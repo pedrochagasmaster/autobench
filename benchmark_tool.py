@@ -6,6 +6,7 @@ import itertools
 import argparse
 import pypyodbc
 import os
+import json
 from datetime import datetime
 
 # Define a new Python class with functions and attributes
@@ -741,7 +742,8 @@ def get_combinations_proposed(initial_df,
                               max_percentage, 
                               num_combinations, 
                               vars_to_eval, 
-                              rules):
+                              rules,
+                              issuer_column):
     list_final_result = [] # Initialization of the list of tuples we will return at the end
     applied_other_rule = False
     rule_to_apply = (num_participants, max_percentage)
@@ -760,19 +762,15 @@ def get_combinations_proposed(initial_df,
                 original_values = comb_wei.copy()
                 data = adjust_values(comb_wei, var, max_percentage) # Execute the functions adjust_values, that will weight the peers that exceed the % rule used. 
                 #Returns the df with the adjusted values that complies with the rule (weight values)
-                original_values = original_values.set_index('Issuer Name') # Set the 'Issuer Name' column as the index for the original_values DataFrame
-                df_adjusted = data.set_index('Issuer Name') # Set the 'Issuer Name' column as the index for the data DataFrame, resulting in df_adjusted
-                
+                original_values = original_values.set_index("Issuer Name") # Set the "Issuer Name" as the index for the original_values DataFrame
+                df_adjusted = data.set_index("Issuer Name") # Set the "Issuer Name" as the index for the data DataFrame, resulting in df_adjusted
                 # Divide columns to get factor
                 df_adjusted['Factor_Used'] = df_adjusted[var] / original_values[var]
-                
                 # Reset index
                 df_adjusted = df_adjusted.reset_index()
-                
                 total_sum_var = df_adjusted[var].sum() # Calculate the total sum of the specified variable column in df_adjusted
                 df_adjusted[var+'_Percentage'] = (df_adjusted[var] / total_sum_var) * 100 # Calculate the percentage of each value in the specified variable column
                 # and create a new column with the results
-                
                 result_df.append(df_adjusted) # Append the adjusted DataFrame to the result_df list
 
             if result_df:
@@ -792,20 +790,17 @@ def get_combinations_proposed(initial_df,
                     applied_other_rule = False
                     print('SORRY, no combinations found under any rule :(')
                     continue # Continue to the next iteration variable
-        
         ##-- This Section to evaluate if there´s any peer that was not included because its size and adjust it if any.
         used_peers = [] # List that will contain all the peers already included in the suggested combinations
         for comb in result_df.copy(): 
-            used_peers.extend(comb['Issuer Name'].tolist()) # Add the used peers to the list 
-        all_peers = initial_df['Issuer Name'].tolist() # Get the list of all the peers from the initial csv
+            used_peers.extend(comb["Issuer Name"].tolist()) # Add the used peers to the list 
+        all_peers = initial_df["Issuer Name"].tolist() # Get the list of all the peers from the initial csv
         diff = set(all_peers) - set(used_peers) # Calculate the difference between the set of all_peers and used_peers to find peers that haven't been used yet
-        diff_issuers = initial_df[initial_df['Issuer Name'].isin(diff)] # Filter the initial DataFrame to include only the rows where 'Issuer Name' is in the diff set
-
+        diff_issuers = initial_df[initial_df["Issuer Name"].isin(diff)] # Filter the initial DataFrame to include only the rows where "Issuer Name" is in the diff set
         # Execute the functions that will return the list of peers that were not used because did not comply with the % rule and are above the max peer used
         filtered_top_excluded_peers = get_max_issuer_used(var_names, initial_df, result_df)
-
         # Get the number of peers that were excluded and can be included
-        n_peer = filtered_top_excluded_peers['Issuer Name'].count()
+        n_peer = filtered_top_excluded_peers["Issuer Name"].count()
     
         if n_peer == 0: # If the number of peers excluded are 0, then
             tuple_data = (var, result_df) # Create a tuple for the final result. The tuple is structured: (variable being evaluated name, resulting df with the combinations)
@@ -821,7 +816,7 @@ def get_combinations_proposed(initial_df,
                         if 'Distance to Client' not in combo.columns:
                             # Add the column with a dummy value, e.g., 0 or NaN
                             combo['Distance to Client'] = 0  
-                        columns_to_select = ['Issuer Name', 'Distance to Client', var, var +'_Percentage'] # Select the columns to display: the variable and its percentage. This to reduce the view columns.
+                        columns_to_select = ["Issuer Name", 'Distance to Client', var, var +'_Percentage'] # Select the columns to display: the variable and its percentage. This to reduce the view columns.
                         combo_sel = combo[columns_to_select]
                 
                         # Print the combination index and the selected columns
@@ -829,11 +824,8 @@ def get_combinations_proposed(initial_df,
                         print(combo_sel)
                         print()
             continue # Continue to the next iteration variable
-
         #Function to evaluate that the result_df containing the list of dfs with the resulting combinations are not the same after trimming the last n rows, for fitting the excluded peers.
-        result, distinct_dfs = validate_dfs_are_distinct(result_df.copy(), n_peer) # Return a tuple (bool value for whether all trimmed dfs are equal, the distinct original dfs we can use)
-
-
+        result, distinct_dfs = validate_dfs_are_distinct(result_df.copy(), n_peer)
         for comb in distinct_dfs.copy(): ## Iterate over all the distinct comb df after the last n rows trimmed
             if (len(result_df) >= num_combinations): ## If we already have all the combinations do not add more even if there are weighted
                 tuple_data = (var, result_df) # Create a tuple with the variable name and the list of result df
@@ -844,32 +836,24 @@ def get_combinations_proposed(initial_df,
             df_test = fit_excluded_peers(comb, vars_to_eval, filtered_top_excluded_peers, num_participants) 
         #and executes the function that will include the excluded peers on the combinations. Return a new df containing the excluded peers. For function details:
             #Go to Part 2. Weights Logic -> fit_excluded_peers(comb, vars_to_eval, excl_peers, num_participants, exclude_last=True, peer_to_exclude=[''])
-
             original_values = df_test.copy() ## Create a opy of the result df from previous function. 
             #This will be used later to calculate the adjustement made to the variable num, the 'factor'
-
             if applied_other_rule: # This is to control the max percetage used in case other rule were applied
                 data = adjust_values(df_test, var, new_max_percentage) # Execute the functions adjust_values, that will weight the peers that exceed the % rule used. 
                 #Returns the df with the adjusted values that complies with the rule (weight values)
             else:
                 data = adjust_values(df_test, var, max_percentage) # Execute the functions adjust_values, that will weight the peers that exceed the % rule used. 
                 #Returns the df with the adjusted values that complies with the rule (weight values)
-            
-            original_values = original_values.set_index('Issuer Name') # Set the 'Issuer Name' column as the index for the original_values DataFrame
-            df_adjusted = data.set_index('Issuer Name') # Set the 'Issuer Name' column as the index for the data DataFrame, resulting in df_adjusted
-            
+            original_values = original_values.set_index("Issuer Name") # Set the "Issuer Name" as the index for the original_values DataFrame
+            df_adjusted = data.set_index("Issuer Name") # Set the "Issuer Name" as the index for the data DataFrame, resulting in df_adjusted
             # Divide columns to get factor
             df_adjusted['Factor_Used'] = df_adjusted[var] / original_values[var]
-            
             # Reset index
             df_adjusted = df_adjusted.reset_index()
-            
             total_sum_var = df_adjusted[var].sum() # Calculate the total sum of the specified variable column in df_adjusted
             df_adjusted[var+'_Percentage'] = (df_adjusted[var] / total_sum_var) * 100 # Calculate the percentage of each value in the specified variable column
             # and create a new column with the results
-            
             result_df.append(df_adjusted) # Append the adjusted DataFrame to the result_df list
-            
         tuple_data = (var, result_df) # Create a tuple with the variable name and the list of result df
         results_rule_Eval = evaluate_rules(tuple_data, rule_to_apply)
         print('4')
@@ -878,7 +862,6 @@ def get_combinations_proposed(initial_df,
             print('One of combinations does not meet rules. Please review. Details:')
             for result in results_rule_Eval:
                 print(result)
-        
         ## Final output. Print the results:
         print("\nValidated Data:")
         for idx, combo in enumerate(result_df):
@@ -886,14 +869,14 @@ def get_combinations_proposed(initial_df,
                 # Add the column with a dummy value, e.g., 0 or NaN
                 combo['Distance to Client'] = 0  # or you can use pd.NA, np.nan, etc.
             if 'Factor_Used' in combo.columns:
-                columns_to_select = ['Issuer Name', 'Distance to Client', var, var +'_Percentage', 'Factor_Used']
+                columns_to_select = ["Issuer Name", 'Distance to Client', var, var +'_Percentage', 'Factor_Used']
             else:
-                columns_to_select = ['Issuer Name', 'Distance to Client', var, var +'_Percentage']
+                columns_to_select = ["Issuer Name", 'Distance to Client', var, var +'_Percentage']
             combo_sel = combo[columns_to_select]
             print(f"Combination {idx + 1}:")
             print(combo_sel.sort_values(var, ascending=False))
             print()
-    compare_result_dfs_by_column(list_final_result, 'Issuer Name') # This line executes the compare_result_dfs_by_column to validate if there os any 
+    compare_result_dfs_by_column(list_final_result, "Issuer Name") # This line executes the compare_result_dfs_by_column to validate if there os any 
     #combination that can be used in other breaks
     return list_final_result # Return the output for usage
 
@@ -1126,11 +1109,12 @@ def prepare_benchmark(df_pivot_adj, break_cols, dict2convert, issuer_column, iss
     benchmark_tool.df_2_breaks(dummy_fraud=False)
     benchmark_tool.get_peer_distances(dict_compare={"General_Cnt_tl0": ["Perc_CNP_Cnt"]})
     benchmark_tool.get_initial_df()
+    
     return benchmark_tool
 
-def evaluate_combinations(initial_df, vars_to_eval, rules, num_participants, max_percentage, num_combinations, selected_comb):
+def evaluate_combinations(initial_df, vars_to_eval, rules, num_participants, max_percentage, num_combinations, selected_comb, issuer_column):
     tuple_final = get_combinations_proposed(
-        initial_df, num_participants, max_percentage, num_combinations, vars_to_eval, rules
+        initial_df, num_participants, max_percentage, num_combinations, vars_to_eval, rules, issuer_column
     )
     peer_group_names = []
     if tuple_final:
@@ -1138,7 +1122,7 @@ def evaluate_combinations(initial_df, vars_to_eval, rules, num_participants, max
         if first_valid_result:
             try:
                 selected_df = first_valid_result[1][selected_comb - 1]
-                peer_group_names = selected_df['Issuer Name'].tolist()
+                peer_group_names = selected_df["Issuer Name"].tolist()
             except IndexError:
                 print(f"Warning: Combination {selected_comb} not found for this break.")
     df_kpis = pd.DataFrame(columns=['Metric', 'AVG Aproval Rate', 'BIC Approval Rate', 'AVG BPS', 'BIC BPS'])
@@ -1160,7 +1144,7 @@ def balance_peer(df_raw, rows, breaks, columns_pivot, dict2convert, issuer_colum
     initial_df.columns = initial_df.columns.str.strip()
     vars_to_eval = [col for col in initial_df.columns if col.startswith("v_")]
     df_kpis, peer_group = evaluate_combinations(
-        initial_df, vars_to_eval, rules, num_participants, max_percentage, num_combinations, selected_comb
+        initial_df, vars_to_eval, rules, num_participants, max_percentage, num_combinations, selected_comb, issuer_column
     )
     return df_kpis, peer_group
 
@@ -1222,27 +1206,293 @@ def load_and_preprocess_data(source_type, csv_file, table_name, appr_amount_col,
     if source_type == 'sql':
         source = table_name
         cnxn = pypyodbc.connect(DSN="IMPALA64-Prod", Schema="core", autocommit=True)
+    
     df_raw = load_data(source_type=source_type, csv_path=source, table_name=source, connection=cnxn)
+    
     df_raw = df_raw.rename(columns={
         "total_amount": "txn_amt", "total_txns": "txn_cnt",
         appr_amount_col: "app_amt", appr_txns_col: "app_cnt",
         "declined_amount": "dcl_amt", "declined_txns": "dcl_cnt",
         "qt_fraud": "fraud_cnt", "amount_fraud": "fraud_amt",
     })
+
+    if 'fraud_cnt' not in df_raw.columns:
+        print(">> WARNING: 'qt_fraud' column not found in source. Creating dummy fraud count data.")
+        df_raw['fraud_cnt'] = 1
+    if 'fraud_amt' not in df_raw.columns:
+        print(">> WARNING: 'amount_fraud' column not found in source. Creating dummy fraud amount data.")
+        df_raw['fraud_amt'] = 1
+
     if cnxn: cnxn.close()
     return df_raw
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run dynamic benchmark analysis with logging.')
-    # (Arguments are the same as before)
-    parser.add_argument('--type', choices=['csv', 'sql'], required=True, help='Specify the data source: "csv" or "sql".')
-    parser.add_argument('--csv-file', dest='csv_file', help='Path to the CSV file (if type is csv).')
-    parser.add_argument('--table-name', dest='table_name', help='SQL table name (if type is sql).')
-    parser.add_argument('--appr-amount-col', default='appr_amount', help='Name of the approved amount column.')
-    parser.add_argument('--appr-txns-col', default='appr_txns', help='Name of the approved transactions column.')
-    parser.add_argument('--break-def', action='append', required=True, help='Define a break. Format: "col" or "col1:col2". Can be used multiple times.')
-    parser.add_argument('--comb-priority', nargs='+', type=int, default=[1, 2, 3, 4, 5], help='Priority order of combinations to try (e.g., 1 5 3).')
+    # Load presets for help text
+    def get_presets_help():
+        try:
+            with open('presets.json', 'r') as f:
+                presets = json.load(f)['presets']
+                help_text = "\nPRESETS:\n"
+                for name, config in presets.items():
+                    help_text += f"  {name}: {config['participants']} participants, {config['max_percent']}% max, combinations {config['combinations']}\n"
+                return help_text
+        except:
+            return """
+PRESETS:
+  conservative: 6 participants, 25% max, combinations [1,2,3]
+  standard:    4 participants, 35% max, combinations [5,1,2]  
+  aggressive:  7 participants, 40% max, combinations [1,2,3,4,5]
+            """
+
+    parser = argparse.ArgumentParser(
+        description='Benchmark Analysis Tool - Compare issuer performance against peer groups',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+EXAMPLES:
+  # Quick rate analysis with defaults
+  python benchmark_tool.py rate --csv data.csv --issuer "BANCO SANTANDER" --break month_year
+
+  # Share analysis for wallet flag
+  python benchmark_tool.py share --csv data.csv --issuer "BANCO SANTANDER" --break wallet_flag
+
+  # Multiple breaks with custom settings
+  python benchmark_tool.py rate --csv data.csv --issuer "BANCO SANTANDER" \\
+    --break month_year industry wallet_flag \\
+    --participants 6 --max-percent 30
+
+  # Use preset configurations
+  python benchmark_tool.py rate --csv data.csv --issuer "BANCO SANTANDER" \\
+    --break month_year --preset conservative
+
+  # List available presets
+  python benchmark_tool.py presets
+
+{get_presets_help()}
+        """
+    )
+    
+    # Create subparsers for different analysis types
+    subparsers = parser.add_subparsers(dest='command', help='Analysis type')
+    
+    # Get available preset names for argument choices
+    def get_preset_choices():
+        try:
+            with open('presets.json', 'r') as f:
+                presets = json.load(f)['presets']
+                return list(presets.keys())
+        except:
+            return ['conservative', 'standard', 'aggressive']
+    
+    preset_choices = get_preset_choices()
+    
+    # Rate analysis subcommand
+    rate_parser = subparsers.add_parser('rate', help='Rate-based benchmark analysis (approval rates, fraud rates)')
+    rate_parser.add_argument('--csv', required=True, help='Path to CSV file')
+    rate_parser.add_argument('--issuer', required=True, help='Name of the client issuer')
+    rate_parser.add_argument('--break', dest='breaks', nargs='+', required=True, 
+                           help='Break columns to analyze (e.g., month_year industry)')
+    rate_parser.add_argument('--issuer-col', default='issuer_name', help='Issuer column name (default: issuer_name)')
+    rate_parser.add_argument('--participants', type=int, default=4, help='Number of participants (default: 4)')
+    rate_parser.add_argument('--max-percent', type=float, default=35, help='Max percentage per peer (default: 35)')
+    rate_parser.add_argument('--combinations', nargs='+', type=int, default=[5,1,2], 
+                           help='Combination priority order (default: 5 1 2)')
+    rate_parser.add_argument('--preset', choices=preset_choices, 
+                           help='Use preset configuration')
+    
+    # Share analysis subcommand  
+    share_parser = subparsers.add_parser('share', help='Share-based benchmark analysis (market share, distribution)')
+    share_parser.add_argument('--csv', required=True, help='Path to CSV file')
+    share_parser.add_argument('--issuer', required=True, help='Name of the client issuer')
+    share_parser.add_argument('--break', dest='breaks', nargs='+', required=True,
+                           help='Break columns to analyze (e.g., wallet_flag industry)')
+    share_parser.add_argument('--issuer-col', default='issuer_name', help='Issuer column name (default: issuer_name)')
+    share_parser.add_argument('--participants', type=int, default=4, help='Number of participants (default: 4)')
+    share_parser.add_argument('--max-percent', type=float, default=35, help='Max percentage per peer (default: 35)')
+    share_parser.add_argument('--combinations', nargs='+', type=int, default=[5,1,2],
+                           help='Combination priority order (default: 5 1 2)')
+    share_parser.add_argument('--preset', choices=preset_choices,
+                           help='Use preset configuration')
+    
+    # Presets subcommand
+    presets_parser = subparsers.add_parser('presets', help='List available preset configurations')
+    
+    # Legacy compatibility subcommand
+    legacy_parser = subparsers.add_parser('legacy', help='Legacy command-line interface for backward compatibility')
+    legacy_parser.add_argument('--type', choices=['csv', 'sql'], required=True, help='Data source type')
+    legacy_parser.add_argument('--csv-file', dest='csv_file', help='Path to CSV file')
+    legacy_parser.add_argument('--table-name', dest='table_name', help='SQL table name')
+    legacy_parser.add_argument('--appr-amount-col', default='appr_amount', help='Approved amount column')
+    legacy_parser.add_argument('--appr-txns-col', default='appr_txns', help='Approved transactions column')
+    legacy_parser.add_argument('--break-def', action='append', required=True, help='Break definition')
+    legacy_parser.add_argument('--comb-priority', nargs='+', type=int, default=[1,2,3,4,5], help='Combination priority')
+    legacy_parser.add_argument('--metric-type', action='append', help='Metric type definition')
+    legacy_parser.add_argument('--issuer-column', default='issuer_name', help='Issuer column name')
+    legacy_parser.add_argument('--issuer-name', default='BANCO SANTANDER (BRASIL) S.A.', help='Issuer name')
+    legacy_parser.add_argument('--num-participants', type=int, default=4, help='Number of participants')
+    legacy_parser.add_argument('--max-percentage', type=float, default=35, help='Maximum percentage')
+    legacy_parser.add_argument('--num-combinations', type=int, default=5, help='Number of combinations')
+    
     args = parser.parse_args()
+
+    # Handle presets
+    def load_presets():
+        """Load presets from JSON file, fallback to defaults if file not found"""
+        try:
+            with open('presets.json', 'r') as f:
+                return json.load(f)['presets']
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            # Fallback to hardcoded presets
+            return {
+                "conservative": {
+                    "description": "High privacy requirements, regulatory compliance",
+                    "participants": 6,
+                    "max_percent": 25,
+                    "combinations": [1, 2, 3]
+                },
+                "standard": {
+                    "description": "Most common use cases, good balance", 
+                    "participants": 4,
+                    "max_percent": 35,
+                    "combinations": [5, 1, 2]
+                },
+                "aggressive": {
+                    "description": "Limited data availability, need more flexibility",
+                    "participants": 7,
+                    "max_percent": 40,
+                    "combinations": [1, 2, 3, 4, 5]
+                }
+            }
+    
+    def apply_preset(preset_name, args):
+        presets = load_presets()
+        if preset_name in presets:
+            preset = presets[preset_name]
+            args.participants = preset['participants']
+            args.max_percent = preset['max_percent']
+            args.combinations = preset['combinations']
+            print(f"Applied preset '{preset_name}': {preset['description']}")
+        else:
+            print(f"Warning: Preset '{preset_name}' not found. Using default settings.")
+    
+    # --- Helper functions (defined before use) ---
+    def parse_metric_type_args(metric_type_args):
+        metric_type_map = {}
+        if metric_type_args:
+            for entry in metric_type_args:
+                if ':' in entry:
+                    var, mtype = entry.split(':', 1)
+                    metric_type_map[var.strip()] = mtype.strip().lower()
+        return metric_type_map
+
+    def get_metric_type_for_break(break_name, metric_type_map):
+        # Try exact match, else default to 'rate'
+        return metric_type_map.get(break_name, 'rate')
+
+    # Process arguments based on command
+    if args.command == 'presets':
+        # List available presets
+        presets = load_presets()
+        print("Available Preset Configurations:")
+        print("=" * 50)
+        for name, config in presets.items():
+            print(f"\n{name.upper()}:")
+            print(f"  Description: {config['description']}")
+            print(f"  Participants: {config['participants']}")
+            print(f"  Max Percentage: {config['max_percent']}%")
+            print(f"  Combinations: {config['combinations']}")
+        print(f"\nTo use a preset: --preset <name>")
+        print(f"To add new presets: Edit presets.json file")
+        exit(0)
+        
+    elif args.command == 'legacy':
+        # Legacy mode - use existing logic
+        metric_type_map = parse_metric_type_args(getattr(args, 'metric_type', None))
+        # ... rest of legacy logic
+        pass
+        
+    elif args.command in ['rate', 'share']:
+        # New simplified mode
+        if args.preset:
+            apply_preset(args.preset, args)
+        
+        # Convert new args to legacy format for compatibility
+        legacy_args = argparse.Namespace()
+        legacy_args.type = 'csv'
+        legacy_args.csv_file = args.csv
+        legacy_args.table_name = None
+        legacy_args.appr_amount_col = 'appr_amount'
+        legacy_args.appr_txns_col = 'appr_txns'
+        legacy_args.break_def = args.breaks
+        legacy_args.comb_priority = args.combinations
+        legacy_args.issuer_column = args.issuer_col
+        legacy_args.issuer_name = args.issuer
+        legacy_args.num_participants = args.participants
+        legacy_args.max_percentage = args.max_percent
+        legacy_args.num_combinations = 5
+        # Set metric type based on command
+        if args.command == 'share':
+            legacy_args.metric_type = [f"Break_by_{break_name}:share" for break_name in args.breaks]
+            legacy_args.command = 'share'
+        else:
+            legacy_args.metric_type = None
+            legacy_args.command = 'rate'
+        args = legacy_args
+        metric_type_map = parse_metric_type_args(getattr(args, 'metric_type', None))
+        
+    else:
+        parser.print_help()
+        exit(1)
+
+    def get_metric_type_for_break(break_name, metric_type_map):
+        # Try exact match, else default to 'rate'
+        return metric_type_map.get(break_name, 'rate')
+
+    # --- Share metric aggregation and KPI logic ---
+    def aggregate_share_metric(df, issuer_column, cat_col):
+        df_cat = df.groupby([issuer_column, cat_col]).size().reset_index(name='count')
+        df_cat['total'] = df_cat.groupby(issuer_column)['count'].transform('sum')
+        df_cat['share'] = df_cat['count'] / df_cat['total']
+        df_pivot = df_cat.pivot(index=issuer_column, columns=cat_col, values='share').reset_index().fillna(0)
+        return df_pivot
+
+    def kpis_for_share_metric(df_pivot, issuer_column, issuer_name):
+        vars_to_eval = [col for col in df_pivot.columns if col != issuer_column]
+        df_kpis = pd.DataFrame(columns=['Metric', 'Peer Group Average Share'])
+        player_row = df_pivot[df_pivot[issuer_column] == issuer_name]
+        if player_row.empty:
+            return df_kpis
+        for var in vars_to_eval:
+            # Calculate average share for peer group (excluding the client)
+            peer_shares = df_pivot[(df_pivot[issuer_column] != issuer_name)][var]
+            avg_share = peer_shares.mean()
+            series_to_append = pd.Series([var, round(avg_share, 4)], index=df_kpis.columns)
+            df_kpis = pd.concat([df_kpis, series_to_append.to_frame().T], ignore_index=True)
+        return df_kpis
+
+    def run_share_benchmark(df_to_process, break_cols, issuer_column, issuer_name, comb_priority_list, rules, num_combinations, num_participants, max_percentage):
+        cat_col = break_cols[0]
+        df_pivot = aggregate_share_metric(df_to_process, issuer_column, cat_col)
+        # Rename issuer column to 'Issuer Name' for compatibility
+        df_pivot = df_pivot.rename(columns={issuer_column: 'Issuer Name'})
+        columns_pivot_share = [col for col in df_pivot.columns if col != 'Issuer Name']
+        dict2convert_share = {cat: cat for cat in columns_pivot_share}
+        initial_df = df_pivot.copy()
+        initial_df.columns = initial_df.columns.str.strip()
+        vars_to_eval = columns_pivot_share  # Use all category columns at once for group validation
+        tuple_final = get_combinations_proposed(
+            initial_df, num_participants, max_percentage, num_combinations, vars_to_eval, rules, 'Issuer Name'
+        )
+        peer_group_names = []
+        if tuple_final:
+            first_valid_result = next((tup for tup in tuple_final if tup[1]), None)
+            if first_valid_result:
+                try:
+                    selected_df = first_valid_result[1][comb_priority_list[0] - 1]
+                    peer_group_names = selected_df['Issuer Name'].tolist()
+                except IndexError:
+                    print(f"Warning: Combination {comb_priority_list[0]} not found for this break.")
+        df_kpis = kpis_for_share_metric(df_pivot, 'Issuer Name', issuer_name)
+        return df_kpis, peer_group_names, comb_priority_list[0] if peer_group_names else None
 
     # --- Setup Logging ---
     log_filename = f"log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
@@ -1253,21 +1503,29 @@ if __name__ == "__main__":
     target_breaks = generate_target_breaks(args.break_def, df_geral, args.comb_priority)
     rows = ['issuer_name']; columns_pivot = ["app", "txn", "fraud"]
     dict2convert = {"Approved": "app", "Total": "txn", "Fraud": "fraud"}
-    issuer_column = "issuer_name"; issuer_name = "BANCO SANTANDER (BRASIL) S.A."
-    rules = [(5, 26), (6, 31), (7, 36), (10, 41)]; num_participants = 4
-    max_percentage = 35; num_combinations = 5
+    issuer_column = args.issuer_column
+    issuer_name = args.issuer_name
+    rules = [(5, 26), (6, 31), (7, 36), (10, 41)]
+    num_participants = args.num_participants
+    max_percentage = args.max_percentage
+    num_combinations = args.num_combinations
     
     # --- Main Execution Loop ---
     kpi_results = {}
     print("Starting benchmark analysis...")
     for name, params in target_breaks.items():
         break_cols, df_to_process, comb_priority_list = params
-        df_kpis_result, peer_group_result, successful_comb = run_analysis_with_fallback(
-            comb_priority_list, df_to_process, rows, break_cols, columns_pivot, dict2convert,
-            issuer_column, issuer_name, rules, num_combinations, num_participants, max_percentage
-        )
+        metric_type = get_metric_type_for_break(name, metric_type_map)
+        if metric_type == 'share':
+            df_kpis_result, peer_group_result, successful_comb = run_share_benchmark(
+                df_to_process, break_cols, issuer_column, issuer_name, comb_priority_list, rules, num_combinations, num_participants, max_percentage
+            )
+        else:
+            df_kpis_result, peer_group_result, successful_comb = run_analysis_with_fallback(
+                comb_priority_list, df_to_process, rows, break_cols, columns_pivot, dict2convert,
+                issuer_column, issuer_name, rules, num_combinations, num_participants, max_percentage
+            )
         kpi_results[name] = (df_kpis_result, peer_group_result, successful_comb)
-        # Log the result for this break immediately
         log_result(log_filename, name, df_to_process.shape, kpi_results[name])
     
     # --- Prepare for Excel Export ---
@@ -1280,15 +1538,26 @@ if __name__ == "__main__":
             header = f"Analysis for: {name} | Status: FAILED - No valid peer combination found."
         header_info_list.append(header)
         
+    # Determine analysis type for filename suffix
+    analysis_type = "unknown"
+    if args.command == 'share':
+        analysis_type = "share"
+    elif args.command == 'rate':
+        analysis_type = "rate"
+    elif args.command == 'legacy':
+        # Try to determine from metric types
+        if hasattr(args, 'metric_type') and args.metric_type:
+            if any('share' in mt for mt in args.metric_type):
+                analysis_type = "share"
+            else:
+                analysis_type = "rate"
+        else:
+            analysis_type = "rate"  # Default for legacy
+    
     save_dfs_to_excel(
         list_of_dfs=[result[0] for result in kpi_results.values()],
         sheet_names=[f"Break_{i+1}" for i in range(len(kpi_results))],
         header_infos=header_info_list,
-        file_name=f"benchmark_output_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        file_name=f"benchmark_output_{datetime.now().strftime('%Y%m%d')}_{analysis_type}.xlsx"
     )
     print(f"\nLog file created: {log_filename}")
-
-
-
-
-
