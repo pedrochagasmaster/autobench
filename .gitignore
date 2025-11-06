@@ -56,3 +56,7 @@ config.json
 # Keep these patterns
 !presets.json
 !config.template.json
+
+*.txt
+*.xlsx
+*.csv

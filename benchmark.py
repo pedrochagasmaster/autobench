@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+import pandas as pd
+
 # Import core modules
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.data_loader import DataLoader
@@ -109,8 +111,8 @@ EXAMPLES:
     # Required arguments
     share_parser.add_argument('--csv', required=True, 
                              help='Path to CSV input file')
-    share_parser.add_argument('--entity', required=True,
-                             help='Name of the entity to benchmark')
+    share_parser.add_argument('--entity',
+                             help='Name of the entity to benchmark (omit for peer-only analysis)')
     share_parser.add_argument('--metric', required=True,
                              choices=['txn_cnt', 'tpv', 'transaction_count', 'transaction_amount'],
                              help='Metric to analyze (txn_cnt or tpv)')
@@ -137,6 +139,8 @@ EXAMPLES:
                              help='Enable debug mode (includes unweighted averages and weight details)')
     share_parser.add_argument('--consistent-weights', action='store_true',
                              help='Use same privacy-constrained weights across all dimensions (global weighting)')
+    share_parser.add_argument('--time-col', 
+                             help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
     
     # Weight algorithm parameters
     share_parser.add_argument('--max-iterations', type=int, default=1000,
@@ -149,7 +153,25 @@ EXAMPLES:
                              help='Minimum weight multiplier allowed (default: 0.01)')
     share_parser.add_argument('--volume-preservation', type=float, default=0.5,
                              help='Volume preservation strength 0.0-1.0 (default: 0.5)')
-    
+    # New options
+    share_parser.add_argument('--prefer-slacks-first', action='store_true',
+                             help='Try full-dimension LP with slacks-first (rank penalty set to 0) before dropping dimensions')
+    share_parser.add_argument('--auto-subset-search', action='store_true',
+                             help='Automatically search for the largest feasible global dimension subset before greedy dropping')
+    share_parser.add_argument('--subset-search-max-tests', type=int, default=200,
+                             help='Maximum attempts during auto subset search (default: 200)')
+    share_parser.add_argument('--greedy-subset-search', dest='greedy_subset_search', action='store_true', default=True,
+                             help='Use greedy subset search (remove one dimension at a time). Default: enabled')
+    share_parser.add_argument('--no-greedy-subset-search', dest='greedy_subset_search', action='store_false',
+                             help='Use random subset search instead of greedy (test random n-1, n-2, ... combinations)')
+    # Slack-aware subset trigger (Milestone 1)
+    share_parser.add_argument('--trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_true', default=True,
+                             help='If any LP cap slack exceeds threshold, trigger subset search even when LP returns success (default: enabled)')
+    share_parser.add_argument('--no-trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_false',
+                             help='Disable triggering subset search on LP slack usage')
+    share_parser.add_argument('--max-cap-slack', type=float, default=0.0,
+                             help='Slack sum threshold as percentage of total volume; if LP sum slack exceeds this, subset search is triggered (default: 0.0 = any slack)')
+
     # ========================================================================
     # RATE ANALYSIS COMMAND
     # ========================================================================
@@ -162,21 +184,16 @@ EXAMPLES:
     # Required arguments
     rate_parser.add_argument('--csv', required=True,
                             help='Path to CSV input file')
-    rate_parser.add_argument('--entity', required=True,
-                            help='Name of the entity to benchmark')
+    rate_parser.add_argument('--entity',
+                            help='Name of the entity to benchmark (omit for peer-only analysis)')
     rate_parser.add_argument('--total-col', required=True,
                             help='Total transactions column (e.g., txn_cnt)')
     
-    # Rate type selection
-    rate_type = rate_parser.add_mutually_exclusive_group(required=True)
-    rate_type.add_argument('--approved-col',
-                          help='Approved transactions column (for approval rate)')
-    rate_type.add_argument('--fraud-col',
-                          help='Fraud transactions column (for fraud rate)')
-    
-    # Fraud mode flag
-    rate_parser.add_argument('--fraud-mode', action='store_true',
-                            help='Calculate fraud rates (use 15th percentile for BIC)')
+    # Rate type selection (both can be specified for simultaneous analysis)
+    rate_parser.add_argument('--approved-col',
+                            help='Approved transactions column (for approval rate)')
+    rate_parser.add_argument('--fraud-col',
+                            help='Fraud transactions column (for fraud rate)')
     
     # Dimension selection
     rate_dim_group = rate_parser.add_mutually_exclusive_group()
@@ -196,6 +213,8 @@ EXAMPLES:
                             default='INFO', help='Logging level')
     rate_parser.add_argument('--preset', choices=preset_choices,
                             help='Use preset configuration')
+    rate_parser.add_argument('--time-col', 
+                            help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
     rate_parser.add_argument('--debug', action='store_true',
                             help='Enable debug mode (includes unweighted averages and weight details)')
     rate_parser.add_argument('--consistent-weights', action='store_true',
@@ -292,13 +311,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             return 1
         
         # Map metric name - the data_loader already standardizes column names
-        # So we need to use the standardized names
         metric_col = args.metric
-        # if metric_col == 'txn_cnt':
-        #     metric_col = 'transaction_count'
-        # elif metric_col == 'tpv':
-        #     metric_col = 'transaction_amount'
-        # If user already specified transaction_count or transaction_amount, keep it as is
         
         # Validate metric column exists
         if metric_col not in df.columns:
@@ -308,6 +321,12 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing metric: {metric_col}")
+        
+        # Check for peer-only mode
+        if args.entity is None:
+            logger.info("Running in PEER-ONLY mode (no target entity specified)")
+        else:
+            logger.info(f"Target entity: {args.entity}")
         
         # Get unique entities and counts for metadata
         unique_entities = df[entity_col].nunique()
@@ -326,7 +345,14 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             tolerance=getattr(args, 'tolerance', 1.0),
             max_weight=getattr(args, 'max_weight', 10.0),
             min_weight=getattr(args, 'min_weight', 0.01),
-            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5)
+            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5),
+            prefer_slacks_first=getattr(args, 'prefer_slacks_first', False),
+            auto_subset_search=getattr(args, 'auto_subset_search', False),
+            subset_search_max_tests=getattr(args, 'subset_search_max_tests', 200),
+            greedy_subset_search=getattr(args, 'greedy_subset_search', True),
+            trigger_subset_on_slack=getattr(args, 'trigger_subset_on_slack', True),
+            max_cap_slack=getattr(args, 'max_cap_slack', 0.0),
+            time_column=getattr(args, 'time_col', None),
         )
         
         # Determine dimensions
@@ -334,14 +360,14 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             dimensions = args.dimensions
             logger.info(f"Using specified dimensions: {dimensions}")
         else:
-            dimensions = analyzer.identify_dimensional_columns(df)
+            # Auto-detect dimensions via DataLoader
+            dimensions = data_loader.get_available_dimensions(df)
             logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
-        
+
         # Calculate global weights if consistent_weights mode is enabled
-        # This must be done BEFORE analyzing dimensions to ensure weights work for ALL categories
         if args.consistent_weights:
             analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
-        
+
         # Run analysis
         results = {}
         for dim in dimensions:
@@ -355,28 +381,57 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             except Exception as e:
                 logger.error(f"Error analyzing dimension {dim}: {e}")
                 continue
-        
+
         if not results:
             logger.error("No analysis results generated")
             return 1
-        
+
         # Collect metadata for report
         metadata = {
-            'entity': args.entity,
+            'entity': args.entity if args.entity else 'PEER-ONLY',
             'analysis_type': 'share',
             'metric': metric_col,
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
-            'peer_count': unique_entities - 1,
+            'peer_count': unique_entities if args.entity is None else unique_entities - 1,
             'bic_percentile': args.bic_percentile,
             'dimensions_analyzed': len(results),
             'dimension_names': list(results.keys()),
             'preset': getattr(args, 'preset', None),
             'debug_mode': debug_mode,
-            'timestamp': datetime.now()
+            'consistent_weights': consistent_weights,
+            'timestamp': datetime.now(),
+            # New: capture all input parameters
+            'input_csv': getattr(args, 'csv', None),
+            'log_level': getattr(args, 'log_level', None),
+            'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
+            'dimensions_requested': getattr(args, 'dimensions', None),
+            'entity_col_arg': getattr(args, 'entity_col', None),
+            'max_iterations': getattr(args, 'max_iterations', None),
+            'tolerance_pp': getattr(args, 'tolerance', None),
+            'max_weight': getattr(args, 'max_weight', None),
+            'min_weight': getattr(args, 'min_weight', None),
+            'volume_preservation_strength': getattr(args, 'volume_preservation', None),
+            'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
+            'prefer_slacks_first': getattr(args, 'prefer_slacks_first', False),
+            'auto_subset_search': getattr(args, 'auto_subset_search', False),
+            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', 200),
+            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', True),
+            'max_cap_slack': getattr(args, 'max_cap_slack', 0.0),
+            'analyzer_ref': analyzer,
+            'last_lp_stats': getattr(analyzer, 'last_lp_stats', {}),
+            'slack_subset_triggered': getattr(analyzer, 'slack_subset_triggered', False),
         }
         
+        # Calculate rank preservation strength for metadata (new for v2.0)
+        if args.consistent_weights:
+            metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
+            metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
+            metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
+            # capture subset search attempts if any
+            metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
+
         # Get weights data if debug mode
         weights_df = None
         if debug_mode:
@@ -384,14 +439,55 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
         
+        # Build method breakdown tab (final tab)
+        method_breakdown_df = None
+        if consistent_weights:
+            rows = []
+            dims_all = list(dimensions)
+            used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
+            removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
+            per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
+            global_w = getattr(analyzer, 'global_weights', {})
+            peers = set(global_w.keys())
+            for d, wmap in per_dim_dict.items():
+                peers.update(wmap.keys())
+            for dim in dims_all:
+                # Prioritize per-dimension weights over global when both exist
+                if dim in per_dim_dict:
+                    method = 'Per-dimension LP'
+                elif dim in used_dims:
+                    method = 'Global LP'
+                elif dim in removed_dims:
+                    method = 'Global weights (dropped in LP)'
+                else:
+                    method = 'Global weights'
+                # rows per peer
+                peer_list = sorted(peers)
+                for p in peer_list:
+                    if dim in per_dim_dict and p in per_dim_dict[dim]:
+                        mult = float(per_dim_dict[dim][p])
+                    else:
+                        mult = float(global_w.get(p, {}).get('multiplier', 1.0))
+                    global_weight_pct = global_w.get(p, {}).get('weight', None)
+                    rows.append({
+                        'Dimension': dim,
+                        'Method': method,
+                        'Peer': p,
+                        'Multiplier': round(mult, 6),
+                        'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None
+                    })
+            if rows:
+                method_breakdown_df = pd.DataFrame(rows)
+        
         # Generate output
-        output_file = args.output or f"benchmark_share_{args.entity.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        generate_excel_report(results, output_file, args.entity, 'share', logger, metadata, weights_df)
+        entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
+        output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df)
         
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        print(f"Entity: {args.entity}")
+        print(f"Entity: {args.entity if args.entity else 'PEER-ONLY MODE'}")
         print(f"Metric: {metric_col}")
         print(f"Dimensions Analyzed: {len(results)}")
         print(f"Report: {output_file}")
@@ -409,6 +505,11 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     logger.info("Starting rate-based dimensional analysis")
     
     try:
+        # Validate that at least one rate type is specified
+        if not args.approved_col and not args.fraud_col:
+            logger.error("At least one of --approved-col or --fraud-col must be specified")
+            return 1
+        
         # Load data
         config = ConfigManager()
         data_loader = DataLoader(config)
@@ -426,118 +527,187 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error(f"Entity column '{args.entity_col}' not found in data")
             return 1
         
-        # Determine numerator column (approved or fraud)
-        numerator_col = args.approved_col or args.fraud_col
-        if numerator_col not in df.columns:
-            logger.error(f"Column '{numerator_col}' not found in data")
-            return 1
-        
+        # Validate columns exist
         if args.total_col not in df.columns:
             logger.error(f"Total column '{args.total_col}' not found in data")
             return 1
         
-        # Set BIC percentile based on fraud mode
-        if args.fraud_mode:
-            bic_percentile = 0.15  # Lower is better for fraud
-            logger.info("Fraud rate mode: Using 15th percentile for BIC")
-        else:
-            bic_percentile = args.bic_percentile
-            logger.info(f"Approval rate mode: Using {bic_percentile*100}th percentile for BIC")
+        rate_types = []
+        numerator_cols = {}
+        bic_percentiles = {}
+        
+        if args.approved_col:
+            if args.approved_col not in df.columns:
+                logger.error(f"Approved column '{args.approved_col}' not found in data")
+                return 1
+            rate_types.append('approval')
+            numerator_cols['approval'] = args.approved_col
+            bic_percentiles['approval'] = args.bic_percentile  # Higher is better
+            logger.info(f"Approval rate calculation: {args.approved_col} / {args.total_col}")
+        
+        if args.fraud_col:
+            if args.fraud_col not in df.columns:
+                logger.error(f"Fraud column '{args.fraud_col}' not found in data")
+                return 1
+            rate_types.append('fraud')
+            numerator_cols['fraud'] = args.fraud_col
+            bic_percentiles['fraud'] = 0.15  # Lower is better for fraud
+            logger.info(f"Fraud rate calculation: {args.fraud_col} / {args.total_col}")
         
         logger.info(f"Using entity column: {entity_col}")
-        logger.info(f"Rate calculation: {numerator_col} / {args.total_col}")
+        logger.info(f"Analyzing rate types: {', '.join(rate_types)}")
         
         # Get unique entities and counts for metadata
         unique_entities = df[entity_col].nunique()
         total_records = len(df)
         
-        # Initialize analyzer
-        # Initialize analyzer
+        # Determine dimensions
         debug_mode = getattr(args, 'debug', False)
         consistent_weights = getattr(args, 'consistent_weights', False)
+        
+        if args.dimensions:
+            dimensions = args.dimensions
+            logger.info(f"Using specified dimensions: {dimensions}")
+        else:
+            dimensions = data_loader.get_available_dimensions(df)
+            logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
+        
+        # Initialize analyzer ONCE with first rate type's BIC (we'll override per-dimension)
+        # The key insight: weights are based on total_col, not the numerator
+        first_rate_type = rate_types[0]
         analyzer = DimensionalAnalyzer(
             target_entity=args.entity,
             entity_column=entity_col,
-            bic_percentile=bic_percentile,
+            bic_percentile=bic_percentiles[first_rate_type],  # Used for first rate type
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
             max_iterations=getattr(args, 'max_iterations', 1000),
             tolerance=getattr(args, 'tolerance', 1.0),
             max_weight=getattr(args, 'max_weight', 10.0),
             min_weight=getattr(args, 'min_weight', 0.01),
-            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5)
+            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5),
+            prefer_slacks_first=getattr(args, 'prefer_slacks_first', False),
+            auto_subset_search=getattr(args, 'auto_subset_search', False),
+            subset_search_max_tests=getattr(args, 'subset_search_max_tests', 200),
+            greedy_subset_search=getattr(args, 'greedy_subset_search', True),
+            trigger_subset_on_slack=getattr(args, 'trigger_subset_on_slack', True),
+            max_cap_slack=getattr(args, 'max_cap_slack', 0.0),
+            time_column=getattr(args, 'time_col', None),
         )
         
-        # Determine dimensions
-        if args.dimensions:
-            dimensions = args.dimensions
-            logger.info(f"Using specified dimensions: {dimensions}")
-        else:
-            dimensions = analyzer.identify_dimensional_columns(df)
-            logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
-        
-        # Calculate global weights if consistent_weights mode is enabled
-        # This must be done BEFORE analyzing dimensions to ensure weights work for ALL categories
+        # Calculate global weights ONCE based on total_col
+        # These weights apply to both rate types since they share the same denominator
         if consistent_weights:
+            logger.info(f"\nCalculating global privacy-constrained weights based on {args.total_col}")
             analyzer.calculate_global_privacy_weights(df, args.total_col, dimensions)
+            logger.info("Global weights will be used for all rate types")
         
-        # Run analysis
-        results = {}
-        for dim in dimensions:
-            try:
-                result_df = analyzer.analyze_dimension_rate(
-                    df=df,
-                    dimension_column=dim,
-                    total_col=args.total_col,
-                    numerator_col=numerator_col
-                )
-                results[dim] = result_df
-            except Exception as e:
-                logger.error(f"Error analyzing dimension {dim}: {e}")
+        # Store results for each rate type
+        all_results = {}
+        
+        # Analyze each rate type using the SAME weights
+        for rate_type in rate_types:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Analyzing {rate_type.upper()} RATE")
+            logger.info(f"{'='*60}")
+            
+            numerator_col = numerator_cols[rate_type]
+            bic_percentile = bic_percentiles[rate_type]
+            
+            # Update BIC percentile for this rate type (used for BIC calculation, not weights)
+            analyzer.bic_percentile = bic_percentile
+            logger.info(f"Using {bic_percentile*100}th percentile for BIC")
+            
+            # Run analysis for this rate type
+            results = {}
+            for dim in dimensions:
+                try:
+                    result_df = analyzer.analyze_dimension_rate(
+                        df=df,
+                        dimension_column=dim,
+                        total_col=args.total_col,
+                        numerator_col=numerator_col
+                    )
+                    results[dim] = result_df
+                except Exception as e:
+                    logger.error(f"Error analyzing dimension {dim}: {e}")
+                    continue
+            
+            if not results:
+                logger.warning(f"No analysis results generated for {rate_type} rate")
                 continue
+            
+            # Store results
+            all_results[rate_type] = results
         
-        if not results:
-            logger.error("No analysis results generated")
+        if not all_results:
+            logger.error("No analysis results generated for any rate type")
             return 1
         
-        # Collect metadata for report
-        rate_type = 'fraud' if args.fraud_mode else 'approval'
+        # Collect common metadata
         metadata = {
-            'entity': args.entity,
-            'analysis_type': f'{rate_type}_rate',
-            'rate_type': rate_type,
-            'numerator_col': numerator_col,
+            'entity': args.entity or 'PEER-ONLY',
+            'analysis_type': 'multi_rate' if len(all_results) > 1 else f'{rate_types[0]}_rate',
+            'rate_types': rate_types,
+            'approved_col': getattr(args, 'approved_col', None),
+            'fraud_col': getattr(args, 'fraud_col', None),
             'total_col': args.total_col,
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
-            'peer_count': unique_entities - 1,
-            'bic_percentile': bic_percentile,
-            'dimensions_analyzed': len(results),
-            'dimension_names': list(results.keys()),
+            'peer_count': unique_entities if args.entity is None else (unique_entities - 1),
+            'dimensions_analyzed': len(dimensions),
+            'dimension_names': dimensions,
             'preset': getattr(args, 'preset', None),
             'debug_mode': debug_mode,
-            'timestamp': datetime.now()
+            'consistent_weights': consistent_weights,
+            'timestamp': datetime.now(),
+            'input_csv': getattr(args, 'csv', None),
+            'log_level': getattr(args, 'log_level', None),
+            'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
+            'dimensions_requested': getattr(args, 'dimensions', None),
+            'entity_col_arg': getattr(args, 'entity_col', None),
+            'max_iterations': getattr(args, 'max_iterations', None),
+            'tolerance_pp': getattr(args, 'tolerance', None),
+            'max_weight': getattr(args, 'max_weight', None),
+            'min_weight': getattr(args, 'min_weight', None),
+            'volume_preservation_strength': getattr(args, 'volume_preservation', None),
+            'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
+            'bic_percentiles': bic_percentiles,  # Store both BIC percentiles
         }
         
-        # Get weights data if debug mode
+        # Get weights data if debug mode (same weights for all rate types)
         weights_df = None
         if debug_mode:
             weights_df = analyzer.get_weights_dataframe()
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
         
-        # Generate output
-        output_file = args.output or f"benchmark_{rate_type}_rate_{args.entity.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        generate_excel_report(results, output_file, args.entity, f'{rate_type}_rate', logger, metadata, weights_df)
+        # Generate single output file
+        entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
+        if args.output:
+            output_file = args.output
+        elif len(all_results) > 1:
+            output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        else:
+            output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
+        # Generate report with all rate types
+        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles)
+        
+        # Print summary
         print(f"\n{'='*80}")
-        print(f"{rate_type.upper()} RATE ANALYSIS COMPLETE")
+        print(f"RATE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        print(f"Entity: {args.entity}")
-        print(f"Rate Type: {rate_type}")
-        print(f"Dimensions Analyzed: {len(results)}")
+        if args.entity:
+            print(f"Entity: {args.entity}")
+        else:
+            print(f"Mode: PEER-ONLY (No Target Entity)")
+        print(f"Rate Types Analyzed: {', '.join([rt.upper() for rt in all_results.keys()])}")
+        print(f"Dimensions Analyzed: {len(dimensions)}")
         print(f"Report: {output_file}")
+        if len(all_results) > 1:
+            print(f"Note: Both rate types use same privacy-constrained weights (based on {args.total_col})")
         print(f"{'='*80}\n")
         
         return 0
@@ -554,7 +724,8 @@ def generate_excel_report(
     analysis_type: str,
     logger: logging.Logger,
     metadata: Optional[Dict[str, Any]] = None,
-    weights_df: Optional[Any] = None
+    weights_df: Optional[Any] = None,
+    method_breakdown_df: Optional[pd.DataFrame] = None
 ) -> None:
     """Generate Excel report with dimensional analysis results."""
     try:
@@ -570,7 +741,7 @@ def generate_excel_report(
     # Summary sheet with enhanced metadata
     ws_summary = wb.create_sheet("Summary")
     ws_summary.column_dimensions['A'].width = 30
-    ws_summary.column_dimensions['B'].width = 40
+    ws_summary.column_dimensions['B'].width = 60
     
     row = 1
     ws_summary[f'A{row}'] = f"{analysis_type.upper()} ANALYSIS SUMMARY"
@@ -593,6 +764,49 @@ def generate_excel_report(
     ws_summary[f'A{row}'] = "Timestamp:"
     ws_summary[f'B{row}'] = metadata.get('timestamp', datetime.now()).strftime('%Y-%m-%d %H:%M:%S') if metadata else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     row += 2
+    
+    # Input parameters
+    if metadata:
+        ws_summary[f'A{row}'] = "INPUT PARAMETERS"
+        ws_summary[f'A{row}'].font = Font(bold=True, size=11)
+        row += 1
+
+        def write_input(label: str, value: Any):
+            nonlocal row
+            ws_summary[f'A{row}'] = label
+            ws_summary[f'B{row}'] = value if value is not None else 'N/A'
+            row += 1
+        
+        write_input("CSV Path:", metadata.get('input_csv'))
+        write_input("Output File:", output_file)
+        write_input("Entity Column (arg):", metadata.get('entity_col_arg', metadata.get('entity_column')))
+        # Share/Rate specific inputs
+        if metadata.get('analysis_type') == 'share':
+            write_input("Metric:", metadata.get('metric'))
+        else:
+            write_input("Rate Type:", metadata.get('rate_type'))
+            write_input("Numerator Column:", metadata.get('numerator_col'))
+            write_input("Total Column:", metadata.get('total_col'))
+            write_input("Fraud Mode:", metadata.get('fraud_mode'))
+        # Dimension selection
+        write_input("Dimensions Mode:", metadata.get('dimensions_mode'))
+        dims_req = metadata.get('dimensions_requested')
+        if dims_req:
+            write_input("Dimensions Requested:", ", ".join(map(str, dims_req)))
+        # General controls
+        write_input("BIC Percentile:", metadata.get('bic_percentile'))
+        write_input("Log Level:", metadata.get('log_level'))
+        write_input("Preset:", metadata.get('preset'))
+        write_input("Debug Mode:", 'ENABLED' if metadata.get('debug_mode') else 'DISABLED')
+        write_input("Consistent Weights:", 'ENABLED' if metadata.get('consistent_weights') else 'DISABLED')
+        # Weight algorithm parameters
+        write_input("Max Iterations:", metadata.get('max_iterations'))
+        write_input("Tolerance (pp):", metadata.get('tolerance_pp'))
+        write_input("Max Weight:", metadata.get('max_weight'))
+        write_input("Min Weight:", metadata.get('min_weight'))
+        write_input("Volume Preservation (input):", metadata.get('volume_preservation_strength'))
+        write_input("Rank Preservation Strength:", metadata.get('rank_preservation_strength'))
+        row += 1
     
     # Data information
     if metadata:
@@ -684,7 +898,29 @@ def generate_excel_report(
             row += 1
         
         row += 1
-    
+
+    # If Rank Changes available, add a short top-movers section to Summary
+    try:
+        rank_df = None
+        if metadata and 'analyzer_ref' in metadata:
+            ana = metadata['analyzer_ref']
+            rank_df = getattr(ana, 'rank_changes_df', None)
+        if rank_df is not None and hasattr(rank_df, 'empty') and not rank_df.empty:
+            ws_summary[f'A{row}'] = "RANK CHANGES (Top Movers)"
+            ws_summary[f'A{row}'].font = Font(bold=True, size=11)
+            row += 1
+            # Top 5 by absolute Delta
+            top = rank_df.copy()
+            top['Abs_Delta'] = (top['Delta']).abs()
+            top = top.sort_values(['Abs_Delta', 'Adjusted_Rank'], ascending=[False, True]).head(5)
+            for _, r in top.iterrows():
+                ws_summary[f'A{row}'] = str(r['Peer'])
+                ws_summary[f'B{row}'] = f"Base→Adj: {int(r['Base_Rank'])}→{int(r['Adjusted_Rank'])} (Δ {int(r['Delta'])})"
+                row += 1
+            row += 1
+    except Exception as e:
+        logger.warning(f"Could not add Rank Changes summary: {e}")
+
     # Dimensions analyzed
     ws_summary[f'A{row}'] = "DIMENSIONS ANALYZED"
     ws_summary[f'A{row}'].font = Font(bold=True, size=11)
@@ -773,7 +1009,420 @@ def generate_excel_report(
             ws_weights.column_dimensions[column].width = min(max_length + 2, 50)
 
         logger.info("Added Peer Weights tab with weight calculations and contributions")
+
+    # Add final Weight Methods tab if provided
+    if method_breakdown_df is not None and not method_breakdown_df.empty:
+        ws_methods = wb.create_sheet("Weight Methods")
+        ws_methods['A1'] = "Dimension Weighting Methods"
+        ws_methods['A1'].font = Font(bold=True, size=12)
+        
+        # Write headers
+        for c_idx, col_name in enumerate(method_breakdown_df.columns, start=1):
+            cell = ws_methods.cell(row=3, column=c_idx, value=col_name)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Write data
+        for r_idx, row_data in enumerate(method_breakdown_df.itertuples(index=False), start=4):
+            for c_idx, value in enumerate(row_data, start=1):
+                ws_methods.cell(row=r_idx, column=c_idx, value=value)
+        
+        # Auto-size columns
+        for col in ws_methods.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            ws_methods.column_dimensions[column].width = min(max_length + 2, 60)
+
+    # Subset Search tab if attempts were recorded
+    try:
+        attempts = metadata.get('subset_search_results') if metadata else None
+        if attempts:
+            ws_ss = wb.create_sheet("Subset Search")
+            ws_ss['A1'] = "Auto Subset Search Attempts"
+            ws_ss['A1'].font = Font(bold=True, size=12)
+            # Stable columns aligned with analyzer keys
+            cols_sorted = ['Attempt', 'Count', 'Dimensions', 'Success', 'Max_Slack', 'Sum_Slack', 'Method', 'Note']
+            for c_idx, col_name in enumerate(cols_sorted, start=1):
+                cell = ws_ss.cell(row=3, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, d in enumerate(attempts, start=4):
+                ws_ss.cell(row=r_idx, column=1, value=d.get('Attempt'))
+                ws_ss.cell(row=r_idx, column=2, value=d.get('Count'))
+                # Join list of dims into a string for Excel
+                dims_val = d.get('Dimensions')
+                if isinstance(dims_val, (list, tuple)):
+                    dims_val = ", ".join(map(str, dims_val))
+                ws_ss.cell(row=r_idx, column=3, value=dims_val)
+                ws_ss.cell(row=r_idx, column=4, value=d.get('Success'))
+                ws_ss.cell(row=r_idx, column=5, value=d.get('Max_Slack'))
+                ws_ss.cell(row=r_idx, column=6, value=d.get('Sum_Slack'))
+                ws_ss.cell(row=r_idx, column=7, value=d.get('Method'))
+                ws_ss.cell(row=r_idx, column=8, value=d.get('Note'))
+            for col in ws_ss.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_ss.column_dimensions[column].width = min(max_length + 2, 80)
+    except Exception as e:
+        logger.warning(f"Could not add Subset Search sheet: {e}")
+
+    # New: Structural infeasibility diagnostics tabs if available via analyzer metadata
+    try:
+        structural_detail = None
+        structural_summary = None
+        if metadata and 'analyzer_ref' in metadata:
+            ana = metadata['analyzer_ref']
+            structural_detail = getattr(ana, 'structural_detail_df', None)
+            structural_summary = getattr(ana, 'structural_summary_df', None)
+        # fallback if metadata carries dataframes directly in future
+        if structural_summary is not None and hasattr(structural_summary, 'empty') and not structural_summary.empty:
+            ws_sum = wb.create_sheet("Structural Summary")
+            ws_sum['A1'] = "Structural Infeasibility by Dimension"
+            ws_sum['A1'].font = Font(bold=True, size=12)
+            df_sum = structural_summary
+            for c_idx, col_name in enumerate(df_sum.columns, start=1):
+                cell = ws_sum.cell(row=3, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, row_data in enumerate(df_sum.itertuples(index=False), start=4):
+                for c_idx, value in enumerate(row_data, start=1):
+                    ws_sum.cell(row=r_idx, column=c_idx, value=value)
+            for col in ws_sum.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_sum.column_dimensions[column].width = min(max_length + 2, 60)
+        if structural_detail is not None and hasattr(structural_detail, 'empty') and not structural_detail.empty:
+            ws_det = wb.create_sheet("Structural Detail")
+            ws_det['A1'] = "Per-Category Structural Feasibility"
+            ws_det['A1'].font = Font(bold=True, size=12)
+            df_det = structural_detail
+            for c_idx, col_name in enumerate(df_det.columns, start=1):
+                cell = ws_det.cell(row=3, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, row_data in enumerate(df_det.itertuples(index=False), start=4):
+                for c_idx, value in enumerate(row_data, start=1):
+                    ws_det.cell(row=r_idx, column=c_idx, value=value)
+            for col in ws_det.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_det.column_dimensions[column].width = min(max_length + 2, 80)
+    except Exception as e:
+        logger.warning(f"Could not add structural diagnostics sheets: {e}")
+
+    # Rank Changes full sheet (Milestone 2)
+    try:
+        rank_df = None
+        if metadata and 'analyzer_ref' in metadata:
+            ana = metadata['analyzer_ref']
+            rank_df = getattr(ana, 'rank_changes_df', None)
+        if rank_df is not None and hasattr(rank_df, 'empty') and not rank_df.empty:
+            ws_rank = wb.create_sheet("Rank Changes")
+            ws_rank['A1'] = "Peer Rank Changes (Baseline vs Adjusted)"
+            ws_rank['A1'].font = Font(bold=True, size=12)
+            for c_idx, col_name in enumerate(rank_df.columns, start=1):
+                cell = ws_rank.cell(row=3, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, row_data in enumerate(rank_df.itertuples(index=False), start=4):
+                for c_idx, value in enumerate(row_data, start=1):
+                    ws_rank.cell(row=r_idx, column=c_idx, value=value)
+            for col in ws_rank.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_rank.column_dimensions[column].width = min(max_length + 2, 60)
+    except Exception as e:
+        logger.warning(f"Could not add Rank Changes sheet: {e}")
+
+    wb.save(output_file)
+    logger.info(f"Report saved to: {output_file}")
+
+
+def generate_multi_rate_excel_report(
+    all_results: Dict[str, Dict[str, Any]],
+    output_file: str,
+    entity_name: str,
+    logger: logging.Logger,
+    metadata: Dict[str, Any],
+    weights_df: Optional[Any] = None,
+    numerator_cols: Optional[Dict[str, str]] = None,
+    bic_percentiles: Optional[Dict[str, float]] = None
+) -> None:
+    """Generate Excel report with multiple rate types using shared weights.
     
+    For multi-rate analysis, combines both rate types into the same dimension sheets
+    with side-by-side columns for easy comparison.
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        logger.error("openpyxl not installed. Install with: pip install openpyxl")
+        raise
+    
+    wb = Workbook()
+    wb.remove(wb.active)
+    
+    rate_types = list(all_results.keys())
+    is_multi_rate = len(rate_types) > 1
+    debug_mode = metadata.get('debug_mode', False)
+    
+    # Summary sheet with enhanced metadata
+    ws_summary = wb.create_sheet("Summary")
+    ws_summary.column_dimensions['A'].width = 30
+    ws_summary.column_dimensions['B'].width = 60
+    
+    row = 1
+    if is_multi_rate:
+        ws_summary[f'A{row}'] = "MULTI-RATE ANALYSIS SUMMARY"
+    else:
+        ws_summary[f'A{row}'] = f"{rate_types[0].upper()} RATE ANALYSIS SUMMARY"
+    ws_summary[f'A{row}'].font = Font(bold=True, size=14)
+    row += 2
+    
+    # Basic information
+    ws_summary[f'A{row}'] = "BASIC INFORMATION"
+    ws_summary[f'A{row}'].font = Font(bold=True)
+    row += 1
+    
+    ws_summary[f'A{row}'] = "Entity"
+    ws_summary[f'B{row}'] = entity_name
+    row += 1
+    
+    if is_multi_rate:
+        ws_summary[f'A{row}'] = "Analysis Type"
+        ws_summary[f'B{row}'] = "Multi-Rate (Approval & Fraud)"
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Approval Column"
+        ws_summary[f'B{row}'] = numerator_cols.get('approval', 'N/A') if numerator_cols else 'N/A'
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Fraud Column"
+        ws_summary[f'B{row}'] = numerator_cols.get('fraud', 'N/A') if numerator_cols else 'N/A'
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Total Column (Shared Denominator)"
+        ws_summary[f'B{row}'] = metadata.get('total_col', 'N/A')
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Approval BIC Percentile"
+        ws_summary[f'B{row}'] = f"{bic_percentiles.get('approval', 0.85)*100:.0f}th (higher is better)" if bic_percentiles else "85th"
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Fraud BIC Percentile"
+        ws_summary[f'B{row}'] = f"{bic_percentiles.get('fraud', 0.15)*100:.0f}th (lower is better)" if bic_percentiles else "15th"
+        row += 1
+    else:
+        rate_type = rate_types[0]
+        ws_summary[f'A{row}'] = "Analysis Type"
+        ws_summary[f'B{row}'] = f"{rate_type.capitalize()} Rate"
+        row += 1
+        
+        ws_summary[f'A{row}'] = f"{rate_type.capitalize()} Column"
+        ws_summary[f'B{row}'] = numerator_cols.get(rate_type, 'N/A') if numerator_cols else 'N/A'
+        row += 1
+        
+        ws_summary[f'A{row}'] = "Total Column"
+        ws_summary[f'B{row}'] = metadata.get('total_col', 'N/A')
+        row += 1
+        
+        ws_summary[f'A{row}'] = "BIC Percentile"
+        ws_summary[f'B{row}'] = f"{bic_percentiles.get(rate_type, 0.85)*100:.0f}th" if bic_percentiles else "85th"
+        row += 1
+    
+    ws_summary[f'A{row}'] = "Dimensions Analyzed"
+    ws_summary[f'B{row}'] = ', '.join(metadata.get('dimension_names', []))
+    row += 1
+    
+    ws_summary[f'A{row}'] = "Total Records"
+    ws_summary[f'B{row}'] = metadata.get('total_records', 'N/A')
+    row += 1
+    
+    ws_summary[f'A{row}'] = "Unique Entities"
+    ws_summary[f'B{row}'] = metadata.get('unique_entities', 'N/A')
+    row += 1
+    
+    ws_summary[f'A{row}'] = "Peer Count"
+    ws_summary[f'B{row}'] = metadata.get('peer_count', 'N/A')
+    row += 1
+    
+    if metadata.get('consistent_weights', False):
+        ws_summary[f'A{row}'] = "Weight Strategy"
+        if is_multi_rate:
+            ws_summary[f'B{row}'] = "Global weights (shared across all dimensions and rate types, based on total_col)"
+        else:
+            ws_summary[f'B{row}'] = "Global weights (shared across all dimensions)"
+        ws_summary[f'B{row}'].font = Font(bold=True, color="0000FF")
+        row += 1
+    
+    ws_summary[f'A{row}'] = "Timestamp"
+    ws_summary[f'B{row}'] = str(metadata.get('timestamp', ''))
+    row += 2
+    
+    # Add note about shared weights for multi-rate
+    if is_multi_rate:
+        ws_summary[f'A{row}'] = "IMPORTANT NOTE"
+        ws_summary[f'A{row}'].font = Font(bold=True, color="FF0000")
+        row += 1
+        ws_summary[f'A{row}'] = "Privacy-constrained weights are calculated ONCE based on the total column."
+        row += 1
+        ws_summary[f'A{row}'] = "The same weights are applied to both approval and fraud rate calculations,"
+        row += 1
+        ws_summary[f'A{row}'] = "ensuring consistent privacy compliance across both analyses."
+        row += 2
+    
+    # Create dimension sheets - combine rate types if multi-rate
+    if is_multi_rate:
+        # Get all dimensions from first rate type (should be same for all)
+        dimensions = list(all_results[rate_types[0]].keys())
+        
+        for dimension in dimensions:
+            sheet_name = dimension[:31] if len(dimension) > 31 else dimension
+            ws = wb.create_sheet(sheet_name)
+            
+            # Get results for both rate types
+            approval_df = all_results.get('approval', {}).get(dimension)
+            fraud_df = all_results.get('fraud', {}).get(dimension)
+            
+            if approval_df is None or fraud_df is None:
+                logger.warning(f"Missing data for dimension {dimension}")
+                continue
+            
+            # Merge the dataframes side by side
+            # Start with category column
+            combined_df = approval_df[['Category']].copy()
+            
+            # Add approval rate columns
+            for col in approval_df.columns:
+                if col != 'Category':
+                    if 'Unweighted' in col or 'Original' in col or 'Peer_Count' in col:
+                        if debug_mode:
+                            combined_df[f'Approval_{col}'] = approval_df[col]
+                    else:
+                        combined_df[f'Approval_{col}'] = approval_df[col]
+            
+            # Add fraud rate columns
+            for col in fraud_df.columns:
+                if col != 'Category':
+                    if 'Unweighted' in col or 'Original' in col or 'Peer_Count' in col:
+                        if debug_mode:
+                            combined_df[f'Fraud_{col}'] = fraud_df[col]
+                    else:
+                        combined_df[f'Fraud_{col}'] = fraud_df[col]
+            
+            # Write headers with formatting
+            for col_idx, col_name in enumerate(combined_df.columns, start=1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.value = col_name
+                cell.font = Font(bold=True)
+                
+                # Color code by rate type
+                if 'Approval_' in col_name:
+                    cell.fill = PatternFill(start_color="C6E0B4", end_color="C6E0B4", fill_type="solid")  # Green
+                elif 'Fraud_' in col_name:
+                    cell.fill = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")  # Orange
+                else:
+                    cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")  # Gray
+            
+            # Write data
+            for row_idx, row_data in enumerate(combined_df.values, start=2):
+                for col_idx, value in enumerate(row_data, start=1):
+                    ws.cell(row=row_idx, column=col_idx, value=value)
+            
+            # Auto-size columns
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws.column_dimensions[column].width = min(max_length + 2, 50)
+    else:
+        # Single rate type - use original logic
+        rate_type = rate_types[0]
+        results = all_results[rate_type]
+        
+        for dimension, result_df in results.items():
+            sheet_name = dimension[:31] if len(dimension) > 31 else dimension
+            ws = wb.create_sheet(sheet_name)
+            
+            # Write headers
+            for col_idx, col_name in enumerate(result_df.columns, start=1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.value = col_name
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+            
+            # Write data
+            for row_idx, row_data in enumerate(result_df.values, start=2):
+                for col_idx, value in enumerate(row_data, start=1):
+                    ws.cell(row=row_idx, column=col_idx, value=value)
+            
+            # Auto-size columns
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws.column_dimensions[column].width = min(max_length + 2, 50)
+    
+    # Add weights tab if available (same for all rate types)
+    if weights_df is not None and not weights_df.empty:
+        ws_weights = wb.create_sheet("Peer Weights")
+        
+        # Write headers
+        for col_idx, col_name in enumerate(weights_df.columns, start=1):
+            cell = ws_weights.cell(row=1, column=col_idx)
+            cell.value = col_name
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        
+        # Write data
+        for row_idx, row_data in enumerate(weights_df.values, start=2):
+            for col_idx, value in enumerate(row_data, start=1):
+                ws_weights.cell(row=row_idx, column=col_idx, value=value)
+        
+        logger.info("Added Peer Weights tab with weight calculations and contributions")
+    
+    # Save workbook
     wb.save(output_file)
     logger.info(f"Report saved to: {output_file}")
 
