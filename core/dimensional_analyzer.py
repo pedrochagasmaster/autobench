@@ -134,6 +134,8 @@ class DimensionalAnalyzer:
         self.structural_summary_df: pd.DataFrame = pd.DataFrame()
         # Rank changes (Milestone 2)
         self.rank_changes_df: pd.DataFrame = pd.DataFrame()
+        # Privacy compliance validation (debug mode)
+        self.privacy_validation_df: pd.DataFrame = pd.DataFrame()
         logger.info(f"Initialized DimensionalAnalyzer for entity: {target_entity}")
         if debug_mode:
             logger.info("Debug mode enabled - will include unweighted averages and weights tracking")
@@ -1483,3 +1485,61 @@ class DimensionalAnalyzer:
                     results.append(result)
         
         return pd.DataFrame(results)
+
+    def build_privacy_validation_dataframe(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> pd.DataFrame:
+        """Build detailed privacy validation dataframe showing original and balanced shares for each dimension-category-(time) combination."""
+        if not self.debug_mode or not self.consistent_weights:
+            return pd.DataFrame()
+        validation_rows: List[Dict[str, Any]] = []
+        peers = list(self.global_weights.keys())
+        peer_count = len(peers)
+        if peer_count >= 10: max_concentration = 40.0
+        elif peer_count >= 7: max_concentration = 35.0
+        elif peer_count >= 6: max_concentration = 30.0
+        elif peer_count >= 5: max_concentration = 25.0
+        elif peer_count >= 4: max_concentration = 35.0
+        else: max_concentration = 50.0
+        weights = {p: self.global_weights[p]['multiplier'] for p in peers}
+        for dimension in dimensions:
+            dim_weights = self.per_dimension_weights.get(dimension, weights)
+            weight_source = "Per-Dimension" if dimension in self.per_dimension_weights else "Global"
+            if self.time_column and self.time_column in df.columns:
+                time_periods = sorted(df[self.time_column].unique())
+                for time_period in time_periods:
+                    time_df = df[df[self.time_column] == time_period]
+                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
+                    for category in entity_dim_agg[dimension].unique():
+                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                        peer_data = []
+                        for peer_entity in peers:
+                            peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
+                            peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
+                        total_original_vol = sum(p['volume'] for p in peer_data)
+                        total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
+                        for peer_info in peer_data:
+                            peer, peer_vol, peer_weight = peer_info['peer'], peer_info['volume'], dim_weights.get(peer_info['peer'], 1.0)
+                            original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
+                            balanced_vol = peer_vol * peer_weight
+                            balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                            compliant = balanced_share <= max_concentration + self.tolerance
+                            violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
+                            validation_rows.append({'Dimension': dimension, 'Time_Period': time_period, 'Category': category, 'Peer': peer, 'Weight_Source': weight_source, 'Multiplier': peer_weight, 'Original_Volume': peer_vol, 'Original_Share_%': round(original_share, 4), 'Balanced_Volume': balanced_vol, 'Balanced_Share_%': round(balanced_share, 4), 'Privacy_Cap_%': max_concentration, 'Tolerance_%': self.tolerance, 'Compliant': 'Yes' if compliant else 'No', 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0})
+            else:
+                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
+                for category in entity_dim_agg[dimension].unique():
+                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    peer_data = []
+                    for peer_entity in peers:
+                        peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
+                        peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
+                    total_original_vol = sum(p['volume'] for p in peer_data)
+                    total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
+                    for peer_info in peer_data:
+                        peer, peer_vol, peer_weight = peer_info['peer'], peer_info['volume'], dim_weights.get(peer_info['peer'], 1.0)
+                        original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
+                        balanced_vol = peer_vol * peer_weight
+                        balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                        compliant = balanced_share <= max_concentration + self.tolerance
+                        violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
+                        validation_rows.append({'Dimension': dimension, 'Category': category, 'Peer': peer, 'Weight_Source': weight_source, 'Multiplier': peer_weight, 'Original_Volume': peer_vol, 'Original_Share_%': round(original_share, 4), 'Balanced_Volume': balanced_vol, 'Balanced_Share_%': round(balanced_share, 4), 'Privacy_Cap_%': max_concentration, 'Tolerance_%': self.tolerance, 'Compliant': 'Yes' if compliant else 'No', 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0})
+        return pd.DataFrame(validation_rows)

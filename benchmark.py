@@ -220,6 +220,36 @@ EXAMPLES:
     rate_parser.add_argument('--consistent-weights', action='store_true',
                             help='Use same privacy-constrained weights across all dimensions (global weighting)')
     
+    # Weight algorithm parameters (same as share analysis)
+    rate_parser.add_argument('--max-iterations', type=int, default=1000,
+                            help='Maximum iterations for weight convergence (default: 1000)')
+    rate_parser.add_argument('--tolerance', type=float, default=1.0,
+                            help='Tolerance for privacy violations in percentage points (default: 1.0)')
+    rate_parser.add_argument('--max-weight', type=float, default=10.0,
+                            help='Maximum weight multiplier allowed (default: 10.0)')
+    rate_parser.add_argument('--min-weight', type=float, default=0.01,
+                            help='Minimum weight multiplier allowed (default: 0.01)')
+    rate_parser.add_argument('--volume-preservation', type=float, default=0.5,
+                            help='Volume preservation strength 0.0-1.0 (default: 0.5)')
+    # Advanced options
+    rate_parser.add_argument('--prefer-slacks-first', action='store_true',
+                            help='Try full-dimension LP with slacks-first (rank penalty set to 0) before dropping dimensions')
+    rate_parser.add_argument('--auto-subset-search', action='store_true',
+                            help='Automatically search for the largest feasible global dimension subset before greedy dropping')
+    rate_parser.add_argument('--subset-search-max-tests', type=int, default=200,
+                            help='Maximum attempts during auto subset search (default: 200)')
+    rate_parser.add_argument('--greedy-subset-search', dest='greedy_subset_search', action='store_true', default=True,
+                            help='Use greedy subset search (remove one dimension at a time). Default: enabled')
+    rate_parser.add_argument('--no-greedy-subset-search', dest='greedy_subset_search', action='store_false',
+                            help='Use random subset search instead of greedy (test random n-1, n-2, ... combinations)')
+    # Slack-aware subset trigger
+    rate_parser.add_argument('--trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_true', default=True,
+                            help='If any LP cap slack exceeds threshold, trigger subset search even when LP returns success (default: enabled)')
+    rate_parser.add_argument('--no-trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_false',
+                            help='Disable triggering subset search on LP slack usage')
+    rate_parser.add_argument('--max-cap-slack', type=float, default=0.0,
+                            help='Slack sum threshold as percentage of total volume; if LP sum slack exceeds this, subset search is triggered (default: 0.0 = any slack)')
+    
     # ========================================================================
     # PRESETS COMMAND
     # ========================================================================
@@ -434,10 +464,16 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
 
         # Get weights data if debug mode
         weights_df = None
+        privacy_validation_df = None
         if debug_mode:
             weights_df = analyzer.get_weights_dataframe()
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
+            # Build privacy validation dataframe
+            if consistent_weights:
+                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, metric_col, dimensions)
+                if not privacy_validation_df.empty:
+                    logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
         # Build method breakdown tab (final tab)
         method_breakdown_df = None
@@ -482,7 +518,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Generate output
         entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
         output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df)
+        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df, privacy_validation_df)
         
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
@@ -678,10 +714,16 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Get weights data if debug mode (same weights for all rate types)
         weights_df = None
+        privacy_validation_df = None
         if debug_mode:
             weights_df = analyzer.get_weights_dataframe()
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
+            # Build privacy validation dataframe (based on total_col for rate analysis)
+            if consistent_weights:
+                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, args.total_col, dimensions)
+                if not privacy_validation_df.empty:
+                    logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
         # Generate single output file
         entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
@@ -693,7 +735,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         # Generate report with all rate types
-        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles)
+        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df)
         
         # Print summary
         print(f"\n{'='*80}")
@@ -725,7 +767,8 @@ def generate_excel_report(
     logger: logging.Logger,
     metadata: Optional[Dict[str, Any]] = None,
     weights_df: Optional[Any] = None,
-    method_breakdown_df: Optional[pd.DataFrame] = None
+    method_breakdown_df: Optional[pd.DataFrame] = None,
+    privacy_validation_df: Optional[pd.DataFrame] = None
 ) -> None:
     """Generate Excel report with dimensional analysis results."""
     try:
@@ -1164,6 +1207,38 @@ def generate_excel_report(
     except Exception as e:
         logger.warning(f"Could not add Rank Changes sheet: {e}")
 
+    # Privacy Validation sheet (debug mode)
+    if privacy_validation_df is not None and not privacy_validation_df.empty:
+        try:
+            ws_validation = wb.create_sheet("Privacy Validation")
+            ws_validation['A1'] = "Privacy Compliance Validation"
+            ws_validation['A1'].font = Font(bold=True, size=12)
+            ws_validation['A2'] = "Detailed breakdown showing original and balanced volume shares for each dimension-category-(time) combination"
+            ws_validation['A2'].font = Font(italic=True)
+            for c_idx, col_name in enumerate(privacy_validation_df.columns, start=1):
+                cell = ws_validation.cell(row=4, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, row_data in enumerate(privacy_validation_df.itertuples(index=False), start=5):
+                for c_idx, value in enumerate(row_data, start=1):
+                    cell = ws_validation.cell(row=r_idx, column=c_idx, value=value)
+                    # Highlight violations in red
+                    if c_idx == privacy_validation_df.columns.get_loc('Compliant') + 1 and value == 'No':
+                        cell.fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+            for col in ws_validation.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_validation.column_dimensions[column].width = min(max_length + 2, 50)
+            logger.info("Added Privacy Validation tab")
+        except Exception as e:
+            logger.warning(f"Could not add Privacy Validation sheet: {e}")
+
     wb.save(output_file)
     logger.info(f"Report saved to: {output_file}")
 
@@ -1176,7 +1251,8 @@ def generate_multi_rate_excel_report(
     metadata: Dict[str, Any],
     weights_df: Optional[Any] = None,
     numerator_cols: Optional[Dict[str, str]] = None,
-    bic_percentiles: Optional[Dict[str, float]] = None
+    bic_percentiles: Optional[Dict[str, float]] = None,
+    privacy_validation_df: Optional[pd.DataFrame] = None
 ) -> None:
     """Generate Excel report with multiple rate types using shared weights.
     
@@ -1421,6 +1497,38 @@ def generate_multi_rate_excel_report(
                 ws_weights.cell(row=row_idx, column=col_idx, value=value)
         
         logger.info("Added Peer Weights tab with weight calculations and contributions")
+    
+    # Privacy Validation sheet (debug mode - same for all rate types)
+    if privacy_validation_df is not None and not privacy_validation_df.empty:
+        try:
+            ws_validation = wb.create_sheet("Privacy Validation")
+            ws_validation['A1'] = "Privacy Compliance Validation"
+            ws_validation['A1'].font = Font(bold=True, size=12)
+            ws_validation['A2'] = "Detailed breakdown showing original and balanced volume shares for each dimension-category-(time) combination"
+            ws_validation['A2'].font = Font(italic=True)
+            for c_idx, col_name in enumerate(privacy_validation_df.columns, start=1):
+                cell = ws_validation.cell(row=4, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            for r_idx, row_data in enumerate(privacy_validation_df.itertuples(index=False), start=5):
+                for c_idx, value in enumerate(row_data, start=1):
+                    cell = ws_validation.cell(row=r_idx, column=c_idx, value=value)
+                    # Highlight violations in red
+                    if c_idx == privacy_validation_df.columns.get_loc('Compliant') + 1 and value == 'No':
+                        cell.fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+            for col in ws_validation.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_validation.column_dimensions[column].width = min(max_length + 2, 50)
+            logger.info("Added Privacy Validation tab")
+        except Exception as e:
+            logger.warning(f"Could not add Privacy Validation sheet: {e}")
     
     # Save workbook
     wb.save(output_file)
