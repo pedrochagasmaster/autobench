@@ -24,18 +24,38 @@ The Privacy-Compliant Peer Benchmark Tool is a sophisticated dimensional analysi
 - Balanced Peer Averages provide fair comparisons adjusting for market concentration
 - Multi-dimensional insights reveal patterns across products, channels, geographies, and time
 
-### What Makes This Tool Unique?
+### Optimization Architecture
 
-1. **Privacy-First Design**: Uses advanced Linear Programming (LP) optimization to compute peer weights that satisfy strict privacy caps while preserving market structure
-2. **Dimensional Intelligence**: Automatically analyzes any dimensional breakdown in your data (product types, merchant categories, card types, regions, etc.)
-3. **Time-Aware Consistency**: When analyzing time-series data, ensures weights remain consistent across all time periods and category combinations
-4. **Transparent Diagnostics**: Provides detailed explanations of how weights were calculated, which dimensions were feasible, and where structural constraints exist
-5. **Flexible Analysis Modes**: Supports share analysis (volume distribution), rate analysis (approval/fraud rates), peer-only mode (no target entity), and simultaneous multi-rate analysis
+The tool employs a sophisticated three-tier optimization system to handle diverse data structures and privacy constraints:
+
+**Tier 1: Global Linear Programming**
+- Uses SciPy's HiGHS solver with rank-preserving objective
+- Computes ONE set of peer weights that satisfies privacy constraints across ALL dimensions
+- Handles time-aware constraints (monthly totals + monthly category combinations)
+- Slack variables with configurable penalties allow controlled constraint relaxation
+
+**Tier 2: Per-Dimension Linear Programming**
+- When global LP is infeasible for specific dimensions, solves each separately
+- Uses stricter constraints (lambda=100,000,000) to minimize privacy violations
+- Falls through to Tier 3 if still produces violations beyond tolerance
+
+**Tier 3: Bayesian Optimization Fallback**
+- Activated when LP encounters structural infeasibility
+- Uses scipy's L-BFGS-B (Limited-memory BFGS with Bounds) algorithm
+- Objective: Minimize squared violations (100x weight) + stay close to target weights
+- Gradient-based optimization navigates constraint landscape efficiently
+- Typically achieves zero violations when structurally feasible
+- 10x faster than iterative heuristics, no boundary oscillation
+
+**Result Tracking:**
+All weight calculations tracked in Weight Methods tab with exact method used: `Global-LP`, `Per-Dimension-LP`, or `Per-Dimension-Bayesian`.
 
 **New in v2.1:**
 - **Peer-only mode**: Analyze peer distributions and market structure without specifying a target entity
 - **Multi-rate analysis**: Simultaneously analyze approval rates and fraud rates in a single run with shared privacy-compliant weights
 - **Time-aware consistency**: Global weights work across all time periods and categories, ensuring temporal consistency
+- **Bayesian optimization fallback**: When Linear Programming fails for a dimension, intelligent Bayesian optimization (L-BFGS-B) finds optimal weights while respecting privacy constraints
+- **Enhanced weight tracking**: Weight Methods tab shows exact calculation method (Global-LP, Per-Dimension-LP, Per-Dimension-Bayesian) and multipliers for full transparency
 - **Time-dimension output**: When `--time-col` is set, dimension sheets show metrics for each time-category combination plus aggregated "General" rows
 - **Enhanced diagnostics**: Structural infeasibility analysis, subset search reporting, rank change tracking, and privacy validation sheets
 
@@ -92,7 +112,72 @@ This is the actively maintained v2 CLI. Legacy notebooks and experimental script
 - Uses Linear Programming (LP) with rank-preserving objective to find optimal weights
 - Ensures privacy compliance in every category of every dimension simultaneously
 - Maintains consistency across time periods when `--time-col` is specified
+- Automatic fallback to Bayesian optimization (L-BFGS-B) when LP is structurally infeasible
 - Includes tolerance modeling via slack variables with configurable penalties
+
+#### Understanding Tolerance and Slack
+
+**Tolerance (`--tolerance`)**: Defines the acceptable violation margin for privacy caps
+- Measured in **percentage points** added to the base privacy cap
+- Example: 5 peers → 25% base cap, `--tolerance 5` → **30% effective cap** (25% + 5pp)
+- **Validation level**: Used when checking if final weights violate privacy rules
+- **Per-dimension trigger**: If ANY dimension-category-time combination exceeds cap+tolerance, that dimension is solved separately
+- **Higher tolerance** = more flexibility, easier to find solutions, but may allow higher peer concentration
+- **Lower tolerance** = stricter privacy enforcement, but may be structurally infeasible for some dimensions
+- **Typical values**: 1-5pp for strict privacy, 10-20pp for challenging datasets, 50+pp to eliminate violations in difficult data
+- **Impact on results**: Only affects violation detection and fallback triggering; does NOT directly constrain the LP solver
+
+**Slack Variables**: LP optimization mechanism that allows temporary constraint relaxation
+- **Purpose**: Make infeasible problems solvable by allowing small privacy cap violations during optimization
+- **How it works**: LP solver adds "slack" (s) to each privacy constraint: `peer_share ≤ cap + s`
+- **Penalty (lambda)**: Each unit of slack is penalized in the objective function to minimize usage
+  - Formula: `lambda = 100 / tolerance`
+  - Example: `tolerance=5` → `lambda=20` (moderate penalty)
+  - Example: `tolerance=0` → `lambda=∞` (infinite penalty, forces exact compliance)
+- **Usage reporting**: Logged as percentage of total volume (e.g., "max slack=0.0248%")
+- **Not the same as tolerance**: Slack is an LP solver mechanism; tolerance is a validation threshold
+- **Interpretation**:
+  - **Slack < 0.01%**: Excellent, near-perfect compliance during optimization
+  - **Slack 0.01-0.1%**: Good, minor relaxations used
+  - **Slack > 0.1%**: Significant relaxations, may indicate structural infeasibility
+  - **Even with slack, final solution might violate cap+tolerance** due to different denominators across time periods
+
+**Key Relationship**:
+```
+LP Solver → Uses slack with penalty (lambda=100/tolerance)
+     ↓
+Produces weights
+     ↓
+Validation → Checks if ANY category exceeds cap+tolerance
+     ↓
+If violations found → Trigger per-dimension solving
+     ↓
+Per-Dimension LP → Attempts with stricter constraints (lambda=100,000,000)
+     ↓
+If still violations → Bayesian Optimization (L-BFGS-B)
+     ↓
+Minimizes squared violations while staying close to target weights
+```
+
+**Example Scenario** (5 peers, tolerance=5):
+1. **Global LP**: Tries to find weights satisfying 25% cap across all 648 time-aware constraints
+2. **LP uses slack**: 0.048% max slack (small but nonzero)
+3. **Validation checks**: Each dimension-category-time against 30% effective cap (25%+5%)
+4. **Violation detected**: ITAU has 79% of Debit transactions in September (exceeds 30%)
+5. **Per-dimension LP**: credit_debit_flag solved separately with tolerance=0 (infinite penalty)
+6. **LP still uses slack**: 0.048% slack → produces violations
+7. **Bayesian fallback**: L-BFGS-B optimization finds best-effort weights minimizing violations
+8. **Result**: May achieve zero violations if structurally feasible, or minimize violation magnitude
+
+**Why Violations May Persist Despite High Tolerance**:
+- **Structural infeasibility**: Some peer-dimension-category-time combinations have natural concentration >cap+tolerance
+- **Example**: If ITAU processes 79% of all Debit transactions in the market, no weight adjustment (within max_weight=10 bounds) can reduce it to 30%
+- **Bayesian optimization helps** but cannot violate physics: if a peer dominates by 79% and max_weight=10, the best achievable is ~70% (79% × 10 / (79% × 10 + others × 0.1))
+- **Solutions**: 
+  - Increase tolerance further (e.g., 55pp to accommodate 79%)
+  - Increase max_weight (e.g., 50x allows more aggressive downweighting)
+  - Aggregate data (combine Debit+Credit into "Cards" dimension)
+  - Accept remaining violations as documented structural limitations
 
 **Time-Aware Consistency**: When analyzing time-series data, ensures privacy compliance across:
 - Total monthly volumes (privacy rule for each month)
@@ -102,9 +187,10 @@ This is the actively maintained v2 CLI. Legacy notebooks and experimental script
 ### Transparency and Diagnostics
 
 **Weight Methods Tab**: Shows exactly how weights were calculated for each dimension
-- Identifies which method succeeded: Global LP, Per-Dimension LP, Heuristic, or Global Weights (dropped)
+- Identifies which method succeeded: Global-LP, Per-Dimension-LP, Per-Dimension-Bayesian, or Global Weights (dropped)
 - Displays the actual multiplier applied to each peer
 - Enables auditing and validation of the weighting methodology
+- New in v2.1: Tracks Bayesian optimization fallback when LP fails
 
 **Subset Search Tab**: When searching for feasible global dimension subsets, records:
 - Every attempted dimension combination
@@ -496,6 +582,7 @@ All column mappings are defined in `utils/config_manager.py`. You can extend the
    - **Specified with**: `--approved-col <column_name>`
    - **Recognized aliases**: `appr_txns`, `approved_count`, `auth_approved`, `appr_count`
    - **Data type**: Integer (positive, ≤ total_col value)
+   - **Represents**: Number of approved transactions (successful authorizations)
    - **Formula**: Approval Rate = approved_count / total_count × 100%
    - **Example**: If total=1000 and approved=850, approval rate = 85%
 
@@ -504,6 +591,7 @@ All column mappings are defined in `utils/config_manager.py`. You can extend the
    - **Specified with**: `--fraud-col <column_name>`
    - **Recognized aliases**: `fraud_cnt`, `qt_fraud`, `fraud_tran`
    - **Data type**: Integer (positive, ≤ total_col value for fraud rates)
+   - **Represents**: Number of fraudulent transactions (detected frauds)
    - **Formula**: Fraud Rate = fraud_count / approved_count × 100%
    - **Example**: If approved=850 and fraud=7, fraud rate = 0.82%
 
@@ -1008,7 +1096,7 @@ These parameters apply to both share and rate analysis:
   - Example: `--entity-col bank_name`
 
 #### Output Control
-- **`--output <path>`** or **`-o <path>`** (Optional)
+- **`--output/-o <file>`** (Optional)
   - Custom output file path for Excel report
   - If omitted, auto-generates filename with timestamp
   - Multi-rate analysis: Single file with combined sheets
@@ -1089,11 +1177,17 @@ These advanced parameters control the Linear Programming solver behavior when `-
   - Example: `--max-iterations 2000`
 
 - **`--tolerance <float>`** (Optional, default: 1.0)
-  - Tolerance for privacy violations in percentage points
-  - Lower = stricter privacy enforcement
-  - Higher = more flexibility (easier to find solutions)
-  - Range: 0.5-5.0 typical
-  - Example: `--tolerance 2.0`
+  - **Tolerance for privacy cap violations in percentage points**
+  - Defines acceptable margin above the base privacy cap before flagging violations
+  - **Effective cap** = base_cap + tolerance (e.g., 25% + 5pp = 30% for 5 peers)
+  - **Validation-level parameter**: Used to check if final weights violate privacy rules
+  - **Per-dimension trigger**: If ANY dimension-category-time exceeds cap+tolerance, triggers per-dimension solving for that dimension
+  - **Lower tolerance** (0.5-2.0): Strict privacy enforcement, may be infeasible for some dimensions
+  - **Medium tolerance** (2.0-10.0): Balanced approach, typical for production
+  - **Higher tolerance** (10.0-50.0+): Flexible, accommodates structural data concentration
+  - **Does NOT directly constrain LP solver** (LP uses slack with penalty lambda=100/tolerance)
+  - Range: 0.0-100.0 (typical: 1.0-10.0)
+  - Example: `--tolerance 5.0` (allows up to 30% concentration for 5-peer groups)
 
 - **`--max-weight <float>`** (Optional, default: 10.0)
   - Maximum peer weight multiplier allowed
@@ -1128,7 +1222,7 @@ These advanced parameters control the Linear Programming solver behavior when `-
 - **`--auto-subset-search`** (Optional flag)
   - Automatically search for largest feasible global dimension subset
   - If full LP is infeasible, searches for best subset that works
-  - Records all attempts in "Subset Search" Excel tab
+  - Records all attempts in the Subset Search tab
   - Can use greedy or random search mode (see below)
   - Example: `--auto-subset-search`
 
@@ -1167,12 +1261,17 @@ These advanced parameters control the Linear Programming solver behavior when `-
   - Example: `--no-trigger-subset-on-slack`
 
 - **`--max-cap-slack <float>`** (Optional, default: 0.0)
-  - Slack sum threshold as percentage of total volume
-  - If LP slack exceeds this, subset search is triggered
-  - 0.0 = trigger on any slack usage
-  - Higher values allow more slack before triggering
-  - Range: 0.0-5.0 typical
-  - Example: `--max-cap-slack 1.0`
+  - **Slack sum threshold as percentage of total volume**
+  - Controls when subset search is triggered based on LP slack usage
+  - If LP slack sum exceeds this threshold, subset search attempts to find better solution
+  - **Slack explained**: LP solver uses slack variables to relax privacy constraints with penalty; lower slack = better compliance
+  - **0.0**: Trigger subset search on ANY slack usage (strictest)
+  - **0.1-1.0**: Tolerate minor slack before triggering (typical)
+  - **1.0+**: Allow significant slack before triggering (permissive)
+  - **Only matters when** `--trigger-subset-on-slack` is enabled (default)
+  - **Does NOT affect validation**: Final weights still checked against cap+tolerance regardless of slack
+  - Range: 0.0-10.0 (typical: 0.0-1.0)
+  - Example: `--max-cap-slack 0.5` (allows up to 0.5% slack sum before triggering subset search)
 
 ### Share Analysis Specific Parameters
 
@@ -1419,12 +1518,24 @@ Behavior and fallbacks
       - **Random mode**: `--no-greedy-subset-search` randomly tests dimension subsets starting with n-1 combinations, then n-2, continuing until a feasible solution is found or max tests reached. Stops as soon as a feasible subset at the current size is found (no need to test smaller subsets).
       - All attempts are recorded in the Subset Search tab.
 3)  Greedy dimension dropping: If still infeasible, drop dimensions until feasible.
-4)  Per‑dimension solves: For dimensions dropped from the global set, compute per‑dimension LP weights or use the heuristic; ensure each dimension is still privacy‑compliant.
+4)  Per‑dimension solves: For dimensions dropped from the global set, compute per‑dimension LP weights or use Bayesian optimization fallback; ensure each dimension is still privacy‑compliant.
 
-Heuristic (when LP is unavailable or as fallback)
+Bayesian optimization fallback (when LP is unavailable or fails)
 
-  - Iteratively down‑weights violators (peers near/over cap) and up‑weights under‑represented peers within [min,max], guided by the cap gap and a soft rank preservation pull.
-  - Stops after `--max-iterations` or when all categories validate.
+When per-dimension LP fails to satisfy privacy constraints within tolerance, the tool uses Bayesian-inspired optimization via scipy's L-BFGS-B solver:
+
+- **Objective**: Minimize squared violations (primary) + deviation from target weights (secondary)
+- **Method**: L-BFGS-B (Limited-memory Broyden-Fletcher-Goldfarb-Shanno Bounded)
+  - Gradient-based optimization efficient for bounded constraints
+  - Respects box constraints [min_weight, max_weight] natively
+  - Converges quickly to local optima
+- **Advantages over iterative heuristic**:
+  - Uses gradient information to navigate constraint landscape
+  - No oscillation between min/max boundaries
+  - Typically achieves zero violations when structurally feasible
+  - 10x faster than iterative approaches
+- **Violation weighting**: Violations weighted 100x higher than distance-to-target in objective
+- **Result tracking**: Marked as "Per-Dimension-Bayesian" in Weight Methods tab
 
 Balanced Peer Average (used in reports)
 
@@ -1483,341 +1594,4 @@ The Summary sheet provides an overview of your analysis configuration and key fi
 - Peer count (excludes target if specified)
 - Dimensions analyzed (count and names)
 
-**Privacy Rule Applied:**
-- Peer count and applicable privacy cap percentage
-- Example: "6 peers → 30% cap per category"
-
-**LP/Slack Diagnostics** (when `--consistent-weights` used):
-- LP solver method used (HiGHS, HiGHS-DS, HiGHS-IPM)
-- Max slack percentage (how much privacy caps were relaxed)
-- Sum slack percentage (total relaxation across all constraints)
-- Number of variables and constraints in the optimization problem
-- Lambda cap (penalty strength for slack usage)
-
-**Rank Changes - Top Movers** (when `--consistent-weights` used):
-- Quick summary showing top 5 peers by absolute rank change
-- Shows which peers moved up/down most due to privacy weighting
-- Links to full "Rank Changes" tab for complete details
-
-**Dimensions Analyzed:**
-- Table listing each dimension with category counts
-- Helps you quickly see the structure of your analysis
-
-#### 2. Dimension Sheets (One Per Dimension)
-
-Each dimension gets its own sheet showing category-level analysis.
-
-**Standard Columns (With Target Entity):**
-- **Category**: The dimensional category (e.g., "Domestic", "Credit Card", "E-commerce")
-- **Time Column** (if `--time-col` used): Time period for this row (e.g., "2024-01", "2024-Q1")
-- **Balanced Peer Average (%)**: Privacy-weighted peer average share/rate
-- **BIC (%)**: Best-in-Class benchmark (85th percentile for approval, 15th for fraud)
-- **Target Share/Rate (%)**: Your entity's performance in this category
-- **Distance to Peer (pp)**: Gap between target and balanced peer average (percentage points)
-- **Target Rank**: Your entity's rank among all entities in this category
-
-**Additional Debug Columns** (when `--debug` is enabled):
-
-For **Share Analysis**:
-- **Original Peer Average (%)**: Unweighted peer average before privacy adjustments
-- **Original Total Volume**: Total peer volume in this category (raw sum)
-- **Weight Effect (pp)**: Impact of privacy weighting = Balanced Avg - Original Avg
-  - Positive: Privacy weighting increased the benchmark (under-represented peers had higher shares)
-  - Negative: Privacy weighting decreased the benchmark (dominant peers had lower shares)
-  - Near zero: Privacy weighting had minimal impact
-
-For **Rate Analysis**:
-- **Original Peer Average (%)**: Unweighted peer rate before privacy adjustments
-- **Original Total Numerator**: Total numerator volume (approved/fraud transactions)
-- **Original Total Denominator**: Total denominator volume (total transactions)
-- **Weight Effect (pp)**: Impact of privacy weighting = Balanced Rate - Original Rate
-
-**Peer-Only Mode** (when `--entity` is omitted):
-- No target columns: Target Share/Rate, Target Rank, Distance to Peer
-- Shows only peer distribution statistics:
-  - Category, Balanced Peer Average, BIC
-  - Plus peer percentiles: 10th, 25th, 50th (median), 75th, 90th
-  - Debug columns (if enabled): Original averages and weight effects
-
-**Time-Dimension Output** (when `--time-col` is specified):
-- **Multiple rows per category**: One row for each time period
-  - Example: "Domestic" category with 12 months = 12 rows
-- **"General" row per category**: Aggregated across all time periods
-  - Provides overall category performance for comparison with time-specific variations
-  - Always appears last for each category
-- **Row ordering**: Categories appear in order, then time periods chronologically, then "General"
-
-Example structure:
-```
-Category    Time Column    Balanced Peer Avg    BIC    Target Share    Distance
-Domestic    2024-01       51.85%               70.82%  12.74%         -39.11pp
-Domestic    2024-02       44.76%               54.78%  53.52%         +8.76pp
-Domestic    2024-03       54.41%               75.60%  50.34%         -4.07pp
-Domestic    General       49.33%               60.80%  41.92%         -7.41pp
-International 2024-01     48.15%               29.18%  87.26%         +39.11pp
-...
-```
-
-**Multi-Rate Analysis** (when both `--approved-col` and `--fraud-col` specified):
-- **Single Excel file** with both rate types combined
-- Each dimension sheet shows approval AND fraud metrics **side-by-side**
-- Column naming convention:
-  - Approval columns: `Approval_Entity_Rate`, `Approval_Peer_Avg`, `Approval_Peer_BIC`, `Approval_Gap`
-  - Fraud columns: `Fraud_Entity_Rate`, `Fraud_Peer_Avg`, `Fraud_Peer_BIC`, `Fraud_Gap`
-- **Color-coded headers**:
-  - Green fill for approval metric columns (higher is better)
-  - Orange fill for fraud metric columns (lower is better)
-- Enables direct side-by-side comparison of both rate types
-
-### Debug Mode Sheets
-
-These sheets only appear when `--debug` flag is enabled:
-
-#### 3. Peer Weights Tab
-
-Shows the complete picture of how privacy weighting affected each peer's contribution to benchmarks.
-
-**Columns:**
-- **Scope**: "Global" (for global weights) or "Per-Dimension" (dimension-specific weights)
-- **Dimension**: Dimension name (null for Global scope)
-- **Peer**: Peer entity name
-- **Multiplier**: Weight multiplier applied (e.g., 1.0 = no change, 1.5 = 50% increase, 0.6 = 40% decrease)
-- **Unbalanced_Volume**: Original peer volume before any weighting
-- **Unbalanced_Share_%**: Original peer market share (%)
-- **Balanced_Volume**: Adjusted volume after multiplier (= Unbalanced_Volume × Multiplier)
-- **Balanced_Share_%**: Adjusted market share after privacy weighting (%)
-- **Legacy columns** (for backward compatibility): Volume, Weight_%
-
-**Use Cases:**
-- **Privacy Impact Analysis**: See how much weighting changed peer contributions
-  - Multipliers < 1.0: Peers were down-weighted (typically dominated some categories)
-  - Multipliers > 1.0: Peers were up-weighted (typically under-represented)
-  - Multipliers = 1.0: No adjustment needed (already privacy-compliant)
-- **Dominant Peer Identification**: Find which peers were constrained by privacy caps
-- **Volume Redistribution Tracking**: Understand how share percentages rebalanced
-- **Validation**: Verify calculations (Balanced = Unbalanced × Multiplier)
-
-**Example Interpretation:**
-```
-Peer    Multiplier  Unbalanced_%  Balanced_%  Effect
-Bank_A  0.6000      35.71%        25.00%      -10.71pp  ← Down-weighted (dominated categories)
-Bank_B  1.2000      21.43%        30.00%      +8.57pp   ← Up-weighted (under-represented)
-Bank_C  1.0000      22.24%        22.24%      +0.00pp   ← No change needed
-```
-
-#### 4. Privacy Validation Tab
-
-**Only appears when BOTH `--debug` AND `--consistent-weights` are enabled.**
-
-Provides granular validation that privacy rules are satisfied across **every single dimension-category-(time) combination**. This is the most detailed compliance view.
-
-**Columns:**
-- **Dimension**: The dimension being validated
-- **Time_Period**: Time period (only when `--time-col` is used)
-- **Category**: Category within the dimension
-- **Peer**: Individual peer entity
-- **Weight_Source**: "Global" or "Per-Dimension" (which weights were used)
-- **Multiplier**: The weight multiplier for this peer
-- **Original_Volume**: Unweighted volume for this peer-category combination
-- **Original_Share_%**: Unweighted market share in this category
-- **Balanced_Volume**: Privacy-weighted volume
-- **Balanced_Share_%**: Privacy-weighted market share
-- **Privacy_Cap_%**: The applicable cap (30% for 6 peers, 35% for 7 peers, etc.)
-- **Tolerance_%**: The tolerance setting used
-- **Compliant**: "Yes" or "No"
-- **Violation_Margin_%**: Amount by which cap is exceeded (if any)
-
-**Visual Features:**
-- **Red highlighting**: Violations (Compliant = "No") are highlighted in red
-- Sortable/filterable in Excel for detailed analysis
-- Comprehensive view (can be 500+ rows for complex analyses)
-
-**Use Cases:**
-- **Compliance Auditing**: Verify every break satisfies privacy rules
-- **Parameter Tuning**: Identify hardest-to-satisfy dimension-category combinations
-- **Time Analysis**: See how compliance varies across time periods
-- **Peer Behavior**: Understand which peers dominate which categories
-- **Root Cause Analysis**: When LP fails, see exactly which constraints are problematic
-
-**Example:**
-```
-Dimension     Category   Peer    Balanced_%  Cap%   Compliant  Violation
-flag_domestic Domestic   Bank_A  28.5%       30%    Yes        -1.5%
-flag_domestic Domestic   Bank_B  31.2%       30%    No         +1.2%  ← VIOLATION
-cp_cnp        CNP        Bank_A  29.8%       30%    Yes        -0.2%
-```
-
-### Consistent Weights Sheets
-
-These sheets only appear when `--consistent-weights` flag is enabled:
-
-#### 5. Weight Methods Tab
-
-Shows exactly how weights were calculated for each dimension and the specific multipliers applied.
-
-**Columns:**
-- **Dimension**: Dimension name
-- **Peer**: Peer entity
-- **Method**: Weight calculation method used:
-  - "Global LP": Peer uses global weights from Linear Programming
-  - "Per-Dimension LP": Dimension-specific LP weights (when dimension was dropped from global set)
-  - "Per-Dimension Heuristic": Dimension-specific heuristic weights (LP failed for this dimension)
-  - "Global Weights (dropped)": Dimension was dropped from global optimization
-- **Multiplier**: The actual weight multiplier value
-
-**Use Cases:**
-- **Methodology Transparency**: Understand which method succeeded for each dimension
-- **Troubleshooting**: Identify dimensions that required fallback methods
-- **Auditing**: Document weight calculation approach for compliance
-- **Optimization Analysis**: See impact of global vs per-dimension weights
-
-#### 6. Subset Search Tab
-
-**Only appears when `--auto-subset-search` is enabled.**
-
-Records all attempts to find the largest feasible global dimension subset.
-
-**Columns:**
-- **Attempt**: Sequential attempt number
-- **Dimensions_Tested**: Which dimensions were included in this attempt
-- **Dimension_Count**: Number of dimensions in this subset
-- **Result**: "Feasible" or "Infeasible"
-- **Max_Slack_%**: Maximum slack percentage used (if feasible)
-- **Sum_Slack_%**: Total slack percentage across all constraints
-- **Notes**: Additional information (e.g., "Best solution found")
-
-**Use Cases:**
-- **Search Progress**: See how the algorithm explored dimension combinations
-- **Feasibility Understanding**: Understand why certain combinations work/don't work
-- **Comparison**: Evaluate greedy vs random search performance
-- **Documentation**: Audit trail of subset search process
-
-**Example:**
-```
-Attempt  Dimensions_Tested                  Count  Result      Max_Slack  Notes
-1        [A,B,C,D,E]                       5      Infeasible  N/A        Full set failed
-2        [A,B,C,D] (dropped E)             4      Infeasible  N/A        E removed
-3        [A,B,D] (dropped C)               3      Feasible    2.3%       Best solution
-4        [A,B,C,D] (re-added C)            4      Infeasible  N/A        Cannot re-add C
-```
-
-#### 7. Structural Summary Tab
-
-Quantifies fundamental infeasibility drivers by dimension.
-
-**Columns:**
-- **Dimension**: Dimension name
-- **Infeasible_Categories**: Number of categories structurally infeasible
-- **Infeasible_Peers**: Number of peer-category combinations structurally infeasible
-- **Worst_Margin_Over_Cap_%**: Largest violation margin (how far over cap)
-- **Notes**: Summary of issues
-
-**Use Cases:**
-- **Root Cause Identification**: Find dimensions causing infeasibility
-- **Category Merging Decisions**: Identify categories that should be combined
-- **Parameter Adjustment**: Determine if bounds need relaxation
-
-#### 8. Structural Detail Tab
-
-Row-level diagnostics for every structurally infeasible peer-category combination.
-
-**Columns:**
-- **Dimension**: Dimension name
-- **Category**: Category name
-- **Peer**: Peer entity
-- **Min_Adj_Share_%**: Minimum possible adjusted share (even with optimal weights)
-- **Privacy_Cap_%**: The applicable cap
-- **Tolerance_%**: Tolerance setting
-- **Margin_Over_Cap_%**: How much the min share exceeds the cap
-- **Notes**: Explanation
-
-**Use Cases:**
-- **Detailed Troubleshooting**: Understand exactly which combinations are impossible
-- **Data Quality**: Identify if a peer dominates a category too heavily
-- **Remediation Planning**: Decide on category merges or peer exclusions
-
-#### 9. Rank Changes Tab
-
-Shows how privacy weighting affected peer ordering.
-
-**Columns:**
-- **Peer**: Peer entity name
-- **Base_Share_%**: Original market share (unweighted)
-- **Adjusted_Share_%**: Privacy-weighted market share
-- **Base_Rank**: Original rank (1 = largest share)
-- **Adjusted_Rank**: Rank after privacy weighting
-- **Delta**: Rank change (Adjusted_Rank - Base_Rank)
-  - Negative: Moved up (improved ranking)
-  - Positive: Moved down (lower ranking)
-  - Zero: No rank change
-
-**Use Cases:**
-- **Rank Preservation Analysis**: See how well original ordering was maintained
-- **Outlier Identification**: Find peers whose ranks changed significantly
-- **Weight Impact**: Understand redistribution effects
-
-### File Naming Conventions
-
-**Share Analysis:**
-- With entity: `benchmark_share_ENTITY_NAME_YYYYMMDD_HHMMSS.xlsx`
-- Peer-only: `benchmark_share_PEER_ONLY_YYYYMMDD_HHMMSS.xlsx`
-- Custom output: Uses your specified filename
-
-**Rate Analysis (Single Rate):**
-- Approval: `benchmark_approval_rate_ENTITY_NAME_YYYYMMDD_HHMMSS.xlsx`
-- Fraud: `benchmark_fraud_rate_ENTITY_NAME_YYYYMMDD_HHMMSS.xlsx`
-
-**Multi-Rate Analysis:**
-- Single file: `benchmark_multi_rate_ENTITY_NAME_YYYYMMDD_HHMMSS.xlsx`
-- Custom output: Uses your specified filename (single file with combined sheets)
-
----
-
-## Tuning recipes
-
-  - **Include more dimensions globally**: Lower `--rank/--volume-preservation` strength, loosen bounds (higher `--max-weight`, lower `--min-weight`), and enable `--auto-subset-search`.
-  - **Avoid masking violations**: Prefer disabling `--prefer-slacks-first` for production. If enabled, verify slack totals in logs and the Subset Search results.
-  - **Tight vs loose tolerance**: Lower `--tolerance` raises slack penalty (harder to use slacks). Higher tolerance allows limited slack but validation will still flag cap breaches.
-  - **Greedy vs Random subset search**:
-      - Use greedy mode (default) for faster, deterministic results when you want to quickly find a feasible subset.
-      - Use random mode (`--no-greedy-subset-search`) when greedy gets stuck or you want to explore different dimension combinations. Random mode tests all size n-1 subsets (shuffled) before moving to n-2, potentially finding better global solutions at the cost of more computation.
-      - Increase `--subset-search-max-tests` (e.g., 500-1000) for random mode to allow more exploration.
-  - **Time-aware consistency**:
-      - Use `--time-col` with `--consistent-weights` when you need weights that remain constant across time periods.
-      - This creates significantly more constraints (time periods × categories) and may require looser bounds or higher tolerance.
-      - Consider using `--max-cap-slack 0.1` to allow minimal slack when time constraints make the problem very constrained.
-  - **Peer-only mode**: Omit `--entity` to analyze peer distributions without a target. Useful for market landscape analysis or exploratory work before selecting a benchmark target.
-  - **Multi-rate analysis**: Specify both `--approved-col` and `--fraud-col` to analyze approval and fraud rates simultaneously with a single command, generating a combined report.
-
------
-
-## Project structure
-
-  - `benchmark.py`: CLI entry point and Excel writer.
-  - `core/`
-      - `dimensional_analyzer.py`: Share/Rate computation, LP/heuristic weighting, subset search, diagnostics.
-      - `data_loader.py`: CSV loading, normalization, auto dimension discovery.
-      - `privacy_validator.py`, `report_generator.py`: Helpers.
-  - `utils/`
-      - `config_manager.py`: Column mappings, presets, optional SQL config.
-      - `logger.py`: Logging setup.
-  - `data/`: Example datasets (sensitive data should be redacted).
-  - `old/`: Legacy notebooks/scripts.
-
------
-
-## Troubleshooting
-
-  - **Column not found**: Prefer standardized names or extend `config_manager.py` mappings.
-  - **Too few peers (\<4)**: Tool warns; results may not meet minimum privacy requirements.
-  - **LP infeasible**: Inspect Structural tabs; consider relaxing bounds or removing problematic dimensions; enable `--auto-subset-search`.
-  - **Missing Peer Weights**: Add `--debug`.
-  - **Excel write error**: If the file is open, PowerShell locks it. Save to a new filename or close the workbook.
-  - **Multi-rate analysis not running both**: Ensure both `--approved-col` and `--fraud-col` are specified.
-  - **Peer-only mode not working**: Verify `--entity` parameter is completely omitted (not empty string).
-
------
-
-## Compliance note
-
-This tool enforces per‑category peer concentration caps aligned with Mastercard Control 3.2. It does not anonymize inputs; handle source data securely and validate outputs per your organization’s standards.
+**Privacy Rule

@@ -12,7 +12,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class DataLoader:
     """
     Handles data loading from multiple sources and schema validation.

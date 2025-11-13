@@ -725,6 +725,47 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 if not privacy_validation_df.empty:
                     logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
+        # Build method breakdown tab (same for all rate types since weights are shared)
+        method_breakdown_df = None
+        if consistent_weights:
+            rows = []
+            dims_all = list(dimensions)
+            used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
+            removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
+            per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
+            global_w = getattr(analyzer, 'global_weights', {})
+            peers = set(global_w.keys())
+            for d, wmap in per_dim_dict.items():
+                peers.update(wmap.keys())
+            for dim in dims_all:
+                # Prioritize per-dimension weights over global when both exist
+                if dim in per_dim_dict:
+                    method = 'Per-dimension LP'
+                elif dim in used_dims:
+                    method = 'Global LP'
+                elif dim in removed_dims:
+                    method = 'Global weights (dropped in LP)'
+                else:
+                    method = 'Global weights'
+                # rows per peer
+                peer_list = sorted(peers)
+                for p in peer_list:
+                    if dim in per_dim_dict and p in per_dim_dict[dim]:
+                        mult = float(per_dim_dict[dim][p])
+                    else:
+                        mult = float(global_w.get(p, {}).get('multiplier', 1.0))
+                    global_weight_pct = global_w.get(p, {}).get('weight', None)
+                    rows.append({
+                        'Dimension': dim,
+                        'Method': method,
+                        'Peer': p,
+                        'Multiplier': round(mult, 6),
+                        'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None
+                    })
+            if rows:
+                method_breakdown_df = pd.DataFrame(rows)
+                logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
+        
         # Generate single output file
         entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
         if args.output:
@@ -735,7 +776,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         # Generate report with all rate types
-        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df)
+        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df, method_breakdown_df)
         
         # Print summary
         print(f"\n{'='*80}")
@@ -1252,7 +1293,8 @@ def generate_multi_rate_excel_report(
     weights_df: Optional[Any] = None,
     numerator_cols: Optional[Dict[str, str]] = None,
     bic_percentiles: Optional[Dict[str, float]] = None,
-    privacy_validation_df: Optional[pd.DataFrame] = None
+    privacy_validation_df: Optional[pd.DataFrame] = None,
+    method_breakdown_df: Optional[pd.DataFrame] = None
 ) -> None:
     """Generate Excel report with multiple rate types using shared weights.
     
@@ -1529,6 +1571,42 @@ def generate_multi_rate_excel_report(
             logger.info("Added Privacy Validation tab")
         except Exception as e:
             logger.warning(f"Could not add Privacy Validation sheet: {e}")
+    
+    # Add final Weight Methods tab if provided (same for all rate types)
+    if method_breakdown_df is not None and not method_breakdown_df.empty:
+        try:
+            ws_methods = wb.create_sheet("Weight Methods")
+            ws_methods['A1'] = "Dimension Weighting Methods"
+            ws_methods['A1'].font = Font(bold=True, size=12)
+            ws_methods['A2'] = "Shows which calculation method was used for each dimension (Global LP, Per-Dimension LP, or Per-Dimension Bayesian)"
+            ws_methods['A2'].font = Font(italic=True)
+            
+            # Write headers
+            for c_idx, col_name in enumerate(method_breakdown_df.columns, start=1):
+                cell = ws_methods.cell(row=4, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            
+            # Write data
+            for r_idx, row_data in enumerate(method_breakdown_df.itertuples(index=False), start=5):
+                for c_idx, value in enumerate(row_data, start=1):
+                    ws_methods.cell(row=r_idx, column=c_idx, value=value)
+            
+            # Auto-size columns
+            for col in ws_methods.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                ws_methods.column_dimensions[column].width = min(max_length + 2, 60)
+            
+            logger.info("Added Weight Methods tab showing calculation methods per dimension")
+        except Exception as e:
+            logger.warning(f"Could not add Weight Methods sheet: {e}")
     
     # Save workbook
     wb.save(output_file)
