@@ -48,7 +48,10 @@ The tool employs a sophisticated three-tier optimization system to handle divers
 - 10x faster than iterative heuristics, no boundary oscillation
 
 **Result Tracking:**
-All weight calculations tracked in Weight Methods tab with exact method used: `Global-LP`, `Per-Dimension-LP`, or `Per-Dimension-Bayesian`.
+All weight calculations tracked in Weight Methods tab with exact method used:
+- **`Global-LP`**: Dimension uses global weights from successful full-set LP
+- **`Per-Dimension-LP`**: Dimension was removed from global set; solved with strict per-dimension LP
+- **`Per-Dimension-Bayesian`**: Per-dimension LP failed; fallback Bayesian optimization used
 
 **New in v2.1:**
 - **Peer-only mode**: Analyze peer distributions and market structure without specifying a target entity
@@ -1512,13 +1515,21 @@ Global LP formulation
 
 Behavior and fallbacks
 
-1)  Full‑set LP attempt (rank term applied). If infeasible and `--prefer-slacks-first` is set, a second probe sets rank strength to 0 to see if slacks can make it solvable; heavy slack usage is flagged in logs and validation.
-2)  Auto subset search (`--auto-subset-search`): Two modes available:
+1)  **Full‑set LP attempt** (rank term applied). If infeasible and `--prefer-slacks-first` is set, a second probe sets rank strength to 0 to see if slacks can make it solvable; heavy slack usage is flagged in logs and validation.
+2)  **Auto subset search** (`--auto-subset-search`): Two modes available:
       - **Greedy mode (default)**: `--greedy-subset-search` removes the most unbalanced dimension one at a time with attempts to re‑add; returns the largest feasible global dimension set and associated weights.
       - **Random mode**: `--no-greedy-subset-search` randomly tests dimension subsets starting with n-1 combinations, then n-2, continuing until a feasible solution is found or max tests reached. Stops as soon as a feasible subset at the current size is found (no need to test smaller subsets).
       - All attempts are recorded in the Subset Search tab.
-3)  Greedy dimension dropping: If still infeasible, drop dimensions until feasible.
-4)  Per‑dimension solves: For dimensions dropped from the global set, compute per‑dimension LP weights or use Bayesian optimization fallback; ensure each dimension is still privacy‑compliant.
+      - **Removed dimensions**: Any dimensions excluded from the feasible subset are automatically solved using per-dimension methods (see step 5).
+3)  **Slack-triggered subset search** (`--trigger-subset-on-slack`, enabled by default): If LP succeeds but uses slack above `--max-cap-slack` threshold, triggers subset search to find a solution with better privacy compliance.
+      - **Removed dimensions**: Any dimensions excluded from the feasible subset are automatically solved using per-dimension methods (see step 5).
+4)  **Greedy dimension dropping**: If still infeasible after subset search attempts, iteratively drop dimensions (most unbalanced first) until feasible.
+      - **Removed dimensions**: Each dropped dimension is automatically solved using per-dimension methods (see step 5).
+5)  **Per‑dimension solves for removed dimensions**: For ANY dimension removed via subset search or greedy dropping:
+      - **First attempt**: Per-dimension LP with strict constraints (tolerance=0, lambda=100,000,000) targeting the global weights
+      - **Fallback**: If LP fails or produces violations, uses Bayesian optimization (L-BFGS-B) to find best-effort weights that minimize violations while staying close to global weights
+      - **Result tracking**: Method recorded in Weight Methods tab as "Per-Dimension-LP" or "Per-Dimension-Bayesian"
+      - **Privacy compliance**: Each dimension independently satisfies privacy constraints within parametrized bounds
 
 Bayesian optimization fallback (when LP is unavailable or fails)
 

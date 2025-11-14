@@ -114,8 +114,7 @@ EXAMPLES:
     share_parser.add_argument('--entity',
                              help='Name of the entity to benchmark (omit for peer-only analysis)')
     share_parser.add_argument('--metric', required=True,
-                             choices=['txn_cnt', 'tpv', 'transaction_count', 'transaction_amount'],
-                             help='Metric to analyze (txn_cnt or tpv)')
+                             help='Metric column name to analyze (e.g., txn_cnt, tpv, transaction_count, transaction_amount)')
     
     # Dimension selection
     dim_group = share_parser.add_mutually_exclusive_group()
@@ -340,10 +339,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error(f"Entity column '{args.entity_col}' not found in data")
             return 1
         
-        # Map metric name - the data_loader already standardizes column names
+        # Validate metric column exists (use exact name as specified by user)
         metric_col = args.metric
-        
-        # Validate metric column exists
         if metric_col not in df.columns:
             logger.error(f"Metric column '{metric_col}' not found in data")
             logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
@@ -483,16 +480,19 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
             removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
             per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
+            weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
             global_w = getattr(analyzer, 'global_weights', {})
             peers = set(global_w.keys())
             for d, wmap in per_dim_dict.items():
                 peers.update(wmap.keys())
             for dim in dims_all:
-                # Prioritize per-dimension weights over global when both exist
-                if dim in per_dim_dict:
-                    method = 'Per-dimension LP'
+                # Use weight_methods if available, otherwise determine from context
+                if dim in weight_methods:
+                    method = weight_methods[dim]
+                elif dim in per_dim_dict:
+                    method = 'Per-Dimension-LP'
                 elif dim in used_dims:
-                    method = 'Global LP'
+                    method = 'Global-LP'
                 elif dim in removed_dims:
                     method = 'Global weights (dropped in LP)'
                 else:
@@ -563,9 +563,11 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error(f"Entity column '{args.entity_col}' not found in data")
             return 1
         
-        # Validate columns exist
-        if args.total_col not in df.columns:
-            logger.error(f"Total column '{args.total_col}' not found in data")
+        # Validate columns exist (use exact names as specified by user)
+        total_col = args.total_col
+        if total_col not in df.columns:
+            logger.error(f"Total column '{total_col}' not found in data")
+            logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
             return 1
         
         rate_types = []
@@ -575,20 +577,22 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if args.approved_col:
             if args.approved_col not in df.columns:
                 logger.error(f"Approved column '{args.approved_col}' not found in data")
+                logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
                 return 1
             rate_types.append('approval')
             numerator_cols['approval'] = args.approved_col
             bic_percentiles['approval'] = args.bic_percentile  # Higher is better
-            logger.info(f"Approval rate calculation: {args.approved_col} / {args.total_col}")
+            logger.info(f"Approval rate calculation: {args.approved_col} / {total_col}")
         
         if args.fraud_col:
             if args.fraud_col not in df.columns:
                 logger.error(f"Fraud column '{args.fraud_col}' not found in data")
+                logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
                 return 1
             rate_types.append('fraud')
             numerator_cols['fraud'] = args.fraud_col
             bic_percentiles['fraud'] = 0.15  # Lower is better for fraud
-            logger.info(f"Fraud rate calculation: {args.fraud_col} / {args.total_col}")
+            logger.info(f"Fraud rate calculation: {args.fraud_col} / {total_col}")
         
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing rate types: {', '.join(rate_types)}")
@@ -634,8 +638,8 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Calculate global weights ONCE based on total_col
         # These weights apply to both rate types since they share the same denominator
         if consistent_weights:
-            logger.info(f"\nCalculating global privacy-constrained weights based on {args.total_col}")
-            analyzer.calculate_global_privacy_weights(df, args.total_col, dimensions)
+            logger.info(f"\nCalculating global privacy-constrained weights based on {total_col}")
+            analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
             logger.info("Global weights will be used for all rate types")
         
         # Store results for each rate type
@@ -661,7 +665,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                     result_df = analyzer.analyze_dimension_rate(
                         df=df,
                         dimension_column=dim,
-                        total_col=args.total_col,
+                        total_col=total_col,
                         numerator_col=numerator_col
                     )
                     results[dim] = result_df
@@ -687,7 +691,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'rate_types': rate_types,
             'approved_col': getattr(args, 'approved_col', None),
             'fraud_col': getattr(args, 'fraud_col', None),
-            'total_col': args.total_col,
+            'total_col': total_col,
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
@@ -721,7 +725,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
             # Build privacy validation dataframe (based on total_col for rate analysis)
             if consistent_weights:
-                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, args.total_col, dimensions)
+                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, total_col, dimensions)
                 if not privacy_validation_df.empty:
                     logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
@@ -733,16 +737,19 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
             removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
             per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
+            weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
             global_w = getattr(analyzer, 'global_weights', {})
             peers = set(global_w.keys())
             for d, wmap in per_dim_dict.items():
                 peers.update(wmap.keys())
             for dim in dims_all:
-                # Prioritize per-dimension weights over global when both exist
-                if dim in per_dim_dict:
-                    method = 'Per-dimension LP'
+                # Use weight_methods if available, otherwise determine from context
+                if dim in weight_methods:
+                    method = weight_methods[dim]
+                elif dim in per_dim_dict:
+                    method = 'Per-Dimension-LP'
                 elif dim in used_dims:
-                    method = 'Global LP'
+                    method = 'Global-LP'
                 elif dim in removed_dims:
                     method = 'Global weights (dropped in LP)'
                 else:

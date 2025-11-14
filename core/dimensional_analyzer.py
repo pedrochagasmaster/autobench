@@ -1024,6 +1024,32 @@ class DimensionalAnalyzer:
                     used_dimensions = best_dims
                     removed_dimensions = [d for d in dimensions if d not in best_dims]
                     logger.info(f"Slack-aware policy selected global dimensions: {used_dimensions}")
+                    
+                    # Process removed dimensions with per-dimension solving
+                    self.per_dimension_weights.clear()
+                    for rd in removed_dimensions:
+                        rd_cats, rd_peer_vols, _ = self._build_categories(df, metric_col, [rd])
+                        if rd_cats:
+                            # Check if time-aware
+                            has_time = any('time_period' in cat for cat in rd_cats)
+                            time_info = f" (time-aware: {len([c for c in rd_cats if c.get('time_period')])} constraints)" if has_time else ""
+                            logger.info(f"Solving per-dimension weights for removed dimension '{rd}'{time_info}")
+                            
+                            rd_sol = self._solve_global_weights_lp(peers, rd_cats, max_concentration, rd_peer_vols)
+                            if rd_sol is not None:
+                                self.per_dimension_weights[rd] = rd_sol
+                                self.weight_methods[rd] = "Per-Dimension-LP"
+                                logger.info(f"Per-dimension LP succeeded for removed dimension '{rd}'")
+                            else:
+                                # Heuristic per-dimension fallback - use global weights as target
+                                target_multipliers = {p: weights[p] for p in peers} if weights else None
+                                rd_h = self._solve_dimension_weights_heuristic(peers, rd_cats, max_concentration, rd_peer_vols, target_multipliers)
+                                if rd_h:
+                                    self.per_dimension_weights[rd] = rd_h
+                                    self.weight_methods[rd] = "Per-Dimension-Bayesian"
+                                    logger.info(f"Per-dimension Bayesian optimization applied for removed dimension '{rd}' (targeting global weights)")
+                                else:
+                                    logger.warning(f"Per-dimension solving failed for removed dimension '{rd}'")
                 else:
                     logger.info("Subset search failed to improve; keeping full-set LP solution despite slack usage")
 
@@ -1038,6 +1064,32 @@ class DimensionalAnalyzer:
                     used_dimensions = best_dims
                     removed_dimensions = [d for d in dimensions if d not in best_dims]
                     logger.info(f"Auto search selected global dimensions: {used_dimensions}")
+                    
+                    # Process removed dimensions with per-dimension solving
+                    self.per_dimension_weights.clear()
+                    for rd in removed_dimensions:
+                        rd_cats, rd_peer_vols, _ = self._build_categories(df, metric_col, [rd])
+                        if rd_cats:
+                            # Check if time-aware
+                            has_time = any('time_period' in cat for cat in rd_cats)
+                            time_info = f" (time-aware: {len([c for c in rd_cats if c.get('time_period')])} constraints)" if has_time else ""
+                            logger.info(f"Solving per-dimension weights for removed dimension '{rd}'{time_info}")
+                            
+                            rd_sol = self._solve_global_weights_lp(peers, rd_cats, max_concentration, rd_peer_vols)
+                            if rd_sol is not None:
+                                self.per_dimension_weights[rd] = rd_sol
+                                self.weight_methods[rd] = "Per-Dimension-LP"
+                                logger.info(f"Per-dimension LP succeeded for removed dimension '{rd}'")
+                            else:
+                                # Heuristic per-dimension fallback - use global weights as target
+                                target_multipliers = {p: weights[p] for p in peers} if weights else None
+                                rd_h = self._solve_dimension_weights_heuristic(peers, rd_cats, max_concentration, rd_peer_vols, target_multipliers)
+                                if rd_h:
+                                    self.per_dimension_weights[rd] = rd_h
+                                    self.weight_methods[rd] = "Per-Dimension-Bayesian"
+                                    logger.info(f"Per-dimension Bayesian optimization applied for removed dimension '{rd}' (targeting global weights)")
+                                else:
+                                    logger.warning(f"Per-dimension solving failed for removed dimension '{rd}'")
             else:
                 # Dimension-dropping fallback before heuristic
                 scores = self._dimension_unbalance_scores(all_categories)
