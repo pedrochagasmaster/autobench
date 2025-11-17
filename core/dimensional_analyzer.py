@@ -1564,7 +1564,8 @@ class DimensionalAnalyzer:
             if peer_category_dens.get(p, 0.0) > 0:
                 rate = (peer_category_nums.get(p, 0.0) / peer_category_dens[p] * 100.0)
                 peer_rates.append(rate)
-        bic_pct = 0.15 if numerator_col.lower().startswith('fraud') else self.bic_percentile
+        # For fraud rates (lower is better), use 1 - bic_percentile. For other rates (higher is better), use bic_percentile
+        bic_pct = (1.0 - self.bic_percentile) if numerator_col.lower().startswith('fraud') else self.bic_percentile
         bic_value = float(np.percentile(peer_rates, bic_pct * 100.0)) if len(peer_rates) > 0 else 0.0
         
         # Calculate original (unweighted) peer rate for debug mode

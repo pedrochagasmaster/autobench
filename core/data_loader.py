@@ -204,10 +204,8 @@ class DataLoader:
         df.columns = df.columns.str.replace('-', '_')
         df.columns = df.columns.str.replace('[^a-zA-Z0-9_]', '', regex=True)
         
-        # Apply column mapping from config
-        column_mapping = self.config.get_column_mapping()
-        if column_mapping:
-            df = df.rename(columns=column_mapping)
+        # Note: Column mappings removed - use actual column names from dataset
+        # Users specify column names via CLI flags (--entity-col, --metric, etc.)
         
         return df
     

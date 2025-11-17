@@ -1,0 +1,38 @@
+version: "3.0"
+preset_name: "maximum_flexibility"
+description: "Maximum flexibility - try everything before dropping dimensions (Exploratory use)"
+
+# Scenario 4: Accept Slack + Relax First
+# - Accept slack violations
+# - Try relaxing rank preservation before dropping dimensions
+# - Most flexible approach
+
+optimization:
+  bounds:
+    max_weight: 20.0  # Very flexible
+    min_weight: 0.005
+  
+  linear_programming:
+    max_iterations: 1500
+    tolerance: 2.0  # Relaxed tolerance
+  
+  constraints:
+    volume_preservation: 0.5  # Weak rank preservation
+  
+  subset_search:
+    enabled: true
+    strategy: "random"  # Try multiple combinations
+    max_tests: 400
+    trigger_on_slack: false  # Accept slack
+    max_slack_threshold: 0.0  # Not used
+    prefer_slacks_first: true  # Try relaxing first
+  
+  bayesian:
+    max_iterations: 200
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

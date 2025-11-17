@@ -1,0 +1,38 @@
+version: "3.0"
+preset_name: "strict_privacy"
+description: "Maximum strictness - zero tolerance for privacy violations (Production use)"
+
+# Scenario 1: Maximum Strictness
+# - Zero tolerance for privacy cap violations
+# - Always search for cleanest solution
+# - Drop dimensions if needed to maintain strict privacy
+
+optimization:
+  bounds:
+    max_weight: 10.0
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 0.0  # Strict - no tolerance for violations
+  
+  constraints:
+    volume_preservation: 1.0  # Strong rank preservation
+  
+  subset_search:
+    enabled: true
+    strategy: "greedy"
+    max_tests: 200
+    trigger_on_slack: true
+    max_slack_threshold: 0.0  # Trigger on ANY slack usage
+    prefer_slacks_first: false  # Go directly to subset search
+  
+  bayesian:
+    max_iterations: 100
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

@@ -1,0 +1,38 @@
+version: "3.0"
+preset_name: "pragmatic"
+description: "Accept slack violations - prioritize keeping all dimensions (Analysis use)"
+
+# Scenario 3: Accept Slack (Pragmatic)
+# - Accept slack violations to keep all dimensions
+# - Only search for subsets when LP completely fails
+# - Balanced approach for practical analysis
+
+optimization:
+  bounds:
+    max_weight: 12.0
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 1.0  # Moderate tolerance
+  
+  constraints:
+    volume_preservation: 0.7  # Moderate rank preservation
+  
+  subset_search:
+    enabled: true  # Search when LP fails
+    strategy: "greedy"
+    max_tests: 200
+    trigger_on_slack: false  # Accept solutions with slack
+    max_slack_threshold: 0.0  # Not used
+    prefer_slacks_first: false
+  
+  bayesian:
+    max_iterations: 100
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

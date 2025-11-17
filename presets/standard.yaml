@@ -1,0 +1,67 @@
+version: "3.0"
+preset_name: "standard"
+description: "Standard preset for general use cases"
+
+# Note: Column names should match exactly as they appear in your dataset
+# Use CLI flags to specify column names: --entity-col, --metric, --time-col, --dimensions, etc.
+
+# Optimization settings
+optimization:
+  # Weight bounds - control how much peer weights can be adjusted
+  bounds:
+    max_weight: 10.0   # Maximum multiplier for any peer weight (higher = more flexibility)
+    min_weight: 0.01   # Minimum multiplier for any peer weight (lower = more flexibility)
+  
+  # Linear Programming solver settings
+  linear_programming:
+    max_iterations: 1000  # Maximum solver iterations
+    tolerance: 0.0        # Strict - no tolerance for privacy cap violations (in percentage points)
+    # Tolerance explained:
+    # - 0.0: Strict enforcement, no violations allowed
+    # - 0.5-2.0: Moderate tolerance for practical feasibility
+    # - 5.0+: Relaxed constraints for difficult datasets
+  
+  # Optimization constraints
+  constraints:
+    volume_preservation: 1.0  # Maximum volume preservation (rank preservation strength)
+    # 0.0 = No rank preservation (weights can freely reorder peers)
+    # 1.0 = Strong rank preservation (maintain original peer ordering)
+  
+  # Subset search settings - find optimal dimension combinations
+  subset_search:
+    enabled: true                # Enable automatic subset search
+    strategy: "random"           # Search strategy: "greedy" or "random"
+    # greedy: Remove most unbalanced dimension iteratively, fast and deterministic
+    # random: Test random dimension combinations, more thorough but non-deterministic
+    max_tests: 200               # Maximum search attempts
+    trigger_on_slack: true       # Trigger search if LP uses excessive slack
+    max_slack_threshold: 0.0     # Slack sum threshold to trigger search (0.0 = any slack)
+    prefer_slacks_first: false   # Try slack-first approach before dropping dimensions
+  
+  # Bayesian optimization fallback settings (when LP fails)
+  bayesian:
+    max_iterations: 100          # Maximum Bayesian optimization iterations
+    learning_rate: 0.01          # Learning rate for gradient descent
+
+# Analysis settings
+analysis:
+  best_in_class_percentile: 0.85  # Percentile for Best-in-Class calculation
+  # For approval rates and share analysis: Uses this value (0.85 = 85th percentile, higher is better)
+  # For fraud rates: Automatically uses (1 - this value) = 0.15 = 15th percentile (lower is better)
+  # Range: 0.0 to 1.0
+
+# Output settings
+output:
+  include_debug_sheets: true      # Enable comprehensive debug output
+  # Debug mode includes:
+  # - Peer Weights tab with balanced/unbalanced volumes and multipliers
+  # - Original (unweighted) metrics in dimension sheets
+  # - Privacy Validation tab (when using --consistent-weights)
+  # - Weight Methods tab showing calculation method for each dimension
+  # - Subset Search tab (when subset search is enabled)
+  
+  # Output file naming (when not specified via --output flag)
+  default_output_pattern: "benchmark_{analysis_type}_{entity}_{timestamp}.xlsx"
+  # Placeholders: {analysis_type}, {entity}, {metric}, {timestamp}
+
+  

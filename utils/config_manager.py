@@ -91,33 +91,60 @@ class ConfigManager:
         ]
     }
     
-    def __init__(self, config_file: Optional[str] = None):
+    def __init__(self, 
+                 config_file: Optional[str] = None,
+                 preset: Optional[str] = None,
+                 cli_overrides: Optional[Dict[str, Any]] = None):
         """
-        Initialize configuration manager.
+        Initialize configuration manager with hierarchy support.
+        
+        Configuration hierarchy (lowest to highest priority):
+        1. Defaults (hardcoded)
+        2. Preset (if specified)
+        3. Config file (if specified)
+        4. CLI overrides (highest priority)
         
         Parameters:
         -----------
         config_file : str, optional
-            Path to custom configuration file
+            Path to custom configuration file (YAML or JSON)
+        preset : str, optional
+            Preset name to load
+        cli_overrides : dict, optional
+            CLI argument overrides (highest priority)
         """
-        self.config = {}
+        # Start with defaults
+        self.config = self._get_default_config()
         self.column_mapping = self.DEFAULT_COLUMN_MAPPING.copy()
         self.comparison_metrics = self.DEFAULT_COMPARISON_METRICS.copy()
         self.sql_config = {}
         
+        # Apply preset if specified
+        if preset:
+            self._load_preset(preset)
+        
+        # Load custom config file if specified
         if config_file:
             self.load_config(config_file)
         
+        # Apply CLI overrides (highest priority)
+        if cli_overrides:
+            self._apply_cli_overrides(cli_overrides)
+        
         logger.info("Initialized ConfigManager")
+        if preset:
+            logger.info(f"Applied preset: {preset}")
+        if config_file:
+            logger.info(f"Loaded config: {config_file}")
     
     def load_config(self, config_file: str) -> None:
         """
-        Load configuration from JSON file.
+        Load configuration from YAML or JSON file.
         
         Parameters:
         -----------
         config_file : str
-            Path to configuration file
+            Path to configuration file (.yaml, .yml, or .json)
         """
         logger.info(f"Loading configuration from: {config_file}")
         
@@ -127,20 +154,34 @@ class ConfigManager:
             return
         
         try:
-            with open(path, 'r') as f:
-                self.config = json.load(f)
+            # Determine file type and load accordingly
+            if path.suffix.lower() in ['.yaml', '.yml']:
+                try:
+                    from .validators import load_config
+                    loaded_config = load_config(path)
+                except ImportError:
+                    logger.warning("PyYAML not available, trying JSON format")
+                    with open(path, 'r') as f:
+                        loaded_config = json.load(f)
+            else:
+                # Assume JSON
+                with open(path, 'r') as f:
+                    loaded_config = json.load(f)
+            
+            # Merge loaded config into current config
+            self._merge_config(loaded_config)
             
             # Update column mapping if provided
-            if 'column_mappings' in self.config:
-                self.column_mapping.update(self.config['column_mappings'])
+            if 'column_mappings' in loaded_config:
+                self.column_mapping.update(loaded_config['column_mappings'])
             
             # Update comparison metrics if provided
-            if 'comparison_metrics' in self.config:
-                self.comparison_metrics.update(self.config['comparison_metrics'])
+            if 'comparison_metrics' in loaded_config:
+                self.comparison_metrics.update(loaded_config['comparison_metrics'])
             
             # Load SQL configuration
-            if 'sql' in self.config:
-                self.sql_config = self.config['sql']
+            if 'sql' in loaded_config:
+                self.sql_config = loaded_config['sql']
             
             logger.info("Configuration loaded successfully")
             
@@ -324,3 +365,186 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"Failed to load preset: {str(e)}")
             return None
+    
+    def _get_default_config(self) -> Dict[str, Any]:
+        """Get default configuration.
+        
+        Returns:
+        --------
+        Dict[str, Any]
+            Default configuration dictionary
+        """
+        return {
+            'version': '3.0',
+            'input': {
+                'entity_col': 'issuer_name',
+                'time_col': None,
+            },
+            'output': {
+                'format': 'xlsx',
+                'include_debug_sheets': False,
+                'include_privacy_validation': False,
+                'log_level': 'INFO',
+            },
+            'optimization': {
+                'algorithm': 'linear_programming',
+                'linear_programming': {
+                    'max_iterations': 1000,
+                    'tolerance': 1.0,
+                    'rank_penalty_weight': 1.0,
+                },
+                'bounds': {
+                    'max_weight': 10.0,
+                    'min_weight': 0.01,
+                },
+                'constraints': {
+                    'volume_preservation': 0.5,
+                    'consistency_mode': 'global',
+                },
+                'subset_search': {
+                    'enabled': True,
+                    'strategy': 'greedy',
+                    'max_attempts': 200,
+                    'trigger_on_slack': True,
+                    'max_slack_threshold': 0.0,
+                    'prefer_slacks_first': False,
+                },
+                'bayesian': {
+                    'max_iterations': 500,
+                    'learning_rate': 0.01,
+                },
+            },
+            'analysis': {
+                'best_in_class_percentile': 0.85,
+                'fraud_percentile': 0.15,
+                'auto_detect_dimensions': False,
+            },
+        }
+    
+    def _load_preset(self, preset_name: str) -> None:
+        """Load preset configuration.
+        
+        Parameters:
+        -----------
+        preset_name : str
+            Name of preset to load
+        """
+        try:
+            from .preset_manager import PresetManager
+            
+            preset_mgr = PresetManager()
+            preset_config = preset_mgr.get_preset(preset_name)
+            
+            if preset_config:
+                self._merge_config(preset_config)
+                logger.info(f"Loaded preset: {preset_name}")
+            else:
+                available = preset_mgr.list_presets()
+                if available:
+                    raise ValueError(f"Preset '{preset_name}' not found. Available: {', '.join(available)}")
+                else:
+                    raise ValueError(f"Preset '{preset_name}' not found. No presets available.")
+        except ImportError as e:
+            logger.warning(f"Could not load preset manager: {e}")
+        except Exception as e:
+            logger.error(f"Failed to load preset '{preset_name}': {e}")
+            raise
+    
+    def _merge_config(self, override: Dict[str, Any]) -> None:
+        """Deep merge override config into current config.
+        
+        Parameters:
+        -----------
+        override : Dict[str, Any]
+            Configuration to merge (higher priority)
+        """
+        def deep_merge(base, override):
+            """Recursively merge override into base."""
+            for key, value in override.items():
+                if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                    deep_merge(base[key], value)
+                else:
+                    base[key] = value
+        
+        # Skip metadata fields that shouldn't merge
+        metadata_fields = {'version', 'preset_name', 'description'}
+        override_copy = {k: v for k, v in override.items() if k not in metadata_fields}
+        
+        deep_merge(self.config, override_copy)
+    
+    def _apply_cli_overrides(self, overrides: Dict[str, Any]) -> None:
+        """Apply CLI argument overrides.
+        
+        Parameters:
+        -----------
+        overrides : Dict[str, Any]
+            CLI arguments to override config values
+        """
+        # Map CLI args to config paths
+        mapping = {
+            'entity_col': ('input', 'entity_col'),
+            'time_col': ('input', 'time_col'),
+            'debug': ('output', 'include_debug_sheets'),
+            'log_level': ('output', 'log_level'),
+            'max_iterations': ('optimization', 'linear_programming', 'max_iterations'),
+            'tolerance': ('optimization', 'linear_programming', 'tolerance'),
+            'max_weight': ('optimization', 'bounds', 'max_weight'),
+            'min_weight': ('optimization', 'bounds', 'min_weight'),
+            'volume_preservation': ('optimization', 'constraints', 'volume_preservation'),
+            'bic_percentile': ('analysis', 'best_in_class_percentile'),
+            'auto': ('analysis', 'auto_detect_dimensions'),
+        }
+        
+        for cli_key, config_path in mapping.items():
+            if cli_key in overrides and overrides[cli_key] is not None:
+                self._set_nested(self.config, config_path, overrides[cli_key])
+                logger.debug(f"CLI override: {cli_key} = {overrides[cli_key]}")
+    
+    def _set_nested(self, d: dict, path: tuple, value: Any) -> None:
+        """Set nested dictionary value using path tuple.
+        
+        Parameters:
+        -----------
+        d : dict
+            Dictionary to modify
+        path : tuple
+            Path to nested value (e.g., ('optimization', 'bounds', 'max_weight'))
+        value : Any
+            Value to set
+        """
+        for key in path[:-1]:
+            d = d.setdefault(key, {})
+        d[path[-1]] = value
+    
+    def get(self, *path, default=None):
+        """Get configuration value using path.
+        
+        Parameters:
+        -----------
+        *path : str
+            Path components (e.g., 'optimization', 'bounds', 'max_weight')
+        default : Any, optional
+            Default value if path not found
+            
+        Returns:
+        --------
+        Any
+            Configuration value at path, or default if not found
+            
+        Examples:
+        ---------
+        >>> config.get('optimization', 'bounds', 'max_weight')
+        10.0
+        >>> config.get('optimization', 'bounds', 'max_weight', default=5.0)
+        10.0
+        >>> config.get('nonexistent', 'path', default=None)
+        None
+        """
+        value = self.config
+        for key in path:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return default
+        return value
+    

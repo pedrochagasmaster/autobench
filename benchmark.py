@@ -32,15 +32,17 @@ from utils.logger import setup_logging
 def get_presets_help() -> str:
     """Generate help text for available presets."""
     try:
-        with open('presets.json', 'r') as f:
-            presets = json.load(f).get('presets', {})
-            if not presets:
-                return ""
-            
-            help_text = "\nAVAILABLE PRESETS:\n"
-            for name, config in presets.items():
-                help_text += f"  {name:15s}: {config.get('description', 'No description')}\n"
-            return help_text
+        from utils.preset_manager import PresetManager
+        preset_mgr = PresetManager()
+        presets = preset_mgr.list_presets()
+        if not presets:
+            return ""
+        
+        help_text = "\nAVAILABLE PRESETS:\n"
+        for name in presets:
+            desc = preset_mgr.get_preset_description(name) or "No description"
+            help_text += f"  {name:20s}: {desc}\n"
+        return help_text
     except:
         return ""
 
@@ -50,50 +52,49 @@ def create_parser() -> argparse.ArgumentParser:
     
     parser = argparse.ArgumentParser(
         prog='benchmark',
-        description='Privacy-Compliant Dimensional Benchmarking Tool',
+        description='Privacy-Compliant Dimensional Benchmarking Tool v3.0',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 EXAMPLES:
-  # Share analysis (transaction count distribution)
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt
+  # Share analysis with preset
+  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --preset standard
 
-  # Share analysis (transaction amount distribution)
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric tpv
+  # Share analysis with custom config
+  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --config my_config.yaml
 
-  # Rate analysis (approval rates by dimension)
+  # Rate analysis (approval rates)
   python benchmark.py rate --csv data.csv --entity "BANCO SANTANDER" \\
-    --total-col txn_cnt --approved-col app_cnt
-
-  # Fraud rate analysis
-  python benchmark.py rate --csv data.csv --entity "BANCO SANTANDER" \\
-    --total-col app_cnt --fraud-col fraud_cnt --fraud-mode
-
-  # Auto-detect all dimensions
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --auto
-
-  # Specify dimensions manually
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" \\
-    --metric txn_cnt --dimensions flag_domestic cp_cnp tipo_wallet
-
-  # Use preset and custom output
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" \\
-    --metric txn_cnt --preset conservative --output my_analysis.xlsx
+    --total-col txn_cnt --approved-col app_cnt --preset conservative
 
   # List available presets
-  python benchmark.py presets
+  python benchmark.py config list
+
+  # Show preset details
+  python benchmark.py config show conservative
+
+  # Generate config template
+  python benchmark.py config generate my_config.yaml
+
+  # Validate config file
+  python benchmark.py config validate my_config.yaml
 
 {get_presets_help()}
         """
     )
     
+    # Add version flag
+    parser.add_argument('--version', action='store_true',
+                       help='Show version information')
+    
     # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest='command', help='Analysis type')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
     # Get available preset choices
     def get_preset_choices():
         try:
-            with open('presets.json', 'r') as f:
-                return list(json.load(f).get('presets', {}).keys())
+            from utils.preset_manager import PresetManager
+            preset_mgr = PresetManager()
+            return preset_mgr.list_presets()
         except:
             return []
     
@@ -111,10 +112,16 @@ EXAMPLES:
     # Required arguments
     share_parser.add_argument('--csv', required=True, 
                              help='Path to CSV input file')
-    share_parser.add_argument('--entity',
-                             help='Name of the entity to benchmark (omit for peer-only analysis)')
     share_parser.add_argument('--metric', required=True,
                              help='Metric column name to analyze (e.g., txn_cnt, tpv, transaction_count, transaction_amount)')
+    
+    # Optional - Essential
+    share_parser.add_argument('--entity',
+                             help='Name of the entity to benchmark (omit for peer-only analysis)')
+    share_parser.add_argument('--entity-col', default='issuer_name',
+                             help='Entity identifier column name (default: issuer_name)')
+    share_parser.add_argument('--output', '-o',
+                             help='Output file path (default: auto-generated)')
     
     # Dimension selection
     dim_group = share_parser.add_mutually_exclusive_group()
@@ -123,53 +130,26 @@ EXAMPLES:
     dim_group.add_argument('--auto', action='store_true',
                           help='Auto-detect all available dimensions')
     
-    # Optional arguments
-    share_parser.add_argument('--entity-col', default='issuer_name',
-                             help='Entity identifier column name (default: issuer_name)')
-    share_parser.add_argument('--output', '-o',
-                             help='Output file path (default: auto-generated)')
-    share_parser.add_argument('--bic-percentile', type=float, default=0.85,
-                             help='Best-in-class percentile (default: 0.85)')
-    share_parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                             default='INFO', help='Logging level')
-    share_parser.add_argument('--preset', choices=preset_choices,
-                             help='Use preset configuration')
-    share_parser.add_argument('--debug', action='store_true',
-                             help='Enable debug mode (includes unweighted averages and weight details)')
-    share_parser.add_argument('--consistent-weights', action='store_true',
-                             help='Use same privacy-constrained weights across all dimensions (global weighting)')
+    # Time awareness
     share_parser.add_argument('--time-col', 
                              help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
     
-    # Weight algorithm parameters
-    share_parser.add_argument('--max-iterations', type=int, default=1000,
-                             help='Maximum iterations for weight convergence (default: 1000)')
-    share_parser.add_argument('--tolerance', type=float, default=1.0,
-                             help='Tolerance for privacy violations in percentage points (default: 1.0)')
-    share_parser.add_argument('--max-weight', type=float, default=10.0,
-                             help='Maximum weight multiplier allowed (default: 10.0)')
-    share_parser.add_argument('--min-weight', type=float, default=0.01,
-                             help='Minimum weight multiplier allowed (default: 0.01)')
-    share_parser.add_argument('--volume-preservation', type=float, default=0.5,
-                             help='Volume preservation strength 0.0-1.0 (default: 0.5)')
-    # New options
-    share_parser.add_argument('--prefer-slacks-first', action='store_true',
-                             help='Try full-dimension LP with slacks-first (rank penalty set to 0) before dropping dimensions')
-    share_parser.add_argument('--auto-subset-search', action='store_true',
-                             help='Automatically search for the largest feasible global dimension subset before greedy dropping')
-    share_parser.add_argument('--subset-search-max-tests', type=int, default=200,
-                             help='Maximum attempts during auto subset search (default: 200)')
-    share_parser.add_argument('--greedy-subset-search', dest='greedy_subset_search', action='store_true', default=True,
-                             help='Use greedy subset search (remove one dimension at a time). Default: enabled')
-    share_parser.add_argument('--no-greedy-subset-search', dest='greedy_subset_search', action='store_false',
-                             help='Use random subset search instead of greedy (test random n-1, n-2, ... combinations)')
-    # Slack-aware subset trigger (Milestone 1)
-    share_parser.add_argument('--trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_true', default=True,
-                             help='If any LP cap slack exceeds threshold, trigger subset search even when LP returns success (default: enabled)')
-    share_parser.add_argument('--no-trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_false',
-                             help='Disable triggering subset search on LP slack usage')
-    share_parser.add_argument('--max-cap-slack', type=float, default=0.0,
-                             help='Slack sum threshold as percentage of total volume; if LP sum slack exceeds this, subset search is triggered (default: 0.0 = any slack)')
+    # Configuration
+    share_parser.add_argument('--config',
+                             help='Configuration file (YAML)')
+    share_parser.add_argument('--preset', choices=preset_choices,
+                             help='Preset configuration name')
+    
+    # Debug/Logging
+    share_parser.add_argument('--debug', action='store_true',
+                             help='Enable debug mode (includes unweighted averages and weight details)')
+    share_parser.add_argument('--log-level',
+                             choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                             help='Logging level (default: INFO)')
+    share_parser.add_argument('--per-dimension-weights', action='store_true',
+                             help='Optimize each dimension independently (disables global weighting mode)')
+    share_parser.add_argument('--export-balanced-csv', action='store_true',
+                             help='Export balanced shares and volumes to CSV (without weights or original values)')
 
     # ========================================================================
     # RATE ANALYSIS COMMAND
@@ -183,8 +163,6 @@ EXAMPLES:
     # Required arguments
     rate_parser.add_argument('--csv', required=True,
                             help='Path to CSV input file')
-    rate_parser.add_argument('--entity',
-                            help='Name of the entity to benchmark (omit for peer-only analysis)')
     rate_parser.add_argument('--total-col', required=True,
                             help='Total transactions column (e.g., txn_cnt)')
     
@@ -194,127 +172,162 @@ EXAMPLES:
     rate_parser.add_argument('--fraud-col',
                             help='Fraud transactions column (for fraud rate)')
     
+    # Optional - Essential
+    rate_parser.add_argument('--entity',
+                            help='Name of the entity to benchmark (omit for peer-only analysis)')
+    rate_parser.add_argument('--entity-col', default='issuer_name',
+                            help='Entity identifier column name (default: issuer_name)')
+    rate_parser.add_argument('--output', '-o',
+                            help='Output file path (default: auto-generated)')
+    
     # Dimension selection
     rate_dim_group = rate_parser.add_mutually_exclusive_group()
     rate_dim_group.add_argument('--dimensions', nargs='+',
                                help='Specific dimensions to analyze')
     rate_dim_group.add_argument('--auto', action='store_true',
-                               help='Auto-detect all available dimensions')
+                               help='Auto-detect all dimensions')
     
-    # Optional arguments
-    rate_parser.add_argument('--entity-col', default='issuer_name',
-                            help='Entity identifier column name (default: issuer_name)')
-    rate_parser.add_argument('--output', '-o',
-                            help='Output file path (default: auto-generated)')
-    rate_parser.add_argument('--bic-percentile', type=float, default=0.85,
-                            help='BIC percentile for approval rate (default: 0.85, use 0.15 for fraud)')
-    rate_parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                            default='INFO', help='Logging level')
-    rate_parser.add_argument('--preset', choices=preset_choices,
-                            help='Use preset configuration')
+    # Time awareness
     rate_parser.add_argument('--time-col', 
                             help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
+    
+    # Configuration
+    rate_parser.add_argument('--config',
+                            help='Configuration file (YAML)')
+    rate_parser.add_argument('--preset', choices=preset_choices,
+                            help='Preset configuration name')
+    
+    # Debug/Logging
     rate_parser.add_argument('--debug', action='store_true',
                             help='Enable debug mode (includes unweighted averages and weight details)')
-    rate_parser.add_argument('--consistent-weights', action='store_true',
-                            help='Use same privacy-constrained weights across all dimensions (global weighting)')
-    
-    # Weight algorithm parameters (same as share analysis)
-    rate_parser.add_argument('--max-iterations', type=int, default=1000,
-                            help='Maximum iterations for weight convergence (default: 1000)')
-    rate_parser.add_argument('--tolerance', type=float, default=1.0,
-                            help='Tolerance for privacy violations in percentage points (default: 1.0)')
-    rate_parser.add_argument('--max-weight', type=float, default=10.0,
-                            help='Maximum weight multiplier allowed (default: 10.0)')
-    rate_parser.add_argument('--min-weight', type=float, default=0.01,
-                            help='Minimum weight multiplier allowed (default: 0.01)')
-    rate_parser.add_argument('--volume-preservation', type=float, default=0.5,
-                            help='Volume preservation strength 0.0-1.0 (default: 0.5)')
-    # Advanced options
-    rate_parser.add_argument('--prefer-slacks-first', action='store_true',
-                            help='Try full-dimension LP with slacks-first (rank penalty set to 0) before dropping dimensions')
-    rate_parser.add_argument('--auto-subset-search', action='store_true',
-                            help='Automatically search for the largest feasible global dimension subset before greedy dropping')
-    rate_parser.add_argument('--subset-search-max-tests', type=int, default=200,
-                            help='Maximum attempts during auto subset search (default: 200)')
-    rate_parser.add_argument('--greedy-subset-search', dest='greedy_subset_search', action='store_true', default=True,
-                            help='Use greedy subset search (remove one dimension at a time). Default: enabled')
-    rate_parser.add_argument('--no-greedy-subset-search', dest='greedy_subset_search', action='store_false',
-                            help='Use random subset search instead of greedy (test random n-1, n-2, ... combinations)')
-    # Slack-aware subset trigger
-    rate_parser.add_argument('--trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_true', default=True,
-                            help='If any LP cap slack exceeds threshold, trigger subset search even when LP returns success (default: enabled)')
-    rate_parser.add_argument('--no-trigger-subset-on-slack', dest='trigger_subset_on_slack', action='store_false',
-                            help='Disable triggering subset search on LP slack usage')
-    rate_parser.add_argument('--max-cap-slack', type=float, default=0.0,
-                            help='Slack sum threshold as percentage of total volume; if LP sum slack exceeds this, subset search is triggered (default: 0.0 = any slack)')
+    rate_parser.add_argument('--log-level',
+                            choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                            help='Logging level (default: INFO)')
+    rate_parser.add_argument('--per-dimension-weights', action='store_true',
+                            help='Optimize each dimension independently (disables global weighting mode)')
+    rate_parser.add_argument('--export-balanced-csv', action='store_true',
+                            help='Export balanced shares and volumes to CSV (without weights or original values)')
     
     # ========================================================================
-    # PRESETS COMMAND
+    # CONFIG MANAGEMENT COMMAND
     # ========================================================================
-    presets_parser = subparsers.add_parser(
-        'presets',
-        help='List available preset configurations'
+    config_parser = subparsers.add_parser(
+        'config',
+        help='Manage configurations and presets'
     )
+    
+    config_subparsers = config_parser.add_subparsers(dest='config_command',
+                                                     help='Config management command')
+    
+    # List presets
+    config_subparsers.add_parser('list',
+                                 help='List available presets')
+    
+    # Show preset
+    show_parser = config_subparsers.add_parser('show',
+                                               help='Show preset details')
+    show_parser.add_argument('preset_name',
+                            help='Preset name')
+    
+    # Validate config
+    validate_parser = config_subparsers.add_parser('validate',
+                                                   help='Validate config file')
+    validate_parser.add_argument('config_file',
+                                help='Config file path')
+    
+    # Generate template
+    generate_parser = config_subparsers.add_parser('generate',
+                                                   help='Generate config template')
+    generate_parser.add_argument('output_file',
+                                help='Output file path')
     
     return parser
 
 
-def apply_preset(args: argparse.Namespace) -> None:
-    """Apply preset configuration to arguments."""
-    if not hasattr(args, 'preset') or not args.preset:
-        return
+def handle_config_command(args: argparse.Namespace) -> int:
+    """Handle config subcommands.
     
-    try:
-        with open('presets.json', 'r') as f:
-            presets = json.load(f).get('presets', {})
-            
-        if args.preset not in presets:
-            print(f"Warning: Preset '{args.preset}' not found")
-            return
+    Args:
+        args: Parsed command-line arguments
         
-        preset = presets[args.preset]
-        print(f"Applying preset: {args.preset} - {preset.get('description', '')}")
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    import shutil
+    from utils.preset_manager import PresetManager
+    from utils.validators import validate_config_file
+    
+    preset_mgr = PresetManager()
+    
+    if args.config_command == 'list':
+        print(preset_mgr.format_preset_list())
+        return 0
+    
+    elif args.config_command == 'show':
+        print(preset_mgr.format_preset_detail(args.preset_name))
+        return 0
+    
+    elif args.config_command == 'validate':
+        is_valid, errors = validate_config_file(Path(args.config_file))
+        if is_valid:
+            print(f"✓ Configuration file is valid: {args.config_file}")
+            return 0
+        else:
+            print(f"✗ Configuration validation failed:")
+            for error in errors:
+                print(f"  {error}")
+            return 1
+    
+    elif args.config_command == 'generate':
+        template_path = Path(__file__).parent / 'config' / 'template.yaml'
+        output_path = Path(args.output_file)
         
-        # Apply preset values if not already specified
-        if hasattr(args, 'bic_percentile') and args.bic_percentile == 0.85:
-            if 'bic_percentile' in preset:
-                args.bic_percentile = preset['bic_percentile']
-                
-    except Exception as e:
-        print(f"Warning: Could not load preset: {e}")
+        if not template_path.exists():
+            print(f"✗ Template file not found: {template_path}")
+            print(f"  Please ensure the config/template.yaml file exists.")
+            return 1
+        
+        if output_path.exists():
+            print(f"✗ File already exists: {output_path}")
+            print(f"  Please choose a different filename or delete the existing file.")
+            return 1
+        
+        try:
+            shutil.copy(template_path, output_path)
+            print(f"✓ Configuration template created: {output_path}")
+            print(f"  Edit this file to customize your analysis settings.")
+            print(f"  Validate with: benchmark config validate {output_path}")
+            return 0
+        except Exception as e:
+            print(f"✗ Failed to create config file: {e}")
+            return 1
+    
+    else:
+        print("Usage: benchmark config {list|show|validate|generate}")
+        print("  list                    List available presets")
+        print("  show PRESET             Show preset details")
+        print("  validate PATH           Validate a config file")
+        print("  generate PATH           Generate a template config file")
+        return 1
+
+
+def print_version() -> None:
+    """Print version information."""
+    import sys
+    import platform
+    
+    print("Privacy-Compliant Peer Benchmark Tool")
+    print(f"Version: 3.0.0")
+    print(f"Python: {sys.version.split()[0]}")
+    print(f"Platform: {platform.system()} {platform.release()}")
 
 
 def list_presets() -> None:
-    """Display available presets."""
-    try:
-        with open('presets.json', 'r') as f:
-            presets = json.load(f).get('presets', {})
-        
-        if not presets:
-            print("No presets found. Create a presets.json file.")
-            return
-        
-        print("\n" + "="*80)
-        print("AVAILABLE PRESET CONFIGURATIONS")
-        print("="*80)
-        
-        for name, config in presets.items():
-            print(f"\n{name.upper()}:")
-            print(f"  Description: {config.get('description', 'N/A')}")
-            if 'bic_percentile' in config:
-                print(f"  BIC Percentile: {config['bic_percentile']}")
-            if 'participants' in config:
-                print(f"  Min Participants: {config['participants']}")
-            if 'max_percent' in config:
-                print(f"  Max Concentration: {config['max_percent']}%")
-        
-        print("\n" + "="*80)
-        
-    except FileNotFoundError:
-        print("No presets.json file found.")
-    except Exception as e:
-        print(f"Error loading presets: {e}")
+    """Display available presets (deprecated - use 'benchmark config list')."""
+    print("Note: 'benchmark presets' is deprecated. Use 'benchmark config list' instead.\n")
+    from utils.preset_manager import PresetManager
+    preset_mgr = PresetManager()
+    print(preset_mgr.format_preset_list())
 
 
 def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
@@ -322,21 +335,39 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     logger.info("Starting share-based dimensional analysis")
     
     try:
+        # Create CLI overrides dictionary
+        cli_overrides = {
+            'entity_col': args.entity_col,
+            'time_col': getattr(args, 'time_col', None),
+            'debug': getattr(args, 'debug', False),
+            'log_level': getattr(args, 'log_level', None),
+            'auto': getattr(args, 'auto', False),
+        }
+        
+        # Initialize ConfigManager with hierarchy
+        config = ConfigManager(
+            config_file=getattr(args, 'config', None),
+            preset=getattr(args, 'preset', None),
+            cli_overrides=cli_overrides
+        )
+        
         # Load data
-        config = ConfigManager()
         data_loader = DataLoader(config)
         df = data_loader.load_data(args)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
         
+        # Get entity column from config
+        entity_col = config.get('input', 'entity_col')
+        
         # Determine entity column
-        if args.entity_col in df.columns:
-            entity_col = args.entity_col
+        if entity_col in df.columns:
+            pass  # Use config value
         elif 'issuer_name' in df.columns:
             entity_col = 'issuer_name'
         elif 'entity_identifier' in df.columns:
             entity_col = 'entity_identifier'
         else:
-            logger.error(f"Entity column '{args.entity_col}' not found in data")
+            logger.error(f"Entity column '{entity_col}' not found in data")
             return 1
         
         # Validate metric column exists (use exact name as specified by user)
@@ -355,30 +386,44 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         else:
             logger.info(f"Target entity: {args.entity}")
         
+        # Get configuration values
+        opt_config = config.config['optimization']
+        analysis_config = config.config['analysis']
+        
+        # Log configuration source
+        if getattr(args, 'preset', None):
+            logger.info(f"Using preset: {args.preset}")
+        if getattr(args, 'config', None):
+            logger.info(f"Using config file: {args.config}")
+        
         # Get unique entities and counts for metadata
         unique_entities = df[entity_col].nunique()
         total_records = len(df)
         
-        # Initialize analyzer
-        debug_mode = getattr(args, 'debug', False)
-        consistent_weights = getattr(args, 'consistent_weights', False)
+        # Initialize analyzer with config values
+        debug_mode = config.get('output', 'include_debug_sheets', default=False)
+        # Consistent weights is now the default (global weighting mode)
+        # Use --per-dimension-weights flag to disable it
+        consistent_weights = not getattr(args, 'per_dimension_weights', False)
+        time_col = config.get('input', 'time_col')
+        
         analyzer = DimensionalAnalyzer(
             target_entity=args.entity,
             entity_column=entity_col,
-            bic_percentile=args.bic_percentile,
+            bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
-            max_iterations=getattr(args, 'max_iterations', 1000),
-            tolerance=getattr(args, 'tolerance', 1.0),
-            max_weight=getattr(args, 'max_weight', 10.0),
-            min_weight=getattr(args, 'min_weight', 0.01),
-            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5),
-            prefer_slacks_first=getattr(args, 'prefer_slacks_first', False),
-            auto_subset_search=getattr(args, 'auto_subset_search', False),
-            subset_search_max_tests=getattr(args, 'subset_search_max_tests', 200),
-            greedy_subset_search=getattr(args, 'greedy_subset_search', True),
-            trigger_subset_on_slack=getattr(args, 'trigger_subset_on_slack', True),
-            max_cap_slack=getattr(args, 'max_cap_slack', 0.0),
+            max_iterations=opt_config['linear_programming']['max_iterations'],
+            tolerance=opt_config['linear_programming']['tolerance'],
+            max_weight=opt_config['bounds']['max_weight'],
+            min_weight=opt_config['bounds']['min_weight'],
+            volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+            prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
+            auto_subset_search=opt_config['subset_search'].get('enabled', True),
+            subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
+            greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
+            trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
+            max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
             time_column=getattr(args, 'time_col', None),
         )
         
@@ -391,8 +436,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             dimensions = data_loader.get_available_dimensions(df)
             logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
 
-        # Calculate global weights if consistent_weights mode is enabled
-        if args.consistent_weights:
+        # Calculate global weights if consistent_weights mode is enabled (default)
+        if consistent_weights:
             analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
 
         # Run analysis
@@ -422,7 +467,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'total_records': total_records,
             'unique_entities': unique_entities,
             'peer_count': unique_entities if args.entity is None else unique_entities - 1,
-            'bic_percentile': args.bic_percentile,
+            'bic_percentile': config.get('analysis', 'best_in_class_percentile'),
             'dimensions_analyzed': len(results),
             'dimension_names': list(results.keys()),
             'preset': getattr(args, 'preset', None),
@@ -452,7 +497,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         }
         
         # Calculate rank preservation strength for metadata (new for v2.0)
-        if args.consistent_weights:
+        if consistent_weights:
             metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
             metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
             metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
@@ -462,15 +507,18 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get weights data if debug mode
         weights_df = None
         privacy_validation_df = None
+        export_csv = getattr(args, 'export_balanced_csv', False)
+        
         if debug_mode:
             weights_df = analyzer.get_weights_dataframe()
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
-            # Build privacy validation dataframe
-            if consistent_weights:
-                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, metric_col, dimensions)
-                if not privacy_validation_df.empty:
-                    logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+        
+        # Build privacy validation dataframe if debug mode OR CSV export is requested
+        if (debug_mode or export_csv) and consistent_weights:
+            privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, metric_col, dimensions)
+            if not privacy_validation_df.empty:
+                logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
         # Build method breakdown tab (final tab)
         method_breakdown_df = None
@@ -520,6 +568,10 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df, privacy_validation_df)
         
+        # Export balanced CSV if requested
+        if getattr(args, 'export_balanced_csv', False):
+            export_balanced_csv(results, output_file, logger, analysis_type='share')
+        
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
         print(f"{'='*80}")
@@ -546,8 +598,21 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error("At least one of --approved-col or --fraud-col must be specified")
             return 1
         
-        # Load data
-        config = ConfigManager()
+        # Create CLI overrides dictionary
+        cli_overrides = {
+            'entity_col': args.entity_col,
+            'time_col': getattr(args, 'time_col', None),
+            'debug': getattr(args, 'debug', False),
+            'log_level': getattr(args, 'log_level', None),
+            'auto': getattr(args, 'auto', False),
+        }
+        
+        # Initialize ConfigManager with hierarchy
+        config = ConfigManager(
+            config_file=getattr(args, 'config', None),
+            preset=getattr(args, 'preset', None),
+            cli_overrides=cli_overrides
+        )
         data_loader = DataLoader(config)
         df = data_loader.load_data(args)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
@@ -574,6 +639,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         numerator_cols = {}
         bic_percentiles = {}
         
+        # Get BIC percentile from config
+        default_bic = config.get('analysis', 'best_in_class_percentile', default=0.85)
+        
         if args.approved_col:
             if args.approved_col not in df.columns:
                 logger.error(f"Approved column '{args.approved_col}' not found in data")
@@ -581,7 +649,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 return 1
             rate_types.append('approval')
             numerator_cols['approval'] = args.approved_col
-            bic_percentiles['approval'] = args.bic_percentile  # Higher is better
+            bic_percentiles['approval'] = default_bic  # Higher is better
             logger.info(f"Approval rate calculation: {args.approved_col} / {total_col}")
         
         if args.fraud_col:
@@ -602,8 +670,10 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         total_records = len(df)
         
         # Determine dimensions
-        debug_mode = getattr(args, 'debug', False)
-        consistent_weights = getattr(args, 'consistent_weights', False)
+        debug_mode = config.get('output', 'include_debug_sheets', default=False)
+        # Consistent weights is now the default (global weighting mode)
+        # Use --per-dimension-weights flag to disable it
+        consistent_weights = not getattr(args, 'per_dimension_weights', False)
         
         if args.dimensions:
             dimensions = args.dimensions
@@ -611,6 +681,10 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         else:
             dimensions = data_loader.get_available_dimensions(df)
             logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
+        
+        # Get configuration values
+        opt_config = config.config['optimization']
+        analysis_config = config.config['analysis']
         
         # Initialize analyzer ONCE with first rate type's BIC (we'll override per-dimension)
         # The key insight: weights are based on total_col, not the numerator
@@ -621,17 +695,17 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             bic_percentile=bic_percentiles[first_rate_type],  # Used for first rate type
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
-            max_iterations=getattr(args, 'max_iterations', 1000),
-            tolerance=getattr(args, 'tolerance', 1.0),
-            max_weight=getattr(args, 'max_weight', 10.0),
-            min_weight=getattr(args, 'min_weight', 0.01),
-            volume_preservation_strength=getattr(args, 'volume_preservation', 0.5),
-            prefer_slacks_first=getattr(args, 'prefer_slacks_first', False),
-            auto_subset_search=getattr(args, 'auto_subset_search', False),
-            subset_search_max_tests=getattr(args, 'subset_search_max_tests', 200),
-            greedy_subset_search=getattr(args, 'greedy_subset_search', True),
-            trigger_subset_on_slack=getattr(args, 'trigger_subset_on_slack', True),
-            max_cap_slack=getattr(args, 'max_cap_slack', 0.0),
+            max_iterations=opt_config['linear_programming']['max_iterations'],
+            tolerance=opt_config['linear_programming']['tolerance'],
+            max_weight=opt_config['bounds']['max_weight'],
+            min_weight=opt_config['bounds']['min_weight'],
+            volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+            prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
+            auto_subset_search=opt_config['subset_search'].get('enabled', True),
+            subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
+            greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
+            trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
+            max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
             time_column=getattr(args, 'time_col', None),
         )
         
@@ -719,15 +793,18 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get weights data if debug mode (same weights for all rate types)
         weights_df = None
         privacy_validation_df = None
+        export_csv = getattr(args, 'export_balanced_csv', False)
+        
         if debug_mode:
             weights_df = analyzer.get_weights_dataframe()
             if not weights_df.empty:
                 logger.info(f"Captured weights data: {len(weights_df)} weight entries")
-            # Build privacy validation dataframe (based on total_col for rate analysis)
-            if consistent_weights:
-                privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, total_col, dimensions)
-                if not privacy_validation_df.empty:
-                    logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+        
+        # Build privacy validation dataframe if debug mode OR CSV export is requested (based on total_col for rate analysis)
+        if (debug_mode or export_csv) and consistent_weights:
+            privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, total_col, dimensions)
+            if not privacy_validation_df.empty:
+                logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         
         # Build method breakdown tab (same for all rate types since weights are shared)
         method_breakdown_df = None
@@ -784,6 +861,19 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Generate report with all rate types
         generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df, method_breakdown_df)
+        
+        # Export balanced CSV if requested
+        if getattr(args, 'export_balanced_csv', False):
+            export_balanced_csv(
+                None, output_file, logger, 
+                analysis_type='rate', 
+                all_results=all_results,
+                df=df,
+                analyzer=analyzer,
+                dimensions=dimensions,
+                total_col=total_col,
+                numerator_cols=numerator_cols
+            )
         
         # Print summary
         print(f"\n{'='*80}")
@@ -1620,6 +1710,203 @@ def generate_multi_rate_excel_report(
     logger.info(f"Report saved to: {output_file}")
 
 
+def export_balanced_csv(
+    results: Optional[Dict[str, pd.DataFrame]], 
+    output_file: str, 
+    logger: logging.Logger,
+    analysis_type: str = 'share',
+    all_results: Optional[Dict[str, Dict[str, pd.DataFrame]]] = None,
+    df: Optional[pd.DataFrame] = None,
+    analyzer: Optional[Any] = None,
+    dimensions: Optional[list] = None,
+    total_col: Optional[str] = None,
+    numerator_cols: Optional[Dict[str, str]] = None
+) -> None:
+    """
+    Export balanced totals to CSV in concatenated dimension format.
+    
+    For rate analysis: exports dimension, category, balanced_total, balanced_approval_total, balanced_fraud_total
+    The balanced totals are weighted sums: sum(peer_value * weight) across all peers
+    
+    For share analysis: exports dimension, category, and balanced volumes
+    
+    Args:
+        results: Results dictionary for share analysis (dimension -> DataFrame)
+        output_file: Base output file path (will change extension to .csv)
+        logger: Logger instance
+        analysis_type: Type of analysis ('share' or 'rate')
+        all_results: For rate analysis, dict of rate_type -> results (e.g., {'approval': {...}, 'fraud': {...}})
+        df: Source dataframe for recalculating weighted totals
+        analyzer: Analyzer instance with weights
+        dimensions: List of dimensions analyzed
+        total_col: Total column name (for rate analysis)
+        numerator_cols: Dict mapping rate_type to numerator column name
+    """
+    # Create CSV filename from Excel filename
+    csv_output = output_file.rsplit('.', 1)[0] + '_balanced.csv'
+    
+    if analysis_type == 'rate' and all_results and df is not None and analyzer is not None:
+        # Rate analysis: calculate weighted totals for each dimension-category
+        export_rows = []
+        
+        # Get entity column and weights
+        entity_col = analyzer.entity_column
+        
+        # Get global weights or per-dimension weights
+        def get_weight(dimension: str, peer: str) -> float:
+            """Get weight multiplier for a peer in a dimension."""
+            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
+                return float(analyzer.per_dimension_weights[dimension][peer])
+            if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
+                return float(analyzer.global_weights[peer].get('multiplier', 1.0))
+            return 1.0
+        
+        # Check if time column is available
+        time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
+        has_time = time_col and time_col in df.columns
+        
+        # Process each dimension
+        for dimension in dimensions:
+            # Aggregate data by entity, dimension category, and optionally time
+            group_cols = [entity_col, dimension]
+            if has_time:
+                group_cols.append(time_col)
+            
+            agg_dict = {total_col: 'sum'}
+            
+            # Add numerator columns
+            if numerator_cols:
+                for num_col in numerator_cols.values():
+                    if num_col in df.columns:
+                        agg_dict[num_col] = 'sum'
+            
+            entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
+            
+            # Get unique categories
+            categories = entity_dim_agg[dimension].unique()
+            
+            # Get unique time periods if applicable
+            time_periods = sorted(entity_dim_agg[time_col].unique()) if has_time else [None]
+            
+            for category in categories:
+                for time_period in time_periods:
+                    # Filter to this category (and time period if applicable)
+                    if has_time:
+                        cat_df = entity_dim_agg[
+                            (entity_dim_agg[dimension] == category) & 
+                            (entity_dim_agg[time_col] == time_period)
+                        ]
+                    else:
+                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    
+                    if cat_df.empty:
+                        continue
+                    
+                    # Calculate weighted totals
+                    balanced_total = 0.0
+                    balanced_approval = 0.0
+                    balanced_fraud = 0.0
+                    
+                    for _, row in cat_df.iterrows():
+                        peer = row[entity_col]
+                        weight = get_weight(dimension, peer)
+                        
+                        # Weighted total (denominator)
+                        balanced_total += row[total_col] * weight
+                        
+                        # Weighted approval numerator
+                        if numerator_cols and 'approval' in numerator_cols:
+                            approval_col = numerator_cols['approval']
+                            if approval_col in row.index:
+                                balanced_approval += row[approval_col] * weight
+                        
+                        # Weighted fraud numerator  
+                        if numerator_cols and 'fraud' in numerator_cols:
+                            fraud_col = numerator_cols['fraud']
+                            if fraud_col in row.index:
+                                balanced_fraud += row[fraud_col] * weight
+                    
+                    # Add row to export
+                    row_data = {
+                        'Dimension': dimension,
+                        'Category': category,
+                    }
+                    
+                    # Add time period if applicable
+                    if has_time:
+                        row_data[time_col] = time_period
+                    
+                    row_data.update({
+                        'Balanced_Total': round(balanced_total, 2),
+                        'Balanced_Approval_Total': round(balanced_approval, 2) if balanced_approval > 0 else None,
+                        'Balanced_Fraud_Total': round(balanced_fraud, 2) if balanced_fraud > 0 else None
+                    })
+                    
+                    export_rows.append(row_data)
+        
+        if not export_rows:
+            logger.warning("No data to export for rate analysis CSV")
+            return
+        
+        # Create DataFrame and export
+        export_df = pd.DataFrame(export_rows)
+        
+        # Sort by Dimension, Time (if present), then Category
+        sort_cols = ['Dimension']
+        if has_time and time_col in export_df.columns:
+            sort_cols.append(time_col)
+        sort_cols.append('Category')
+        
+        export_df = export_df.sort_values(sort_cols)
+        export_df.to_csv(csv_output, index=False)
+        logger.info(f"Balanced rate data CSV exported to: {csv_output}")
+        print(f"Balanced CSV: {csv_output}")
+        
+    elif analysis_type == 'share' and results:
+        # Share analysis: export dimension, category, and balanced metric
+        export_rows = []
+        
+        for dimension, dim_df in results.items():
+            if dim_df is None or dim_df.empty:
+                continue
+            
+            categories = dim_df['Category'].unique() if 'Category' in dim_df.columns else []
+            
+            for category in categories:
+                category_rows = dim_df[dim_df['Category'] == category]
+                if category_rows.empty:
+                    continue
+                
+                row_data = {
+                    'Dimension': dimension,
+                    'Category': category,
+                    'Balanced_Metric': None
+                }
+                
+                # Get balanced metric value
+                if 'Peer_Balanced_Avg' in category_rows.columns:
+                    row_data['Balanced_Metric'] = category_rows.iloc[0]['Peer_Balanced_Avg']
+                elif 'Peer_Metric' in category_rows.columns:
+                    row_data['Balanced_Metric'] = category_rows.iloc[0]['Peer_Metric']
+                
+                export_rows.append(row_data)
+        
+        if not export_rows:
+            logger.warning("No data to export for share analysis CSV")
+            return
+        
+        # Create DataFrame and export
+        export_df = pd.DataFrame(export_rows)
+        export_df = export_df.sort_values(['Dimension', 'Category'])
+        export_df.to_csv(csv_output, index=False)
+        logger.info(f"Balanced share data CSV exported to: {csv_output}")
+        print(f"Balanced CSV: {csv_output}")
+    
+    else:
+        logger.warning("No valid results provided for CSV export")
+        return
+
+
 def main() -> int:
     """Main entry point."""
     parser = create_parser()
@@ -1630,7 +1917,16 @@ def main() -> int:
     
     args = parser.parse_args()
     
-    # Handle presets command
+    # Handle version flag
+    if hasattr(args, 'version') and args.version:
+        print_version()
+        return 0
+    
+    # Handle config command
+    if args.command == 'config':
+        return handle_config_command(args)
+    
+    # Handle deprecated presets command
     if args.command == 'presets':
         list_presets()
         return 0
@@ -1639,11 +1935,9 @@ def main() -> int:
         parser.print_help()
         return 0
     
-    # Setup logging
-    logger = setup_logging(args.log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-    
-    # Apply preset if specified
-    apply_preset(args)
+    # Setup logging for analysis commands
+    log_level = getattr(args, 'log_level', None) or 'INFO'
+    logger = setup_logging(log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
     # Route to appropriate handler
     if args.command == 'share':

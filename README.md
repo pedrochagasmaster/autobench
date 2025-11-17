@@ -1,10 +1,12 @@
-# Privacy-Compliant Peer Benchmark Tool (v2.1)
+# Privacy-Compliant Peer Benchmark Tool (v3.0)
 
-**Status: Production-ready. All core features implemented and validated.**
+**Status: Production-ready. Configuration-driven architecture with preset system.**
 
 ## What is This Tool?
 
 The Privacy-Compliant Peer Benchmark Tool is a sophisticated dimensional analysis system designed to compare financial entities (banks, issuers, merchants) against their peer groups while strictly enforcing Mastercard privacy compliance rules (Control 3.2). The tool enables you to understand how a target entity performs across multiple business dimensions without compromising the confidentiality of individual peer performance.
+
+**New in v3.0**: Configuration-driven architecture with YAML presets for simplified command-line usage and reusable analysis configurations.
 
 ### Business Value
 
@@ -53,7 +55,15 @@ All weight calculations tracked in Weight Methods tab with exact method used:
 - **`Per-Dimension-LP`**: Dimension was removed from global set; solved with strict per-dimension LP
 - **`Per-Dimension-Bayesian`**: Per-dimension LP failed; fallback Bayesian optimization used
 
-**New in v2.1:**
+**Version 3.0 - Configuration-Driven Architecture:**
+- **Preset System**: Pre-configured YAML files for common analysis scenarios (conservative, standard, aggressive, brazil_banking, emerging_market, nubank_digital)
+- **Simplified CLI**: Reduced from 27+ flags to ~12 essential parameters; tuning parameters moved to configuration files
+- **Configuration Hierarchy**: Defaults → Preset → Custom Config → CLI Arguments
+- **Config Subcommand**: `benchmark config list|show|validate|generate` for exploring and managing configurations
+- **Auto-Determined Privacy Rules**: Privacy caps (4/35, 5/25, 6/30, 7/35, 10/40) automatically determined from peer count
+- **Enhanced Maintainability**: Clean separation between business logic and configuration
+
+**Version 2.1 Features:**
 - **Peer-only mode**: Analyze peer distributions and market structure without specifying a target entity
 - **Multi-rate analysis**: Simultaneously analyze approval rates and fraud rates in a single run with shared privacy-compliant weights
 - **Time-aware consistency**: Global weights work across all time periods and categories, ensuring temporal consistency
@@ -62,12 +72,14 @@ All weight calculations tracked in Weight Methods tab with exact method used:
 - **Time-dimension output**: When `--time-col` is set, dimension sheets show metrics for each time-category combination plus aggregated "General" rows
 - **Enhanced diagnostics**: Structural infeasibility analysis, subset search reporting, rank change tracking, and privacy validation sheets
 
-This is the actively maintained v2 CLI. Legacy notebooks and experimental scripts are archived in the `old/` directory for reference only.
+This is the actively maintained v3 CLI. Legacy notebooks and experimental scripts are archived in the `old/` directory for reference only.
 
 ---
 
 ## Table of Contents
 
+- [What's New in v3.0](#whats-new-in-v30)
+- [Migrating from v2.x to v3.0](#migrating-from-v2x-to-v30)
 - [Core Features](#core-features)
 - [Understanding the Analysis Types](#understanding-the-analysis-types)
 - [Installation](#installation)
@@ -82,6 +94,146 @@ This is the actively maintained v2 CLI. Legacy notebooks and experimental script
 - [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [Additional Documentation](#additional-documentation)
+
+---
+
+## What's New in v3.0
+
+**Configuration-Driven Architecture**: Version 3.0 represents a major architectural shift toward configuration files and presets, dramatically simplifying command-line usage while maintaining full flexibility.
+
+**Key Changes:**
+1. **Preset System**: Six built-in presets (`conservative`, `standard`, `aggressive`, `brazil_banking`, `emerging_market`, `nubank_digital`) provide reusable configurations
+2. **Simplified CLI**: Reduced from 27+ flags to ~12 essential parameters
+3. **YAML Configuration Files**: Tuning parameters (max-weight, tolerance, volume-preservation, subset search settings) moved to config files
+4. **Config Management Commands**: New `config` subcommand for listing, viewing, validating, and generating configurations
+5. **Auto-Determined Privacy Rules**: Privacy caps now automatically determined from peer count (no longer configurable)
+6. **Configuration Hierarchy**: Clean precedence: Defaults → Preset → Custom Config → CLI Args
+
+**Benefits:**
+- **Simpler Commands**: Essential params on CLI, tuning in reusable config files
+- **Better Maintainability**: Cleaner separation between business logic and configuration
+- **Easier Sharing**: Share preset files with colleagues for consistent analysis
+- **Version Control Friendly**: YAML configs work well with git
+- **No Breaking Changes**: All v2.x analysis features remain available, just configured differently
+
+---
+
+## Migrating from v2.x to v3.0
+
+### Command Line Changes
+
+**v2.x Command (with many flags)**:
+```powershell
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto `
+  --max-weight 5.0 --tolerance 0.5 --volume-preservation 0.7 `
+  --max-iterations 1000 --auto-subset-search --greedy-subset-search `
+  --subset-search-max-tests 200 --bic-percentile 0.85 --debug
+```
+
+**v3.0 Equivalent (using preset)**:
+```powershell
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto `
+  --preset conservative --debug
+```
+
+### Removed CLI Flags
+
+These flags are **NO LONGER available** on the command line in v3.0. Use configuration files instead:
+
+**Optimization Parameters** (now in `optimization` section of YAML):
+- `--max-weight` → `optimization.bounds.max_weight`
+- `--min-weight` → `optimization.bounds.min_weight`
+- `--tolerance` → `optimization.linear_programming.tolerance`
+- `--max-iterations` → `optimization.linear_programming.max_iterations`
+- `--volume-preservation` → `optimization.constraints.volume_preservation`
+
+**Subset Search Parameters** (now in `optimization.subset_search` section):
+- `--auto-subset-search` → `optimization.subset_search.enabled`
+- `--greedy-subset-search` / `--no-greedy-subset-search` → `optimization.subset_search.strategy`
+- `--subset-search-max-tests` → `optimization.subset_search.max_tests`
+- `--trigger-subset-on-slack` / `--no-trigger-subset-on-slack` → `optimization.subset_search.trigger_on_slack`
+- `--max-cap-slack` → `optimization.subset_search.max_slack_threshold`
+- `--prefer-slacks-first` → `optimization.subset_search.prefer_slacks_first`
+
+**Analysis Parameters** (now in `analysis` section):
+- `--bic-percentile` → `analysis.best_in_class_percentile`
+
+**Output Parameters** (now in `output` section):
+- Part of `--debug` → `output.include_debug_sheets`
+
+### How to Migrate Your Workflows
+
+**Option 1: Use Built-in Presets**
+
+If your v2.x commands used common parameter combinations, switch to a preset:
+
+- Conservative settings (`max-weight=5.0`, `tolerance=0.5`) → `--preset conservative`
+- Standard settings (`max-weight=10.0`, `tolerance=1.0`) → `--preset standard` (or omit, it's default)
+- Aggressive settings (`max-weight=15.0`, `tolerance=5.0`) → `--preset aggressive`
+
+**Option 2: Create Custom Config Files**
+
+For custom parameter combinations:
+
+1. Generate a template:
+   ```powershell
+   py benchmark.py config generate --output my_analysis.yaml
+   ```
+
+2. Edit the YAML file with your v2.x parameters:
+   ```yaml
+   version: "3.0"
+   optimization:
+     bounds:
+       max_weight: 7.0  # Your v2.x --max-weight value
+       min_weight: 0.05
+     linear_programming:
+       tolerance: 1.5   # Your v2.x --tolerance value
+     # ... other settings
+   ```
+
+3. Use your config:
+   ```powershell
+   py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto --config my_analysis.yaml
+   ```
+
+### Retained CLI Flags
+
+These essential parameters remain as CLI flags in v3.0:
+
+- Data source: `--csv`, `--entity`, `--entity-col`
+- Dimensions: `--auto`, `--dimensions`
+- Metrics: `--metric` (share), `--total-col`, `--approved-col`, `--fraud-col` (rate)
+- Analysis control: `--consistent-weights`, `--time-col`
+- Output: `--output`, `--debug`, `--log-level`
+- Configuration: `--preset`, `--config`
+
+### New Commands in v3.0
+
+```powershell
+# View version
+py benchmark.py --version
+
+# List available presets
+py benchmark.py config list
+
+# Show preset configuration
+py benchmark.py config show conservative
+
+# Validate custom config
+py benchmark.py config validate --config my_config.yaml
+
+# Generate template config
+py benchmark.py config generate --output my_config.yaml
+```
+
+### Backwards Compatibility
+
+- All v2.x **analysis features** remain available (share, rate, multi-rate, time-aware, peer-only)
+- All v2.x **data formats** remain supported
+- All v2.x **output formats** remain unchanged
+- **Breaking change**: CLI tuning flags removed (use config files)
+- **No data migration needed**: Your CSV files work as-is
 
 ---
 
@@ -245,7 +397,7 @@ Share analysis examines how transaction volumes are distributed across dimension
 - Strategic planning for market expansion or optimization
 
 **Metrics Supported:**
-- `transaction_count` (or alias `txn_cnt`): Number of transactions
+- `transaction_count` (or alias `txn_count`): Number of transactions
 - `transaction_amount` (or alias `tpv`): Total transaction value
 
 **Example Output:**
@@ -896,7 +1048,7 @@ py benchmark.py rate `
 
 **What this does:**
 - **Both `--approved-col` and `--fraud-col`**: Analyzes both rates simultaneously
-- Single Excel file with combined dimension sheets showing both metrics side-by-side
+- Single Excel file with combined sheets showing both metrics side-by-side in each dimension sheet
 - Shared privacy-compliant weights ensure consistency
 - Approval metrics in green, fraud metrics in orange (color-coded headers)
 
@@ -934,9 +1086,107 @@ py benchmark.py share `
 
 ---
 
-### Example 8: Advanced Subset Search
+### Example 8: Using Configuration Presets (v3.0)
 
-**Scenario**: You have many dimensions and want the tool to find the largest set of dimensions that can use global consistent weights.
+**Scenario**: You want to run a conservative analysis with strict privacy enforcement.
+
+**Command:**
+```powershell
+py benchmark.py share `
+  --csv data\sample.csv `
+  --entity "BANCO SANTANDER" `
+  --metric transaction_count `
+  --auto `
+  --preset conservative `
+  --debug
+```
+
+**What this does:**
+- **`--preset conservative`**: Applies conservative preset configuration
+  - max_weight=5.0 (strict limit on peer reweighting)
+  - tolerance=0.5pp (tight privacy enforcement)
+  - volume_preservation=0.7 (stronger rank preservation)
+  - greedy subset search strategy
+- All tuning parameters come from the preset file
+- No need to specify individual optimization parameters on command line
+
+**Available Presets:**
+- `conservative`: Strict privacy, limited reweighting (max_weight=5.0, tolerance=0.5)
+- `standard`: Balanced approach (max_weight=10.0, tolerance=1.0) - default behavior
+- `aggressive`: Flexible constraints (max_weight=15.0, tolerance=5.0)
+- `brazil_banking`: Brazil-specific banking analysis
+- `emerging_market`: Relaxed constraints for emerging markets
+- `nubank_digital`: Strict zero-tolerance privacy, random search, debug enabled
+
+**View available presets:**
+```powershell
+py benchmark.py config list
+```
+
+**See preset details:**
+```powershell
+py benchmark.py config show conservative
+```
+
+---
+
+### Example 9: Custom Configuration File (v3.0)
+
+**Scenario**: You have specific optimization requirements not covered by presets.
+
+**Step 1: Generate a template configuration**
+```powershell
+py benchmark.py config generate --output my_config.yaml
+```
+
+**Step 2: Edit the YAML file** with your desired settings (e.g., max_weight=7.0, tolerance=1.5)
+
+**Step 3: Run analysis with custom config**
+```powershell
+py benchmark.py share `
+  --csv data\transactions_q1.csv `
+  --entity "BANCO SANTANDER" `
+  --metric transaction_count `
+  --dimensions flag_domestic cp_cnp card_type `
+  --config my_config.yaml `
+  --output reports\santander_q1_analysis.xlsx `
+  --debug
+```
+
+**What this does:**
+- **`--config my_config.yaml`**: Loads your custom optimization parameters
+- All tuning settings (max_weight, tolerance, volume_preservation, etc.) read from YAML
+- Can still override output file name via CLI
+- Reusable configuration for consistent analysis runs
+
+**Configuration hierarchy:**
+1. Hard-coded defaults
+2. Preset (if --preset specified)
+3. Custom config file (if --config specified) - **highest precedence**
+4. CLI flags (only for essential params like --csv, --entity, --output)
+
+---
+
+### Example 10: Advanced Subset Search (v3.0)
+
+**Scenario**: You have many dimensions and want automatic subset search with custom strategy.
+
+**Create custom config with subset search enabled:**
+```yaml
+# my_subset_search.yaml
+version: "3.0"
+optimization:
+  bounds:
+    max_weight: 10.0
+  linear_programming:
+    tolerance: 1.0
+  subset_search:
+    enabled: true
+    strategy: "random"  # Try random combinations
+    max_tests: 500
+    trigger_on_slack: true
+    max_slack_threshold: 0.0
+```
 
 **Command:**
 ```powershell
@@ -946,55 +1196,54 @@ py benchmark.py share `
   --metric transaction_count `
   --auto `
   --consistent-weights `
-  --auto-subset-search `
-  --subset-search-max-tests 500 `
+  --config my_subset_search.yaml `
   --debug
 ```
 
 **What this does:**
-- **`--auto-subset-search`**: Automatically searches for largest feasible dimension subset
-- If full LP is infeasible, searches for best subset that works
+- Automatically searches for largest feasible dimension subset
+- Uses random search strategy (tests random combinations)
 - Records all attempts in the Subset Search tab
-- Can use greedy or random search mode (see below)
-- **`--subset-search-max-tests 500`**: Allows up to 500 search attempts (default: 200)
-- **`--debug`**: Includes Subset Search tab showing all attempts
+- Up to 500 search attempts allowed
 
-**Use case**: When full LP with all dimensions is infeasible, this finds the best subset that works.
+**Use case**: When full LP with all dimensions is infeasible, finds the best subset that works.
 
 ---
 
-### Example 9: Custom Output File and Parameters
+### Example 11: Time-Aware Analysis with Preset (v3.0)
 
-**Scenario**: You want fine control over the output file name and privacy parameters.
+**Scenario**: You're analyzing 3 months of data with strict privacy enforcement and want time-aware consistency.
 
 **Command:**
 ```powershell
 py benchmark.py share `
-  --csv data\transactions_q1.csv `
+  --csv data\sample.csv `
   --entity "BANCO SANTANDER" `
   --metric transaction_count `
   --dimensions flag_domestic cp_cnp card_type `
-  --output reports\santander_q1_analysis.xlsx `
-  --bic-percentile 0.90 `
   --consistent-weights `
-  --max-weight 5.0 `
-  --tolerance 2.0 `
-  --debug
+  --time-col ano_mes `
+  --preset nubank_digital `
+  --output santander_time_series.xlsx
 ```
 
 **What this does:**
-- **`--output reports\santander_q1_analysis.xlsx`**: Custom output filename
-- **`--bic-percentile 0.90`**: 90th percentile BIC instead of default 85th
-- **`--max-weight 5.0`**: Limits peer weight multipliers to 5× (default: 10×)
-- **`--tolerance 2.0`**: Allows 2 percentage points tolerance on privacy caps (default: 1.0)
+- **`--preset nubank_digital`**: Uses strict zero-tolerance configuration
+  - tolerance=0.0 (strict privacy enforcement)
+  - volume_preservation=1.0 (maximum rank preservation)
+  - random subset search strategy
+  - debug mode enabled by default
+- **`--time-col ano_mes`**: Time-aware constraints across all months
+- One set of global weights works across all time periods and all categories
+- Privacy constraints satisfied in every time-category combination
 
-**When to use**: When you need stricter control or more relaxed privacy constraints.
+**When to use**: Time-series analysis requiring strict privacy compliance and temporal consistency.
 
 ---
 
-### Example 10: Peer-Only Multi-Rate with Time Awareness
+### Example 12: Peer-Only Multi-Rate with Preset (v3.0)
 
-**Scenario**: Analyze peer group approval and fraud trends across time without a target entity.
+**Scenario**: Analyze peer group approval and fraud trends without a target entity, using balanced settings.
 
 **Command:**
 ```powershell
@@ -1003,10 +1252,10 @@ py benchmark.py rate `
   --total-col amt_total `
   --approved-col amt_approved `
   --fraud-col amt_fraud `
-  --dimensions product_group flag_domestic `
-  --consistent-weights `
+  --dimensions flag_recurring fl_token poi pan_entry_mode ticket_range txn_period `
   --time-col year_month `
-  --debug
+  --preset standard `
+  --export-balanced-csv
 ```
 
 **What this does:**
@@ -1019,61 +1268,151 @@ py benchmark.py rate `
 
 ---
 
-### Command Syntax Tips
+### Example 13: Export Balanced CSV for External Analysis (v3.0)
 
-**PowerShell Line Continuation:**
-- Use backtick `` ` `` at end of line to continue on next line
-- Makes long commands more readable
+**Scenario**: You want to export privacy-weighted balanced totals to CSV for importing into Tableau, PowerBI, or Python.
 
-**Quoting Entity Names:**
-- Use quotes if entity name contains spaces: `--entity "BANCO SANTANDER"`
-- No quotes needed if no spaces: `--entity Santander`
+**Command:**
+```powershell
+py benchmark.py rate `
+  --csv "data\carrefour_peer_group_cube.csv" `
+  --total-col amt_total `
+  --approved-col amt_approved `
+  --fraud-col amt_fraud `
+  --dimensions flag_recurring fl_token poi pan_entry_mode ticket_range txn_period `
+  --time-col year_month `
+  --preset strict_privacy `
+  --export-balanced-csv `
+  --output carrefour_prod_v0.xlsx
+```
 
-**Path Separators:**
-- Windows PowerShell: Use backslash `\` → `data\sample.csv`
-- macOS/Linux: Use forward slash `/` → `data/sample.csv`
+**What this does:**
+- **`--export-balanced-csv`**: Generates a CSV file alongside the Excel report
+- CSV contains: Dimension, Category, year_month (time column), Balanced_Total, Balanced_Approval_Total, Balanced_Fraud_Total
+- All values are **privacy-weighted aggregates**: sum(peer_value × weight) across all peers
+- CSV filename: `carrefour_prod_v0_balanced.csv`
+- Works with both rate and share analysis
+- Does NOT require `--debug` flag
 
-**Multiple Dimensions:**
-- Space-separated list: `--dimensions dim1 dim2 dim3`
-- No commas or quotes needed
+**CSV Output Structure:**
+```csv
+Dimension,Category,year_month,Balanced_Total,Balanced_Approval_Total,Balanced_Fraud_Total
+fl_token,Non-tokenized,2024-01,203796570874.8,151927893365.16,185177975.02
+fl_token,Tokenized,2024-01,51780967982.85,38015274284.46,78836403.73
+flag_recurring,0,2024-01,235661586627.14,182768557309.09,229570462.72
+flag_recurring,1,2024-01,19915952230.51,7174610340.53,34443916.03
+```
 
----
+#### Use Cases
 
-### Next Steps
+1. **Data Visualization**: Import into Tableau, PowerBI, or Looker for custom dashboards
+2. **Statistical Analysis**: Load into Python (pandas), R, or SAS for further modeling
+3. **Data Pipeline Integration**: Feed balanced aggregates into downstream systems
+4. **Simplified Reporting**: Share privacy-compliant totals without exposing calculation details
+5. **Time-Series Analysis**: Analyze trends across dimensions and time periods in specialized tools
+6. **Cross-Tool Validation**: Verify Excel calculations independently in other platforms
 
-After running your first analysis:
+#### Requirements
 
-1. **Review the Excel Output**: Open the generated file and examine the Summary sheet first
-2. **Check Dimension Sheets**: Look at each dimension to understand your positioning
-3. **Review Weight Methods** (if using `--consistent-weights`): See how weights were calculated
-4. **Examine Debug Sheets** (if using `--debug`): Compare weighted vs unweighted metrics
-5. **Read Subset Search Results** (if used): Understand which dimension combinations are feasible
+- Works automatically when the flag is enabled
+- Does NOT require `--debug` flag
+- Only works when privacy-constrained weighting is enabled (default behavior)
+- If `--per-dimension-weights` is used, CSV reflects per-dimension weights
+- Time column automatically included if `--time-col` is specified
 
-For more advanced usage, see the [Command-Line Interface](#command-line-interface) section below.
+#### CSV Validation
+
+The tool includes a CSV validation script (`utils/csv_validator.py`) to verify that CSV balanced totals correctly produce the Excel rates:
+
+```powershell
+# Validate CSV against Excel report
+py utils/csv_validator.py carrefour_prod_v0.xlsx carrefour_prod_v0_balanced.csv
+
+# With custom tolerance
+py utils/csv_validator.py report.xlsx report_balanced.csv --tolerance 0.001
+
+# Verbose output showing all comparisons
+py utils/csv_validator.py report.xlsx report_balanced.csv --verbose
+```
+
+The validator checks:
+- Calculated rates from CSV totals match Excel dimension sheets
+- All dimension-category-(time) combinations are validated
+- Reports pass/fail/skip counts with detailed diagnostics
+
+See `utils/csv_validator.py` for more details on validation methodology.
 
 ---
 
 ## Command-Line Interface
 
-### Overview
+### Overview (v3.0)
 
-The tool provides two main analysis commands (`share` and `rate`) plus a `presets` command for viewing available configurations. Each command has its own set of parameters, though many are shared between them.
+The tool provides a configuration-driven CLI with three main commands:
+- **`share`**: Share-based dimensional analysis (transaction volume distribution)
+- **`rate`**: Rate-based dimensional analysis (approval rates, fraud rates)
+- **`config`**: Configuration management (list, show, validate, generate presets)
+
+**Version 3.0 Philosophy**: 
+- Essential parameters remain as CLI flags (data source, entity, dimensions, output)
+- Tuning parameters (max-weight, tolerance, volume-preservation, etc.) moved to YAML configuration files
+- Presets provide reusable configurations for common analysis scenarios
+- Configuration hierarchy: Defaults → Preset → Custom Config File → CLI Overrides
 
 ### Getting Help
 
 ```powershell
-# General help
-python benchmark.py --help
+# General help and version
+py benchmark.py --help
+py benchmark.py --version
 
 # Share analysis help
-python benchmark.py share --help
+py benchmark.py share --help
 
 # Rate analysis help
-python benchmark.py rate --help
+py benchmark.py rate --help
+
+# Config management help
+py benchmark.py config --help
 
 # List available presets
-python benchmark.py presets
+py benchmark.py config list
+
+# Show specific preset configuration
+py benchmark.py config show conservative
+py benchmark.py config show standard
 ```
+
+### Configuration System (v3.0)
+
+#### Presets
+- **`--preset <name>`** (Optional)
+  - Apply predefined configuration preset from `presets/` directory
+  - Presets include: `conservative`, `standard`, `aggressive`, `brazil_banking`, `emerging_market`, `nubank_digital`
+  - View available presets: `py benchmark.py config list`
+  - Show preset details: `py benchmark.py config show <preset_name>`
+  - Example: `--preset conservative`
+  - **Preset files** (YAML):
+    - `conservative.yaml`: max_weight=5.0, tolerance=0.5, greedy search
+    - `standard.yaml`: max_weight=10.0, tolerance=1.0, greedy search (default behavior)
+    - `aggressive.yaml`: max_weight=15.0, tolerance=5.0, random search
+    - `brazil_banking.yaml`: Brazil-specific banking analysis defaults
+    - `emerging_market.yaml`: Emerging market analysis with relaxed constraints
+    - `nubank_digital.yaml`: Strict privacy (tolerance=0.0), random search, debug enabled
+
+#### Custom Configuration Files
+- **`--config <path>`** (Optional)
+  - Load custom YAML configuration file
+  - Overrides built-in defaults
+  - Can be combined with `--preset` (config file takes precedence)
+  - Example: `--config my_analysis_config.yaml`
+  - Generate template: `py benchmark.py config generate --output my_config.yaml`
+
+**Configuration Hierarchy (lowest to highest precedence)**:
+1. Hard-coded defaults in `config_manager.py`
+2. Preset file (if `--preset` specified)
+3. Custom config file (if `--config` specified)
+4. CLI arguments (highest precedence, overrides all)
 
 ### General Parameters (Both Share and Rate)
 
@@ -1106,12 +1445,16 @@ These parameters apply to both share and rate analysis:
   - Example: `--output reports\q1_analysis.xlsx`
 
 #### Analysis Configuration
-- **`--bic-percentile <float>`** (Optional, default: 0.85)
-  - Percentile for Best-in-Class calculation
-  - Share/Approval: 0.85 = 85th percentile (higher is better)
-  - Fraud: Tool automatically uses 0.15 = 15th percentile (lower is better)
-  - Range: 0.0 to 1.0
-  - Example: `--bic-percentile 0.90` for 90th percentile
+- **`--debug`** (Optional flag)
+  - Enables comprehensive debug output in Excel report
+  - **Adds Peer Weights tab** showing balanced/unbalanced volumes and multipliers
+  - **Adds original metrics columns** in dimension sheets:
+    - Share analysis: Original Peer Average (%), Original Total Volume, Weight Effect (pp)
+    - Rate analysis: Original Peer Average (%), Original Total Numerator, Original Total Denominator, Weight Effect (pp)
+  - **Adds Privacy Validation tab** (when used with `--consistent-weights`)
+  - Recommended for auditing and understanding weight adjustments
+  - Can be set in config files: `output.include_debug_sheets: true`
+  - Example: `--debug`
 
 #### Dimension Selection (Choose One)
 - **`--dimensions <col1> <col2> ...`** (Manual selection)
@@ -1134,15 +1477,14 @@ These parameters apply to both share and rate analysis:
   - ERROR: Only errors
   - Example: `--log-level DEBUG`
 
-- **`--debug`** (Optional flag)
-  - Enables comprehensive debug output in Excel report
-  - **Adds Peer Weights tab** showing balanced/unbalanced volumes and multipliers
-  - **Adds original metrics columns** in dimension sheets:
-    - Share analysis: Original Peer Average (%), Original Total Volume, Weight Effect (pp)
-    - Rate analysis: Original Peer Average (%), Original Total Numerator, Original Total Denominator, Weight Effect (pp)
-  - **Adds Privacy Validation tab** (when used with `--consistent-weights`)
-  - Recommended for auditing and understanding weight adjustments
-  - Example: `--debug`
+#### CSV Export
+- **`--export-balanced-csv`** (Optional flag)
+  - Exports balanced totals to a CSV file alongside the Excel report
+  - CSV contains dimension, category, and privacy-weighted aggregated totals
+  - **For rate analysis**: Includes Balanced_Total, Balanced_Approval_Total, Balanced_Fraud_Total
+  - **For share analysis**: Includes balanced metric values
+  - Time column automatically included if `--time-col` is specified
+  - Example: `--export-balanced-csv`
 
 #### Global Weighting
 - **`--consistent-weights`** (Optional flag)
@@ -1158,123 +1500,72 @@ These parameters apply to both share and rate analysis:
   - Name of time period column in your data
   - Enables time-aware consistency when used with `--consistent-weights`
   - Must contain sortable time values (YYYY-MM, YYYYMM, etc.)
-  - Dimension sheets will show time-category combinations plus "General" aggregates
   - Example: `--time-col ano_mes`
 
-#### Preset Configurations
-- **`--preset <name>`** (Optional)
-  - Apply predefined configuration preset
-  - Presets defined in `presets.json`
-  - View available presets: `python benchmark.py presets`
-  - Example: `--preset conservative`
+### Advanced Tuning Parameters (Config File Only in v3.0)
 
-### Weight Optimization Parameters
+**These parameters have been moved to configuration files and presets. They are NO LONGER available as CLI flags in v3.0.**
 
-These advanced parameters control the Linear Programming solver behavior when `--consistent-weights` is enabled:
+To customize these parameters:
+1. Use a preset: `--preset conservative` or `--preset aggressive`
+2. Create a custom config file: `py benchmark.py config generate --output my_config.yaml`
+3. Edit the generated YAML file with your desired values
+4. Run with: `--config my_config.yaml`
 
-#### Basic Constraints
-- **`--max-iterations <int>`** (Optional, default: 1000)
-  - Maximum iterations for weight convergence
-  - Higher values allow more optimization attempts
-  - Range: 100-10000 typical
-  - Example: `--max-iterations 2000`
+#### Optimization Settings (in config files)
 
-- **`--tolerance <float>`** (Optional, default: 1.0)
-  - **Tolerance for privacy cap violations in percentage points**
-  - Defines acceptable margin above the base privacy cap before flagging violations
-  - **Effective cap** = base_cap + tolerance (e.g., 25% + 5pp = 30% for 5 peers)
-  - **Validation-level parameter**: Used to check if final weights violate privacy rules
-  - **Per-dimension trigger**: If ANY dimension-category-time exceeds cap+tolerance, triggers per-dimension solving for that dimension
-  - **Lower tolerance** (0.5-2.0): Strict privacy enforcement, may be infeasible for some dimensions
-  - **Medium tolerance** (2.0-10.0): Balanced approach, typical for production
-  - **Higher tolerance** (10.0-50.0+): Flexible, accommodates structural data concentration
-  - **Does NOT directly constrain LP solver** (LP uses slack with penalty lambda=100/tolerance)
-  - Range: 0.0-100.0 (typical: 1.0-10.0)
-  - Example: `--tolerance 5.0` (allows up to 30% concentration for 5-peer groups)
+**Linear Programming (`optimization.linear_programming`)**:
+- `max_iterations`: Maximum iterations for weight convergence (default: 1000)
+- `tolerance`: Tolerance for privacy cap violations in percentage points (default: 1.0)
+- Can be set to 0.0 for strict enforcement (no tolerance)
 
-- **`--max-weight <float>`** (Optional, default: 10.0)
-  - Maximum peer weight multiplier allowed
-  - Limits how much any peer's weight can be increased
-  - Higher = more flexibility, but can distort benchmarks
-  - Range: 2.0-100.0 typical
-  - Example: `--max-weight 5.0`
+**Weight Bounds (`optimization.bounds`)**:
+- `max_weight`: Maximum peer weight multiplier (default: 10.0)
+- `min_weight`: Minimum peer weight multiplier (default: 0.01)
 
-- **`--min-weight <float>`** (Optional, default: 0.01)
-  - Minimum peer weight multiplier allowed
-  - Limits how much any peer's weight can be decreased
-  - Lower = more flexibility
-  - Range: 0.001-0.5 typical
-  - Example: `--min-weight 0.05`
+**Constraints (`optimization.constraints`)**:
+- `volume_preservation`: Strength of rank preservation, 0.0-1.0 (default: 0.5)
 
-- **`--volume-preservation <float>`** (Optional, default: 0.5)
-  - Strength of rank preservation in optimization (0.0-1.0)
-  - 0.0 = No rank preservation (weights can freely reorder peers)
-  - 1.0 = Strong rank preservation (maintain original peer ordering)
-  - Controls how much the LP tries to preserve original peer market share ranking
-  - Also known as rank_preservation_strength internally
-  - Example: `--volume-preservation 0.2`
+**Subset Search (`optimization.subset_search` in YAML)**:
+- `enabled`: Enable automatic subset search (default: false)
+- `strategy`: "greedy" or "random" (default: "greedy")
+- `max_tests`: Maximum search attempts (default: 200)
+- `trigger_on_slack`: Trigger on excessive slack usage (default: true)
+- `max_slack_threshold`: Slack sum threshold to trigger (default: 0.0)
+- `prefer_slacks_first`: Try slack-first approach (default: false)
 
-#### Advanced Search Options
+**Analysis (`analysis` in YAML)**:
+- `best_in_class_percentile`: BIC percentile (default: 0.85)
 
-- **`--prefer-slacks-first`** (Optional flag)
-  - Try full-dimension LP with slacks-first approach before dropping dimensions
-  - Sets rank penalty to 0 initially to probe feasibility with slack variables
-  - Useful for diagnosing whether infeasibility is due to rank constraints
-  - Example: `--prefer-slacks-first`
+**Example Configuration File** (`presets/conservative.yaml`):
+```yaml
+version: "3.0"
+preset_name: "conservative"
+description: "Conservative analysis with strict privacy enforcement"
 
-- **`--auto-subset-search`** (Optional flag)
-  - Automatically search for largest feasible global dimension subset
-  - If full LP is infeasible, searches for best subset that works
-  - Records all attempts in the Subset Search tab
-  - Can use greedy or random search mode (see below)
-  - Example: `--auto-subset-search`
+optimization:
+  bounds:
+    max_weight: 5.0
+    min_weight: 0.05
+  
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 0.5
+  
+  constraints:
+    volume_preservation: 0.7
+  
+  subset_search:
+    enabled: false
+    strategy: "greedy"
+    max_tests: 200
 
-- **`--subset-search-max-tests <int>`** (Optional, default: 200)
-  - Maximum attempts during subset search
-  - Higher = more thorough search, longer runtime
-  - Only applies when `--auto-subset-search` is enabled
-  - Range: 50-1000 typical
-  - Example: `--subset-search-max-tests 500`
+analysis:
+  best_in_class_percentile: 0.85
 
-- **`--greedy-subset-search`** (Optional flag, DEFAULT)
-  - Use greedy search algorithm for subset search
-  - Removes most unbalanced dimension one at a time
-  - Attempts to re-add dimensions after each removal
-  - Fast and deterministic
-  - This is the default behavior
-  - Example: `--greedy-subset-search`
-
-- **`--no-greedy-subset-search`** (Optional flag)
-  - Use random search algorithm instead of greedy
-  - Tests random dimension combinations: n-1, n-2, n-3, ...
-  - More thorough but non-deterministic
-  - Useful when greedy gets stuck or produces suboptimal results
-  - Example: `--no-greedy-subset-search`
-
-- **`--trigger-subset-on-slack`** (Optional flag, DEFAULT)
-  - Trigger subset search if LP uses excessive slack
-  - Even if LP returns "success," checks if slack usage is too high
-  - Helps find solutions with less cap relaxation
-  - This is the default behavior
-  - Example: `--trigger-subset-on-slack`
-
-- **`--no-trigger-subset-on-slack`** (Optional flag)
-  - Disable automatic subset search on slack usage
-  - Only triggers subset search on explicit LP failure
-  - Example: `--no-trigger-subset-on-slack`
-
-- **`--max-cap-slack <float>`** (Optional, default: 0.0)
-  - **Slack sum threshold as percentage of total volume**
-  - Controls when subset search is triggered based on LP slack usage
-  - If LP slack sum exceeds this threshold, subset search attempts to find better solution
-  - **Slack explained**: LP solver uses slack variables to relax privacy constraints with penalty; lower slack = better compliance
-  - **0.0**: Trigger subset search on ANY slack usage (strictest)
-  - **0.1-1.0**: Tolerate minor slack before triggering (typical)
-  - **1.0+**: Allow significant slack before triggering (permissive)
-  - **Only matters when** `--trigger-subset-on-slack` is enabled (default)
-  - **Does NOT affect validation**: Final weights still checked against cap+tolerance regardless of slack
-  - Range: 0.0-10.0 (typical: 0.0-1.0)
-  - Example: `--max-cap-slack 0.5` (allows up to 0.5% slack sum before triggering subset search)
+output:
+  include_debug_sheets: false
+```
 
 ### Share Analysis Specific Parameters
 
@@ -1308,78 +1599,63 @@ These advanced parameters control the Linear Programming solver behavior when `-
 
 **Note:** You can specify **both** `--approved-col` and `--fraud-col` for simultaneous multi-rate analysis. The tool will generate a single Excel file with both rate types shown side-by-side in each dimension sheet.
 
-#### Weight Parameters
-All weight optimization parameters listed above (`--max-iterations`, `--tolerance`, `--max-weight`, `--min-weight`, `--volume-preservation`, and advanced search options) are fully supported for rate analysis with identical behavior.
+### Config Command (v3.0)
 
-### Parameter Combination Guidelines
+The `config` subcommand provides tools for managing configuration presets and files.
+
+#### List Available Presets
+```powershell
+py benchmark.py config list
+```
+Shows all available presets with their key settings (max_weight, tolerance).
+
+#### Show Preset Details
+```powershell
+py benchmark.py config show conservative
+py benchmark.py config show nubank_digital
+```
+Displays the full configuration from a preset file in YAML format.
+
+#### Validate Configuration File
+```powershell
+py benchmark.py config validate --config my_config.yaml
+```
+Validates a custom configuration file against the v3.0 schema.
+
+#### Generate Template Configuration
+```powershell
+py benchmark.py config generate --output my_config.yaml
+```
+Generates a template configuration file with all available settings and documentation.
+
+### Parameter Combination Guidelines (v3.0)
 
 **Minimal Run (Share)**:
 ```powershell
-python benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto
 ```
 
 **Minimal Run (Rate)**:
 ```powershell
-python benchmark.py rate --csv data.csv --entity "Bank A" --total-col total --approved-col approved --auto
+py benchmark.py rate --csv data.csv --entity "Bank A" --total-col total --approved-col approved --auto
 ```
 
-**Production Run with Global Weights**:
+**With Preset (v3.0)**:
 ```powershell
-python benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimensions dim1 dim2 dim3 --consistent-weights --debug --output report.xlsx
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimensions dim1 dim2 dim3 --preset conservative --output report.xlsx
 ```
 
-**Advanced Tuning Run**:
+**With Custom Config (v3.0)**:
 ```powershell
-python benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto --consistent-weights --time-col month --auto-subset-search --no-greedy-subset-search --subset-search-max-tests 500 --max-weight 5.0 --tolerance 2.0 --debug
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto --config my_analysis.yaml --debug
+```
+
+**Production Run with Time-Aware Consistency**:
+```powershell
+py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimensions dim1 dim2 dim3 --consistent-weights --time-col month --preset standard --debug --output report.xlsx
 ```
 
 ---
-
-General
-
-  - `--csv <path>`: Input CSV file
-  - `--entity <name>`: Target entity (optional - omit for peer-only mode)
-  - `--entity-col <col>`: Entity identifier (default `issuer_name`)
-  - `--output/-o <file>`: Excel output (auto‑named if omitted; multi-rate adds suffix)
-  - `--bic-percentile <float>`: Default 0.85 for approval rates
-  - `--log-level {DEBUG,INFO,WARNING,ERROR}`: Default INFO
-  - `--debug`: Adds Peer Weights tab and extra details. In dimension sheets, includes original (unweighted) peer metrics before privacy adjustments:
-      - **Share analysis**: Original Peer Average (%), Original Total Volume, Weight Effect (pp)
-      - **Rate analysis**: Original Peer Average (%), Original Total Numerator, Original Total Denominator, Weight Effect (pp)
-  - `--consistent-weights`: Compute one global set of peer multipliers for all dimensions
-  - `--time-col <column>`: Time column for time-aware consistency (e.g., ano\_mes, year\_month)
-
-Share specific
-
-  - `--metric {txn_cnt,tpv,transaction_count,transaction_amount}`
-  - Dimensions: `--auto` or `--dimensions <col...>`
-  - Weighting params: `--max-iterations`, `--tolerance` (pp), `--max-weight`, `--min-weight`, `--volume-preservation`
-  - Advanced search/diagnostics:
-      - `--prefer-slacks-first`: Try full‑dimension LP with rank penalty 0 to probe feasibility with slacks
-      - `--auto-subset-search`: Search largest feasible global dimension subset
-      - `--subset-search-max-tests <int>`: Limit attempts (default 200)
-      - `--greedy-subset-search` / `--no-greedy-subset-search`: Use greedy (remove one dim at a time) vs random search (test random n-1, n-2, ... combinations) (default: greedy enabled)
-      - `--trigger-subset-on-slack` / `--no-trigger-subset-on-slack`: If LP uses slack above threshold, auto-run subset search (default on)
-      - `--max-cap-slack <float>`: Slack sum threshold as percentage of total volume to trigger subset search (default 0.0)
-
-Rate specific
-
-  - One or both of `--approved-col` or `--fraud-col` (at least one required)
-  - `--total-col <col>` (denominator, required)
-  - Dimensions: `--auto` or `--dimensions <col...>`
-  - BIC percentiles automatically set: 85th for approval (higher is better), 15th for fraud (lower is better)
-  - When both rate types specified: single Excel file with prefixed dimension sheets (`Approval_*`, `Fraud_*`)
-  - **Weighting params**: Same as share analysis - `--max-iterations`, `--tolerance`, `--max-weight`, `--min-weight`, `--volume-preservation`
-  - **Advanced search/diagnostics**: Same as share analysis - `--prefer-slacks-first`, `--auto-subset-search`, `--subset-search-max-tests`, `--greedy-subset-search`, `--trigger-subset-on-slack`, `--max-cap-slack`
-
-Presets and help
-
-```powershell
-py benchmark.py presets
-py benchmark.py --help; py benchmark.py share --help; py benchmark.py rate --help
-```
-
------
 
 ## Privacy rules and caps
 
@@ -1452,157 +1728,4 @@ Analyze both approval and fraud rates simultaneously by specifying both `--appro
   - Privacy compliance: Constraints applied to the common denominator ensure consistent privacy across both analyses
 
 **Rationale:**
-Since both approval and fraud rates share the same denominator, the privacy constraints are based on the total volume. This allows calculating weights once and applying them to both numerators, ensuring efficiency and consistency. Combining metrics in the same dimension sheet enables direct side-by-side comparison.
-
-**Example:**
-
-```powershell
-py benchmark.py rate --csv data\transactions.csv --total-col amt_total --approved-col amt_approved --fraud-col amt_fraud --dimensions product_group flag_domestic --consistent-weights --time-col year_month --debug --output benchmark_analysis.xlsx
-```
-
-Output: `benchmark_analysis.xlsx` (single file with combined dimension sheets showing both approval and fraud metrics)
-
------
-
-## Time-aware consistency (advanced)
-
-When `--time-col` is specified with `--consistent-weights`, the tool enforces a time-aware consistency model:
-
-**Conceptual strategy:**
-
-  - The same peer weights must work across **all time periods** and **all time-category combinations**
-  - Monthly weighted volumes must follow privacy rules for each month
-  - Monthly weighted volumes for each category of each dimension must follow privacy rules for each month-category combination
-
-**Technical implementation:**
-
-  - Expands the LP formulation to include constraints for each time period
-  - Adds monthly total volume constraints: `m_p * vol_{p,month} ≤ cap * Σ_j m_j * vol_{j,month}`
-  - Adds monthly category constraints: `m_p * vol_{p,month,cat} ≤ cap * Σ_j m_j * vol_{j,month,cat}`
-  - Single set of weights `m_p` satisfies privacy rules across all time-dimension-category combinations
-
-**Usage:**
-
-```powershell
-py benchmark.py share --csv data\sample.csv --entity "BANCO SANTANDER" --metric transaction_count --auto --consistent-weights --time-col ano_mes
-```
-
-This ensures temporal consistency: peer weights remain constant across months while satisfying privacy constraints in every month and every category of every dimension.
-
------
-
-## Weighting engine (deep dive)
-
-Terminology
-
-  - v\_{p,c}: Raw volume for peer p in category c (across all chosen dimensions when solving globally).
-  - m\_p: Peer multiplier (weight) constrained to [min\_weight, max\_weight].
-  - cap: The privacy cap (e.g., 0.35 for 7/35) for the dimension’s peer count.
-  - tol: Tolerance in percentage points, modeled as slack penalty strength.
-
-Global LP formulation
-
-  - Decision variables: m\_p ≥ 0, absolute‑deviation auxiliaries t^+\_p, t^-*p, cap slack s*{p,c} ≥ 0, and optional rank slacks.
-  - Adjusted concentration per (p,c): a\_{p,c}(m) = m\_p v\_{p,c} − cap · Σ\_j m\_j v\_{j,c}.
-  - Cap constraints with slacks: a\_{p,c}(m) − s\_{p,c} ≤ 0.
-  - Bounds: min\_weight ≤ m\_p ≤ max\_weight.
-  - Objective (rank‑preserving, L1 around 1):
-      - Minimize Σ\_p (t^+*p + t^-*p) + λ\_rank · Φ\_rank(m) + λ\_cap · Σ*{p,c} s*{p,c},
-      - with t^+\_p − t^-\_p = m\_p − 1 to encode |m\_p − 1|.
-      - Rank term Φ\_rank promotes preserving the original peer order (strength derived from `--volume-preservation`).
-  - Slack penalty λ\_cap ≈ 100 / tolerance\_pp so that lower tolerance increases the cost of relaxing caps.
-  - Solver: SciPy `linprog` (HiGHS). Automatic fallback among HiGHS variants; captures diagnostics (max/sum slack, method used).
-
-Behavior and fallbacks
-
-1)  **Full‑set LP attempt** (rank term applied). If infeasible and `--prefer-slacks-first` is set, a second probe sets rank strength to 0 to see if slacks can make it solvable; heavy slack usage is flagged in logs and validation.
-2)  **Auto subset search** (`--auto-subset-search`): Two modes available:
-      - **Greedy mode (default)**: `--greedy-subset-search` removes the most unbalanced dimension one at a time with attempts to re‑add; returns the largest feasible global dimension set and associated weights.
-      - **Random mode**: `--no-greedy-subset-search` randomly tests dimension subsets starting with n-1 combinations, then n-2, continuing until a feasible solution is found or max tests reached. Stops as soon as a feasible subset at the current size is found (no need to test smaller subsets).
-      - All attempts are recorded in the Subset Search tab.
-      - **Removed dimensions**: Any dimensions excluded from the feasible subset are automatically solved using per-dimension methods (see step 5).
-3)  **Slack-triggered subset search** (`--trigger-subset-on-slack`, enabled by default): If LP succeeds but uses slack above `--max-cap-slack` threshold, triggers subset search to find a solution with better privacy compliance.
-      - **Removed dimensions**: Any dimensions excluded from the feasible subset are automatically solved using per-dimension methods (see step 5).
-4)  **Greedy dimension dropping**: If still infeasible after subset search attempts, iteratively drop dimensions (most unbalanced first) until feasible.
-      - **Removed dimensions**: Each dropped dimension is automatically solved using per-dimension methods (see step 5).
-5)  **Per‑dimension solves for removed dimensions**: For ANY dimension removed via subset search or greedy dropping:
-      - **First attempt**: Per-dimension LP with strict constraints (tolerance=0, lambda=100,000,000) targeting the global weights
-      - **Fallback**: If LP fails or produces violations, uses Bayesian optimization (L-BFGS-B) to find best-effort weights that minimize violations while staying close to global weights
-      - **Result tracking**: Method recorded in Weight Methods tab as "Per-Dimension-LP" or "Per-Dimension-Bayesian"
-      - **Privacy compliance**: Each dimension independently satisfies privacy constraints within parametrized bounds
-
-Bayesian optimization fallback (when LP is unavailable or fails)
-
-When per-dimension LP fails to satisfy privacy constraints within tolerance, the tool uses Bayesian-inspired optimization via scipy's L-BFGS-B solver:
-
-- **Objective**: Minimize squared violations (primary) + deviation from target weights (secondary)
-- **Method**: L-BFGS-B (Limited-memory Broyden-Fletcher-Goldfarb-Shanno Bounded)
-  - Gradient-based optimization efficient for bounded constraints
-  - Respects box constraints [min_weight, max_weight] natively
-  - Converges quickly to local optima
-- **Advantages over iterative heuristic**:
-  - Uses gradient information to navigate constraint landscape
-  - No oscillation between min/max boundaries
-  - Typically achieves zero violations when structurally feasible
-  - 10x faster than iterative approaches
-- **Violation weighting**: Violations weighted 100x higher than distance-to-target in objective
-- **Result tracking**: Marked as "Per-Dimension-Bayesian" in Weight Methods tab
-
-Balanced Peer Average (used in reports)
-
-  - For share: Σ\_p metric\_p × adjusted\_share\_p with adjusted\_share capped by the privacy rule.
-  - For rate: Weighted by adjusted totals to form a balanced peer rate.
-
------
-
-## Structural infeasibility diagnostics
-
-Goal: Determine when constraints cannot be satisfied regardless of m within bounds.
-
-For each (dimension, category, peer):
-
-  - Compute minimal possible adjusted share of peer p if everyone else takes their most favorable bounds:
-      - min\_adj\_share\_p = (min\_w · v\_{p}) / (min\_w · v\_{p} + max\_w · Σ\_{j≠p} v\_{j}).
-  - If min\_adj\_share\_p \> cap + tolerance, the category is structurally infeasible (no feasible m exists).
-
-Outputs
-
-  - Structural Summary tab: Per dimension counts of infeasible categories/peers and worst margins over cap.
-  - Structural Detail tab: Row‑level diagnostics with dimension, category, peer, min\_adj\_share, cap, tolerance, and margin.
-
-Use these to decide whether to merge/re‑bin categories, relax bounds, or exclude specific dimensions from the global set.
-
------
-
-## Excel Report Contents
-
-The tool generates comprehensive Excel workbooks with multiple sheets providing different analytical perspectives. The exact sheets included depend on your analysis mode (share/rate), flags (`--debug`, `--consistent-weights`), and whether you're using time-aware or multi-rate analysis.
-
-### Always Included Sheets
-
-#### 1. Summary Sheet
-
-The Summary sheet provides an overview of your analysis configuration and key findings:
-
-**Basic Information Section:**
-- Analysis type (SHARE ANALYSIS SUMMARY or RATE ANALYSIS SUMMARY)
-- Target entity name (or "PEER-ONLY" if no target specified)
-- Timestamp of analysis
-- Input file path
-- Log level used
-
-**Input Parameters Section:**
-- Entity column used
-- Metric analyzed (for share) or columns used (for rate)
-- BIC percentile(s) applied
-- Debug mode status
-- Consistent weights status  
-- Time column (if time-aware analysis)
-
-**Data Information Section:**
-- Total records processed
-- Unique entities in dataset
-- Peer count (excludes target if specified)
-- Dimensions analyzed (count and names)
-
-**Privacy Rule
+Since both approval and

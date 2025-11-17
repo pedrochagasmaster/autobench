@@ -1,0 +1,38 @@
+version: "3.0"
+preset_name: "slack_aware"
+description: "Only trigger on slack - trust LP but clean up slack violations (Advanced use)"
+
+# Scenario 7: Only Trigger on Slack
+# - Trust LP to find solutions when it fails (go to per-dimension mode)
+# - But if LP uses slack, search for cleaner subset
+# - Unusual but useful for specific scenarios
+
+optimization:
+  bounds:
+    max_weight: 10.0
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 0.5  # Moderate-strict tolerance
+  
+  constraints:
+    volume_preservation: 0.9  # Strong rank preservation
+  
+  subset_search:
+    enabled: false  # Don't search when LP fails
+    strategy: "greedy"
+    max_tests: 200
+    trigger_on_slack: true  # But search when slack is used
+    max_slack_threshold: 0.0  # Any slack triggers search
+    prefer_slacks_first: false
+  
+  bayesian:
+    max_iterations: 100
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true
