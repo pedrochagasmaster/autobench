@@ -1,11 +1,10 @@
 version: "3.0"
-preset_name: "strict_privacy"
-description: "Maximum strictness - zero tolerance for privacy violations (Production use)"
+preset_name: "compliance_strict"
+description: "Regulatory Compliance - Zero tolerance for violations (formerly strict_privacy)"
 
-# Scenario 1: Maximum Strictness
-# - Zero tolerance for privacy cap violations
-# - Always search for cleanest solution
-# - Drop dimensions if needed to maintain strict privacy
+# Intent: "I need a report for the regulator/compliance."
+# Priority: Zero privacy violations.
+# Trade-off: May drop dimensions (calculate them separately), leading to different weights for different parts of the report.
 
 optimization:
   bounds:
@@ -17,12 +16,12 @@ optimization:
     tolerance: 0.0  # Strict - no tolerance for violations
   
   constraints:
-    volume_preservation: 1.0  # Strong rank preservation
+    volume_preservation: 0.95  # High, but allow slight reordering to find solutions
   
   subset_search:
     enabled: true
-    strategy: "random"
-    max_tests: 2000
+    strategy: "greedy"  # Deterministic: remove most unbalanced dimension iteratively
+    max_tests: 200
     trigger_on_slack: true
     max_slack_threshold: 0.0  # Trigger on ANY slack usage
     prefer_slacks_first: false  # Go directly to subset search

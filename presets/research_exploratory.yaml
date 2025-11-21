@@ -1,0 +1,37 @@
+version: "3.0"
+preset_name: "research_exploratory"
+description: "Research - Maximum flexibility for difficult datasets (formerly maximum_flexibility)"
+
+# Intent: "I have a really hard dataset and nothing works."
+# Priority: Finding ANY feasible solution.
+# Trade-off: Lower rank preservation, higher weight bounds.
+
+optimization:
+  bounds:
+    max_weight: 20.0  # Very flexible
+    min_weight: 0.005
+  
+  linear_programming:
+    max_iterations: 1500
+    tolerance: 5.0  # Relaxed tolerance
+  
+  constraints:
+    volume_preservation: 0.5  # Weak rank preservation (allows reordering)
+  
+  subset_search:
+    enabled: true
+    strategy: "random"
+    max_tests: 400
+    trigger_on_slack: false  # Accept slack
+    max_slack_threshold: 0.0
+    prefer_slacks_first: true  # Try relaxing rank preservation first
+  
+  bayesian:
+    max_iterations: 200
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

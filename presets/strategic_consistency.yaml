@@ -1,13 +1,10 @@
 version: "3.0"
-preset_name: "global_with_violations"
-description: "Global weights for all dimensions, minimizing violations via slack variables (no dimension dropping)"
+preset_name: "strategic_consistency"
+description: "Strategic Analysis - Global weights with minimized violations (formerly global_with_violations)"
 
-# Strategy: Global LP with Controlled Violations
-# - Use ONE set of weights across all dimensions
-# - Allow small violations via slack variables (tolerance > 0)
-# - High lambda penalties minimize slack usage
-# - Never drop dimensions (subset_search disabled)
-# - Best for understanding cross-dimensional tradeoffs
+# Intent: "I need a strategic overview and I want consistent numbers."
+# Priority: Global consistency (one set of weights).
+# Trade-off: Will allow privacy violations in specific categories, but minimizes their business impact.
 
 optimization:
   bounds:
@@ -16,10 +13,10 @@ optimization:
   
   linear_programming:
     max_iterations: 100000
-    tolerance: 65.0  # High tolerance to absorb all violations in global LP
+    tolerance: 25.0  # High tolerance to absorb violations, but not infinite
     lambda_penalty: 100000000  # Very high penalty to minimize slack usage
     volume_weighted_penalties: true  # Weight slack penalties by category volume
-    volume_weighting_exponent: 1.0  # 1.0 = linear weighting (higher = stronger emphasis on large categories)
+    volume_weighting_exponent: 1.5  # Strong emphasis on protecting large categories
   
   constraints:
     volume_preservation: 0.95  # Slight relaxation to help global solution

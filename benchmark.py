@@ -115,6 +115,10 @@ EXAMPLES:
     share_parser.add_argument('--metric', required=True,
                              help='Metric column name to analyze (e.g., txn_cnt, tpv, transaction_count, transaction_amount)')
     
+    # Secondary metrics (can specify multiple)
+    share_parser.add_argument('--secondary-metrics', nargs='+',
+                             help='Secondary metric columns to analyze using weights derived from the primary metric (space-separated list)')
+    
     # Optional - Essential
     share_parser.add_argument('--entity',
                              help='Name of the entity to benchmark (omit for peer-only analysis)')
@@ -165,6 +169,10 @@ EXAMPLES:
                             help='Path to CSV input file')
     rate_parser.add_argument('--total-col', required=True,
                             help='Total transactions column (e.g., txn_cnt)')
+    
+    # Secondary metrics (can specify multiple)
+    rate_parser.add_argument('--secondary-metrics', nargs='+',
+                            help='Secondary metric columns (e.g., txn_count) to analyze using weights derived from the total column (space-separated list)')
     
     # Rate type selection (both can be specified for simultaneous analysis)
     rate_parser.add_argument('--approved-col',
@@ -425,6 +433,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
             max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
             time_column=getattr(args, 'time_col', None),
+            volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
+            volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
         )
         
         # Determine dimensions
@@ -458,11 +468,28 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error("No analysis results generated")
             return 1
 
+        # Run secondary analysis if requested
+        secondary_results_df = None
+        secondary_metrics = getattr(args, 'secondary_metrics', None)
+        if secondary_metrics:
+            logger.info(f"\nCalculating balanced metrics for {len(secondary_metrics)} secondary metric(s): {', '.join(secondary_metrics)}")
+            logger.info(f"Using weights calculated from primary metric: {metric_col}")
+            
+            secondary_results_df = get_balanced_metrics_df(
+                df=df,
+                analyzer=analyzer,
+                dimensions=dimensions,
+                metric_col=metric_col,
+                secondary_metrics=secondary_metrics
+            )
+            logger.info(f"Secondary analysis complete. Generated {len(secondary_results_df)} rows of balanced data.")
+
         # Collect metadata for report
         metadata = {
             'entity': args.entity if args.entity else 'PEER-ONLY',
             'analysis_type': 'share',
             'metric': metric_col,
+            'secondary_metrics': secondary_metrics,
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
@@ -566,11 +593,19 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Generate output
         entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
         output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df, privacy_validation_df)
+        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df, privacy_validation_df, secondary_results=secondary_results_df)
         
         # Export balanced CSV if requested
         if getattr(args, 'export_balanced_csv', False):
-            export_balanced_csv(results, output_file, logger, analysis_type='share')
+            export_balanced_csv(
+                results, output_file, logger, 
+                analysis_type='share',
+                df=df,
+                analyzer=analyzer,
+                dimensions=dimensions,
+                metric_col=metric_col,
+                secondary_metrics=secondary_metrics
+            )
         
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
@@ -707,6 +742,8 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
             max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
             time_column=getattr(args, 'time_col', None),
+            volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
+            volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
         )
         
         # Calculate global weights ONCE based on total_col
@@ -721,7 +758,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Analyze each rate type using the SAME weights
         for rate_type in rate_types:
-            logger.info(f"\n{'='*60}")
+            logger.info(f"{'='*60}")
             logger.info(f"Analyzing {rate_type.upper()} RATE")
             logger.info(f"{'='*60}")
             
@@ -758,11 +795,28 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error("No analysis results generated for any rate type")
             return 1
         
+        # Run secondary analysis if requested (Share analysis on the secondary metrics using Rate weights)
+        secondary_results_df = None
+        secondary_metrics = getattr(args, 'secondary_metrics', None)
+        if secondary_metrics:
+            logger.info(f"\nCalculating balanced metrics for {len(secondary_metrics)} secondary metric(s): {', '.join(secondary_metrics)}")
+            logger.info(f"Using weights calculated from total column: {total_col}")
+            
+            secondary_results_df = get_balanced_metrics_df(
+                df=df,
+                analyzer=analyzer,
+                dimensions=dimensions,
+                total_col=total_col,
+                secondary_metrics=secondary_metrics
+            )
+            logger.info(f"Secondary analysis complete. Generated {len(secondary_results_df)} rows of balanced data.")
+
         # Collect common metadata
         metadata = {
             'entity': args.entity or 'PEER-ONLY',
             'analysis_type': 'multi_rate' if len(all_results) > 1 else f'{rate_types[0]}_rate',
             'rate_types': rate_types,
+            'secondary_metrics': secondary_metrics,
             'approved_col': getattr(args, 'approved_col', None),
             'fraud_col': getattr(args, 'fraud_col', None),
             'total_col': total_col,
@@ -860,10 +914,12 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
         # Generate report with all rate types
-        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df, method_breakdown_df)
+        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df, method_breakdown_df, secondary_results=secondary_results_df)
         
         # Export balanced CSV if requested
         if getattr(args, 'export_balanced_csv', False):
+            # Store secondary_metrics in analyzer for export function to access
+            analyzer.secondary_metrics = secondary_metrics
             export_balanced_csv(
                 None, output_file, logger, 
                 analysis_type='rate', 
@@ -906,7 +962,8 @@ def generate_excel_report(
     metadata: Optional[Dict[str, Any]] = None,
     weights_df: Optional[Any] = None,
     method_breakdown_df: Optional[pd.DataFrame] = None,
-    privacy_validation_df: Optional[pd.DataFrame] = None
+    privacy_validation_df: Optional[pd.DataFrame] = None,
+    secondary_results: Optional[Dict[str, Any]] = None
 ) -> None:
     """Generate Excel report with dimensional analysis results."""
     try:
@@ -1014,6 +1071,11 @@ def generate_excel_report(
         if 'metric' in metadata:
             ws_summary[f'A{row}'] = "Metric Analyzed:"
             ws_summary[f'B{row}'] = metadata.get('metric', 'N/A')
+            row += 1
+        
+        if metadata.get('secondary_metrics'):
+            ws_summary[f'A{row}'] = "Secondary Metrics:"
+            ws_summary[f'B{row}'] = ', '.join(metadata.get('secondary_metrics', []))
             row += 1
         
         if 'rate_type' in metadata:
@@ -1144,6 +1206,39 @@ def generate_excel_report(
                 ws.cell(row=r_idx, column=c_idx, value=value)
         
         # Auto-size columns for this dimension sheet
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            ws.column_dimensions[column].width = min(max_length + 2, 50)
+
+    # Create secondary metrics summary sheet if available
+    if secondary_results is not None and isinstance(secondary_results, pd.DataFrame) and not secondary_results.empty:
+        logger.info("Adding Secondary Metrics Summary sheet")
+        ws = wb.create_sheet("Secondary Metrics")
+        
+        ws['A1'] = "Secondary Metrics Summary"
+        ws['A1'].font = Font(bold=True, size=12)
+        ws['A2'] = f"(Using weights from primary metric: {metadata.get('metric', 'N/A')})"
+        ws['A2'].font = Font(italic=True, size=9)
+        
+        # Write headers
+        for c_idx, col_name in enumerate(secondary_results.columns, start=1):
+            cell = ws.cell(row=4, column=c_idx, value=col_name)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        
+        # Write data
+        for r_idx, row_data in enumerate(secondary_results.itertuples(index=False), start=5):
+            for c_idx, value in enumerate(row_data, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
+        
+        # Auto-size columns
         for col in ws.columns:
             max_length = 0
             column = col[0].column_letter
@@ -1391,7 +1486,8 @@ def generate_multi_rate_excel_report(
     numerator_cols: Optional[Dict[str, str]] = None,
     bic_percentiles: Optional[Dict[str, float]] = None,
     privacy_validation_df: Optional[pd.DataFrame] = None,
-    method_breakdown_df: Optional[pd.DataFrame] = None
+    method_breakdown_df: Optional[pd.DataFrame] = None,
+    secondary_results: Optional[Dict[str, Any]] = None
 ) -> None:
     """Generate Excel report with multiple rate types using shared weights.
     
@@ -1476,6 +1572,11 @@ def generate_multi_rate_excel_report(
         ws_summary[f'B{row}'] = f"{bic_percentiles.get(rate_type, 0.85)*100:.0f}th" if bic_percentiles else "85th"
         row += 1
     
+    if metadata.get('secondary_metrics'):
+        ws_summary[f'A{row}'] = "Secondary Metrics:"
+        ws_summary[f'B{row}'] = ', '.join(metadata.get('secondary_metrics', []))
+        row += 1
+
     ws_summary[f'A{row}'] = "Dimensions Analyzed"
     ws_summary[f'B{row}'] = ', '.join(metadata.get('dimension_names', []))
     row += 1
@@ -1511,6 +1612,7 @@ def generate_multi_rate_excel_report(
         ws_summary[f'A{row}'].font = Font(bold=True, color="FF0000")
         row += 1
         ws_summary[f'A{row}'] = "Privacy-constrained weights are calculated ONCE based on the total column."
+       
         row += 1
         ws_summary[f'A{row}'] = "The same weights are applied to both approval and fraud rate calculations,"
         row += 1
@@ -1619,6 +1721,39 @@ def generate_multi_rate_excel_report(
                         pass
                 ws.column_dimensions[column].width = min(max_length + 2, 50)
     
+    # Create secondary metrics summary sheet if available
+    if secondary_results is not None and isinstance(secondary_results, pd.DataFrame) and not secondary_results.empty:
+        logger.info("Adding Secondary Metrics Summary sheet")
+        ws = wb.create_sheet("Secondary Metrics")
+        
+        ws['A1'] = "Secondary Metrics Summary"
+        ws['A1'].font = Font(bold=True, size=12)
+        ws['A2'] = f"(Using weights from total column: {metadata.get('total_col', 'N/A')})"
+        ws['A2'].font = Font(italic=True, size=9)
+        
+        # Write headers
+        for c_idx, col_name in enumerate(secondary_results.columns, start=1):
+            cell = ws.cell(row=4, column=c_idx, value=col_name)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        
+        # Write data
+        for r_idx, row_data in enumerate(secondary_results.itertuples(index=False), start=5):
+            for c_idx, value in enumerate(row_data, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=value)
+        
+        # Auto-size columns
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except Exception:
+                    pass
+            ws.column_dimensions[column].width = min(max_length + 2, 50)
+
     # Add weights tab if available (same for all rate types)
     if weights_df is not None and not weights_df.empty:
         ws_weights = wb.create_sheet("Peer Weights")
@@ -1710,6 +1845,148 @@ def generate_multi_rate_excel_report(
     logger.info(f"Report saved to: {output_file}")
 
 
+def get_balanced_metrics_df(
+    df: pd.DataFrame,
+    analyzer: DimensionalAnalyzer,
+    dimensions: list,
+    metric_col: Optional[str] = None,
+    secondary_metrics: Optional[list] = None,
+    total_col: Optional[str] = None,
+    numerator_cols: Optional[Dict[str, str]] = None
+) -> pd.DataFrame:
+    """
+    Calculate balanced metrics for primary and secondary metrics.
+    Returns a DataFrame with columns: Dimension, Category, [Time], Balanced_{Metric}...
+    """
+    rows = []
+    entity_col = analyzer.entity_column
+    
+    # Get global weights or per-dimension weights
+    def get_weight(dimension: str, peer: str) -> float:
+        """Get weight multiplier for a peer in a dimension."""
+        if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
+            return float(analyzer.per_dimension_weights[dimension][peer])
+        if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
+            return float(analyzer.global_weights[peer].get('multiplier', 1.0))
+        return 1.0
+    
+    # Check if time column is available
+    time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
+    has_time = time_col and time_col in df.columns
+    
+    # Build list of metrics to calculate
+    metrics_to_calculate = []
+    
+    # Share analysis primary metric
+    if metric_col:
+        metrics_to_calculate.append(('Primary', metric_col))
+        
+    # Rate analysis metrics
+    if total_col:
+        metrics_to_calculate.append(('Total', total_col))
+        if numerator_cols:
+            for key, col in numerator_cols.items():
+                if col in df.columns:
+                    metrics_to_calculate.append((f'Approval_{key.capitalize()}' if key == 'approval' else f'Fraud_{key.capitalize()}' if key == 'fraud' else key.capitalize(), col))
+
+    # Secondary metrics
+    if secondary_metrics:
+        for sec_metric in secondary_metrics:
+            if sec_metric in df.columns:
+                metrics_to_calculate.append(('Secondary', sec_metric))
+    
+    # Process each dimension
+    for dimension in dimensions:
+        # Aggregate data by entity, dimension category, and optionally time
+        group_cols = [entity_col, dimension]
+        if has_time:
+            group_cols.append(time_col)
+        
+        # Build aggregation dict
+        agg_dict = {}
+        for _, metric in metrics_to_calculate:
+            if metric in df.columns:
+                agg_dict[metric] = 'sum'
+        
+        if not agg_dict:
+            continue
+            
+        entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
+        
+        # Get unique categories
+        categories = entity_dim_agg[dimension].unique()
+        
+        # Get unique time periods if applicable
+        time_periods = sorted(entity_dim_agg[time_col].unique()) if has_time else [None]
+        
+        for category in categories:
+            for time_period in time_periods:
+                # Filter to this category (and time period if applicable)
+                if has_time:
+                    cat_df = entity_dim_agg[
+                        (entity_dim_agg[dimension] == category) & 
+                        (entity_dim_agg[time_col] == time_period)
+                    ]
+                else:
+                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                
+                if cat_df.empty:
+                    continue
+                
+                # Build row data
+                row_data = {
+                    'Dimension': dimension,
+                    'Category': category,
+                }
+                
+                # Add time period if applicable
+                if has_time:
+                    row_data[time_col] = time_period
+                
+                # Calculate balanced metric for each metric column
+                for metric_type, metric in metrics_to_calculate:
+                    if metric not in cat_df.columns:
+                        continue
+                        
+                    balanced_metric = 0.0
+                    for _, row in cat_df.iterrows():
+                        peer = row[entity_col]
+                        weight = get_weight(dimension, peer)
+                        balanced_metric += row[metric] * weight
+                    
+                    # Column name based on metric type
+                    if metric_type == 'Primary':
+                        col_name = f'Balanced_{metric}'
+                    elif metric_type == 'Total':
+                        col_name = 'Balanced_Total'
+                    elif metric_type.startswith('Approval'):
+                        col_name = 'Balanced_Approval_Total' # Standardize name for rate analysis
+                    elif metric_type.startswith('Fraud'):
+                        col_name = 'Balanced_Fraud_Total' # Standardize name for rate analysis
+                    elif metric_type == 'Secondary':
+                        col_name = metric
+                    else:
+                        col_name = f'Balanced_{metric}'
+                        
+                    row_data[col_name] = round(balanced_metric, 2)
+                
+                rows.append(row_data)
+    
+    if not rows:
+        return pd.DataFrame()
+    
+    # Create DataFrame
+    result_df = pd.DataFrame(rows)
+    
+    # Sort by Dimension, Time (if present), then Category
+    sort_cols = ['Dimension']
+    if has_time and time_col in result_df.columns:
+        sort_cols.append(time_col)
+    sort_cols.append('Category')
+    
+    return result_df.sort_values(sort_cols)
+
+
 def export_balanced_csv(
     results: Optional[Dict[str, pd.DataFrame]], 
     output_file: str, 
@@ -1720,15 +1997,18 @@ def export_balanced_csv(
     analyzer: Optional[Any] = None,
     dimensions: Optional[list] = None,
     total_col: Optional[str] = None,
-    numerator_cols: Optional[Dict[str, str]] = None
+    numerator_cols: Optional[Dict[str, str]] = None,
+    metric_col: Optional[str] = None,
+    secondary_metrics: Optional[list] = None
 ) -> None:
     """
-    Export balanced totals to CSV in concatenated dimension format.
+    Export balanced metrics to CSV in concatenated dimension format.
     
     For rate analysis: exports dimension, category, balanced_total, balanced_approval_total, balanced_fraud_total
     The balanced totals are weighted sums: sum(peer_value * weight) across all peers
     
-    For share analysis: exports dimension, category, and balanced volumes
+    For share analysis: exports dimension, category, balanced metric values (for primary and secondary metrics)
+    The balanced metrics are weighted sums: sum(peer_metric_value * weight) across all peers
     
     Args:
         results: Results dictionary for share analysis (dimension -> DataFrame)
@@ -1741,6 +2021,8 @@ def export_balanced_csv(
         dimensions: List of dimensions analyzed
         total_col: Total column name (for rate analysis)
         numerator_cols: Dict mapping rate_type to numerator column name
+        metric_col: Primary metric column name (for share analysis)
+        secondary_metrics: List of secondary metric columns (for share analysis)
     """
     # Create CSV filename from Excel filename
     csv_output = output_file.rsplit('.', 1)[0] + '_balanced.csv'
@@ -1765,6 +2047,9 @@ def export_balanced_csv(
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
         has_time = time_col and time_col in df.columns
         
+        # Get secondary metrics from caller
+        secondary_metrics_list = getattr(analyzer, 'secondary_metrics', None)
+        
         # Process each dimension
         for dimension in dimensions:
             # Aggregate data by entity, dimension category, and optionally time
@@ -1779,6 +2064,12 @@ def export_balanced_csv(
                 for num_col in numerator_cols.values():
                     if num_col in df.columns:
                         agg_dict[num_col] = 'sum'
+            
+            # Add secondary metrics
+            if secondary_metrics_list:
+                for sec_metric in secondary_metrics_list:
+                    if sec_metric in df.columns:
+                        agg_dict[sec_metric] = 'sum'
             
             entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
             
@@ -1806,6 +2097,13 @@ def export_balanced_csv(
                     balanced_total = 0.0
                     balanced_approval = 0.0
                     balanced_fraud = 0.0
+                    secondary_balanced = {}
+                    
+                    # Initialize secondary metrics dict
+                    if secondary_metrics_list:
+                        for sec_metric in secondary_metrics_list:
+                            if sec_metric in cat_df.columns:
+                                secondary_balanced[sec_metric] = 0.0
                     
                     for _, row in cat_df.iterrows():
                         peer = row[entity_col]
@@ -1815,16 +2113,19 @@ def export_balanced_csv(
                         balanced_total += row[total_col] * weight
                         
                         # Weighted approval numerator
-                        if numerator_cols and 'approval' in numerator_cols:
-                            approval_col = numerator_cols['approval']
+                        if approval_col := numerator_cols.get('approval'):
                             if approval_col in row.index:
                                 balanced_approval += row[approval_col] * weight
                         
                         # Weighted fraud numerator  
-                        if numerator_cols and 'fraud' in numerator_cols:
-                            fraud_col = numerator_cols['fraud']
+                        if fraud_col := numerator_cols.get('fraud'):
                             if fraud_col in row.index:
                                 balanced_fraud += row[fraud_col] * weight
+                        
+                        # Weighted secondary metrics
+                        for sec_metric in secondary_balanced.keys():
+                            if sec_metric in row.index:
+                                secondary_balanced[sec_metric] += row[sec_metric] * weight
                     
                     # Add row to export
                     row_data = {
@@ -1841,6 +2142,10 @@ def export_balanced_csv(
                         'Balanced_Approval_Total': round(balanced_approval, 2) if balanced_approval > 0 else None,
                         'Balanced_Fraud_Total': round(balanced_fraud, 2) if balanced_fraud > 0 else None
                     })
+                    
+                    # Add secondary metrics to row
+                    for sec_metric, sec_value in secondary_balanced.items():
+                        row_data[sec_metric] = round(sec_value, 2)
                     
                     export_rows.append(row_data)
         
@@ -1862,34 +2167,99 @@ def export_balanced_csv(
         logger.info(f"Balanced rate data CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")
         
-    elif analysis_type == 'share' and results:
-        # Share analysis: export dimension, category, and balanced metric
+    elif analysis_type == 'share' and results and df is not None and analyzer is not None:
+        # Share analysis: calculate balanced metrics for each dimension-category
         export_rows = []
         
-        for dimension, dim_df in results.items():
-            if dim_df is None or dim_df.empty:
-                continue
+        # Get entity column and weights
+        entity_col = analyzer.entity_column
+        
+        # Get global weights or per-dimension weights
+        def get_weight(dimension: str, peer: str) -> float:
+            """Get weight multiplier for a peer in a dimension."""
+            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
+                return float(analyzer.per_dimension_weights[dimension][peer])
+            if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
+                return float(analyzer.global_weights[peer].get('multiplier', 1.0))
+            return 1.0
+        
+        # Check if time column is available
+        time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
+        has_time = time_col and time_col in df.columns
+        
+        # Build list of metrics to calculate (primary + secondary)
+        metrics_to_calculate = []
+        if metric_col:
+            metrics_to_calculate.append(('Primary', metric_col))
+        if secondary_metrics:
+            for sec_metric in secondary_metrics:
+                if sec_metric in df.columns:
+                    metrics_to_calculate.append(('Secondary', sec_metric))
+        
+        # Process each dimension
+        for dimension in dimensions:
+            # Aggregate data by entity, dimension category, and optionally time
+            group_cols = [entity_col, dimension]
+            if has_time:
+                group_cols.append(time_col)
             
-            categories = dim_df['Category'].unique() if 'Category' in dim_df.columns else []
+            # Build aggregation dict for all metrics
+            agg_dict = {}
+            for _, metric in metrics_to_calculate:
+                if metric in df.columns:
+                    agg_dict[metric] = 'sum'
+            
+            if not agg_dict:
+                continue
+                
+            entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
+            
+            # Get unique categories
+            categories = entity_dim_agg[dimension].unique()
+            
+            # Get unique time periods if applicable
+            time_periods = sorted(entity_dim_agg[time_col].unique()) if has_time else [None]
             
             for category in categories:
-                category_rows = dim_df[dim_df['Category'] == category]
-                if category_rows.empty:
-                    continue
-                
-                row_data = {
-                    'Dimension': dimension,
-                    'Category': category,
-                    'Balanced_Metric': None
-                }
-                
-                # Get balanced metric value
-                if 'Peer_Balanced_Avg' in category_rows.columns:
-                    row_data['Balanced_Metric'] = category_rows.iloc[0]['Peer_Balanced_Avg']
-                elif 'Peer_Metric' in category_rows.columns:
-                    row_data['Balanced_Metric'] = category_rows.iloc[0]['Peer_Metric']
-                
-                export_rows.append(row_data)
+                for time_period in time_periods:
+                    # Filter to this category (and time period if applicable)
+                    if has_time:
+                        cat_df = entity_dim_agg[
+                            (entity_dim_agg[dimension] == category) & 
+                            (entity_dim_agg[time_col] == time_period)
+                        ]
+                    else:
+                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    
+                    if cat_df.empty:
+                        continue
+                    
+                    # Build row data
+                    row_data = {
+                        'Dimension': dimension,
+                        'Category': category,
+                    }
+                    
+                    # Add time period if applicable
+                    if has_time:
+                        row_data[time_col] = time_period
+                    
+                    # Calculate balanced metric for each metric column
+                    for metric_type, metric in metrics_to_calculate:
+                        if metric not in cat_df.columns:
+                            continue
+                        
+                        balanced_metric = 0.0
+                        for _, row in cat_df.iterrows():
+                            peer = row[entity_col]
+                            weight = get_weight(dimension, peer)
+                            balanced_metric += row[metric] * weight
+                        
+                        # Column name based on metric type
+                        col_name = f'Balanced_{metric}' if metric_type == 'Primary' else metric
+                        row_data[col_name] = round(balanced_metric, 2)
+                    
+                    export_rows.append(row_data)
         
         if not export_rows:
             logger.warning("No data to export for share analysis CSV")
@@ -1897,9 +2267,16 @@ def export_balanced_csv(
         
         # Create DataFrame and export
         export_df = pd.DataFrame(export_rows)
-        export_df = export_df.sort_values(['Dimension', 'Category'])
+        
+        # Sort by Dimension, Time (if present), then Category
+        sort_cols = ['Dimension']
+        if has_time and time_col in export_df.columns:
+            sort_cols.append(time_col)
+        sort_cols.append('Category')
+        
+        export_df = export_df.sort_values(sort_cols)
         export_df.to_csv(csv_output, index=False)
-        logger.info(f"Balanced share data CSV exported to: {csv_output}")
+        logger.info(f"Balanced share metrics CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")
     
     else:
