@@ -24,7 +24,7 @@ optimization:
     strategy: "random"  # More thorough search
     max_tests: 300
     trigger_on_slack: true
-    max_slack_threshold: 0.0
+    max_slack_threshold: 0.004
     prefer_slacks_first: true  # Try relaxing rank preservation first
   
   bayesian:

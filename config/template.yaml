@@ -61,6 +61,15 @@ optimization:
     # Tolerance for privacy violations (percentage points)
     # Higher tolerance = more flexibility, less strict privacy
     tolerance: 1.0
+    
+    # Volume-weighted slack penalties
+    # When true, violations in high-volume categories are penalized more heavily
+    # This minimizes violations where they have the most business impact
+    volume_weighted_penalties: false
+    
+    # Exponent for volume weighting (only used if volume_weighted_penalties=true)
+    # 1.0 = linear weighting, 2.0 = quadratic (stronger emphasis on large volumes)
+    volume_weighting_exponent: 1.0
   
   # Weight bounds
   bounds:
@@ -101,7 +110,6 @@ optimization:
     # If true: Search for better solution when LP succeeds but violates max_slack_threshold
     # If false: Accept LP solution even if it uses slack
     # Note: This is INDEPENDENT of 'enabled' - controls different trigger condition
-    #       See SUBSET_SEARCH_SCENARIOS.md for complete decision tree
     trigger_on_slack: true
     
     # Maximum slack threshold (in percentage points)

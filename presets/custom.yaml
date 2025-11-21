@@ -14,18 +14,18 @@ optimization:
   
   linear_programming:
     max_iterations: 1000
-    tolerance: 0.0  # Strict - no tolerance for violations
-  
+    tolerance: 0.0
+
   constraints:
-    volume_preservation: 1.0  # Strong rank preservation
+    volume_preservation: 0.8  # Strong rank preservation
   
   subset_search:
     enabled: true
     strategy: "random"
     max_tests: 2000
     trigger_on_slack: true
-    max_slack_threshold: 0.0  # Trigger on ANY slack usage
-    prefer_slacks_first: false  # Go directly to subset search
+    max_slack_threshold: 0.01
+    prefer_slacks_first: True 
   
   bayesian:
     max_iterations: 100

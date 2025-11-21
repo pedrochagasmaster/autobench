@@ -62,6 +62,7 @@ All weight calculations tracked in Weight Methods tab with exact method used:
 - **Config Subcommand**: `benchmark config list|show|validate|generate` for exploring and managing configurations
 - **Auto-Determined Privacy Rules**: Privacy caps (4/35, 5/25, 6/30, 7/35, 10/40) automatically determined from peer count
 - **Enhanced Maintainability**: Clean separation between business logic and configuration
+- **Volume-Weighted Penalties**: NEW optimization feature that prioritizes compliance in high-volume categories while accepting violations in low-impact categories
 
 **Version 2.1 Features:**
 - **Peer-only mode**: Analyze peer distributions and market structure without specifying a target entity
@@ -108,6 +109,7 @@ This is the actively maintained v3 CLI. Legacy notebooks and experimental script
 4. **Config Management Commands**: New `config` subcommand for listing, viewing, validating, and generating configurations
 5. **Auto-Determined Privacy Rules**: Privacy caps now automatically determined from peer count (no longer configurable)
 6. **Configuration Hierarchy**: Clean precedence: Defaults → Preset → Custom Config → CLI Args
+7. **Volume-Weighted Penalties**: NEW optimization feature that weights slack penalties by category volume, minimizing violations where business impact is highest
 
 **Benefits:**
 - **Simpler Commands**: Essential params on CLI, tuning in reusable config files
@@ -203,7 +205,7 @@ These essential parameters remain as CLI flags in v3.0:
 
 - Data source: `--csv`, `--entity`, `--entity-col`
 - Dimensions: `--auto`, `--dimensions`
-- Metrics: `--metric` (share), `--total-col`, `--approved-col`, `--fraud-col` (rate)
+- Metrics: `--metric` (share), `--total-col`, `--approved-col`, `--fraud-col` (rate), `--secondary-metrics`
 - Analysis control: `--consistent-weights`, `--time-col`
 - Output: `--output`, `--debug`, `--log-level`
 - Configuration: `--preset`, `--config`
@@ -255,6 +257,18 @@ py benchmark.py config generate --output my_config.yaml
 **Peer-Only Mode**: Analyze market structure and peer distributions without comparing to a specific target entity
 - Useful for landscape analysis, market sizing, and understanding competitive dynamics
 - All entities treated as peers with no target-specific comparisons
+
+**Secondary Metrics**: Analyze additional metrics using the same privacy-constrained weights derived from the primary metric
+- Efficiently analyze multiple metrics (e.g., transaction count AND amount) without recalculating weights
+- Ensures consistency across all metrics in the analysis
+- Output includes a dedicated summary sheet for all secondary metrics
+- Available for both Share and Rate analysis modes
+
+**Secondary Metrics**: Analyze additional metrics using the same privacy-constrained weights derived from the primary metric
+- Efficiently analyze multiple metrics (e.g., transaction count AND amount) without recalculating weights
+- Ensures consistency across all metrics in the analysis
+- Output includes a dedicated summary sheet for all secondary metrics
+- Available for both Share and Rate analysis modes
 
 ### Privacy Compliance
 
@@ -338,6 +352,62 @@ Minimizes squared violations while staying close to target weights
 - Total monthly volumes (privacy rule for each month)
 - Monthly category volumes (privacy rule for each month-dimension-category combination)
 - Same peer weights satisfy all temporal and categorical constraints
+
+#### Volume-Weighted Slack Penalties (NEW in v3.0)
+
+**Purpose**: Prioritize privacy compliance in high-volume categories while accepting violations in low-volume categories where business impact is minimal.
+
+**How It Works**:
+- **Traditional approach**: All slack penalties are uniform (`lambda = 100/tolerance` for every constraint)
+- **Volume-weighted approach**: Penalty for each constraint is proportional to that category's total volume
+- **Formula**: `penalty[category, peer] = base_lambda × (category_volume / total_volume) ^ exponent`
+- **Effect**: Optimizer works harder to avoid violations in high-volume categories, accepts violations in low-volume categories
+
+**Configuration**:
+```yaml
+optimization:
+  linear_programming:
+    tolerance: 65.0  # Allow violations
+    volume_weighted_penalties: true  # Enable volume-weighting
+    volume_weighting_exponent: 1.0  # Linear weighting (recommended)
+```
+
+**Exponent Tuning**:
+- **0.5** (square root): Gentle emphasis on large volumes
+- **1.0** (linear): Proportional to volume (recommended default)
+- **1.5**: Stronger emphasis on large volumes
+- **2.0** (quadratic): Very strong emphasis on large volumes
+
+**When to Use**:
+1. **Global weights are essential**: You want ONE set of weights across all dimensions (no dimension dropping)
+2. **Privacy is structurally infeasible**: Some violations are unavoidable even with high tolerance
+3. **Business impact varies**: Violations in small-volume categories don't matter much
+4. **Smart trade-offs needed**: You want to minimize total business impact, not just violation count
+
+**Example Impact** (Fort Brasil dataset, 9 dimensions, 7 peers):
+
+*Without volume-weighting (uniform penalties)*:
+- REALIZE: multiplier=0.5663 (small-volume peer gets moderate weight)
+- BRADESCARD: multiplier=0.2538 (large-volume peer heavily downweighted)
+- Result: Violations spread across all volume ranges
+
+*With volume-weighting (exponent=1.0)*:
+- REALIZE: multiplier=0.4228 (↓25%, small peer further downweighted)
+- BRADESCARD: multiplier=0.3956 (↑56%, large peer gets more weight)
+- Result: High-volume categories have near-perfect compliance, violations concentrated in low-volume categories
+
+**Trade-offs**:
+- ✅ **Pro**: Violations occur where they matter least (small volume categories)
+- ✅ **Pro**: Global weights retained across all dimensions
+- ✅ **Pro**: Total business impact of violations is minimized
+- ⚠️ **Con**: Some categories may have larger violations in percentage terms
+- ⚠️ **Con**: Not suitable if all categories are equally important regardless of volume
+
+**Available Presets**:
+- `global_with_violations`: Has volume-weighting **enabled** by default
+- All other presets: Volume-weighting **disabled** by default (backwards compatible)
+
+**Documentation**: See `VOLUME_WEIGHTED_PENALTIES.md` for detailed implementation notes and testing results.
 
 ### Transparency and Diagnostics
 
@@ -632,7 +702,7 @@ After installation, verify everything works:
 python benchmark.py --help
 
 # List available presets
-python benchmark.py presets
+python benchmark.py config list
 
 # View share analysis help
 python benchmark.py share --help
@@ -833,16 +903,6 @@ BANCO SANTANDER,Domestic,DEBIT,200000,186000,372
 BANCO SANTANDER,International,CREDIT,15000,12000,78
 ITAU UNIBANCO,Domestic,CREDIT,180000,162000,540
 ITAU UNIBANCO,Domestic,DEBIT,250000,235000,475
-```
-
-**Time-Series Example (CSV):**
-```csv
-issuer_name,ano_mes,flag_domestic,card_type,transaction_count
-BANCO SANTANDER,2024-01,Domestic,CREDIT,40000
-BANCO SANTANDER,2024-02,Domestic,CREDIT,42000
-BANCO SANTANDER,2024-03,Domestic,CREDIT,43000
-BANCO SANTANDER,2024-01,Domestic,DEBIT,65000
-BANCO SANTANDER,2024-02,Domestic,DEBIT,67000
 ```
 
 ### Data Quality Requirements
@@ -1052,7 +1112,14 @@ py benchmark.py rate `
 - Shared privacy-compliant weights ensure consistency
 - Approval metrics in green, fraud metrics in orange (color-coded headers)
 
-**Key advantage**: Efficient single-pass analysis with consistent privacy weighting.
+**Rationale:**
+Since both approval and
+ fraud rates share the same denominator (total transactions), using one set of privacy-constrained weights ensures fairness and consistency.
+
+**Example:**
+`powershell
+py benchmark.py rate --csv data.csv --total-col txn_cnt --approved-col app_cnt --fraud-col fraud_cnt --dimensions dim1 dim2 dim3 --preset standard --output multi_rate_report.xlsx
+`
 
 ---
 
@@ -1142,13 +1209,7 @@ py benchmark.py config generate --output my_config.yaml
 **Step 2: Edit the YAML file** with your desired settings (e.g., max_weight=7.0, tolerance=1.5)
 
 **Step 3: Run analysis with custom config**
-```powershell
-py benchmark.py share `
-  --csv data\transactions_q1.csv `
-  --entity "BANCO SANTANDER" `
-  --metric transaction_count `
-  --dimensions flag_domestic cp_cnp card_type `
-  --config my_config.yaml `
+```
   --output reports\santander_q1_analysis.xlsx `
   --debug
 ```
@@ -1186,6 +1247,7 @@ optimization:
     max_tests: 500
     trigger_on_slack: true
     max_slack_threshold: 0.0
+    prefer_slacks_first: false
 ```
 
 **Command:**
@@ -1661,7 +1723,7 @@ py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimens
 
 Applied cap is a function of peer count:
 
-  - **With target entity**: Peer count = unique entities - 1 (excludes target)
+  - **With target entity**: Peer count = unique entities -  1 (excludes target)
   - **Peer-only mode**: Peer count = unique entities (all are peers)
 
 Cap thresholds by peer count:
@@ -1729,3 +1791,29 @@ Analyze both approval and fraud rates simultaneously by specifying both `--appro
 
 **Rationale:**
 Since both approval and
+ fraud rates share the same denominator (total transactions), using one set of privacy-constrained weights ensures fairness and consistency.
+
+**Example:**
+`powershell
+py benchmark.py rate --csv data.csv --total-col txn_cnt --approved-col app_cnt --fraud-col fraud_cnt --dimensions dim1 dim2 dim3 --preset standard --output multi_rate_report.xlsx
+`
+
+---
+
+## Additional Documentation
+
+**Core Documentation:**
+- README.md (this file): Complete user guide and reference
+- VOLUME_WEIGHTED_PENALTIES.md: Detailed documentation on volume-weighted slack penalties optimization feature
+
+**Configuration:**
+- config/template.yaml: Template configuration file with all settings documented
+- presets/*.yaml: Pre-configured analysis scenarios
+
+**Legacy/Archive:**
+- old/: Legacy notebooks and experimental scripts (not actively maintained)
+
+**For Developers:**
+- Source code is extensively commented
+- Key modules: core/dimensional_analyzer.py, core/privacy_validator.py, core/report_generator.py
+- Configuration system: utils/config_manager.py, utils/preset_manager.py

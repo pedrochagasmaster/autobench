@@ -1,0 +1,43 @@
+version: "3.0"
+preset_name: "global_with_violations"
+description: "Global weights for all dimensions, minimizing violations via slack variables (no dimension dropping)"
+
+# Strategy: Global LP with Controlled Violations
+# - Use ONE set of weights across all dimensions
+# - Allow small violations via slack variables (tolerance > 0)
+# - High lambda penalties minimize slack usage
+# - Never drop dimensions (subset_search disabled)
+# - Best for understanding cross-dimensional tradeoffs
+
+optimization:
+  bounds:
+    max_weight: 15.0  # Flexibility to find global solution
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 100000
+    tolerance: 65.0  # High tolerance to absorb all violations in global LP
+    lambda_penalty: 100000000  # Very high penalty to minimize slack usage
+    volume_weighted_penalties: true  # Weight slack penalties by category volume
+    volume_weighting_exponent: 1.0  # 1.0 = linear weighting (higher = stronger emphasis on large categories)
+  
+  constraints:
+    volume_preservation: 0.95  # Slight relaxation to help global solution
+  
+  subset_search:
+    enabled: false  # CRITICAL: Never drop dimensions
+    strategy: "greedy"
+    max_tests: 0
+    trigger_on_slack: false  # CRITICAL: Don't drop even if slack occurs
+    max_slack_threshold: 999.0  # Effectively disabled
+    prefer_slacks_first: false
+  
+  bayesian:
+    max_iterations: 150
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

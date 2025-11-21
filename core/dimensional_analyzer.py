@@ -54,6 +54,9 @@ class DimensionalAnalyzer:
         trigger_subset_on_slack: bool = True,
         max_cap_slack: float = 0.0,
         time_column: Optional[str] = None,
+        # Volume-weighted penalties
+        volume_weighted_penalties: bool = False,
+        volume_weighting_exponent: float = 1.0,
     ):
         """
         Initialize dimensional analyzer.
@@ -96,6 +99,10 @@ class DimensionalAnalyzer:
         time_column : Optional[str]
             Name of the time column for time-aware consistency. When provided with consistent_weights=True,
             ensures weights are consistent across all time periods and all time-category combinations.
+        volume_weighted_penalties : bool
+            If True, weight slack penalties by category volume (higher penalties for high-volume categories)
+        volume_weighting_exponent : float
+            Exponent for volume weighting: penalty ∝ volume^exponent (default: 1.0 = linear)
         """
         self.target_entity = target_entity
         self.entity_column = entity_column
@@ -128,6 +135,9 @@ class DimensionalAnalyzer:
         self.trigger_subset_on_slack: bool = bool(trigger_subset_on_slack)
         self.max_cap_slack: float = float(max_cap_slack)
         self.time_column: Optional[str] = time_column
+        # Volume-weighted penalties
+        self.volume_weighted_penalties: bool = bool(volume_weighted_penalties)
+        self.volume_weighting_exponent: float = float(volume_weighting_exponent)
         self.slack_subset_triggered: bool = False
         # Structural diagnostics placeholders
         self.structural_detail_df: pd.DataFrame = pd.DataFrame()
@@ -141,6 +151,8 @@ class DimensionalAnalyzer:
             logger.info("Debug mode enabled - will include unweighted averages and weights tracking")
         if consistent_weights:
             logger.info("Consistent weights mode enabled - same privacy-constrained weights across all dimensions")
+            if self.volume_weighted_penalties:
+                logger.info(f"Volume-weighted penalties ENABLED - violations in high-volume categories penalized more heavily (exponent={self.volume_weighting_exponent})")
             logger.info(
                 "Weight parameters: max_iterations=%s, tolerance=%s%%, "
                 "max_weight=%sx, min_weight=%sx, rank_preservation=%s",
@@ -240,12 +252,38 @@ class DimensionalAnalyzer:
         # Objective: minimize sum_p (t_plus_p + t_minus_p) + lambda_cap * sum s_cap + lambda_rank * sum s_rank
         lambda_rank = float(self.rank_preservation_strength)
         # Penalty for cap slacks: scale by inverse of tolerance so higher tolerance allows more slack
-        lambda_cap = float(100.0 / max(self.tolerance, 1e-6))
+        base_lambda_cap = float(100.0 / max(self.tolerance, 1e-6))
+        
+        # Calculate volume-weighted slack penalties if enabled
+        if self.volume_weighted_penalties:
+            # Calculate category volumes
+            category_volumes = []
+            for v in cat_vectors:
+                cat_vol = float(np.dot(v, peer_vol_arr))
+                category_volumes.append(cat_vol)
+            
+            total_category_vol = sum(category_volumes)
+            
+            # Build volume-weighted penalties for each constraint
+            slack_penalties = []
+            for cat_idx, cat_vol in enumerate(category_volumes):
+                # Volume weight: (volume / total_volume) ^ exponent
+                vol_weight = (cat_vol / total_category_vol) ** self.volume_weighting_exponent if total_category_vol > 0 else 1.0
+                # Apply volume weight to base penalty for all peers in this category
+                for p_idx in range(P):
+                    penalty = base_lambda_cap * vol_weight
+                    slack_penalties.append(penalty)
+            
+            slack_penalty_array = np.array(slack_penalties, dtype=float)
+        else:
+            # Uniform penalties (original behavior)
+            slack_penalty_array = np.full(num_cap_constraints, base_lambda_cap, dtype=float)
+        
         c = np.concatenate([
             np.zeros(P, dtype=float),                              # m
             np.ones(P, dtype=float),                               # t_plus
             np.ones(P, dtype=float),                               # t_minus
-            np.full(num_cap_constraints, lambda_cap, dtype=float), # s_cap
+            slack_penalty_array,                                   # s_cap (volume-weighted if enabled)
             np.full(K, lambda_rank, dtype=float)                   # s_rank
         ])
 
@@ -344,7 +382,9 @@ class DimensionalAnalyzer:
         sum_slack_pct = (sum_slack_abs / total_category_volume * 100.0) if total_category_volume > 0 else 0.0
         
         if s_cap_used.size > 0:
-            logger.info(f"LP used cap slacks: max={max_slack_pct:.4f}%, sum={sum_slack_pct:.4f}% (penalized with lambda={lambda_cap:.2f})")
+            # Report the base lambda (or average if volume-weighted)
+            avg_lambda = base_lambda_cap if not self.volume_weighted_penalties else float(slack_penalty_array.mean())
+            logger.info(f"LP used cap slacks: max={max_slack_pct:.4f}%, sum={sum_slack_pct:.4f}% (penalized with lambda={avg_lambda:.2f})")
         
         # Save stats for reporting (store both absolute and percentage)
         self.last_lp_stats = {
@@ -353,7 +393,8 @@ class DimensionalAnalyzer:
             'sum_slack': sum_slack_pct,  # Now in percentage
             'max_slack_abs': max_slack_abs,  # Keep absolute for debugging
             'sum_slack_abs': sum_slack_abs,  # Keep absolute for debugging
-            'lambda_cap': lambda_cap,
+            'lambda_cap': base_lambda_cap,  # Base penalty (before volume weighting)
+            'volume_weighted': self.volume_weighted_penalties,
             'num_vars': n_vars,
             'num_constraints': len(b_ub),
             'num_categories': len(cat_vectors),
