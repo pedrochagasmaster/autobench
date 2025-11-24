@@ -168,7 +168,7 @@ Recommended workflow when using `--export-balanced-csv`:
      --dimensions flag_recurring fl_token poi \
      --time-col year_month \
      --export-balanced-csv \
-     --preset strict_privacy \
+     --preset compliance_strict \
      --output report.xlsx
    ```
 

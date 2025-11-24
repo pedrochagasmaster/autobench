@@ -6,7 +6,7 @@
 
 The Privacy-Compliant Peer Benchmark Tool is a sophisticated dimensional analysis system designed to compare financial entities (banks, issuers, merchants) against their peer groups while strictly enforcing Mastercard privacy compliance rules (Control 3.2). The tool enables you to understand how a target entity performs across multiple business dimensions without compromising the confidentiality of individual peer performance.
 
-**Features**: Configuration-driven architecture with YAML presets for simplified command-line usage and reusable analysis configurations.
+**Primary Interface**: An interactive Terminal User Interface (TUI) for easy configuration and execution.
 
 ### Business Value
 
@@ -52,13 +52,41 @@ All weight calculations tracked in Weight Methods tab with exact method used:
 
 ## Table of Contents
 
+- [Quick Start (TUI)](#quick-start-tui)
+- [Using the TUI](#using-the-tui)
 - [Core Features](#core-features)
 - [Understanding the Analysis Types](#understanding-the-analysis-types)
-- [Installation](#installation)
-- [Quick Start Guide](#quick-start-guide)
+- [Peer-Only Mode](#peer-only-mode-market-landscape-analysis)
+- [Secondary Metrics](#secondary-metrics-analysis)
 - [Input Data Requirements](#input-data-requirements)
-- [Command-Line Interface](#command-line-interface)
+- [Developer & Debug CLI](#developer--debug-cli)
+- [Configuration Management](#configuration-management)
 - [Additional Documentation](#additional-documentation)
+
+
+---
+
+## Using the tool
+
+The UI provides a user-friendly way to configure and run analyses without remembering complex command-line arguments.
+
+### Configuration Section
+*   **Select CSV**: Opens a file browser to navigate and select your input dataset.
+*   **Entity Name**: The exact name of the target entity as it appears in your data (case-sensitive).
+*   **Entity Column**: The column name identifying entities (default: `issuer_name`).
+*   **Preset**: Choose a pre-defined configuration (see [Choosing the Right Preset](#choosing-the-right-preset)).
+
+### Analysis Tabs
+*   **Share Analysis**:
+    *   **Primary Metric**: The main volume column to analyze (e.g., `txn_cnt`, `tpv`).
+    *   **Secondary Metrics**: Additional metrics to analyze using the same weights.
+*   **Rate Analysis**:
+    *   **Total Column**: The denominator (e.g., `txn_cnt`).
+    *   **Approved/Fraud Column**: The numerator(s) for rate calculation.
+
+### Execution
+*   **Run Analysis**: Starts the processing in a background thread.
+*   **Execution Log**: Displays real-time progress, validation warnings, and results.
 
 ---
 
@@ -335,7 +363,7 @@ Analyze both approval and fraud rates simultaneously by specifying both `--appro
   - Fraud columns: `Fraud_Entity_Rate`, `Fraud_Peer_Avg`, `Fraud_Peer_BIC`, `Fraud_Gap`
   - Color-coded headers: Green for approval metrics, orange for fraud metrics
 
-### Peer-Only Mode: Market Landscape Analysis
+## Peer-Only Mode: Market Landscape Analysis
 
 Peer-only mode analyzes the collective peer group without comparing to a specific target entity. It answers questions like:
 - "How is transaction volume distributed across peers in each category?"
@@ -364,7 +392,7 @@ Peer-only mode analyzes the collective peer group without comparing to a specifi
 - No target columns in output: `target_share`, `target_rate`, `target_rank`, `delta`
 - All dimensional analysis focuses on peer distributions only
 
-### Secondary Metrics Analysis
+## Secondary Metrics Analysis
 
 Secondary metrics allow you to analyze additional metrics using the same privacy-constrained weights derived from the primary metric.
 
@@ -573,240 +601,9 @@ ITAU UNIBANCO,Domestic,DEBIT,250000,235000,475
 
 ---
 
-## Quick Start Guide
 
-This section provides practical examples to get you started quickly. All examples use Windows PowerShell syntax, but they work on macOS/Linux with minor path adjustments (`\` → `/`).
 
-### Basic Commands
 
-**Note on Python Launcher**: These examples use `py` (Windows Python Launcher) which automatically uses the correct Python version. On macOS/Linux, use `python3` instead.
-
-### Example 1: Basic Share Analysis with Auto-Detection
-
-**Scenario**: You want to understand how Banco Santander's transaction volume is distributed across all available dimensions.
-
-**Command:**
-```powershell
-py benchmark.py share `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --metric transaction_count `
-  --auto
-```
-
-**What this does:**
-- **`share`**: Runs share analysis (volume distribution)
-- **`--csv data\sample.csv`**: Loads data from the specified CSV file
-- **`--entity "BANCO SANTANDER"`**: Compares this entity against peers
-- **`--metric transaction_count`**: Analyzes transaction count distribution
-- **`--auto`**: Automatically detects and analyzes all dimensional columns
-
-**Output**: Excel file with one sheet per dimension showing:
-- Santander's share (%) in each category
-- Balanced Peer Average (%) after privacy adjustments
-- Best-in-Class (85th percentile)
-- Gap from peer average
-
-**File naming**: `benchmark_share_BANCO_SANTANDER_20241107_143022.xlsx`
-
----
-
-### Example 2: Share Analysis with Manual Dimension Selection
-
-**Scenario**: You only want to analyze specific dimensions (domestic/international, card present/not present, purchase type).
-
-**Command:**
-```powershell
-py benchmark.py share `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --metric transaction_amount `
-  --dimensions flag_domestic cp_cnp tipo_compra
-```
-
-**What this does:**
-- Same as Example 1, but:
-- **`--metric transaction_amount`**: Analyzes value (TPV) distribution instead of count
-- **`--dimensions flag_domestic cp_cnp tipo_compra`**: Only analyzes these three dimensions
-
-**When to use**: When you know exactly which dimensions matter for your analysis and want faster execution.
-
----
-
-### Example 3: Peer-Only Mode (No Target Entity)
-
-**Scenario**: You want to understand the overall peer landscape without comparing to a specific entity.
-
-**Command:**
-```powershell
-py benchmark.py share `
-  --csv data\sample.csv `
-  --metric transaction_count `
-  --auto
-```
-
-**What this does:**
-- **No `--entity` parameter**: Treats all entities as peers
-- Provides peer distribution statistics without target-specific comparisons
-- Useful for market research and exploratory analysis
-
-**Output differences**:
-- No "Target" columns in dimension sheets
-- Filename includes `PEER_ONLY` identifier
-- Peer count = total unique entities (not unique entities - 1)
-
----
-
-### Example 4: Approval Rate Analysis
-
-**Scenario**: You want to benchmark Santander's approval rates across dimensions.
-
-**Command:**
-```powershell
-py benchmark.py rate `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --total-col total_count `
-  --approved-col approved_count `
-  --auto
-```
-
-**What this does:**
-- **`rate`**: Runs rate analysis mode
-- **`--total-col total_count`**: Column with total transactions (denominator)
-- **`--approved-col approved_count`**: Column with approved transactions (numerator)
-- **`--auto`**: Analyzes all dimensions
-
-**Formula**: Approval Rate = approved_count / total_count × 100%
-
-**Output**: Shows approval rates with 85th percentile BIC (higher is better).
-
----
-
-### Example 5: Fraud Rate Analysis
-
-**Scenario**: You want to benchmark fraud rates to identify high-risk segments.
-
-**Command:**
-```powershell
-py benchmark.py rate `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --total-col total_count `
-  --fraud-col fraud_count `
-  --auto
-```
-
-**What this does:**
-- **`--fraud-col fraud_count`**: Column with fraud transactions
-- Tool automatically uses 15th percentile BIC for fraud (lower is better)
-
-**Formula**: Fraud Rate = fraud_count / total_count × 100%
-
-**Interpretation**: Categories where you're below peer average and BIC are performing well.
-
----
-
-### Example 6: Multi-Rate Analysis (Approval + Fraud Simultaneously)
-
-**Scenario**: You want to analyze both approval and fraud rates in a single run for comprehensive insights.
-
-**Command:**
-```powershell
-py benchmark.py rate `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --total-col total_count `
-  --approved-col approved_count `
-  --fraud-col fraud_count `
-  --dimensions flag_domestic card_type
-```
-
-**What this does:**
-- **Both `--approved-col` and `--fraud-col`**: Analyzes both rates simultaneously
-- Single Excel file with combined sheets showing both metrics side-by-side in each dimension sheet
-- Shared privacy-compliant weights ensure consistency
-- Approval metrics in green, fraud metrics in orange (color-coded headers)
-
-**Rationale:**
-Since both approval and
- fraud rates share the same denominator (total transactions), using one set of privacy-constrained weights ensures fairness and consistency.
-
-**Example:**
-`powershell
-py benchmark.py rate --csv data.csv --total-col txn_cnt --approved-col app_cnt --fraud-col fraud_cnt --dimensions dim1 dim2 dim3 --preset balanced_default --output multi_rate_report.xlsx
-`
-
----
-
-### Example 7: Time-Aware Consistency
-
-**Scenario**: You're analyzing 3 months of data and want peer weights that remain consistent across all time periods.
-
-**Command:**
-```powershell
-py benchmark.py share `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --metric transaction_count `
-  --auto `
-  --consistent-weights `
-  --time-col ano_mes `
-  --debug
-```
-
-**What this does:**
-- **`--consistent-weights`**: Calculates one global set of peer weights
-- **`--time-col ano_mes`**: Specifies the time period column
-- **`--debug`**: Includes debug sheets (Peer Weights, original metrics)
-
-**Result**: 
-- Same peer weights applied across all months and all dimension-category-month combinations
-- Dimension sheets show rows for each category-month combination plus "General" aggregates
-- Privacy constraints satisfied in every month and every category of every dimension
-
-**When to use**: Time-series analysis where you need temporal consistency in benchmarks.
-
----
-
-### Example 8: Using Configuration Presets
-
-**Scenario**: You want to run a conservative analysis with strict privacy enforcement.
-
-**Command:**
-```powershell
-py benchmark.py share `
-  --csv data\sample.csv `
-  --entity "BANCO SANTANDER" `
-  --metric transaction_count `
-  --auto `
-  --preset compliance_strict `
-  --debug
-```
-
-**What this does:**
-- **`--preset compliance_strict`**: Applies compliance_strict preset configuration
-  - max_weight=5.0 (strict limit on peer reweighting)
-  - tolerance=0.0 (strict privacy enforcement)
-  - greedy subset search strategy
-- All tuning parameters come from the preset file
-- No need to specify individual optimization parameters on command line
-
-**Available Presets:**
-- `compliance_strict`: Regulatory Compliance - Zero tolerance for violations
-- `balanced_default`: Standard Analysis - Balance of compliance and consistency
-- `strategic_consistency`: Strategic Analysis - Global weights with minimized violations
-- `research_exploratory`: Research - Maximum flexibility for difficult datasets
-
-**View available presets:**
-```powershell
-py benchmark.py config list
-```
-
-**See preset details:**
-```powershell
-py benchmark.py config show compliance_strict
-```
 
 ---
 
@@ -870,7 +667,6 @@ py benchmark.py share `
   --entity "BANCO SANTANDER" `
   --metric transaction_count `
   --auto `
-  --consistent-weights `
   --config my_subset_search.yaml `
   --debug
 ```
@@ -1015,11 +811,44 @@ The validator checks:
 - All dimension-category-(time) combinations are validated
 - Reports pass/fail/skip counts with detailed diagnostics
 
-See `utils/csv_validator.py` for more details on validation methodology.
+---
+
+## Installation & Setup
+
+### Multi-User Remote Deployment
+
+This tool is designed to be deployed on a shared server and accessed by multiple users from their own directories.
+
+**1. Admin Setup (One-time)**
+Navigate to the installation directory and run the setup script:
+```bash
+cd ~/ads_storage/Peer Benchmark Tool
+./setup_remote_env.sh
+```
+This creates the virtual environment, installs dependencies, and prepares the wrapper scripts.
+
+**2. User Setup (Per User)**
+Each user should run the alias setup script to configure their environment:
+```bash
+~/ads_storage/Peer Benchmark Tool/setup_alias.sh
+source ~/.bashrc
+```
+
+**3. Usage**
+Users can now run the tool from any directory. The tool will use the shared code but read/write files in the user's current directory.
+```bash
+# Go to your personal workspace
+cd ~/ads_storage/e123456
+
+# Run the tool (opens TUI)
+peer_benchmark
+```
 
 ---
 
-## Command-Line Interface
+## Developer & Debug CLI
+
+The Command-Line Interface (CLI) is available for advanced users, debugging, and automation scripts.
 
 ### Overview
 
@@ -1202,43 +1031,10 @@ To customize these parameters:
 **Subset Search (`optimization.subset_search` in YAML)**:
 - `enabled`: Enable automatic subset search (default: false)
 - `strategy`: "greedy" or "random" (default: "greedy")
-- `max_tests`: Maximum search attempts (default: 200)
-- `trigger_on_slack`: Trigger on excessive slack usage (default: true)
-- `max_slack_threshold`: Slack sum threshold to trigger (default: 0.0)
-- `prefer_slacks_first`: Try slack-first approach (default: false)
-
-**Analysis (`analysis` in YAML)**:
-- `best_in_class_percentile`: BIC percentile (default: 0.85)
-
-**Example Configuration File** (`presets/compliance_strict.yaml`):
-```yaml
-version: "3.0"
-preset_name: "compliance_strict"
-description: "Regulatory Compliance - Zero tolerance for violations (formerly strict_privacy)"
-
-optimization:
-  bounds:
-    max_weight: 10.0
-    min_weight: 0.01
-  
-  linear_programming:
-    max_iterations: 1000
-    tolerance: 0.0  # Strict - no tolerance for violations
-  
-  constraints:
-    volume_preservation: 0.95
-  
-  subset_search:
-    enabled: true
-    strategy: "greedy"
-    max_tests: 200
-
-analysis:
-  best_in_class_percentile: 0.85
-
-output:
-  include_debug_sheets: false
-```
+- `max_tests`: Maximum number of subsets to test (default: 1000)
+- `trigger_on_slack`: Trigger subset search if slack is used (default: false)
+- `max_slack_threshold`: Maximum slack allowed before triggering subset search (default: 0.0)
+- `prefer_slacks_first`: Prefer subsets with slack variables in search (default: true)
 
 ### Share Analysis Specific Parameters
 
@@ -1272,9 +1068,7 @@ output:
 
 **Note:** You can specify **both** `--approved-col` and `--fraud-col` for simultaneous multi-rate analysis. The tool will generate a single Excel file with both rate types shown side-by-side in each dimension sheet.
 
-### Config Command
-
-The `config` subcommand provides tools for managing configuration presets and files.
+### Configuration Management
 
 #### List Available Presets
 ```powershell
@@ -1301,29 +1095,10 @@ py benchmark.py config generate --output my_config.yaml
 ```
 Generates a template configuration file with all available settings and documentation.
 
-### Parameter Combination Guidelines
+---
 
-**Minimal Run (Share)**:
-```powershell
-py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto
-```
+## Additional Documentation
 
-**Minimal Run (Rate)**:
-```powershell
-py benchmark.py rate --csv data.csv --entity "Bank A" --total-col total --approved-col approved --auto
-```
-
-**With Preset**:
-```powershell
-py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimensions dim1 dim2 dim3 --preset compliance_strict --output report.xlsx
-```
-
-**With Custom Config**:
-```powershell
-py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --auto --config my_analysis.yaml --debug
-```
-
-**Production Run with Time-Aware Consistency**:
-```powershell
-py benchmark.py share --csv data.csv --entity "Bank A" --metric txn_cnt --dimensions dim1 dim2 dim3 --consistent-weights --time-col month --preset balanced_default --debug --output report.xlsx
-```
+- [Architecture Overview](docs/architecture.md) (Coming Soon)
+- [Algorithm Details](docs/algorithm.md) (Coming Soon)
+- [Contributing Guidelines](CONTRIBUTING.md)

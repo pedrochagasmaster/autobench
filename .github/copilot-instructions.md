@@ -6,13 +6,17 @@ This is a Python-based dimensional analysis tool designed to compare financial e
 ## Architecture & Core Components
 The system follows a configuration-driven architecture with a clear separation of concerns:
 
-- **Entry Point**: `benchmark.py` handles CLI parsing and orchestration.
+- **Entry Points**:
+  - `benchmark.py`: CLI parsing and orchestration.
+  - `tui_app.py`: Textual-based Terminal User Interface (TUI) for interactive workflows.
 - **Core Logic** (`core/`):
   - `DataLoader`: Handles CSV/SQL ingestion and schema validation.
   - `DimensionalAnalyzer`: The core engine. Calculates weighted peer averages using a 3-tier optimization strategy.
   - `PrivacyValidator`: Enforces concentration rules (e.g., 5/25, 6/30) based on peer count.
   - `ReportGenerator`: Produces multi-sheet Excel reports.
 - **Configuration**: Uses YAML-based configuration and presets (`config/`, `presets/`).
+  - **Hierarchy**: Defaults -> Preset -> Config File -> CLI Args.
+  - **Integrity**: All analysis logic must source parameters from the merged `opt_config` object, NOT raw CLI args, to ensure presets are respected.
 
 ### Optimization Strategy (Critical)
 The tool uses a 3-tier fallback mechanism to find privacy-compliant weights:
@@ -48,8 +52,11 @@ py benchmark.py rate --csv data/input.csv --entity "TARGET_BANK" --total-col txn
   - When modifying `DimensionalAnalyzer`, ensure the 3-tier fallback logic is preserved.
   - Use `scipy.optimize` for solver integration.
 - **Logging**: Use the centralized logger (`utils.logger`).
+- **Reporting**: Excel reports must include a full dump of "Optimization Parameters" sourced from `opt_config` for auditability.
 
 ## Project Structure
+- `benchmark.py`: Main CLI entry point.
+- `tui_app.py`: Terminal User Interface application.
 - `core/`: Business logic and analysis engines.
 - `config/`: Configuration templates and validation logic.
 - `data/`: Input datasets (CSV/SQL).

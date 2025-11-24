@@ -155,6 +155,16 @@ EXAMPLES:
     share_parser.add_argument('--export-balanced-csv', action='store_true',
                              help='Export balanced shares and volumes to CSV (without weights or original values)')
 
+    # Advanced Optimization
+    share_parser.add_argument('--auto-subset-search', action='store_true',
+                             help='Automatically search for largest feasible global dimension subset')
+    share_parser.add_argument('--subset-search-max-tests', type=int,
+                             help='Maximum attempts during subset search')
+    share_parser.add_argument('--trigger-subset-on-slack', action='store_true',
+                             help='Trigger subset search if LP uses slack')
+    share_parser.add_argument('--max-cap-slack', type=float,
+                             help='Slack sum threshold to trigger subset search')
+
     # ========================================================================
     # RATE ANALYSIS COMMAND
     # ========================================================================
@@ -216,6 +226,16 @@ EXAMPLES:
     rate_parser.add_argument('--export-balanced-csv', action='store_true',
                             help='Export balanced shares and volumes to CSV (without weights or original values)')
     
+    # Advanced Optimization
+    rate_parser.add_argument('--auto-subset-search', action='store_true',
+                            help='Automatically search for largest feasible global dimension subset')
+    rate_parser.add_argument('--subset-search-max-tests', type=int,
+                            help='Maximum attempts during subset search')
+    rate_parser.add_argument('--trigger-subset-on-slack', action='store_true',
+                            help='Trigger subset search if LP uses slack')
+    rate_parser.add_argument('--max-cap-slack', type=float,
+                            help='Slack sum threshold to trigger subset search')
+
     # ========================================================================
     # CONFIG MANAGEMENT COMMAND
     # ========================================================================
@@ -350,6 +370,10 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'debug': getattr(args, 'debug', False),
             'log_level': getattr(args, 'log_level', None),
             'auto': getattr(args, 'auto', False),
+            'auto_subset_search': getattr(args, 'auto_subset_search', None),
+            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
+            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
+            'max_cap_slack': getattr(args, 'max_cap_slack', None),
         }
         
         # Initialize ConfigManager with hierarchy
@@ -507,20 +531,31 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
-            'max_iterations': getattr(args, 'max_iterations', None),
-            'tolerance_pp': getattr(args, 'tolerance', None),
-            'max_weight': getattr(args, 'max_weight', None),
-            'min_weight': getattr(args, 'min_weight', None),
-            'volume_preservation_strength': getattr(args, 'volume_preservation', None),
+            'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
+            'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
+            'max_weight': opt_config.get('bounds', {}).get('max_weight'),
+            'min_weight': opt_config.get('bounds', {}).get('min_weight'),
+            'volume_preservation_strength': opt_config.get('constraints', {}).get('volume_preservation'),
             'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
-            'prefer_slacks_first': getattr(args, 'prefer_slacks_first', False),
-            'auto_subset_search': getattr(args, 'auto_subset_search', False),
-            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', 200),
-            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', True),
-            'max_cap_slack': getattr(args, 'max_cap_slack', 0.0),
+            'prefer_slacks_first': opt_config.get('subset_search', {}).get('prefer_slacks_first'),
+            'auto_subset_search': opt_config.get('subset_search', {}).get('enabled'),
+            'subset_search_max_tests': opt_config.get('subset_search', {}).get('max_attempts'),
+            'trigger_subset_on_slack': opt_config.get('subset_search', {}).get('trigger_on_slack'),
+            'max_cap_slack': opt_config.get('subset_search', {}).get('max_slack_threshold'),
             'analyzer_ref': analyzer,
             'last_lp_stats': getattr(analyzer, 'last_lp_stats', {}),
             'slack_subset_triggered': getattr(analyzer, 'slack_subset_triggered', False),
+            # Extended optimization parameters
+            'lambda_penalty': opt_config.get('linear_programming', {}).get('lambda_penalty'),
+            'volume_weighted_penalties': opt_config.get('linear_programming', {}).get('volume_weighted_penalties'),
+            'volume_weighting_exponent': opt_config.get('linear_programming', {}).get('volume_weighting_exponent'),
+            'subset_search_enabled': opt_config.get('subset_search', {}).get('enabled'),
+            'subset_search_strategy': opt_config.get('subset_search', {}).get('strategy'),
+            'subset_search_max_tests': opt_config.get('subset_search', {}).get('max_attempts'),
+            'subset_search_trigger_on_slack': opt_config.get('subset_search', {}).get('trigger_on_slack'),
+            'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
+            'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
+            'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
         }
         
         # Calculate rank preservation strength for metadata (new for v2.0)
@@ -640,6 +675,10 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'debug': getattr(args, 'debug', False),
             'log_level': getattr(args, 'log_level', None),
             'auto': getattr(args, 'auto', False),
+            'auto_subset_search': getattr(args, 'auto_subset_search', None),
+            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
+            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
+            'max_cap_slack': getattr(args, 'max_cap_slack', None),
         }
         
         # Initialize ConfigManager with hierarchy
@@ -811,6 +850,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             )
             logger.info(f"Secondary analysis complete. Generated {len(secondary_results_df)} rows of balanced data.")
 
+        # Get optimization config for metadata
+        opt_config = config.config.get('optimization', {})
+
         # Collect common metadata
         metadata = {
             'entity': args.entity or 'PEER-ONLY',
@@ -835,13 +877,25 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
-            'max_iterations': getattr(args, 'max_iterations', None),
-            'tolerance_pp': getattr(args, 'tolerance', None),
-            'max_weight': getattr(args, 'max_weight', None),
-            'min_weight': getattr(args, 'min_weight', None),
-            'volume_preservation_strength': getattr(args, 'volume_preservation', None),
+            'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
+            'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
+            'max_weight': opt_config.get('bounds', {}).get('max_weight'),
+            'min_weight': opt_config.get('bounds', {}).get('min_weight'),
+            'volume_preservation_strength': opt_config.get('constraints', {}).get('volume_preservation'),
             'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
+            'prefer_slacks_first': opt_config.get('subset_search', {}).get('prefer_slacks_first'),
             'bic_percentiles': bic_percentiles,  # Store both BIC percentiles
+            # Extended optimization parameters
+            'lambda_penalty': opt_config.get('linear_programming', {}).get('lambda_penalty'),
+            'volume_weighted_penalties': opt_config.get('linear_programming', {}).get('volume_weighted_penalties'),
+            'volume_weighting_exponent': opt_config.get('linear_programming', {}).get('volume_weighting_exponent'),
+            'subset_search_enabled': opt_config.get('subset_search', {}).get('enabled'),
+            'subset_search_strategy': opt_config.get('subset_search', {}).get('strategy'),
+            'subset_search_max_tests': opt_config.get('subset_search', {}).get('max_attempts'),
+            'subset_search_trigger_on_slack': opt_config.get('subset_search', {}).get('trigger_on_slack'),
+            'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
+            'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
+            'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
         }
         
         # Get weights data if debug mode (same weights for all rate types)
@@ -1044,6 +1098,19 @@ def generate_excel_report(
         write_input("Min Weight:", metadata.get('min_weight'))
         write_input("Volume Preservation (input):", metadata.get('volume_preservation_strength'))
         write_input("Rank Preservation Strength:", metadata.get('rank_preservation_strength'))
+        
+        # Extended Optimization Parameters
+        write_input("Lambda Penalty:", metadata.get('lambda_penalty'))
+        write_input("Volume Weighted Penalties:", metadata.get('volume_weighted_penalties'))
+        write_input("Volume Weighting Exponent:", metadata.get('volume_weighting_exponent'))
+        write_input("Subset Search Enabled:", metadata.get('subset_search_enabled'))
+        write_input("Subset Search Strategy:", metadata.get('subset_search_strategy'))
+        write_input("Subset Search Max Tests:", metadata.get('subset_search_max_tests'))
+        write_input("Subset Search Trigger on Slack:", metadata.get('subset_search_trigger_on_slack'))
+        write_input("Subset Search Max Slack Threshold:", metadata.get('subset_search_max_slack_threshold'))
+        write_input("Bayesian Max Iterations:", metadata.get('bayesian_max_iterations'))
+        write_input("Bayesian Learning Rate:", metadata.get('bayesian_learning_rate'))
+        
         row += 1
     
     # Data information
@@ -1586,6 +1653,7 @@ def generate_multi_rate_excel_report(
     row += 1
     
     ws_summary[f'A{row}'] = "Unique Entities"
+   
     ws_summary[f'B{row}'] = metadata.get('unique_entities', 'N/A')
     row += 1
     
@@ -1604,6 +1672,41 @@ def generate_multi_rate_excel_report(
     
     ws_summary[f'A{row}'] = "Timestamp"
     ws_summary[f'B{row}'] = str(metadata.get('timestamp', ''))
+    row += 2
+
+    # Optimization Parameters
+    ws_summary[f'A{row}'] = "OPTIMIZATION PARAMETERS"
+    ws_summary[f'A{row}'].font = Font(bold=True)
+    row += 1
+
+    def write_param(label, key, default='N/A'):
+        nonlocal row
+        ws_summary[f'A{row}'] = label
+        val = metadata.get(key)
+        ws_summary[f'B{row}'] = val if val is not None else default
+        row += 1
+
+    write_param("Preset", 'preset')
+    write_param("Max Iterations", 'max_iterations')
+    write_param("Tolerance (pp)", 'tolerance_pp')
+    write_param("Max Weight", 'max_weight')
+    write_param("Min Weight", 'min_weight')
+    write_param("Volume Preservation", 'volume_preservation_strength')
+    write_param("Rank Preservation", 'rank_preservation_strength')
+    write_param("Prefer Slacks First", 'prefer_slacks_first')
+    
+    # Extended Optimization Parameters
+    write_param("Lambda Penalty", 'lambda_penalty')
+    write_param("Volume Weighted Penalties", 'volume_weighted_penalties')
+    write_param("Volume Weighting Exponent", 'volume_weighting_exponent')
+    write_param("Subset Search Enabled", 'subset_search_enabled')
+    write_param("Subset Search Strategy", 'subset_search_strategy')
+    write_param("Subset Search Max Tests", 'subset_search_max_tests')
+    write_param("Subset Search Trigger on Slack", 'subset_search_trigger_on_slack')
+    write_param("Subset Search Max Slack Threshold", 'subset_search_max_slack_threshold')
+    write_param("Bayesian Max Iterations", 'bayesian_max_iterations')
+    write_param("Bayesian Learning Rate", 'bayesian_learning_rate')
+    
     row += 2
     
     # Add note about shared weights for multi-rate

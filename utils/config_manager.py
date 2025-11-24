@@ -493,6 +493,10 @@ class ConfigManager:
             'volume_preservation': ('optimization', 'constraints', 'volume_preservation'),
             'bic_percentile': ('analysis', 'best_in_class_percentile'),
             'auto': ('analysis', 'auto_detect_dimensions'),
+            'auto_subset_search': ('optimization', 'subset_search', 'enabled'),
+            'subset_search_max_tests': ('optimization', 'subset_search', 'max_attempts'),
+            'trigger_subset_on_slack': ('optimization', 'subset_search', 'trigger_on_slack'),
+            'max_cap_slack': ('optimization', 'subset_search', 'max_slack_threshold'),
         }
         
         for cli_key, config_path in mapping.items():
