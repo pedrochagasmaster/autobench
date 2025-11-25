@@ -2240,11 +2240,14 @@ def export_balanced_csv(
                     if has_time:
                         row_data[time_col] = time_period
                     
-                    row_data.update({
-                        'Balanced_Total': round(balanced_total, 2),
-                        'Balanced_Approval_Total': round(balanced_approval, 2) if balanced_approval > 0 else None,
-                        'Balanced_Fraud_Total': round(balanced_fraud, 2) if balanced_fraud > 0 else None
-                    })
+                    # Use dynamic column names based on input columns
+                    row_data[total_col] = round(balanced_total, 2)
+                    
+                    if numerator_cols:
+                        if approval_col := numerator_cols.get('approval'):
+                            row_data[approval_col] = round(balanced_approval, 2) if balanced_approval > 0 else None
+                        if fraud_col := numerator_cols.get('fraud'):
+                            row_data[fraud_col] = round(balanced_fraud, 2) if balanced_fraud > 0 else None
                     
                     # Add secondary metrics to row
                     for sec_metric, sec_value in secondary_balanced.items():
@@ -2359,7 +2362,7 @@ def export_balanced_csv(
                             balanced_metric += row[metric] * weight
                         
                         # Column name based on metric type
-                        col_name = f'Balanced_{metric}' if metric_type == 'Primary' else metric
+                        col_name = metric
                         row_data[col_name] = round(balanced_metric, 2)
                     
                     export_rows.append(row_data)

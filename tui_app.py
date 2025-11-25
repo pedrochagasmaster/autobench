@@ -23,12 +23,15 @@ from textual.widgets import (
     Log,
     Static,
     ListView,
-    ListItem
+    ListItem,
+    SelectionList,
+    Markdown
 )
 from textual.worker import Worker, WorkerState
 from textual import work
 from textual.logging import TextualHandler
 from datetime import datetime
+from textual.screen import ModalScreen
 
 # Import core logic from benchmark.py
 # We need to add the script directory to sys.path to ensure imports work
@@ -57,6 +60,69 @@ class FileListItem(ListItem):
     def __init__(self, file_path: str) -> None:
         super().__init__(Label(file_path))
         self.file_path = file_path
+
+class PresetHelpScreen(ModalScreen):
+    """Screen to show preset help."""
+    
+    CSS = """
+    PresetHelpScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.7);
+    }
+    
+    #help_container {
+        width: 60%;
+        height: 80%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    
+    #help_text {
+        height: 1fr;
+        margin-top: 1;
+        margin-bottom: 1;
+        overflow-y: auto;
+    }
+    
+    #btn_close_help {
+        width: 100%;
+        dock: bottom;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="help_container"):
+            yield Label("Preset Guide", classes="section-title")
+            yield Markdown(
+                """
+### compliance_strict
+- **Intent:** "I cannot have any privacy violations."
+- **Best For:** Regulatory reporting, external audits.
+- **Trade-off:** May drop dimensions if they violate privacy rules.
+
+### strategic_consistency
+- **Intent:** "I need one set of weights for all dimensions."
+- **Best For:** Strategic analysis, executive dashboards.
+- **Trade-off:** Minimizes business impact of violations but may allow small ones.
+
+### balanced_default
+- **Intent:** "I want a good report with minimal fuss."
+- **Best For:** Day-to-day analysis.
+- **Trade-off:** Good balance, allows very small violations (2%).
+
+### research_exploratory
+- **Intent:** "This dataset is difficult, just give me numbers."
+- **Best For:** Data exploration, difficult datasets.
+- **Trade-off:** Lower rank preservation, higher weight bounds.
+                """,
+                id="help_text"
+            )
+            yield Button("Close", id="btn_close_help", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_close_help":
+            self.dismiss()
 
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
@@ -131,6 +197,20 @@ class BenchmarkApp(App):
     .file-browser.-visible {
         display: block;
     }
+
+    .multi-select {
+        height: 8;
+        border: solid gray;
+        margin-bottom: 1;
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    #btn_preset_help {
+        min-width: 10;
+    }
     """
 
     TITLE = "Privacy-Compliant Peer Benchmark Tool"
@@ -158,7 +238,9 @@ class BenchmarkApp(App):
             with Horizontal(classes="input-group"):
                 yield Input(placeholder="Output Filename (Optional)", id="output_file")
 
-            yield Select([], prompt="Select Preset", id="preset_select")
+            with Horizontal(classes="input-group"):
+                yield Select([], prompt="Select Preset", id="preset_select")
+                yield Button("Help", id="btn_preset_help", variant="default")
 
             # Mode Selection
             with TabbedContent(initial="share_tab"):
@@ -166,14 +248,18 @@ class BenchmarkApp(App):
                 with TabPane("Share Analysis", id="share_tab"):
                     yield Label("Metric Configuration")
                     yield Select([], prompt="Select Primary Metric", id="share_metric")
-                    yield Input(placeholder="Secondary Metrics (space separated)", id="share_secondary")
+                    
+                    yield Label("Secondary Metrics")
+                    yield SelectionList(id="share_secondary", classes="multi-select")
                     
                     yield Label("Dimensions")
                     with Horizontal(classes="input-group"):
                         yield Checkbox("Auto-detect Dimensions", value=True, id="share_auto_dim")
                         yield Checkbox("Debug Mode", value=False, id="share_debug")
                         yield Checkbox("Export Balanced CSV", value=False, id="share_export_csv")
-                    yield Input(placeholder="Specific Dimensions (space separated, if not auto)", id="share_dims", disabled=True)
+                    
+                    yield Label("Specific Dimensions", id="share_dims_label", classes="hidden")
+                    yield SelectionList(id="share_dims", classes="multi-select hidden")
 
                 # Rate Analysis Tab
                 with TabPane("Rate Analysis", id="rate_tab"):
@@ -183,14 +269,17 @@ class BenchmarkApp(App):
                         yield Select([], prompt="Select Approved Column", id="rate_approved")
                         yield Select([], prompt="Select Fraud Column", id="rate_fraud")
                     
-                    yield Input(placeholder="Secondary Metrics (space separated)", id="rate_secondary")
+                    yield Label("Secondary Metrics")
+                    yield SelectionList(id="rate_secondary", classes="multi-select")
 
                     yield Label("Dimensions")
                     with Horizontal(classes="input-group"):
                         yield Checkbox("Auto-detect Dimensions", value=True, id="rate_auto_dim")
                         yield Checkbox("Debug Mode", value=False, id="rate_debug")
                         yield Checkbox("Export Balanced CSV", value=False, id="rate_export_csv")
-                    yield Input(placeholder="Specific Dimensions (space separated, if not auto)", id="rate_dims", disabled=True)
+                    
+                    yield Label("Specific Dimensions", id="rate_dims_label", classes="hidden")
+                    yield SelectionList(id="rate_dims", classes="multi-select hidden")
 
             # Action
             yield Button("Run Analysis", id="btn_run", variant="primary")
@@ -222,7 +311,9 @@ class BenchmarkApp(App):
         try:
             # Read only headers
             cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            self.csv_columns = cols
             options = [(c, c) for c in cols]
+            selection_options = [(c, c) for c in cols]
             
             # Update Select widgets
             self.query_one("#entity_col").set_options(options)
@@ -230,6 +321,12 @@ class BenchmarkApp(App):
             self.query_one("#rate_total").set_options(options)
             self.query_one("#rate_approved").set_options(options)
             self.query_one("#rate_fraud").set_options(options)
+            
+            # Update SelectionLists
+            for list_id in ["#share_secondary", "#share_dims", "#rate_secondary", "#rate_dims"]:
+                s_list = self.query_one(list_id, SelectionList)
+                s_list.clear_options()
+                s_list.add_options(selection_options)
             
             # Try to set defaults if they exist
             if "issuer_name" in cols:
@@ -242,6 +339,29 @@ class BenchmarkApp(App):
                 
         except Exception as e:
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
+
+    def update_secondary_options(self, list_id, exclude=None):
+        """Update options in a SelectionList, excluding specified values."""
+        if not hasattr(self, 'csv_columns'):
+            return
+            
+        if exclude is None:
+            exclude = []
+            
+        s_list = self.query_one(list_id, SelectionList)
+        current_selected = set(s_list.selected)
+        
+        s_list.clear_options()
+        
+        options = []
+        for col in self.csv_columns:
+            if col in exclude:
+                continue
+            # Preserve selection state if possible
+            is_selected = col in current_selected
+            options.append((col, col, is_selected))
+            
+        s_list.add_options(options)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle file selection from the list."""
@@ -291,13 +411,30 @@ class BenchmarkApp(App):
                 
         elif event.button.id == "btn_run":
             self.run_analysis()
+            
+        elif event.button.id == "btn_preset_help":
+            self.push_screen(PresetHelpScreen())
+            
+        elif event.button.id == "btn_help_presets":
+            self.push_screen(PresetHelpScreen())
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox toggles."""
         if event.checkbox.id == "share_auto_dim":
-            self.query_one("#share_dims").disabled = event.value
+            if event.value:
+                self.query_one("#share_dims").add_class("hidden")
+                self.query_one("#share_dims_label").add_class("hidden")
+            else:
+                self.query_one("#share_dims").remove_class("hidden")
+                self.query_one("#share_dims_label").remove_class("hidden")
+                
         elif event.checkbox.id == "rate_auto_dim":
-            self.query_one("#rate_dims").disabled = event.value
+            if event.value:
+                self.query_one("#rate_dims").add_class("hidden")
+                self.query_one("#rate_dims_label").add_class("hidden")
+            else:
+                self.query_one("#rate_dims").remove_class("hidden")
+                self.query_one("#rate_dims_label").remove_class("hidden")
 
     def load_unique_entities(self, column_name):
         """Load unique values from the specified column."""
@@ -322,6 +459,12 @@ class BenchmarkApp(App):
         if event.select.id == "entity_col":
             if event.value != Select.BLANK:
                 self.load_unique_entities(event.value)
+        
+        elif event.select.id == "share_metric":
+             self.update_secondary_options("#share_secondary", exclude=[event.value])
+             
+        elif event.select.id == "rate_total":
+             self.update_secondary_options("#rate_secondary", exclude=[event.value])
 
     @work(thread=True)
     def run_analysis(self) -> None:
@@ -329,6 +472,9 @@ class BenchmarkApp(App):
         log_widget = self.query_one("#log_output")
         self.call_from_thread(log_widget.clear)
         self.call_from_thread(log_widget.write, "Starting analysis...\n")
+        
+        # Scroll to bottom to show logs
+        self.call_from_thread(self.query_one(".main-container").scroll_end, animate=True)
         
         # Disable button
         self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", True))
@@ -399,12 +545,12 @@ class BenchmarkApp(App):
                     self.call_from_thread(log_widget.write, "ERROR: Metric is required for Share Analysis.\n")
                     return
                 
-                sec_metrics = self.query_one("#share_secondary").value
-                args.secondary_metrics = sec_metrics.split() if sec_metrics else None
+                sec_metrics = self.query_one("#share_secondary", SelectionList).selected
+                args.secondary_metrics = sec_metrics if sec_metrics else None
                 
                 args.auto = self.query_one("#share_auto_dim").value
-                dims = self.query_one("#share_dims").value
-                args.dimensions = dims.split() if dims and not args.auto else None
+                dims = self.query_one("#share_dims", SelectionList).selected
+                args.dimensions = dims if dims and not args.auto else None
                 
                 args.debug = self.query_one("#share_debug").value
                 args.per_dimension_weights = False # Default
@@ -436,12 +582,12 @@ class BenchmarkApp(App):
                     self.call_from_thread(log_widget.write, "ERROR: At least one of Approved Col or Fraud Col is required.\n")
                     return
 
-                sec_metrics = self.query_one("#rate_secondary").value
-                args.secondary_metrics = sec_metrics.split() if sec_metrics else None
+                sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
+                args.secondary_metrics = sec_metrics if sec_metrics else None
 
                 args.auto = self.query_one("#rate_auto_dim").value
-                dims = self.query_one("#rate_dims").value
-                args.dimensions = dims.split() if dims and not args.auto else None
+                dims = self.query_one("#rate_dims", SelectionList).selected
+                args.dimensions = dims if dims and not args.auto else None
                 
                 args.debug = self.query_one("#rate_debug").value
                 args.export_balanced_csv = self.query_one("#rate_export_csv").value
