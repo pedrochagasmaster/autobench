@@ -3,6 +3,24 @@ PrivacyValidator - Privacy compliance validation for peer groups.
 
 Implements multiple privacy rules (5/25, 6/30, 7/35, 10/40, 4/35) and
 validates concentration limits for regulatory compliance.
+
+Rule Specifications:
+-------------------
+- 5/25: Min 5 participants, max 25% per participant
+  Example: [25, 25, 25, 24, 1]
+
+- 6/30: Min 6 participants, max 30% per participant, at least 3 participants ≥ 7%
+  Example: [30, 24.5, 24.5, 7, 7, 7] or [30, 30, 30, 3.33, 3.33, 3.33]
+
+- 7/35: Min 7 participants, max 35% per participant, at least 2 ≥ 15%, 
+        and at least 1 additional participant ≥ 8%
+  Example: [35, 15, 15, 8.75, 8.75, 8.75, 8.75]
+
+- 10/40: Min 10 participants, max 40% per participant, at least 2 ≥ 20%, 
+         and at least 1 additional participant ≥ 10%
+  Example: [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6]
+
+- 4/35 (Merchant benchmarking only): Min 4 participants, max 35% per participant
 """
 
 import pandas as pd
@@ -17,23 +35,58 @@ class PrivacyValidator:
     """
     Validates peer groups against privacy concentration rules.
     
-    Supports multiple privacy rules:
+    Supports multiple privacy rules with maximum concentration limits
+    and minimum percentage requirements:
+    
     - 5/25: 5 minimum entities, 25% max concentration
-    - 6/30: 6 minimum entities, 30% max concentration (+ 3 entities ≥ 7%)
-    - 7/35: 7 minimum entities, 35% max concentration (+ special rules)
-    - 10/40: 10 minimum entities, 40% max concentration (+ special rules)
-    - 4/35: 4 minimum entities, 35% max concentration (merchant-only)
+      Compliant example: [25, 25, 25, 24, 1]
+      
+    - 6/30: 6 minimum entities, 30% max concentration
+      + At least 3 participants must be ≥ 7%
+      Compliant examples: [30, 24.5, 24.5, 7, 7, 7] or [30, 30, 30, 3.33, 3.33, 3.33]
+      
+    - 7/35: 7 minimum entities, 35% max concentration
+      + At least 2 participants must be ≥ 15%
+      + At least 1 additional participant must be ≥ 8%
+      Compliant example: [35, 15, 15, 8.75, 8.75, 8.75, 8.75]
+      
+    - 10/40: 10 minimum entities, 40% max concentration
+      + At least 2 participants must be ≥ 20%
+      + At least 1 additional participant must be ≥ 10%
+      Compliant example: [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6]
+      
+    - 4/35: 4 minimum entities, 35% max concentration (merchant benchmarking only)
     """
     
     RULES = {
-        '5/25': {'min_entities': 5, 'max_concentration': 25.0},
-        '6/30': {'min_entities': 6, 'max_concentration': 30.0,
-                 'additional': {'min_count_above_threshold': (3, 7.0)}},
-        '7/35': {'min_entities': 7, 'max_concentration': 35.0,
-                 'additional': {'min_count_15': 2, 'min_count_8': 1}},
-        '10/40': {'min_entities': 10, 'max_concentration': 40.0,
-                  'additional': {'min_count_20': 2, 'min_count_10': 1}},
-        '4/35': {'min_entities': 4, 'max_concentration': 35.0}
+        # 5/25: No participant may exceed 25%
+        '5/25': {
+            'min_entities': 5, 
+            'max_concentration': 25.0
+        },
+        # 6/30: No participant may exceed 30%, at least 3 participants must be ≥ 7%
+        '6/30': {
+            'min_entities': 6, 
+            'max_concentration': 30.0,
+            'additional': {'min_count_above_threshold': (3, 7.0)}
+        },
+        # 7/35: No participant may exceed 35%, at least 2 ≥ 15%, at least 1 additional ≥ 8%
+        '7/35': {
+            'min_entities': 7, 
+            'max_concentration': 35.0,
+            'additional': {'min_count_15': 2, 'min_count_8': 1}
+        },
+        # 10/40: No participant may exceed 40%, at least 2 ≥ 20%, at least 1 additional ≥ 10%
+        '10/40': {
+            'min_entities': 10, 
+            'max_concentration': 40.0,
+            'additional': {'min_count_20': 2, 'min_count_10': 1}
+        },
+        # 4/35: Merchant benchmarking only - no participant may exceed 35%
+        '4/35': {
+            'min_entities': 4, 
+            'max_concentration': 35.0
+        }
     }
     
     def __init__(

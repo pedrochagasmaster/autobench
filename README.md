@@ -182,13 +182,13 @@ ATM         97.2%   96.8%  +0.4pp
 
 The tool **auto-detects** your peer count and applies the correct privacy rule:
 
-| Peers | Max Share | Example |
-|-------|-----------|---------|
-| 4 | 35% | Small peer group |
-| 5 | **25%** | Strictest |
-| 6 | 30% | |
-| 7-9 | 35% | |
-| 10+ | 40% | Large peer group |
+| Rule | Min Peers | Max Share | Additional Requirements | Compliant Example |
+|------|-----------|-----------|------------------------|-------------------|
+| **5/25** | 5 | 25% | — | [25, 25, 25, 24, 1] |
+| **6/30** | 6 | 30% | ≥3 participants must be ≥7% | [30, 24.5, 24.5, 7, 7, 7] |
+| **7/35** | 7 | 35% | ≥2 participants ≥15%, ≥1 additional ≥8% | [35, 15, 15, 8.75, 8.75, 8.75, 8.75] |
+| **10/40** | 10 | 40% | ≥2 participants ≥20%, ≥1 additional ≥10% | [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6] |
+| **4/35** | 4 | 35% | Merchant benchmarking only | — |
 
 > ⚠️ **You never configure privacy caps manually.** The tool handles this automatically based on your data.
 

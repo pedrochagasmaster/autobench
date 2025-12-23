@@ -60,13 +60,13 @@
 
 These are **legal compliance requirements**. The tool auto-selects based on peer count:
 
-| Peers | Max Concentration | Rule |
-|-------|------------------|------|
-| 4 | 35% | 4/35 |
-| 5 | 25% | 5/25 |
-| 6 | 30% | 6/30 |
-| 7-9 | 35% | 7/35 |
-| 10+ | 40% | 10/40 |
+| Rule | Min Peers | Max Concentration | Additional Requirements |
+|------|-----------|-------------------|------------------------|
+| **5/25** | 5 | 25% | — |
+| **6/30** | 6 | 30% | ≥3 participants must be ≥7% |
+| **7/35** | 7 | 35% | ≥2 participants ≥15%, ≥1 additional ≥8% |
+| **10/40** | 10 | 40% | ≥2 participants ≥20%, ≥1 additional ≥10% |
+| **4/35** | 4 | 35% | Merchant benchmarking only |
 
 **Implementation**: `core/privacy_validator.py` → `PrivacyValidator`
 
