@@ -1,8 +1,6 @@
 # AGENTS.md - AI Agent Developer Guide
 
 > **Purpose**: Complete context for AI agents working on this codebase. Read this **entirely** before making any changes.
->
-> **Companion File**: `.github/copilot-instructions.md` provides additional TUI-specific patterns.
 
 ---
 
@@ -132,8 +130,6 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── tui_app.py                # TUI application (1166 lines)
 ├── requirements.txt          # Dependencies
 ├── AGENTS.md                 # This file
-├── 📁 .github/
-│   └── copilot-instructions.md  # TUI-specific patterns
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
 │   ├── dimensional_analyzer.py  # Core algorithm (1831 lines) ⭐ CRITICAL
@@ -345,24 +341,89 @@ ITAU UNIBANCO,Domestic,CREDIT,180000,22000000
 
 ## 🖥️ TUI Development Patterns
 
-**See also**: `.github/copilot-instructions.md`
+### Architecture
+
+The TUI is built with **Textual** framework and follows these patterns:
+
+```
+tui_app.py
+├── BenchmarkApp (App)           # Main application
+├── FileListItem (ListItem)      # Custom list item for file paths
+├── LogHandler (logging.Handler) # Redirects logs to TUI
+└── PresetHelpScreen (Screen)    # Modal help screen
+```
+
+### Widget Selection Rules
+
+| Need | Widget | Why |
+|------|--------|-----|
+| Single file selection | `ListView` + `FileListItem` | Avoids ID collisions with paths |
+| Single column/entity | `Select` | Dropdown with search |
+| Multiple dimensions | `SelectionList` or `Input` | Multi-select or space-separated |
+| Text input | `Input` | For secondary metrics, dimensions |
 
 ### Key Patterns
 
-1. **Use `FileListItem`** for file lists to avoid ID collisions with paths
-2. **Populate `Select` widgets** with `pd.read_csv(..., nrows=0)` for header-only reads
-3. **Use `Select`** for single-choice fields (columns, entities)
-4. **Use `Input`** for multi-value fields (secondary metrics, dimensions)
-5. **Use `SelectionList`** for multi-select (dimensions)
+1. **Use `FileListItem`** for file lists to avoid ID collision issues with file paths:
+```python
+class FileListItem(ListItem):
+    def __init__(self, file_path: str) -> None:
+        super().__init__(Label(file_path))
+        self.file_path = file_path  # Store path safely
+```
 
-### TUI Classes
+2. **Populate `Select` widgets efficiently** — read headers only:
+```python
+headers = pd.read_csv(file_path, nrows=0).columns.tolist()
+select_widget.set_options([(h, h) for h in headers])
+```
+
+3. **Load unique entities on column selection**:
+```python
+def load_unique_entities(self, column_name):
+    df = pd.read_csv(self.current_file)
+    unique_values = df[column_name].unique().tolist()
+    self.entity_select.set_options([(v, v) for v in sorted(unique_values)])
+```
+
+4. **Use `Input` for multi-value fields** (dimensions, secondary metrics):
+```python
+# User enters: "flag_domestic card_type merchant_category"
+dimensions = input_widget.value.split()
+```
+
+5. **File discovery pattern** — search current dir + `data/`:
+```python
+csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
+```
+
+### TUI Workflow
+
+```
+1. File Selection    → ListView populated from current dir + data/
+2. Entity Column     → Select populated from CSV headers
+3. Target Entity     → Select populated from unique values in selected column
+4. Preset Selection  → Select populated from presets/ directory
+5. Analysis Config   → Tab-based (Share / Rate)
+6. Run Analysis      → Background thread execution
+7. Log Display       → Real-time logging via LogHandler
+```
+
+### Coding Conventions for TUI
+
+- **Log redirection**: Always use `LogHandler` to capture logs in the TUI
+- **Background execution**: Run analysis in a thread to prevent UI freeze
+- **CSS styling**: Defined in `BenchmarkApp.CSS` class variable
+- **Keyboard bindings**: Defined in `BenchmarkApp.BINDINGS`
+
+### TUI Classes Reference
 
 | Class | Purpose |
 |-------|---------|
-| `BenchmarkApp` | Main Textual App |
-| `FileListItem` | ListView item storing file path |
-| `LogHandler` | Redirects logging to TUI Log widget |
-| `PresetHelpScreen` | Modal screen for preset help |
+| `BenchmarkApp` | Main Textual App with CSS and bindings |
+| `FileListItem` | ListView item that safely stores file path |
+| `LogHandler` | Redirects Python logging to TUI Log widget |
+| `PresetHelpScreen` | Modal screen showing preset descriptions |
 
 ---
 
