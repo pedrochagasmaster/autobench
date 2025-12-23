@@ -1,0 +1,571 @@
+# AGENTS.md - AI Agent Developer Guide
+
+> **Purpose**: Complete context for AI agents working on this codebase. Read this **entirely** before making any changes.
+>
+> **Companion File**: `.github/copilot-instructions.md` provides additional TUI-specific patterns.
+
+---
+
+## 🎯 Project Identity
+
+**Privacy-Compliant Peer Benchmark Tool** — A dimensional analysis system comparing financial entities against peer groups while enforcing Mastercard Control 3.2 privacy compliance.
+
+| Aspect | Details |
+|--------|---------|
+| **Domain** | Financial benchmarking (banks, issuers, merchants) |
+| **Core Constraint** | Privacy caps prevent single-peer market dominance |
+| **Primary Output** | Excel reports with privacy-weighted peer comparisons |
+| **Interfaces** | CLI (`benchmark.py`) and TUI (`tui_app.py`) |
+| **Config Version** | 3.0 (YAML-based) |
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         USER INTERFACES                             │
+├──────────────────────────────┬──────────────────────────────────────┤
+│   benchmark.py (CLI)         │        tui_app.py (TUI)              │
+│   - share subcommand         │        - Textual-based UI            │
+│   - rate subcommand          │        - ListView for file browser   │
+│   - config subcommand        │        - Select for dropdowns        │
+└──────────────┬───────────────┴────────────────── ┬──────────────────┘
+               │                                   │
+               └───────────────┬───────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          CORE ENGINE                                │
+├─────────────────────────────────────────────────────────────────────┤
+│  core/data_loader.py          │  Ingestion, normalization, schema   │
+│  core/dimensional_analyzer.py │  LP/Bayesian weight optimization    │
+│  core/privacy_validator.py    │  Control 3.2 cap enforcement        │
+│  core/report_generator.py     │  Excel output formatting            │
+└─────────────────────────────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         UTILITIES                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│  utils/config_manager.py   │  YAML parsing, hierarchy merging       │
+│  utils/preset_manager.py   │  Preset loading from presets/          │
+│  utils/validators.py       │  Config schema validation              │
+│  utils/csv_validator.py    │  Output CSV vs Excel validation        │
+│  utils/logger.py           │  Logging setup                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚠️ Critical Business Rules — NEVER BYPASS
+
+### Privacy Caps (Mastercard Control 3.2)
+
+These are **legal compliance requirements**. The tool auto-selects based on peer count:
+
+| Peers | Max Concentration | Rule |
+|-------|------------------|------|
+| 4 | 35% | 4/35 |
+| 5 | 25% | 5/25 |
+| 6 | 30% | 6/30 |
+| 7-9 | 35% | 7/35 |
+| 10+ | 40% | 10/40 |
+
+**Implementation**: `core/privacy_validator.py` → `PrivacyValidator`
+
+### Configuration Integrity
+
+> **ALL analysis logic MUST source parameters from the merged `opt_config` object, NOT raw CLI args**, to ensure presets are respected.
+
+---
+
+## 🔄 Weight Optimization Algorithm
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  1. GLOBAL LP (SciPy linprog + HiGHS solver)                        │
+│     - Variables: [m₀...mₚ, t⁺, t⁻, slack_cap, slack_rank]           │
+│     - Objective: min(deviation from 1.0 + rank_penalty + slack)     │
+│     - Constraints: m_p × v_{p,c} ≤ cap × Σ(m_j × v_{j,c})           │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                              ▼
+       ┌─────────────┐               ┌─────────────────┐
+       │  SUCCESS    │               │    FAILURE      │
+       │  (no slack) │               │  (infeasible)   │
+       └──────┬──────┘               └────────┬────────┘
+              │                               │
+              ▼                               ▼
+┌─────────────────────────┐     ┌─────────────────────────────────────┐
+│ Validate against        │     │  2. SUBSET SEARCH                    │
+│ tolerance threshold     │     │     Strategy: greedy or random       │
+│ (trigger_on_slack)      │     │     Find largest feasible subset     │
+└──────────┬──────────────┘     └────────────────────┬────────────────┘
+           │                                          │
+           ▼                               ┌──────────┴──────────┐
+    Use Global Weights                     ▼                      ▼
+    for all dimensions             Selected Dims           Dropped Dims
+                                   → Global Weights        → Per-Dim LP
+                                                                 │
+                                                     ┌───────────┴───────────┐
+                                                     ▼                       ▼
+                                              ┌─────────────┐         ┌────────────┐
+                                              │  LP Success │         │ LP Failure │
+                                              └─────────────┘         └─────┬──────┘
+                                                                            ▼
+                                                                  ┌────────────────────┐
+                                                                  │ 3. BAYESIAN        │
+                                                                  │    L-BFGS-B        │
+                                                                  │    scipy.minimize  │
+                                                                  └────────────────────┘
+```
+
+**Key Method**: `DimensionalAnalyzer.calculate_global_privacy_weights()`
+
+---
+
+## 📁 File Structure
+
+```
+📁 Project Root
+├── benchmark.py              # CLI entry point (2437 lines)
+├── tui_app.py                # TUI application (1166 lines)
+├── requirements.txt          # Dependencies
+├── AGENTS.md                 # This file
+├── 📁 .github/
+│   └── copilot-instructions.md  # TUI-specific patterns
+├── 📁 core/                  # Business logic
+│   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
+│   ├── dimensional_analyzer.py  # Core algorithm (1831 lines) ⭐ CRITICAL
+│   ├── data_loader.py           # Data ingestion (387 lines)
+│   ├── privacy_validator.py     # Privacy enforcement (412 lines)
+│   └── report_generator.py      # Excel generation
+├── 📁 utils/
+│   ├── __init__.py              # Exports: ConfigManager, setup_logging
+│   ├── config_manager.py        # Config handling (554 lines)
+│   ├── preset_manager.py        # Preset loading
+│   ├── validators.py            # Config schema validation
+│   ├── csv_validator.py         # CSV output validation
+│   ├── CSV_VALIDATOR_README.md  # Validator documentation
+│   └── logger.py                # Logging setup
+├── 📁 config/
+│   └── template.yaml            # Default config template (v3.0)
+├── 📁 presets/
+│   ├── balanced_default.yaml      # tolerance=2.0, random search
+│   ├── compliance_strict.yaml     # tolerance=0.0, greedy search
+│   ├── research_exploratory.yaml  # Relaxed constraints
+│   └── strategic_consistency.yaml # tolerance=25.0, volume-weighted
+├── 📁 data/                  # Input data (gitignored)
+├── 📁 outputs/               # Generated reports (gitignored)
+└── 📁 old/                   # Legacy code (reference only)
+```
+
+---
+
+## ⚙️ Configuration System
+
+### Hierarchy (Highest → Lowest Priority)
+
+```
+1. CLI arguments         (--entity, --csv, --output, --debug)
+2. Custom config file    (--config my_config.yaml)
+3. Preset file           (--preset compliance_strict)
+4. Hard-coded defaults   (ConfigManager._get_default_config())
+```
+
+### Preset Quick Reference
+
+| Preset | Intent | Tolerance | Vol-Weight | Subset |
+|--------|--------|-----------|-----------|--------|
+| `compliance_strict` | Regulatory | 0.0 | ❌ | greedy |
+| `balanced_default` | Day-to-day | 2.0 | ❌ | random |
+| `strategic_consistency` | Dashboards | 25.0 | ✅ 1.5x | ❌ |
+| `research_exploratory` | Difficult data | 5.0 | ❌ | random |
+
+### Config Schema (v3.0)
+
+```yaml
+version: "3.0"           # REQUIRED - must be "3.0"
+preset_name: "my_preset" # Optional - for presets
+description: "..."       # Optional
+
+optimization:
+  bounds:
+    max_weight: 10.0     # Maximum peer multiplier (>0)
+    min_weight: 0.01     # Minimum peer multiplier (>0, <max)
+  linear_programming:
+    max_iterations: 1000 # Positive integer
+    tolerance: 1.0       # >=0, in percentage points
+    volume_weighted_penalties: false
+    volume_weighting_exponent: 1.0
+  constraints:
+    volume_preservation: 0.5  # 0.0-1.0 (rank preservation strength)
+  subset_search:
+    enabled: true
+    strategy: "greedy"        # "greedy" | "random"
+    max_attempts: 200         # Positive integer
+    trigger_on_slack: true
+    max_slack_threshold: 0.0  # >=0
+    prefer_slacks_first: false
+  bayesian:
+    max_iterations: 500
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85  # 0.0-1.0
+
+output:
+  format: "xlsx"                  # "xlsx" | "csv" | "json"
+  include_debug_sheets: false
+  include_privacy_validation: false
+  log_level: "INFO"               # DEBUG|INFO|WARNING|ERROR
+```
+
+### ConfigManager API
+
+```python
+config = ConfigManager(
+    config_file="my_config.yaml",  # Optional
+    preset="compliance_strict",     # Optional
+    cli_overrides={'debug': True}   # Optional
+)
+
+# Access nested values safely
+max_weight = config.get("optimization", "bounds", "max_weight", default=10.0)
+```
+
+---
+
+## 🔧 Key Classes Reference
+
+### DimensionalAnalyzer
+
+**Location**: `core/dimensional_analyzer.py`
+
+**Constructor Parameters**:
+```python
+DimensionalAnalyzer(
+    target_entity: Optional[str],      # None for peer-only mode
+    entity_column: str = "issuer_name",
+    bic_percentile: float = 0.85,
+    debug_mode: bool = False,
+    consistent_weights: bool = True,   # Global vs per-dimension
+    max_iterations: int = 1000,
+    tolerance: float = 1.0,            # Privacy slack tolerance (pp)
+    max_weight: float = 10.0,
+    min_weight: float = 0.01,
+    volume_preservation_strength: float = 0.5,  # Mapped to rank_preservation
+    prefer_slacks_first: bool = False,
+    auto_subset_search: bool = False,
+    subset_search_max_tests: int = 200,
+    greedy_subset_search: bool = True,
+    trigger_subset_on_slack: bool = True,
+    max_cap_slack: float = 0.0,
+    time_column: Optional[str] = None,
+    volume_weighted_penalties: bool = False,
+    volume_weighting_exponent: float = 1.0,
+)
+```
+
+**Key Instance Attributes** (after `calculate_global_privacy_weights`):
+- `global_weights: Dict[str, Dict]` — peer → {volume, weight, multiplier, ...}
+- `per_dimension_weights: Dict[str, Dict[str, float]]` — dim → peer → multiplier
+- `weight_methods: Dict[str, str]` — dim → "Global-LP" | "Per-Dimension-LP" | "Per-Dimension-Bayesian"
+- `last_lp_stats: Dict` — solver statistics
+- `subset_search_results: List[Dict]` — search attempt logs
+- `rank_changes_df: pd.DataFrame` — rank change tracking
+- `privacy_validation_df: pd.DataFrame` — compliance validation
+
+### DataLoader
+
+**Location**: `core/data_loader.py`
+
+| Method | Purpose |
+|--------|---------|
+| `load_from_csv(file_path)` | Load CSV with normalization |
+| `_normalize_columns(df)` | Lowercase + underscores |
+| `validate_minimal_schema(df)` | Check required columns |
+| `get_available_dimensions(df)` | Auto-detect dimensions |
+
+### PrivacyValidator
+
+**Location**: `core/privacy_validator.py`
+
+```python
+PrivacyValidator(
+    min_participants: int = 5,
+    max_concentration: float = 25.0,
+    rule_name: Optional[str] = None,
+    protected_entities: Optional[List[str]] = None,
+    protected_max_concentration: float = 25.0
+)
+```
+
+| Method | Purpose |
+|--------|---------|
+| `validate_peer_group(peer_group, metrics, entity_column)` | Check concentration |
+| `calculate_concentration(peer_group, metric, entity_column)` | Compute shares |
+| `apply_weighting(peer_group, metric, threshold_pct)` | Adjust weights |
+
+---
+
+## 📊 Data Format Requirements
+
+### Input Data Structure
+
+Data must be **"long" format** — one row per entity-dimension combination:
+
+```csv
+issuer_name,flag_domestic,card_type,txn_cnt,tpv
+BANCO SANTANDER,Domestic,CREDIT,125000,15000000
+BANCO SANTANDER,Domestic,DEBIT,200000,8000000
+ITAU UNIBANCO,Domestic,CREDIT,180000,22000000
+```
+
+### Column Normalization
+
+`DataLoader._normalize_columns()` applies:
+1. Convert to lowercase
+2. Replace spaces with underscores
+
+### Standard Column Aliases
+
+| Input | Normalized To |
+|-------|---------------|
+| `txn_cnt`, `txn_count` | `transaction_count` |
+| `tpv`, `amt` | `transaction_amount` |
+| `appr_txns` | `approved_count` |
+| `fraud_cnt` | `fraud_count` |
+
+### CLI Gotcha
+
+> **Column names in CLI flags must match the CSV AFTER normalization**, not before.
+
+---
+
+## 🖥️ TUI Development Patterns
+
+**See also**: `.github/copilot-instructions.md`
+
+### Key Patterns
+
+1. **Use `FileListItem`** for file lists to avoid ID collisions with paths
+2. **Populate `Select` widgets** with `pd.read_csv(..., nrows=0)` for header-only reads
+3. **Use `Select`** for single-choice fields (columns, entities)
+4. **Use `Input`** for multi-value fields (secondary metrics, dimensions)
+5. **Use `SelectionList`** for multi-select (dimensions)
+
+### TUI Classes
+
+| Class | Purpose |
+|-------|---------|
+| `BenchmarkApp` | Main Textual App |
+| `FileListItem` | ListView item storing file path |
+| `LogHandler` | Redirects logging to TUI Log widget |
+| `PresetHelpScreen` | Modal screen for preset help |
+
+---
+
+## 📋 CLI Command Reference
+
+### Share Analysis
+
+```powershell
+py benchmark.py share ^
+  --csv data\sample.csv ^
+  --entity "BANCO SANTANDER" ^
+  --metric transaction_count ^
+  --dimensions flag_domestic card_type ^
+  --time-col year_month ^
+  --preset compliance_strict ^
+  --debug ^
+  --export-balanced-csv
+```
+
+### Rate Analysis
+
+```powershell
+py benchmark.py rate ^
+  --csv data\sample.csv ^
+  --entity "ENTITY_NAME" ^
+  --total-col amt_total ^
+  --approved-col amt_approved ^
+  --fraud-col amt_fraud ^
+  --dimensions flag_domestic card_type ^
+  --time-col year_month ^
+  --preset balanced_default
+```
+
+### Config Management
+
+```powershell
+py benchmark.py config list              # List presets
+py benchmark.py config show <preset>     # Show preset details
+py benchmark.py config validate <file>   # Validate config
+py benchmark.py config generate <output> # Generate template
+```
+
+### Key Flags
+
+| Flag | Analysis | Description |
+|------|----------|-------------|
+| `--csv` | Both | Input CSV file (required) |
+| `--entity` | Both | Target entity (omit for peer-only) |
+| `--metric` | Share | Metric column (required for share) |
+| `--total-col` | Rate | Denominator column (required for rate) |
+| `--approved-col` | Rate | Approval numerator |
+| `--fraud-col` | Rate | Fraud numerator |
+| `--dimensions` | Both | Explicit dimension list |
+| `--auto` | Both | Auto-detect dimensions |
+| `--time-col` | Both | Time-aware consistency |
+| `--preset` | Both | Use preset |
+| `--config` | Both | Custom YAML config |
+| `--debug` | Both | Enable debug sheets |
+| `--per-dimension-weights` | Both | Disable global mode |
+| `--export-balanced-csv` | Both | Export balanced CSV |
+
+---
+
+## 📈 Output Structure
+
+### Excel Sheets
+
+| Sheet | Content | Condition |
+|-------|---------|-----------|
+| Summary | Metadata, inputs, findings | Always |
+| Per-dimension | Target vs peer comparisons | Always |
+| Weight Methods | Method per dimension | Always |
+| Rank Changes | Before/after ranking | Always |
+| Peer Weights | Multipliers and volumes | `--debug` |
+| Privacy Validation | Per-category compliance | `--debug` |
+| Structural Diagnostics | Infeasibility analysis | LP failure |
+| Subset Search | Search attempts | Subset search |
+
+### Weight Method Labels
+
+| Label | Meaning |
+|-------|---------|
+| `Global-LP` | All dimensions solved together |
+| `Per-Dimension-LP` | Dimension solved independently |
+| `Per-Dimension-Bayesian` | Bayesian fallback after LP failure |
+
+### CSV Export Format
+
+```csv
+Dimension,Category,year_month,Balanced_Total,Balanced_Approval_Total,Balanced_Fraud_Total
+fl_token,Non-tokenized,2024-01,203796570874.8,151927893365.16,185177975.02
+```
+
+---
+
+## 🐛 Debugging & Testing
+
+### Validate CSV Output
+
+```powershell
+py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
+```
+
+### Common Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `Entity not found` | Case mismatch | Match exact entity name |
+| `No valid dimensions` | All filtered | Use `--dimensions` explicitly |
+| `LP Infeasible` | Structural impossibility | Check Structural Diagnostics sheet |
+| `Column not found` | Name mismatch | Check normalized column names |
+| `Memory error` | High cardinality | Limit dimensions |
+
+### LP Solver Fallback Order
+
+1. `highs` (default)
+2. `highs-ds` (dual simplex)
+3. `highs-ipm` (interior point)
+
+---
+
+## 🔨 Common Modification Patterns
+
+### Adding a New Preset
+
+```yaml
+# presets/my_preset.yaml
+version: "3.0"
+preset_name: "my_preset"
+description: "My custom intent"
+
+optimization:
+  linear_programming:
+    tolerance: 3.0  # Only override what differs
+```
+
+Test: `py benchmark.py config show my_preset`
+
+### Modifying LP Formulation
+
+Key location: `DimensionalAnalyzer._solve_global_weights_lp()`
+
+```python
+# Variable layout:
+# [m₀...mₚ₋₁, t⁺₀...t⁺ₚ₋₁, t⁻₀...t⁻ₚ₋₁, s_cap₀..., s_rank₀...]
+```
+
+### Adding New Column Aliases
+
+1. `utils/config_manager.py` → `DEFAULT_COLUMN_MAPPING`
+2. `core/data_loader.py` → `validate_minimal_schema()`
+3. `benchmark.py` → `create_parser()` choices
+
+---
+
+## 📚 Dependencies
+
+```
+pandas>=1.3.0       # Data manipulation
+numpy>=1.21.0       # Numerical operations
+openpyxl>=3.0.0     # Excel output
+PyYAML>=6.0         # Configuration
+scipy>=1.8.0        # LP solver (linprog)
+pypyodbc>=1.3.6     # SQL support (optional)
+textual>=0.40.0     # TUI framework
+python-dateutil>=2.8.0
+```
+
+---
+
+## 🎨 Code Style
+
+| Aspect | Standard |
+|--------|----------|
+| Python | 3.8+ |
+| Type hints | Required on public methods |
+| Docstrings | NumPy style |
+| Logging | `logger = logging.getLogger(__name__)` |
+| Config access | Via `ConfigManager.get()` only |
+
+---
+
+## 🚨 Critical Warnings
+
+| Rule | Reason |
+|------|--------|
+| **NEVER bypass privacy caps** | Legal compliance requirement |
+| **NEVER modify `presets/` files** | Create new presets instead |
+| **NEVER hardcode config values** | Use `ConfigManager.get()` |
+| **NEVER source params from raw CLI args** | Must use merged `opt_config` |
+| **Entity names are case-sensitive** | Must match data exactly |
+| **Output files are gitignored** | `.xlsx`, `.csv`, `.log` won't commit |
+| **TUI and CLI share `core/`** | Changes affect both interfaces |
+
+---
+
+## 📂 Gitignored Patterns
+
+```
+*.xlsx, *.csv, *.log      # Output files
+__pycache__/, *.pyc       # Python cache
+venv/, env/, .venv/       # Virtual environments
+.vscode/, .idea/          # IDE configs
+data/*.csv                # Input data
+/offline_packages/*       # Offline install bundles
+```
