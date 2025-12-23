@@ -7,8 +7,17 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 TOOL_SCRIPT="$SCRIPT_DIR/run_tool.sh"
 
-# Make sure the tool script is executable
-chmod +x "$TOOL_SCRIPT"
+# Try to make the tool script executable (may fail for non-owners on shared filesystems)
+# This is non-critical if the file already has execute permissions
+if ! chmod +x "$TOOL_SCRIPT" 2>/dev/null; then
+    echo "Note: Could not modify permissions (you may not be the file owner)."
+    if [ -x "$TOOL_SCRIPT" ]; then
+        echo "      The script is already executable - continuing."
+    else
+        echo "WARNING: $TOOL_SCRIPT is not executable and could not be made executable."
+        echo "         Ask the file owner to run: chmod +x $TOOL_SCRIPT"
+    fi
+fi
 
 # Determine shell config file
 # Check for kshrc first since the user seems to be using ksh

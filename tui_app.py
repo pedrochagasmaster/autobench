@@ -7,6 +7,7 @@ import pandas as pd
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List
+import yaml
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
@@ -25,7 +26,8 @@ from textual.widgets import (
     ListView,
     ListItem,
     SelectionList,
-    Markdown
+    Markdown,
+    Collapsible
 )
 from textual.worker import Worker, WorkerState
 from textual import work
@@ -127,6 +129,15 @@ class PresetHelpScreen(ModalScreen):
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
 
+    BINDINGS = [
+        ("ctrl+o", "open_file", "Open CSV"),
+        ("ctrl+r", "run_analysis", "Run"),
+        ("f1", "show_help", "Help"),
+        ("escape", "close_browser", "Close"),
+        ("ctrl+a", "toggle_advanced", "Advanced"),
+        ("ctrl+e", "export_advanced", "Export Adv"),
+    ]
+
     CSS = """
     Screen {
         align: center middle;
@@ -146,6 +157,22 @@ class BenchmarkApp(App):
         margin-bottom: 1;
     }
 
+    .subsection-title {
+        text-style: italic;
+        color: $text-muted;
+        margin-bottom: 0;
+    }
+
+    .field-label {
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    .field-pair {
+        height: auto;
+        margin-bottom: 1;
+    }
+
     .input-group {
         height: auto;
         margin-bottom: 1;
@@ -161,7 +188,7 @@ class BenchmarkApp(App):
         margin-bottom: 1;
     }
 
-    .split-inputs Input {
+    .split-inputs Input, .split-inputs Select {
         width: 1fr;
         margin-right: 1;
     }
@@ -211,6 +238,49 @@ class BenchmarkApp(App):
     #btn_preset_help {
         min-width: 10;
     }
+
+    /* Advanced Optimization Section */
+    #advanced_opt {
+        border: solid $accent;
+        padding: 1 1;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+    
+    #advanced_form {
+        height: auto;
+    }
+
+    .adv-group-title {
+        text-style: bold;
+        color: $warning;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+
+    .adv-field-label {
+        color: $text;
+        margin-bottom: 0;
+    }
+
+    #advanced_form .field-pair {
+        margin-bottom: 0;
+    }
+
+    #advanced_form .input-group {
+        margin-bottom: 0;
+    }
+
+    /* Textual CSS does not support fractional spacing; use whole numbers */
+    #advanced_form Input, #advanced_form Checkbox {
+        margin-bottom: 1;
+    }
+
+    #advanced_form Button {
+        margin-bottom: 0;
+    }
+
+    /* flex-wrap not supported in textual; rely on vertical containers for narrow terminals */
     """
 
     TITLE = "Privacy-Compliant Peer Benchmark Tool"
@@ -221,64 +291,203 @@ class BenchmarkApp(App):
         yield Header()
         
         with Container(classes="main-container"):
-            yield Label("Configuration", classes="section-title")
-            
-            # Common Inputs
+            # ═══════════════════════════════════════════════════════════════
+            # DATA SOURCE
+            # ═══════════════════════════════════════════════════════════════
+            yield Label("Data Source", classes="section-title")
+            yield Label("CSV File Path", classes="field-label")
             with Horizontal(classes="input-group"):
-                yield Button("Select CSV", id="btn_browse_csv", variant="default")
-                yield Input(placeholder="Path to CSV file (e.g., data/input.csv)", id="csv_path", classes="file-input")
+                yield Button("Browse...", id="btn_browse_csv", variant="default")
+                yield Input(id="csv_path", classes="file-input")
             
             # File Browser (Hidden by default)
             yield ListView(id="file_list", classes="file-browser")
 
+            # ═══════════════════════════════════════════════════════════════
+            # ENTITY CONFIGURATION
+            # ═══════════════════════════════════════════════════════════════
+            yield Label("Entity Configuration", classes="section-title")
             with Horizontal(classes="input-group"):
-                yield Select([], prompt="Select Entity Column", id="entity_col")
-                yield Select([], prompt="Select Target Entity", id="entity_name")
+                with Vertical(classes="field-pair"):
+                    yield Label("Entity ID Column", classes="field-label")
+                    yield Select([], prompt="Select column...", id="entity_col")
+                with Vertical(classes="field-pair"):
+                    yield Label("Target Entity (blank = peer-only)", classes="field-label")
+                    yield Select([], prompt="Select entity...", id="entity_name", allow_blank=True)
             
+            # ═══════════════════════════════════════════════════════════════
+            # ANALYSIS OPTIONS
+            # ═══════════════════════════════════════════════════════════════
+            yield Label("Analysis Options", classes="section-title")
             with Horizontal(classes="input-group"):
-                yield Input(placeholder="Output Filename (Optional)", id="output_file")
+                with Vertical(classes="field-pair"):
+                    yield Label("Time Period Column (optional)", classes="field-label")
+                    yield Select([], prompt="Select column...", id="time_col", allow_blank=True)
+                with Vertical(classes="field-pair"):
+                    yield Label("Output Filename", classes="field-label")
+                    yield Input(placeholder="Auto-generated if blank", id="output_file")
 
-            with Horizontal(classes="input-group"):
-                yield Select([], prompt="Select Preset", id="preset_select")
-                yield Button("Help", id="btn_preset_help", variant="default")
+            with Vertical(classes="field-pair"):
+                yield Label("Optimization Preset", classes="field-label")
+                with Horizontal(classes="input-group"):
+                    yield Select([], prompt="Select preset...", id="preset_select")
+                    yield Button("Preset Guide", id="btn_preset_help", variant="default")
 
-            # Mode Selection
-            with TabbedContent(initial="share_tab"):
-                # Share Analysis Tab
-                with TabPane("Share Analysis", id="share_tab"):
-                    yield Label("Metric Configuration")
-                    yield Select([], prompt="Select Primary Metric", id="share_metric")
-                    
-                    yield Label("Secondary Metrics")
-                    yield SelectionList(id="share_secondary", classes="multi-select")
-                    
-                    yield Label("Dimensions")
+            # ═══════════════════════════════════════════════════════════════
+            # ADVANCED OPTIMIZATION (collapsed by default)
+            # ═══════════════════════════════════════════════════════════════
+            with Collapsible(title="Advanced Optimization Parameters", id="advanced_opt", collapsed=True):
+                with Vertical(id="advanced_form"):
+                    # ───────────────────────────────────────────
+                    # LINEAR PROGRAMMING
+                    # ───────────────────────────────────────────
+                    yield Label("Linear Programming", classes="adv-group-title")
                     with Horizontal(classes="input-group"):
-                        yield Checkbox("Auto-detect Dimensions", value=True, id="share_auto_dim")
-                        yield Checkbox("Debug Mode", value=False, id="share_debug")
-                        yield Checkbox("Export Balanced CSV", value=False, id="share_export_csv")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Tolerance (pp)", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Max Iterations", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Lambda Penalty", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Volume Weighting Exponent", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent")
+                    with Horizontal(classes="input-group"):
+                        yield Checkbox("Enable Volume-Weighted Penalties", id="adv_lp_volume_weighted_penalties")
+
+                    # ───────────────────────────────────────────
+                    # CONSTRAINTS
+                    # ───────────────────────────────────────────
+                    yield Label("Constraints", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Volume Preservation", classes="adv-field-label")
+                            yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation")
+
+                    # ───────────────────────────────────────────
+                    # BOUNDS
+                    # ───────────────────────────────────────────
+                    yield Label("Weight Bounds", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Min Weight", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Max Weight", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight")
+
+                    # ───────────────────────────────────────────
+                    # SUBSET SEARCH
+                    # ───────────────────────────────────────────
+                    yield Label("Subset Search", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        yield Checkbox("Enable Subset Search", id="adv_subset_enabled")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Strategy", classes="adv-field-label")
+                            yield Input(placeholder="greedy / random", id="adv_subset_strategy")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Max Attempts", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Max Slack Threshold", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold")
+                    with Horizontal(classes="input-group"):
+                        yield Checkbox("Trigger on Slack", id="adv_subset_trigger_on_slack")
+                        yield Checkbox("Prefer Slacks First", id="adv_subset_prefer_slacks_first")
+
+                    # ───────────────────────────────────────────
+                    # BAYESIAN FALLBACK
+                    # ───────────────────────────────────────────
+                    yield Label("Bayesian Optimization (Fallback)", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Max Iterations", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Learning Rate", classes="adv-field-label")
+                            yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate")
+
+                    # ───────────────────────────────────────────
+                    # ANALYSIS SETTINGS
+                    # ───────────────────────────────────────────
+                    yield Label("Analysis Settings", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        with Vertical(classes="field-pair"):
+                            yield Label("Best-in-Class Percentile", classes="adv-field-label")
+                            yield Input(placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile")
+
+                    # ───────────────────────────────────────────
+                    # OUTPUT SETTINGS
+                    # ───────────────────────────────────────────
+                    yield Label("Output Settings", classes="adv-group-title")
+                    with Horizontal(classes="input-group"):
+                        yield Checkbox("Include Debug Sheets", id="adv_output_debug_sheets")
+                        yield Checkbox("Include Privacy Validation", id="adv_output_privacy_validation")
+
+                    # ───────────────────────────────────────────
+                    # ACTIONS
+                    # ───────────────────────────────────────────
+                    with Horizontal(classes="input-group"):
+                        yield Button("Apply Overrides", id="btn_apply_advanced", variant="primary")
+                        yield Button("Export Config", id="btn_export_advanced", variant="default")
+                    yield Label("Values override preset when applied.", classes="subsection-title")
+
+            # ═══════════════════════════════════════════════════════════════
+            # ANALYSIS MODE TABS
+            # ═══════════════════════════════════════════════════════════════
+            with TabbedContent(initial="share_tab"):
+                # ───────────────────────────────────────────
+                # SHARE ANALYSIS TAB
+                # ───────────────────────────────────────────
+                with TabPane("Share Analysis", id="share_tab"):
+                    with Vertical(classes="field-pair"):
+                        yield Label("Primary Metric Column", classes="field-label")
+                        yield Select([], prompt="Select column...", id="share_metric")
                     
-                    yield Label("Specific Dimensions", id="share_dims_label", classes="hidden")
+                    with Vertical(classes="field-pair"):
+                        yield Label("Secondary Metrics (Optional)", classes="field-label")
+                        yield SelectionList(id="share_secondary", classes="multi-select")
+                    
+                    yield Label("Dimension Options", classes="subsection-title")
+                    with Horizontal(classes="input-group"):
+                        yield Checkbox("Auto-detect Dimensions", value=False, id="share_auto_dim")
+                        yield Checkbox("Include Debug Sheets", value=True, id="share_debug")
+                        yield Checkbox("Export Balanced CSV", value=True, id="share_export_csv")
+                    
+                    yield Label("Manual Dimension Selection", id="share_dims_label", classes="hidden")
                     yield SelectionList(id="share_dims", classes="multi-select hidden")
 
-                # Rate Analysis Tab
+                # ───────────────────────────────────────────
+                # RATE ANALYSIS TAB
+                # ───────────────────────────────────────────
                 with TabPane("Rate Analysis", id="rate_tab"):
-                    yield Label("Column Configuration")
-                    yield Select([], prompt="Select Total Column", id="rate_total")
+                    with Vertical(classes="field-pair"):
+                        yield Label("Total Column (denominator)", classes="field-label")
+                        yield Select([], prompt="Select column...", id="rate_total")
                     with Horizontal(classes="split-inputs"):
-                        yield Select([], prompt="Select Approved Column", id="rate_approved")
-                        yield Select([], prompt="Select Fraud Column", id="rate_fraud")
+                        with Vertical(classes="field-pair"):
+                            yield Label("Approved Column", classes="field-label")
+                            yield Select([], prompt="Select column...", id="rate_approved", allow_blank=True)
+                        with Vertical(classes="field-pair"):
+                            yield Label("Fraud Column", classes="field-label")
+                            yield Select([], prompt="Select column...", id="rate_fraud", allow_blank=True)
                     
-                    yield Label("Secondary Metrics")
-                    yield SelectionList(id="rate_secondary", classes="multi-select")
+                    with Vertical(classes="field-pair"):
+                        yield Label("Secondary Metrics (Optional)", classes="field-label")
+                        yield SelectionList(id="rate_secondary", classes="multi-select")
 
-                    yield Label("Dimensions")
+                    yield Label("Dimension Options", classes="subsection-title")
                     with Horizontal(classes="input-group"):
                         yield Checkbox("Auto-detect Dimensions", value=True, id="rate_auto_dim")
-                        yield Checkbox("Debug Mode", value=False, id="rate_debug")
+                        yield Checkbox("Include Debug Sheets", value=False, id="rate_debug")
                         yield Checkbox("Export Balanced CSV", value=False, id="rate_export_csv")
                     
-                    yield Label("Specific Dimensions", id="rate_dims_label", classes="hidden")
+                    yield Label("Manual Dimension Selection", id="rate_dims_label", classes="hidden")
                     yield SelectionList(id="rate_dims", classes="multi-select hidden")
 
             # Action
@@ -298,6 +507,8 @@ class BenchmarkApp(App):
         
         # Set initial focus
         self.query_one("#csv_path").focus()
+        # Quick guidance notify
+        self.notify("Ctrl+A: toggle advanced | Ctrl+E: export overrides", title="Shortcuts", severity="information", timeout=5)
 
     def populate_file_list(self):
         """Populate the file list with CSV files from current directory and data/."""
@@ -317,6 +528,7 @@ class BenchmarkApp(App):
             
             # Update Select widgets
             self.query_one("#entity_col").set_options(options)
+            self.query_one("#time_col").set_options(options)
             self.query_one("#share_metric").set_options(options)
             self.query_one("#rate_total").set_options(options)
             self.query_one("#rate_approved").set_options(options)
@@ -336,9 +548,13 @@ class BenchmarkApp(App):
                 self.query_one("#rate_total").value = "txn_cnt"
             if "app_cnt" in cols:
                 self.query_one("#rate_approved").value = "app_cnt"
+            
+            # Notify user
+            self.notify(f"Loaded {len(cols)} columns from CSV", title="CSV Loaded", severity="information", timeout=5)
                 
         except Exception as e:
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
+            self.notify(f"Failed to read CSV: {e}", title="CSV Error", severity="error")
 
     def update_secondary_options(self, list_id, exclude=None):
         """Update options in a SelectionList, excluding specified values."""
@@ -385,6 +601,108 @@ class BenchmarkApp(App):
             
         self.query_one("#preset_select").set_options(options)
         self.query_one("#preset_select").value = options[0][0] if options else None
+        if options:
+            self.update_advanced_parameters(options[0][0])
+        # Track custom override file path
+        self.advanced_config_path = None
+
+    def update_advanced_parameters(self, preset_name: str) -> None:
+        """Populate editable advanced optimization inputs from preset YAML."""
+        presets_dir = Path(__file__).parent / "presets"
+        preset_path = presets_dir / f"{preset_name}.yaml"
+        
+        # Clear all advanced inputs
+        for inp in self.query("Input"):
+            if inp.id and inp.id.startswith("adv_"):
+                inp.value = ""
+        for cb in self.query("Checkbox"):
+            if cb.id and cb.id.startswith("adv_"):
+                cb.value = False
+                
+        if not preset_path.exists():
+            return
+        try:
+            with open(preset_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            return
+
+        opt = data.get("optimization", {})
+        lp = opt.get("linear_programming", {})
+        bounds = opt.get("bounds", {})
+        subset = opt.get("subset_search", {})
+        constraints = opt.get("constraints", {})
+        bayes = opt.get("bayesian", {})
+        analysis = data.get("analysis", {})
+        output = data.get("output", {})
+        
+        # Helper to safely set Input value
+        def safe_set_input(field_id, value):
+            try:
+                self.query_one(f"#{field_id}", Input).value = str(value)
+            except Exception:
+                pass
+        
+        # Helper to safely set Checkbox value
+        def safe_set_checkbox(field_id, value):
+            try:
+                self.query_one(f"#{field_id}", Checkbox).value = bool(value)
+            except Exception:
+                pass
+
+        # LINEAR PROGRAMMING
+        if "tolerance" in lp:
+            safe_set_input("adv_lp_tolerance", lp["tolerance"])
+        if "max_iterations" in lp:
+            safe_set_input("adv_lp_max_iterations", lp["max_iterations"])
+        if "lambda_penalty" in lp:
+            safe_set_input("adv_lp_lambda_penalty", lp["lambda_penalty"])
+        if "volume_weighting_exponent" in lp:
+            safe_set_input("adv_lp_volume_weighting_exponent", lp["volume_weighting_exponent"])
+        if "volume_weighted_penalties" in lp:
+            safe_set_checkbox("adv_lp_volume_weighted_penalties", lp["volume_weighted_penalties"])
+        
+        # CONSTRAINTS
+        if "volume_preservation" in constraints:
+            safe_set_input("adv_constraints_volume_preservation", constraints["volume_preservation"])
+        
+        # BOUNDS
+        if "min_weight" in bounds:
+            safe_set_input("adv_bounds_min_weight", bounds["min_weight"])
+        if "max_weight" in bounds:
+            safe_set_input("adv_bounds_max_weight", bounds["max_weight"])
+        
+        # SUBSET SEARCH
+        if subset.get("enabled") is not None:
+            safe_set_checkbox("adv_subset_enabled", subset["enabled"])
+        if subset.get("strategy"):
+            safe_set_input("adv_subset_strategy", subset["strategy"])
+        # max_attempts or max_tests (alias)
+        max_att = subset.get("max_attempts") or subset.get("max_tests")
+        if max_att is not None:
+            safe_set_input("adv_subset_max_attempts", max_att)
+        if subset.get("max_slack_threshold") is not None:
+            safe_set_input("adv_subset_max_slack_threshold", subset["max_slack_threshold"])
+        if subset.get("trigger_on_slack") is not None:
+            safe_set_checkbox("adv_subset_trigger_on_slack", subset["trigger_on_slack"])
+        if subset.get("prefer_slacks_first") is not None:
+            safe_set_checkbox("adv_subset_prefer_slacks_first", subset["prefer_slacks_first"])
+        
+        # BAYESIAN
+        if "max_iterations" in bayes:
+            safe_set_input("adv_bayes_max_iterations", bayes["max_iterations"])
+        if "learning_rate" in bayes:
+            safe_set_input("adv_bayes_learning_rate", bayes["learning_rate"])
+        
+        # ANALYSIS
+        if "best_in_class_percentile" in analysis:
+            safe_set_input("adv_analysis_bic_percentile", analysis["best_in_class_percentile"])
+        
+        # OUTPUT
+        if "include_debug_sheets" in output:
+            safe_set_checkbox("adv_output_debug_sheets", output["include_debug_sheets"])
+        if "include_privacy_validation" in output:
+            safe_set_checkbox("adv_output_privacy_validation", output["include_privacy_validation"])
 
     def setup_logging_capture(self):
         """Redirect logging to the TUI Log widget."""
@@ -404,10 +722,7 @@ class BenchmarkApp(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
         if event.button.id == "btn_browse_csv":
-            file_list = self.query_one("#file_list")
-            file_list.toggle_class("-visible")
-            if "-visible" in file_list.classes:
-                file_list.focus()
+            self.action_open_file()
                 
         elif event.button.id == "btn_run":
             self.run_analysis()
@@ -417,6 +732,31 @@ class BenchmarkApp(App):
             
         elif event.button.id == "btn_help_presets":
             self.push_screen(PresetHelpScreen())
+        elif event.button.id == "btn_apply_advanced":
+            self.apply_advanced_overrides()
+        elif event.button.id == "btn_export_advanced":
+            self.export_advanced_overrides()
+
+    def action_open_file(self) -> None:
+        """Open file browser (Ctrl+O)."""
+        file_list = self.query_one("#file_list")
+        file_list.add_class("-visible")
+        file_list.focus()
+
+    def action_run_analysis(self) -> None:
+        """Run analysis (Ctrl+R)."""
+        self.run_analysis()
+
+    def action_show_help(self) -> None:
+        """Show preset help (F1)."""
+        self.push_screen(PresetHelpScreen())
+
+    def action_close_browser(self) -> None:
+        """Close file browser (Escape)."""
+        file_list = self.query_one("#file_list")
+        if "-visible" in file_list.classes:
+            file_list.remove_class("-visible")
+            self.query_one("#csv_path").focus()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox toggles."""
@@ -465,6 +805,182 @@ class BenchmarkApp(App):
              
         elif event.select.id == "rate_total":
              self.update_secondary_options("#rate_secondary", exclude=[event.value])
+
+        elif event.select.id == "preset_select":
+            if event.value != Select.BLANK:
+                self.update_advanced_parameters(event.value)
+                if not self.query_one("#advanced_opt").collapsed:
+                    self.notify(f"Preset '{event.value}' parameters refreshed", title="Advanced Optimization", severity="information", timeout=4)
+
+    def action_toggle_advanced(self) -> None:
+        """Toggle the advanced optimization collapsible (Ctrl+A)."""
+        collapsible = self.query_one("#advanced_opt")
+        collapsible.collapsed = not collapsible.collapsed
+        if not collapsible.collapsed:
+            preset_val = self.query_one("#preset_select").value
+            if preset_val and preset_val != Select.BLANK:
+                self.update_advanced_parameters(preset_val)
+            self.notify("Advanced parameters visible", title="Advanced Optimization", severity="information", timeout=3)
+        else:
+            self.notify("Advanced parameters hidden", title="Advanced Optimization", severity="information", timeout=3)
+
+    def action_export_advanced(self) -> None:
+        """Keyboard shortcut to export advanced overrides (Ctrl+E)."""
+        # Ensure overrides exist
+        if self.query_one("#advanced_opt").collapsed:
+            self.notify("Expanding advanced section to ensure values are current", title="Export Adv", severity="information", timeout=3)
+            self.query_one("#advanced_opt").collapsed = False
+            preset_val = self.query_one("#preset_select").value
+            if preset_val and preset_val != Select.BLANK:
+                self.update_advanced_parameters(preset_val)
+        # Apply then export
+        self.apply_advanced_overrides()
+        self.export_advanced_overrides()
+
+    def apply_advanced_overrides(self) -> None:
+        """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
+        
+        def get_input(fid):
+            try:
+                return self.query_one(f"#{fid}", Input).value.strip()
+            except Exception:
+                return ""
+        
+        def try_number(v):
+            if v == "":
+                return None
+            try:
+                return float(v) if '.' in v else int(v)
+            except ValueError:
+                return v
+        
+        def get_bool(cid):
+            try:
+                return self.query_one(f"#{cid}", Checkbox).value
+            except Exception:
+                return False
+
+        # LINEAR PROGRAMMING
+        lp = {}
+        val = try_number(get_input("adv_lp_tolerance"))
+        if val is not None:
+            lp["tolerance"] = val
+        val = try_number(get_input("adv_lp_max_iterations"))
+        if val is not None:
+            lp["max_iterations"] = val
+        val = try_number(get_input("adv_lp_lambda_penalty"))
+        if val is not None:
+            lp["lambda_penalty"] = val
+        val = try_number(get_input("adv_lp_volume_weighting_exponent"))
+        if val is not None:
+            lp["volume_weighting_exponent"] = val
+        lp["volume_weighted_penalties"] = get_bool("adv_lp_volume_weighted_penalties")
+
+        # CONSTRAINTS
+        constraints = {}
+        val = try_number(get_input("adv_constraints_volume_preservation"))
+        if val is not None:
+            constraints["volume_preservation"] = val
+
+        # BOUNDS
+        bounds = {}
+        val = try_number(get_input("adv_bounds_min_weight"))
+        if val is not None:
+            bounds["min_weight"] = val
+        val = try_number(get_input("adv_bounds_max_weight"))
+        if val is not None:
+            bounds["max_weight"] = val
+
+        # SUBSET SEARCH
+        subset = {}
+        subset["enabled"] = get_bool("adv_subset_enabled")
+        val = get_input("adv_subset_strategy")
+        if val:
+            subset["strategy"] = val
+        val = try_number(get_input("adv_subset_max_attempts"))
+        if val is not None:
+            subset["max_attempts"] = val
+        val = try_number(get_input("adv_subset_max_slack_threshold"))
+        if val is not None:
+            subset["max_slack_threshold"] = val
+        subset["trigger_on_slack"] = get_bool("adv_subset_trigger_on_slack")
+        subset["prefer_slacks_first"] = get_bool("adv_subset_prefer_slacks_first")
+
+        # BAYESIAN
+        bayesian = {}
+        val = try_number(get_input("adv_bayes_max_iterations"))
+        if val is not None:
+            bayesian["max_iterations"] = val
+        val = try_number(get_input("adv_bayes_learning_rate"))
+        if val is not None:
+            bayesian["learning_rate"] = val
+
+        # ANALYSIS
+        analysis = {}
+        val = try_number(get_input("adv_analysis_bic_percentile"))
+        if val is not None:
+            analysis["best_in_class_percentile"] = val
+
+        # OUTPUT
+        output = {}
+        output["include_debug_sheets"] = get_bool("adv_output_debug_sheets")
+        output["include_privacy_validation"] = get_bool("adv_output_privacy_validation")
+
+        # Build config
+        optimization = {}
+        if lp:
+            optimization["linear_programming"] = lp
+        if constraints:
+            optimization["constraints"] = constraints
+        if bounds:
+            optimization["bounds"] = bounds
+        if subset:
+            optimization["subset_search"] = subset
+        if bayesian:
+            optimization["bayesian"] = bayesian
+
+        yaml_data = {"version": "tui-override"}
+        if optimization:
+            yaml_data["optimization"] = optimization
+        if analysis:
+            yaml_data["analysis"] = analysis
+        if output:
+            yaml_data["output"] = output
+
+        if len(yaml_data) == 1:  # only version key
+            self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
+            return
+
+        tmp_path = Path(".tui_advanced_overrides.yaml")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(yaml_data, f, sort_keys=False)
+            self.advanced_config_path = str(tmp_path)
+            self.notify(f"Advanced overrides applied (file: {tmp_path.name})", title="Advanced Overrides", severity="information", timeout=6)
+        except Exception as e:
+            self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
+
+    def export_advanced_overrides(self) -> None:
+        """Export current advanced override values to a timestamped YAML file (persistent)."""
+        # Reuse apply collection logic without setting temporary file name
+        if not getattr(self, 'advanced_config_path', None):
+            # Create a temporary first if user hasn't applied
+            self.apply_advanced_overrides()
+            if not getattr(self, 'advanced_config_path', None):
+                return
+        preset_val = self.query_one("#preset_select").value or 'custom'
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        export_name = f"advanced_override_{preset_val}_{ts}.yaml"
+        try:
+            # Read current temp file contents
+            tmp_path = Path(self.advanced_config_path)
+            with open(tmp_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            with open(export_name, 'w', encoding='utf-8') as out:
+                out.write(content)
+            self.notify(f"Exported advanced config: {export_name}", title="Advanced Export", severity="information", timeout=6)
+        except Exception as e:
+            self.notify(f"Failed export: {e}", title="Advanced Export", severity="error", timeout=6)
 
     @work(thread=True)
     def run_analysis(self) -> None:
@@ -523,18 +1039,25 @@ class BenchmarkApp(App):
             args.csv = csv_path
             args.entity = entity if entity else None
             args.preset = preset
-            args.config = None
+            # Use advanced override config if applied
+            args.config = self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None
             
             output_file = self.query_one("#output_file").value
             args.output = output_file if output_file else None
             
             args.entity_col = entity_col if entity_col else "issuer_name"
-            args.time_col = None # Not exposed in simple UI yet
+            
+            time_col_val = self.query_one("#time_col").value
+            args.time_col = time_col_val if time_col_val != Select.BLANK else None
+            
             args.log_level = "INFO"
             
             # Common logger
             logger = logging.getLogger("benchmark")
 
+            # Determine output file name for notification
+            entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
+            
             if active_tab == "share_tab":
                 self.call_from_thread(log_widget.write, "Mode: Share Analysis\n")
                 
@@ -543,6 +1066,7 @@ class BenchmarkApp(App):
                 
                 if not args.metric:
                     self.call_from_thread(log_widget.write, "ERROR: Metric is required for Share Analysis.\n")
+                    self.call_from_thread(self.notify, "Metric is required for Share Analysis", title="Validation Error", severity="error")
                     return
                 
                 sec_metrics = self.query_one("#share_secondary", SelectionList).selected
@@ -556,8 +1080,17 @@ class BenchmarkApp(App):
                 args.per_dimension_weights = False # Default
                 args.export_balanced_csv = self.query_one("#share_export_csv").value
                 
+                # Determine expected output file
+                output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                
                 # Run Share Analysis
-                run_share_analysis(args, logger)
+                result = run_share_analysis(args, logger)
+                
+                if result == 0:
+                    self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+                    self.call_from_thread(self.notify, f"Report saved: {output_file}", title="Share Analysis Complete", severity="information", timeout=10)
+                else:
+                    self.call_from_thread(self.notify, "Analysis failed - check logs for details", title="Share Analysis Failed", severity="error", timeout=10)
 
             elif active_tab == "rate_tab":
                 self.call_from_thread(log_widget.write, "Mode: Rate Analysis\n")
@@ -567,6 +1100,7 @@ class BenchmarkApp(App):
                 
                 if not args.total_col:
                     self.call_from_thread(log_widget.write, "ERROR: Total Column is required for Rate Analysis.\n")
+                    self.call_from_thread(self.notify, "Total Column is required for Rate Analysis", title="Validation Error", severity="error")
                     return
                 
                 approved_val = self.query_one("#rate_approved").value
@@ -580,6 +1114,7 @@ class BenchmarkApp(App):
                 
                 if not args.approved_col and not args.fraud_col:
                     self.call_from_thread(log_widget.write, "ERROR: At least one of Approved Col or Fraud Col is required.\n")
+                    self.call_from_thread(self.notify, "At least one of Approved or Fraud Column is required", title="Validation Error", severity="error")
                     return
 
                 sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
@@ -592,15 +1127,34 @@ class BenchmarkApp(App):
                 args.debug = self.query_one("#rate_debug").value
                 args.export_balanced_csv = self.query_one("#rate_export_csv").value
                 
+                # Determine expected output file
+                rate_types = []
+                if args.approved_col:
+                    rate_types.append('approval')
+                if args.fraud_col:
+                    rate_types.append('fraud')
+                    
+                if args.output:
+                    output_file = args.output
+                elif len(rate_types) > 1:
+                    output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                else:
+                    output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                
                 # Run Rate Analysis
-                run_rate_analysis(args, logger)
-
-            self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+                result = run_rate_analysis(args, logger)
+                
+                if result == 0:
+                    self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+                    self.call_from_thread(self.notify, f"Report saved: {output_file}", title="Rate Analysis Complete", severity="information", timeout=10)
+                else:
+                    self.call_from_thread(self.notify, "Analysis failed - check logs for details", title="Rate Analysis Failed", severity="error", timeout=10)
 
         except Exception as e:
             self.call_from_thread(log_widget.write, f"CRITICAL ERROR: {str(e)}\n")
             import traceback
             self.call_from_thread(log_widget.write, traceback.format_exc())
+            self.call_from_thread(self.notify, f"Critical error: {str(e)}", title="Analysis Failed", severity="error", timeout=15)
         
         finally:
             # Re-enable button
