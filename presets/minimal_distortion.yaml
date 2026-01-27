@@ -1,0 +1,40 @@
+version: "3.0"
+preset_name: "minimal_distortion"
+description: "Minimize distortion - Very high tolerance, prioritizes accuracy over privacy"
+
+# Intent: "I need accurate market share numbers, privacy violations are acceptable."
+# Priority: Minimize distortion at all costs.
+# Trade-off: Will allow significant privacy violations.
+
+optimization:
+  bounds:
+    max_weight: 50.0 # Extremely flexible
+    min_weight: 0.001 # Extremely flexible
+
+  linear_programming:
+    max_iterations: 10000
+    tolerance: 100.0 # Very high - allows large violations
+    lambda_penalty: 1 # Minimal penalty - prioritize weight stability
+    volume_weighted_penalties: true
+    volume_weighting_exponent: 2.0
+
+  constraints:
+    volume_preservation: 0.1 # Very low - maximum flexibility
+
+  subset_search:
+    enabled: false
+    strategy: "greedy"
+    max_tests: 0
+    trigger_on_slack: false
+    max_slack_threshold: 999.0
+    prefer_slacks_first: true
+
+  bayesian:
+    max_iterations: 500
+    learning_rate: 0.1
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

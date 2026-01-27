@@ -2002,13 +2002,14 @@ def get_balanced_metrics_df(
     for dimension in dimensions:
         # Aggregate data by entity, dimension category, and optionally time
         group_cols = [entity_col, dimension]
-        if has_time:
+        # Only add time_col if it's different from the current dimension
+        if has_time and time_col != dimension:
             group_cols.append(time_col)
         
-        # Build aggregation dict
+        # Build aggregation dict - exclude columns that are part of groupby
         agg_dict = {}
         for _, metric in metrics_to_calculate:
-            if metric in df.columns:
+            if metric in df.columns and metric not in group_cols:
                 agg_dict[metric] = 'sum'
         
         if not agg_dict:
@@ -2157,23 +2158,30 @@ def export_balanced_csv(
         for dimension in dimensions:
             # Aggregate data by entity, dimension category, and optionally time
             group_cols = [entity_col, dimension]
-            if has_time:
+            # Only add time_col if it's different from the current dimension
+            if has_time and time_col != dimension:
                 group_cols.append(time_col)
             
-            agg_dict = {total_col: 'sum'}
+            # Build aggregation dict - exclude columns that are part of groupby
+            agg_dict = {}
+            if total_col not in group_cols:
+                agg_dict[total_col] = 'sum'
             
-            # Add numerator columns
+            # Add numerator columns (exclude those in group_cols)
             if numerator_cols:
                 for num_col in numerator_cols.values():
-                    if num_col in df.columns:
+                    if num_col in df.columns and num_col not in group_cols:
                         agg_dict[num_col] = 'sum'
             
-            # Add secondary metrics
+            # Add secondary metrics (exclude those in group_cols)
             if secondary_metrics_list:
                 for sec_metric in secondary_metrics_list:
-                    if sec_metric in df.columns:
+                    if sec_metric in df.columns and sec_metric not in group_cols:
                         agg_dict[sec_metric] = 'sum'
             
+            if not agg_dict:
+                continue
+                
             entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
             
             # Get unique categories
@@ -2306,13 +2314,14 @@ def export_balanced_csv(
         for dimension in dimensions:
             # Aggregate data by entity, dimension category, and optionally time
             group_cols = [entity_col, dimension]
-            if has_time:
+            # Only add time_col if it's different from the current dimension
+            if has_time and time_col != dimension:
                 group_cols.append(time_col)
             
-            # Build aggregation dict for all metrics
+            # Build aggregation dict for all metrics - exclude columns that are part of groupby
             agg_dict = {}
             for _, metric in metrics_to_calculate:
-                if metric in df.columns:
+                if metric in df.columns and metric not in group_cols:
                     agg_dict[metric] = 'sum'
             
             if not agg_dict:

@@ -1,0 +1,40 @@
+version: "3.0"
+preset_name: "low_distortion"
+description: "Minimize distortion - Tight weight bounds to limit market share distortion"
+
+# Intent: "I need low distortion numbers even at the cost of some privacy violations."
+# Priority: Minimize distortion while still attempting privacy compliance.
+# Trade-off: Tighter weight bounds mean less ability to balance, may result in violations.
+
+optimization:
+  bounds:
+    max_weight: 1.0 # Identity - no peer volume changes at all
+    min_weight: 1.0 # Identity - no peer volume changes at all
+
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 10.0 # Allow violations to preserve accuracy
+    lambda_penalty: 1000 # Lower penalty for violations (prioritize accuracy)
+    volume_weighted_penalties: true
+    volume_weighting_exponent: 1.0
+
+  constraints:
+    volume_preservation: 0.5 # Lower - allow more flexibility in weights
+
+  subset_search:
+    enabled: false # Don't drop dimensions
+    strategy: "greedy"
+    max_tests: 0
+    trigger_on_slack: false
+    max_slack_threshold: 999.0
+    prefer_slacks_first: true # Allow slacks instead of dropping
+
+  bayesian:
+    max_iterations: 100
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true
