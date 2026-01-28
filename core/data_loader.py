@@ -6,11 +6,46 @@ Supports multiple data sources (CSV, SQL) and validates schema compliance.
 
 import pandas as pd
 import numpy as np
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from pathlib import Path
+from enum import Enum
+from dataclasses import dataclass, field
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class ValidationSeverity(Enum):
+    """Severity levels for data validation issues."""
+    ERROR = "ERROR"      # Abort analysis - data is invalid
+    WARNING = "WARNING"  # Continue with caution - data quality concern
+    INFO = "INFO"        # Informational - no action required
+
+
+@dataclass
+class ValidationIssue:
+    """Represents a data quality issue found during validation."""
+    severity: ValidationSeverity
+    category: str
+    message: str
+    row_indices: Optional[List[int]] = None
+    auto_fix_available: bool = False
+    fix_description: Optional[str] = None
+    
+    def __str__(self) -> str:
+        return f"[{self.severity.value}] {self.category}: {self.message}"
+
+
+# Default thresholds for data quality validation
+# These can be overridden via config file (input.validation_thresholds)
+VALIDATION_THRESHOLDS = {
+    'min_denominator': 100,           # Minimum total for stable rate calculation
+    'min_peer_count': 5,              # Minimum peers for privacy compliance
+    'max_rate_deviation': 50.0,       # Max rate deviation from 0-100% expected range
+    'min_rows_per_category': 3,       # Minimum rows per category for statistical validity
+    'max_null_percentage': 5.0,       # Max percentage of null values in critical columns
+    'max_entity_concentration': 50.0, # Max single entity concentration (warning threshold)
+}
 
 class DataLoader:
     """
@@ -384,3 +419,336 @@ class DataLoader:
         logger.info(f"Preprocessed: {len(df_clean)} rows remaining")
         
         return df_clean
+    
+    def validate_share_input(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        entity_col: str,
+        dimensions: List[str],
+        time_col: Optional[str] = None,
+        target_entity: Optional[str] = None,
+        thresholds: Optional[Dict[str, Any]] = None
+    ) -> List[ValidationIssue]:
+        """
+        Validate input data for share analysis.
+        
+        Checks for:
+        - Missing required columns
+        - Null values in critical columns
+        - Negative metric values
+        - Entity count (privacy compliance)
+        - Category coverage
+        - Entity concentration
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Input dataframe
+        metric_col : str
+            Column containing metric values (e.g., volume_brl, txn_count)
+        entity_col : str
+            Column containing entity identifiers
+        dimensions : List[str]
+            List of dimension columns
+        time_col : Optional[str]
+            Time column if present
+        target_entity : Optional[str]
+            Target entity for analysis
+        thresholds : Optional[Dict[str, Any]]
+            Custom validation thresholds (overrides defaults)
+            
+        Returns:
+        --------
+        List[ValidationIssue]
+            List of validation issues found
+        """
+        issues: List[ValidationIssue] = []
+        
+        # Merge thresholds with defaults
+        t = {**VALIDATION_THRESHOLDS, **(thresholds or {})}
+        
+        # 1. Check required columns exist
+        required_cols = [metric_col, entity_col] + dimensions
+        if time_col:
+            required_cols.append(time_col)
+            
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="missing_columns",
+                message=f"Required columns not found: {missing_cols}. Available: {list(df.columns)}"
+            ))
+            return issues  # Cannot continue validation without required columns
+        
+        # 2. Check for null values in critical columns
+        for col in required_cols:
+            null_count = df[col].isnull().sum()
+            null_pct = 100.0 * null_count / len(df) if len(df) > 0 else 0
+            
+            if null_pct > t['max_null_percentage']:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="null_values",
+                    message=f"Column '{col}' has {null_pct:.1f}% null values (threshold: {t['max_null_percentage']}%)",
+                    row_indices=df[df[col].isnull()].index.tolist()[:100],
+                    auto_fix_available=True,
+                    fix_description=f"Fill nulls with 0 or mode for categorical columns"
+                ))
+            elif null_count > 0:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="null_values",
+                    message=f"Column '{col}' has {null_count} null values ({null_pct:.2f}%)",
+                    row_indices=df[df[col].isnull()].index.tolist()[:20]
+                ))
+        
+        # 3. Check for negative metric values
+        negative_mask = df[metric_col] < 0
+        if negative_mask.any():
+            negative_count = negative_mask.sum()
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="negative_values",
+                message=f"Metric column '{metric_col}' has {negative_count} negative values",
+                row_indices=df[negative_mask].index.tolist()[:50]
+            ))
+        
+        # 4. Check entity count (privacy compliance)
+        unique_entities = df[entity_col].nunique()
+        target_match = None
+        if target_entity:
+            if target_entity in df[entity_col].values:
+                target_match = target_entity
+            else:
+                entity_upper = str(target_entity).upper()
+                for e in df[entity_col].unique():
+                    if e is not None and str(e).upper() == entity_upper:
+                        target_match = str(e)
+                        break
+        peer_count = unique_entities - 1 if target_match else unique_entities
+        if peer_count < t['min_peer_count']:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="insufficient_peers",
+                message=f"Only {peer_count} peer entities found (excluding target). Minimum {t['min_peer_count']} required for privacy compliance."
+            ))
+        
+        # 5. Check if target entity exists in data
+        if target_entity:
+            if target_match is None:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="missing_entity",
+                    message=f"Target entity '{target_entity}' not found in data. Available entities: {df[entity_col].unique()[:10].tolist()}"
+                ))
+            elif target_match != target_entity:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.INFO,
+                    category="entity_case",
+                    message=f"Target entity found with different case: '{target_match}'"
+                ))
+        
+        # 6. Check minimum rows per category (for each dimension)
+        for dim in dimensions:
+            category_counts = df[dim].value_counts()
+            small_categories = category_counts[category_counts < t['min_rows_per_category']]
+            if len(small_categories) > 0:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="small_categories",
+                    message=f"Dimension '{dim}' has {len(small_categories)} categories with fewer than {t['min_rows_per_category']} rows: {small_categories.index.tolist()[:5]}"
+                ))
+        
+        # 7. Check entity concentration
+        total_metric = df[metric_col].sum()
+        if total_metric > 0:
+            entity_shares = df.groupby(entity_col)[metric_col].sum() / total_metric * 100
+            high_concentration = entity_shares[entity_shares > t['max_entity_concentration']]
+            if len(high_concentration) > 0:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="high_concentration",
+                    message=f"High entity concentration detected: {dict(high_concentration.round(1))}. Consider balanced weighting."
+                ))
+        
+        logger.info(f"Share validation complete: {len([i for i in issues if i.severity == ValidationSeverity.ERROR])} errors, "
+                   f"{len([i for i in issues if i.severity == ValidationSeverity.WARNING])} warnings")
+        
+        return issues
+    
+    def validate_rate_input(
+        self,
+        df: pd.DataFrame,
+        total_col: str,
+        numerator_cols: Dict[str, str],
+        entity_col: str,
+        dimensions: List[str],
+        time_col: Optional[str] = None,
+        target_entity: Optional[str] = None,
+        thresholds: Optional[Dict[str, Any]] = None
+    ) -> List[ValidationIssue]:
+        """
+        Validate input data for rate analysis.
+        
+        Checks for:
+        - Missing required columns
+        - Null values in critical columns
+        - Negative or invalid rate values
+        - Numerator > denominator
+        - Entity count (privacy compliance)
+        - Minimum denominator for stable rates
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Input dataframe
+        total_col : str
+            Column containing total/denominator values
+        numerator_cols : Dict[str, str]
+            Dict mapping rate name to numerator column (e.g., {'approval': 'approved_col'})
+        entity_col : str
+            Column containing entity identifiers
+        dimensions : List[str]
+            List of dimension columns
+        time_col : Optional[str]
+            Time column if present
+        target_entity : Optional[str]
+            Target entity for analysis
+        thresholds : Optional[Dict[str, Any]]
+            Custom validation thresholds
+            
+        Returns:
+        --------
+        List[ValidationIssue]
+            List of validation issues found
+        """
+        issues: List[ValidationIssue] = []
+        
+        # Merge thresholds with defaults
+        t = {**VALIDATION_THRESHOLDS, **(thresholds or {})}
+        
+        # 1. Check required columns exist
+        all_num_cols = list(numerator_cols.values())
+        required_cols = [total_col, entity_col] + all_num_cols + dimensions
+        if time_col:
+            required_cols.append(time_col)
+            
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="missing_columns",
+                message=f"Required columns not found: {missing_cols}. Available: {list(df.columns)}"
+            ))
+            return issues
+        
+        # 2. Check for null values in critical columns
+        for col in [total_col] + all_num_cols:
+            null_count = df[col].isnull().sum()
+            null_pct = 100.0 * null_count / len(df) if len(df) > 0 else 0
+            
+            if null_pct > t['max_null_percentage']:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="null_values",
+                    message=f"Column '{col}' has {null_pct:.1f}% null values (threshold: {t['max_null_percentage']}%)",
+                    row_indices=df[df[col].isnull()].index.tolist()[:100]
+                ))
+            elif null_count > 0:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.WARNING,
+                    category="null_values",
+                    message=f"Column '{col}' has {null_count} null values ({null_pct:.2f}%)"
+                ))
+        
+        # 3. Check for negative values in numeric columns
+        for col in [total_col] + all_num_cols:
+            negative_mask = df[col] < 0
+            if negative_mask.any():
+                negative_count = negative_mask.sum()
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="negative_values",
+                    message=f"Column '{col}' has {negative_count} negative values",
+                    row_indices=df[negative_mask].index.tolist()[:50]
+                ))
+        
+        # 4. Check numerator <= denominator for each rate
+        for rate_name, num_col in numerator_cols.items():
+            invalid_mask = df[num_col] > df[total_col]
+            if invalid_mask.any():
+                invalid_count = invalid_mask.sum()
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="invalid_rate",
+                    message=f"Rate '{rate_name}': {invalid_count} rows have numerator ({num_col}) > denominator ({total_col})",
+                    row_indices=df[invalid_mask].index.tolist()[:50]
+                ))
+        
+        # 5. Check minimum denominator for stable rates
+        low_denom_mask = (df[total_col] > 0) & (df[total_col] < t['min_denominator'])
+        if low_denom_mask.any():
+            low_count = low_denom_mask.sum()
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="low_denominator",
+                message=f"{low_count} rows have denominator below {t['min_denominator']} - rates may be unstable",
+                row_indices=df[low_denom_mask].index.tolist()[:20]
+            ))
+        
+        # 6. Check entity count (privacy compliance)
+        unique_entities = df[entity_col].nunique()
+        target_match = None
+        if target_entity:
+            if target_entity in df[entity_col].values:
+                target_match = target_entity
+            else:
+                entity_upper = str(target_entity).upper()
+                for e in df[entity_col].unique():
+                    if e is not None and str(e).upper() == entity_upper:
+                        target_match = str(e)
+                        break
+        peer_count = unique_entities - 1 if target_match else unique_entities
+        if peer_count < t['min_peer_count']:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="insufficient_peers",
+                message=f"Only {peer_count} peer entities found (excluding target). Minimum {t['min_peer_count']} required for privacy compliance."
+            ))
+        
+        # 7. Check if target entity exists
+        if target_entity:
+            if target_match is None:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="missing_entity",
+                    message=f"Target entity '{target_entity}' not found in data."
+                ))
+            elif target_match != target_entity:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.INFO,
+                    category="entity_case",
+                    message=f"Target entity found with different case: '{target_match}'"
+                ))
+        
+        # 8. Check for outlier rates
+        for rate_name, num_col in numerator_cols.items():
+            valid_rows = df[total_col] > 0
+            if valid_rows.any():
+                rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
+                outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
+                outliers = rates[outlier_mask]
+                if len(outliers) > 0:
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.WARNING,
+                        category="outlier_rates",
+                        message=f"Rate '{rate_name}' has {len(outliers)} outlier values outside 0-100% range"
+                    ))
+        
+        logger.info(f"Rate validation complete: {len([i for i in issues if i.severity == ValidationSeverity.ERROR])} errors, "
+                   f"{len([i for i in issues if i.severity == ValidationSeverity.WARNING])} warnings")
+        
+        return issues
+

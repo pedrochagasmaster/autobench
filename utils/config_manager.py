@@ -379,11 +379,29 @@ class ConfigManager:
             'input': {
                 'entity_col': 'issuer_name',
                 'time_col': None,
+                'validate_input': True,
+                'validation_thresholds': {
+                    'min_denominator': 100,
+                    'min_peer_count': 5,
+                    'max_rate_deviation': 50.0,
+                    'min_rows_per_category': 3,
+                    'max_null_percentage': 5.0,
+                    'max_entity_concentration': 50.0,
+                },
             },
             'output': {
                 'format': 'xlsx',
+                'output_format': 'analysis',  # 'analysis', 'publication', or 'both'
                 'include_debug_sheets': False,
                 'include_privacy_validation': False,
+                'include_distortion_summary': False,
+                'include_preset_comparison': False,
+                'include_calculated_metrics': False,
+                'distortion_thresholds': {
+                    'high_distortion_pp': 1.0,
+                    'low_distortion_pp': 0.25,
+                },
+                'fraud_in_bps': True,  # Convert fraud rates to basis points in publication
                 'log_level': 'INFO',
             },
             'optimization': {
@@ -497,6 +515,13 @@ class ConfigManager:
             'subset_search_max_tests': ('optimization', 'subset_search', 'max_attempts'),
             'trigger_subset_on_slack': ('optimization', 'subset_search', 'trigger_on_slack'),
             'max_cap_slack': ('optimization', 'subset_search', 'max_slack_threshold'),
+            # New enhanced analysis flags
+            'validate_input': ('input', 'validate_input'),
+            'compare_presets': ('output', 'include_preset_comparison'),
+            'analyze_distortion': ('output', 'include_distortion_summary'),
+            'output_format': ('output', 'output_format'),
+            'include_calculated': ('output', 'include_calculated_metrics'),
+            'fraud_in_bps': ('output', 'fraud_in_bps'),
         }
         
         for cli_key, config_path in mapping.items():

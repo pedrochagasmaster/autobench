@@ -24,7 +24,9 @@ import pandas as pd
 
 # Import core modules
 from core.dimensional_analyzer import DimensionalAnalyzer
-from core.data_loader import DataLoader
+from core.data_loader import DataLoader, ValidationSeverity, ValidationIssue
+from core.report_generator import ReportGenerator
+from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
 
@@ -43,7 +45,7 @@ def get_presets_help() -> str:
             desc = preset_mgr.get_preset_description(name) or "No description"
             help_text += f"  {name:20s}: {desc}\n"
         return help_text
-    except:
+    except Exception:
         return ""
 
 
@@ -95,7 +97,7 @@ EXAMPLES:
             from utils.preset_manager import PresetManager
             preset_mgr = PresetManager()
             return preset_mgr.list_presets()
-        except:
+        except Exception:
             return []
     
     preset_choices = get_preset_choices()
@@ -154,6 +156,25 @@ EXAMPLES:
                              help='Optimize each dimension independently (disables global weighting mode)')
     share_parser.add_argument('--export-balanced-csv', action='store_true',
                              help='Export balanced shares and volumes to CSV (without weights or original values)')
+    
+    # Enhanced Analysis Options
+    share_parser.add_argument('--compare-presets', action='store_true',
+                             help='Compare all presets and report distortion for each')
+    share_parser.add_argument('--analyze-distortion', action='store_true',
+                             help='Include distortion details and summary sheets in output')
+    share_parser.add_argument('--validate-input', action='store_true', default=None,
+                             dest='validate_input',
+                             help='Enable input data validation before analysis (default: enabled)')
+    share_parser.add_argument('--no-validate-input', action='store_false', dest='validate_input',
+                             help='Disable input data validation')
+    share_parser.add_argument('--output-format', choices=['analysis', 'publication', 'both'],
+                             default=None,
+                             help='Output format: analysis (default), publication, or both')
+    share_parser.add_argument('--publication-format', action='store_const', const='publication',
+                             dest='output_format',
+                             help='Convenience alias for --output-format=publication')
+    share_parser.add_argument('--include-calculated', action='store_true',
+                             help='Include calculated metrics (raw/balanced share, distortion) in balanced CSV export')
 
     # Advanced Optimization
     share_parser.add_argument('--auto-subset-search', action='store_true',
@@ -225,6 +246,30 @@ EXAMPLES:
                             help='Optimize each dimension independently (disables global weighting mode)')
     rate_parser.add_argument('--export-balanced-csv', action='store_true',
                             help='Export balanced shares and volumes to CSV (without weights or original values)')
+    
+    # Enhanced Analysis Options
+    rate_parser.add_argument('--compare-presets', action='store_true',
+                            help='Compare all presets and report distortion for each')
+    rate_parser.add_argument('--analyze-distortion', action='store_true',
+                            help='Include weight effect details and summary sheets in output')
+    rate_parser.add_argument('--validate-input', action='store_true', default=None,
+                            dest='validate_input',
+                            help='Enable input data validation before analysis (default: enabled)')
+    rate_parser.add_argument('--no-validate-input', action='store_false', dest='validate_input',
+                            help='Disable input data validation')
+    rate_parser.add_argument('--output-format', choices=['analysis', 'publication', 'both'],
+                            default=None,
+                            help='Output format: analysis (default), publication, or both')
+    rate_parser.add_argument('--publication-format', action='store_const', const='publication',
+                            dest='output_format',
+                            help='Convenience alias for --output-format=publication')
+    rate_parser.add_argument('--include-calculated', action='store_true',
+                            help='Include calculated metrics (rate weight effect) in balanced CSV export')
+    rate_parser.add_argument('--fraud-in-bps', action='store_true', default=None,
+                            dest='fraud_in_bps',
+                            help='Convert fraud rates to basis points in publication format (default: enabled)')
+    rate_parser.add_argument('--no-fraud-in-bps', action='store_false', dest='fraud_in_bps',
+                            help='Keep fraud rates as percentages in publication format')
     
     # Advanced Optimization
     rate_parser.add_argument('--auto-subset-search', action='store_true',
@@ -358,6 +403,202 @@ def list_presets() -> None:
     print(preset_mgr.format_preset_list())
 
 
+def run_preset_comparison(
+    df: pd.DataFrame,
+    metric_col: str,
+    entity_col: str,
+    dimensions: list,
+    target_entity: Optional[str],
+    time_col: Optional[str],
+    analysis_type: str,
+    logger: logging.Logger,
+    total_col: Optional[str] = None,
+    numerator_cols: Optional[Dict[str, str]] = None
+) -> pd.DataFrame:
+    """
+    Run analysis for all standard presets and compare distortion.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Input data
+    metric_col : str
+        Metric column for share analysis
+    entity_col : str
+        Entity identifier column
+    dimensions : list
+        Dimensions to analyze
+    target_entity : Optional[str]
+        Target entity (None for peer-only)
+    time_col : Optional[str]
+        Time column
+    analysis_type : str
+        'share' or 'rate'
+    logger : logging.Logger
+        Logger instance
+    total_col : Optional[str]
+        For rate analysis: total transactions column
+    numerator_cols : Optional[Dict[str, str]]
+        For rate analysis: numerator columns
+        
+    Returns:
+    --------
+    pd.DataFrame
+        Comparison table with preset, mean/min/max/std distortion
+    """
+    if not dimensions:
+        logger.warning("No dimensions provided for preset comparison. Skipping.")
+        return pd.DataFrame()
+
+    from utils.preset_manager import PresetManager
+    
+    preset_mgr = PresetManager()
+    presets = preset_mgr.list_presets()
+    presets_to_test = sorted(presets)
+    variants = []
+    for preset_name in presets_to_test:
+        variants.append((preset_name, True, preset_name))
+        variants.append((preset_name, False, f"{preset_name}+perdim"))
+    
+    logger.info(f"Comparing {len(variants)} presets: {', '.join([v[2] for v in variants])}")
+    
+    comparison_results = []
+    
+    for preset_name, consistent_weights, display_name in variants:
+        mode_label = "global" if consistent_weights else "per-dimension"
+        logger.info(f"  Testing preset: {display_name} ({mode_label})...")
+        
+        try:
+            # Load preset config
+            config = ConfigManager(preset=preset_name)
+            opt_config = config.config['optimization']
+            analysis_config = config.config['analysis']
+            
+            # Create analyzer with preset parameters
+            analyzer = DimensionalAnalyzer(
+                target_entity=target_entity,
+                entity_column=entity_col,
+                bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+                debug_mode=False,
+                consistent_weights=consistent_weights,
+                max_iterations=opt_config['linear_programming']['max_iterations'],
+                tolerance=opt_config['linear_programming']['tolerance'],
+                max_weight=opt_config['bounds']['max_weight'],
+                min_weight=opt_config['bounds']['min_weight'],
+                volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+                prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
+                auto_subset_search=opt_config['subset_search'].get('enabled', True),
+                subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
+                greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
+                trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
+                max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
+                time_column=time_col,
+                volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
+                volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+            )
+            
+            # Calculate global weights
+            if consistent_weights:
+                if analysis_type == 'share':
+                    analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
+                else:
+                    analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
+            
+            # Calculate distortion
+            if analysis_type == 'share' and target_entity:
+                distortion_df = analyzer.calculate_share_distortion(df, metric_col, dimensions, target_entity)
+                if not distortion_df.empty:
+                    stats = {
+                        'Preset': display_name,
+                        'Weight_Mode': mode_label,
+                        'Mean_Abs_Distortion_PP': round(distortion_df['Distortion_PP'].abs().mean(), 4),
+                        'Max_Abs_Distortion_PP': round(distortion_df['Distortion_PP'].abs().max(), 4),
+                        'Min_Distortion_PP': round(distortion_df['Distortion_PP'].min(), 4),
+                        'Max_Distortion_PP': round(distortion_df['Distortion_PP'].max(), 4),
+                        'Std_Distortion_PP': round(distortion_df['Distortion_PP'].std(), 4) if len(distortion_df) > 1 else 0.0,
+                        'Categories_Analyzed': len(distortion_df),
+                        'Dimensions_In_Global_LP': len(getattr(analyzer, 'global_dimensions_used', [])),
+                        'LP_Method': getattr(analyzer, 'last_lp_stats', {}).get('method', 'N/A'),
+                        'Max_Slack_%': round(getattr(analyzer, 'last_lp_stats', {}).get('max_slack', 0.0), 4),
+                    }
+                    comparison_results.append(stats)
+                    logger.info(f"    Mean abs distortion: {stats['Mean_Abs_Distortion_PP']:.4f} pp")
+                else:
+                    logger.warning(f"    No distortion data for preset {display_name}")
+            elif analysis_type == 'rate' and numerator_cols:
+                # For rate analysis, calculate weight effect
+                effect_df = analyzer.calculate_rate_weight_effect(df, total_col, numerator_cols, dimensions)
+                if not effect_df.empty:
+                    # Get first rate's effect column
+                    rate_cols = [c for c in effect_df.columns if c.endswith('_Weight_Effect_PP')]
+                    if rate_cols:
+                        mean_abs_values = []
+                        max_abs_values = []
+                        stats = {
+                            'Preset': display_name,
+                            'Weight_Mode': mode_label,
+                            'Categories_Analyzed': len(effect_df),
+                            'Dimensions_In_Global_LP': len(getattr(analyzer, 'global_dimensions_used', [])),
+                            'LP_Method': getattr(analyzer, 'last_lp_stats', {}).get('method', 'N/A'),
+                            'Max_Slack_%': round(getattr(analyzer, 'last_lp_stats', {}).get('max_slack', 0.0), 4),
+                        }
+                        for effect_col in rate_cols:
+                            rate_name = effect_col.replace('_Weight_Effect_PP', '')
+                            mean_abs = round(effect_df[effect_col].abs().mean(), 4)
+                            max_abs = round(effect_df[effect_col].abs().max(), 4)
+                            stats[f'{rate_name}_Mean_Abs_Effect_PP'] = mean_abs
+                            stats[f'{rate_name}_Max_Abs_Effect_PP'] = max_abs
+                            stats[f'{rate_name}_Min_Effect_PP'] = round(effect_df[effect_col].min(), 4)
+                            stats[f'{rate_name}_Max_Effect_PP'] = round(effect_df[effect_col].max(), 4)
+                            stats[f'{rate_name}_Std_Effect_PP'] = round(effect_df[effect_col].std(), 4) if len(effect_df) > 1 else 0.0
+                            mean_abs_values.append(mean_abs)
+                            max_abs_values.append(max_abs)
+                        if mean_abs_values:
+                            stats['Mean_Abs_Effect_PP'] = round(sum(mean_abs_values) / len(mean_abs_values), 4)
+                            stats['Max_Abs_Effect_PP'] = round(max(max_abs_values), 4)
+                        comparison_results.append(stats)
+                        if 'Mean_Abs_Effect_PP' in stats:
+                            logger.info(f"    Mean abs weight effect: {stats['Mean_Abs_Effect_PP']:.4f} pp")
+            else:
+                # Peer-only mode - use LP stats instead
+                stats = {
+                    'Preset': display_name,
+                    'Weight_Mode': mode_label,
+                    'Dimensions_In_Global_LP': len(getattr(analyzer, 'global_dimensions_used', [])),
+                    'LP_Method': getattr(analyzer, 'last_lp_stats', {}).get('method', 'N/A'),
+                    'Max_Slack_%': round(getattr(analyzer, 'last_lp_stats', {}).get('max_slack', 0.0), 4),
+                    'Sum_Slack_%': round(getattr(analyzer, 'last_lp_stats', {}).get('sum_slack', 0.0), 4),
+                }
+                comparison_results.append(stats)
+                logger.info(f"    LP stats collected for preset {display_name}")
+                    
+        except Exception as e:
+            logger.error(f"    Failed to test preset {display_name}: {e}")
+            comparison_results.append({
+                'Preset': display_name,
+                'Weight_Mode': mode_label,
+                'Error': str(e)
+            })
+    
+    comparison_df = pd.DataFrame(comparison_results)
+    
+    # Mark best preset (lowest mean absolute distortion/effect)
+    if not comparison_df.empty:
+        distortion_col = 'Mean_Abs_Distortion_PP' if 'Mean_Abs_Distortion_PP' in comparison_df.columns else 'Mean_Abs_Effect_PP'
+        if distortion_col in comparison_df.columns:
+            valid_values = comparison_df[distortion_col].dropna()
+            if not valid_values.empty:
+                min_idx = comparison_df[distortion_col].idxmin()
+                comparison_df['Best'] = ''
+                comparison_df.loc[min_idx, 'Best'] = '⭐'
+                best_preset = comparison_df.loc[min_idx, 'Preset']
+                logger.info(f"\nBest preset (lowest mean abs distortion): {best_preset}")
+            else:
+                logger.warning("No valid distortion data to determine best preset")
+    
+    return comparison_df
+
+
 def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     """Execute share-based dimensional analysis."""
     logger.info("Starting share-based dimensional analysis")
@@ -374,6 +615,12 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
             'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
             'max_cap_slack': getattr(args, 'max_cap_slack', None),
+            # Enhanced analysis features
+            'validate_input': getattr(args, 'validate_input', None),
+            'compare_presets': getattr(args, 'compare_presets', None),
+            'analyze_distortion': getattr(args, 'analyze_distortion', None),
+            'output_format': getattr(args, 'output_format', None),
+            'include_calculated': getattr(args, 'include_calculated', None),
         }
         
         # Initialize ConfigManager with hierarchy
@@ -382,10 +629,17 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             preset=getattr(args, 'preset', None),
             cli_overrides=cli_overrides
         )
+        include_preset_comparison = config.get('output', 'include_preset_comparison', default=False)
+        include_distortion_summary = config.get('output', 'include_distortion_summary', default=False)
+        include_calculated_metrics = config.get('output', 'include_calculated_metrics', default=False)
+        output_format = config.get('output', 'output_format', default='analysis')
+        fraud_in_bps = config.get('output', 'fraud_in_bps', default=True)
         
         # Load data
         data_loader = DataLoader(config)
-        df = data_loader.load_data(args)
+        df = getattr(args, 'df', None)
+        if df is None:
+            df = data_loader.load_data(args)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
         
         # Get entity column from config
@@ -409,14 +663,51 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
             return 1
         
+        time_col = config.get('input', 'time_col')
+        
+        # ========================================
+        # Input Data Validation
+        # ========================================
+        val_dimensions = args.dimensions if args.dimensions else data_loader.get_available_dimensions(df)
+        validation_issues, should_abort = run_input_validation(
+            df=df,
+            config=config,
+            data_loader=data_loader,
+            analysis_type='share',
+            metric_col=metric_col,
+            entity_col=entity_col,
+            dimensions=val_dimensions,
+            time_col=time_col,
+            target_entity=args.entity
+        )
+        if should_abort:
+            return 1
+        
+        resolved_entity = args.entity
+        if args.entity:
+            entity_upper = str(args.entity).upper()
+            all_matches = [
+                e for e in df[entity_col].unique()
+                if e is not None and str(e).upper() == entity_upper
+            ]
+            if len(all_matches) > 1:
+                logger.error(f"Ambiguous entity name: '{args.entity}' matches multiple entities: {all_matches}")
+                logger.error("Please specify the exact entity name with correct casing.")
+                return 1
+            elif len(all_matches) == 1:
+                match = all_matches[0]
+                if match != args.entity:
+                    logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{args.entity}'.")
+                resolved_entity = str(match)
+
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing metric: {metric_col}")
         
         # Check for peer-only mode
-        if args.entity is None:
+        if resolved_entity is None:
             logger.info("Running in PEER-ONLY mode (no target entity specified)")
         else:
-            logger.info(f"Target entity: {args.entity}")
+            logger.info(f"Target entity: {resolved_entity}")
         
         # Get configuration values
         opt_config = config.config['optimization']
@@ -437,10 +728,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Consistent weights is now the default (global weighting mode)
         # Use --per-dimension-weights flag to disable it
         consistent_weights = not getattr(args, 'per_dimension_weights', False)
-        time_col = config.get('input', 'time_col')
-        
         analyzer = DimensionalAnalyzer(
-            target_entity=args.entity,
+            target_entity=resolved_entity,
             entity_column=entity_col,
             bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
             debug_mode=debug_mode,
@@ -456,7 +745,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
             trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
             max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
-            time_column=getattr(args, 'time_col', None),
+            time_column=time_col,
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
         )
@@ -509,15 +798,16 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.info(f"Secondary analysis complete. Generated {len(secondary_results_df)} rows of balanced data.")
 
         # Collect metadata for report
+        peer_count = unique_entities if resolved_entity is None else max(unique_entities - 1, 0)
         metadata = {
-            'entity': args.entity if args.entity else 'PEER-ONLY',
+            'entity': resolved_entity if resolved_entity else 'PEER-ONLY',
             'analysis_type': 'share',
             'metric': metric_col,
             'secondary_metrics': secondary_metrics,
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
-            'peer_count': unique_entities if args.entity is None else unique_entities - 1,
+            'peer_count': peer_count,
             'bic_percentile': config.get('analysis', 'best_in_class_percentile'),
             'dimensions_analyzed': len(results),
             'dimension_names': list(results.keys()),
@@ -556,6 +846,10 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
             'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
             'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
+            'distortion_thresholds': {
+                'high_distortion_pp': config.get('output', 'distortion_thresholds', 'high_distortion_pp', default=1.0),
+                'low_distortion_pp': config.get('output', 'distortion_thresholds', 'low_distortion_pp', default=0.25),
+            },
         }
         
         # Calculate rank preservation strength for metadata (new for v2.0)
@@ -625,30 +919,135 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             if rows:
                 method_breakdown_df = pd.DataFrame(rows)
         
+        # ===================================
+        # Preset Comparison (Phase 2 feature)
+        # ===================================
+        preset_comparison_df = None
+        if include_preset_comparison:
+            logger.info("\n=== Running Preset Comparison ===")
+            preset_comparison_df = run_preset_comparison(
+                df=df,
+                metric_col=metric_col,
+                entity_col=entity_col,
+                dimensions=dimensions,
+                target_entity=resolved_entity,
+                time_col=time_col,
+                analysis_type='share',
+                logger=logger
+            )
+            if preset_comparison_df is not None and not preset_comparison_df.empty:
+                logger.info(f"Preset comparison complete. Analyzed {len(preset_comparison_df)} presets.")
+                metadata['preset_comparison'] = preset_comparison_df.to_dict('records')
+            else:
+                logger.warning("Preset comparison returned no results.")
+        
+        # ===================================
+        # Distortion Analysis (Phase 2 feature)
+        # ===================================
+        distortion_df = None
+        distortion_summary_df = None
+        if include_distortion_summary and resolved_entity:
+            logger.info("\n=== Computing Distortion Analysis ===")
+            try:
+                # Calculate distortion for all categories
+                distortion_df = analyzer.calculate_share_distortion(df, metric_col, dimensions, resolved_entity)
+                
+                if distortion_df is not None and not distortion_df.empty:
+                    logger.info(f"Distortion analysis complete. Analyzed {len(distortion_df)} categories.")
+                    
+                    # Calculate summary statistics
+                    distortion_summary = {
+                        'mean_distortion_pp': round(distortion_df['Distortion_PP'].mean(), 4),
+                        'mean_abs_distortion_pp': round(distortion_df['Distortion_PP'].abs().mean(), 4),
+                        'std_distortion_pp': round(distortion_df['Distortion_PP'].std(), 4) if len(distortion_df) > 1 else 0.0,
+                        'min_distortion_pp': round(distortion_df['Distortion_PP'].min(), 4),
+                        'max_distortion_pp': round(distortion_df['Distortion_PP'].max(), 4),
+                        'categories_analyzed': len(distortion_df),
+                    }
+                    metadata['distortion_summary'] = distortion_summary
+                    
+                    # Create summary by dimension
+                    if 'Dimension' in distortion_df.columns:
+                        dimension_summary = []
+                        for dim in distortion_df['Dimension'].unique():
+                            dim_data = distortion_df[distortion_df['Dimension'] == dim]
+                            dimension_summary.append({
+                                'Dimension': dim,
+                                'Mean_Abs_Distortion_PP': round(dim_data['Distortion_PP'].abs().mean(), 4),
+                                'Max_Abs_Distortion_PP': round(dim_data['Distortion_PP'].abs().max(), 4),
+                                'Categories': len(dim_data),
+                            })
+                        distortion_summary_df = pd.DataFrame(dimension_summary)
+                        logger.info("Distortion summary by dimension:")
+                        for row in dimension_summary:
+                            logger.info(f"  {row['Dimension']}: Mean Abs Distortion = {row['Mean_Abs_Distortion_PP']:.4f} pp, Max = {row['Max_Abs_Distortion_PP']:.4f} pp")
+                    
+                    metadata['distortion_details'] = distortion_df.to_dict('records')
+                else:
+                    logger.warning("Distortion analysis returned no results.")
+            except Exception as e:
+                logger.error(f"Failed to compute distortion analysis: {e}")
+        elif include_distortion_summary and not resolved_entity:
+            logger.warning("Distortion analysis requires a target entity. Use --entity to specify.")
+        
         # Generate output
-        entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
-        output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        generate_excel_report(results, output_file, args.entity or 'PEER-ONLY', 'share', logger, metadata, weights_df, method_breakdown_df, privacy_validation_df, secondary_results=secondary_results_df)
+        entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
+        analysis_output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        publication_output = None
+        if output_format in ('analysis', 'both'):
+            generate_excel_report(
+                results,
+                analysis_output_file,
+                resolved_entity or 'PEER-ONLY',
+                'share',
+                logger,
+                metadata,
+                weights_df,
+                method_breakdown_df,
+                privacy_validation_df,
+                secondary_results=secondary_results_df,
+                preset_comparison_df=preset_comparison_df,
+                distortion_df=distortion_df,
+                distortion_summary_df=distortion_summary_df,
+                validation_issues=validation_issues
+            )
+        
+        if output_format in ('publication', 'both'):
+            pub_path = Path(analysis_output_file)
+            publication_output = str(pub_path.with_name(f"{pub_path.stem}_publication{pub_path.suffix}"))
+            report_generator = ReportGenerator(config)
+            report_generator.generate_publication_workbook(
+                results=results,
+                output_file=publication_output,
+                analysis_type='share',
+                metadata=metadata
+            )
         
         # Export balanced CSV if requested
         if getattr(args, 'export_balanced_csv', False):
             export_balanced_csv(
-                results, output_file, logger, 
+                results, analysis_output_file, logger, 
                 analysis_type='share',
                 df=df,
                 analyzer=analyzer,
                 dimensions=dimensions,
                 metric_col=metric_col,
-                secondary_metrics=secondary_metrics
+                secondary_metrics=secondary_metrics,
+                include_calculated=include_calculated_metrics
             )
         
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        print(f"Entity: {args.entity if args.entity else 'PEER-ONLY MODE'}")
+        print(f"Entity: {resolved_entity if resolved_entity else 'PEER-ONLY MODE'}")
         print(f"Metric: {metric_col}")
         print(f"Dimensions Analyzed: {len(results)}")
-        print(f"Report: {output_file}")
+        report_paths = []
+        if output_format in ('analysis', 'both'):
+            report_paths.append(analysis_output_file)
+        if output_format in ('publication', 'both') and publication_output:
+            report_paths.append(publication_output)
+        print(f"Report: {', '.join(report_paths)}")
         print(f"{'='*80}\n")
         
         return 0
@@ -679,6 +1078,13 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
             'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
             'max_cap_slack': getattr(args, 'max_cap_slack', None),
+            # Enhanced analysis features
+            'validate_input': getattr(args, 'validate_input', None),
+            'compare_presets': getattr(args, 'compare_presets', None),
+            'analyze_distortion': getattr(args, 'analyze_distortion', None),
+            'output_format': getattr(args, 'output_format', None),
+            'include_calculated': getattr(args, 'include_calculated', None),
+            'fraud_in_bps': getattr(args, 'fraud_in_bps', None),
         }
         
         # Initialize ConfigManager with hierarchy
@@ -687,8 +1093,15 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             preset=getattr(args, 'preset', None),
             cli_overrides=cli_overrides
         )
+        include_preset_comparison = config.get('output', 'include_preset_comparison', default=False)
+        include_distortion_summary = config.get('output', 'include_distortion_summary', default=False)
+        include_calculated_metrics = config.get('output', 'include_calculated_metrics', default=False)
+        output_format = config.get('output', 'output_format', default='analysis')
+        fraud_in_bps = config.get('output', 'fraud_in_bps', default=True)
         data_loader = DataLoader(config)
-        df = data_loader.load_data(args)
+        df = getattr(args, 'df', None)
+        if df is None:
+            df = data_loader.load_data(args)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
         
         # Determine entity column
@@ -736,6 +1149,50 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             bic_percentiles['fraud'] = 0.15  # Lower is better for fraud
             logger.info(f"Fraud rate calculation: {args.fraud_col} / {total_col}")
         
+        time_col = config.get('input', 'time_col')
+        
+        # ========================================
+        # Input Data Validation
+        # ========================================
+        val_dimensions = args.dimensions if args.dimensions else data_loader.get_available_dimensions(df)
+        numerator_cols = {}
+        if hasattr(args, 'approved_col') and args.approved_col:
+            numerator_cols['approval'] = args.approved_col
+        if hasattr(args, 'fraud_col') and args.fraud_col:
+            numerator_cols['fraud'] = args.fraud_col
+
+        validation_issues, should_abort = run_input_validation(
+            df=df,
+            config=config,
+            data_loader=data_loader,
+            analysis_type='rate',
+            total_col=total_col,
+            numerator_cols=numerator_cols,
+            entity_col=entity_col,
+            dimensions=val_dimensions,
+            time_col=time_col,
+            target_entity=args.entity
+        )
+        if should_abort:
+            return 1
+        
+        resolved_entity = args.entity
+        if args.entity:
+            entity_upper = str(args.entity).upper()
+            all_matches = [
+                e for e in df[entity_col].unique()
+                if e is not None and str(e).upper() == entity_upper
+            ]
+            if len(all_matches) > 1:
+                logger.error(f"Ambiguous entity name: '{args.entity}' matches multiple entities: {all_matches}")
+                logger.error("Please specify the exact entity name with correct casing.")
+                return 1
+            elif len(all_matches) == 1:
+                match = all_matches[0]
+                if match != args.entity:
+                    logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{args.entity}'.")
+                resolved_entity = str(match)
+
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing rate types: {', '.join(rate_types)}")
         
@@ -764,7 +1221,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # The key insight: weights are based on total_col, not the numerator
         first_rate_type = rate_types[0]
         analyzer = DimensionalAnalyzer(
-            target_entity=args.entity,
+            target_entity=resolved_entity,
             entity_column=entity_col,
             bic_percentile=bic_percentiles[first_rate_type],  # Used for first rate type
             debug_mode=debug_mode,
@@ -780,7 +1237,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
             trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
             max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
-            time_column=getattr(args, 'time_col', None),
+            time_column=time_col,
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
         )
@@ -854,8 +1311,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         opt_config = config.config.get('optimization', {})
 
         # Collect common metadata
+        peer_count = unique_entities if resolved_entity is None else max(unique_entities - 1, 0)
         metadata = {
-            'entity': args.entity or 'PEER-ONLY',
+            'entity': resolved_entity or 'PEER-ONLY',
             'analysis_type': 'multi_rate' if len(all_results) > 1 else f'{rate_types[0]}_rate',
             'rate_types': rate_types,
             'secondary_metrics': secondary_metrics,
@@ -865,7 +1323,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'entity_column': entity_col,
             'total_records': total_records,
             'unique_entities': unique_entities,
-            'peer_count': unique_entities if args.entity is None else (unique_entities - 1),
+            'peer_count': peer_count,
             'dimensions_analyzed': len(dimensions),
             'dimension_names': dimensions,
             'preset': getattr(args, 'preset', None),
@@ -896,6 +1354,10 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
             'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
             'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
+            'distortion_thresholds': {
+                'high_distortion_pp': config.get('output', 'distortion_thresholds', 'high_distortion_pp', default=1.0),
+                'low_distortion_pp': config.get('output', 'distortion_thresholds', 'low_distortion_pp', default=0.25),
+            },
         }
         
         # Get weights data if debug mode (same weights for all rate types)
@@ -958,44 +1420,185 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 method_breakdown_df = pd.DataFrame(rows)
                 logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
         
-        # Generate single output file
-        entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
+        # ===================================
+        # Preset Comparison (Phase 2 feature)
+        # ===================================
+        preset_comparison_df = None
+        if include_preset_comparison:
+            logger.info("\n=== Running Preset Comparison ===")
+            preset_comparison_df = run_preset_comparison(
+                df=df,
+                metric_col=total_col,
+                entity_col=entity_col,
+                dimensions=dimensions,
+                target_entity=resolved_entity,
+                time_col=time_col,
+                analysis_type='rate',
+                logger=logger,
+                total_col=total_col,
+                numerator_cols=numerator_cols
+            )
+            if preset_comparison_df is not None and not preset_comparison_df.empty:
+                logger.info(f"Preset comparison complete. Analyzed {len(preset_comparison_df)} presets.")
+                metadata['preset_comparison'] = preset_comparison_df.to_dict('records')
+            else:
+                logger.warning("Preset comparison returned no results.")
+        
+        # ===================================
+        # Weight Effect Analysis (Phase 2 feature)
+        # ===================================
+        weight_effect_df = None
+        weight_effect_summary_df = None
+        if include_distortion_summary:
+            logger.info("\n=== Computing Weight Effect Analysis ===")
+            try:
+                # Calculate weight effect for all categories
+                weight_effect_df = analyzer.calculate_rate_weight_effect(df, total_col, numerator_cols, dimensions)
+                
+                if weight_effect_df is not None and not weight_effect_df.empty:
+                    logger.info(f"Weight effect analysis complete. Analyzed {len(weight_effect_df)} categories.")
+                    
+                    # Calculate summary statistics for each rate type
+                    effect_summary = {}
+                    
+                    # Find effect columns
+                    rate_cols = [c for c in weight_effect_df.columns if c.endswith('_Weight_Effect_PP')]
+                    
+                    for col in rate_cols:
+                        rate_name = col.replace('_Weight_Effect_PP', '')
+                        effect_summary[f'{rate_name}_mean_abs_effect_pp'] = round(weight_effect_df[col].abs().mean(), 4)
+                        effect_summary[f'{rate_name}_max_abs_effect_pp'] = round(weight_effect_df[col].abs().max(), 4)
+                    
+                    metadata['weight_effect_summary'] = effect_summary
+                    
+                    # Create summary by dimension (taking the max effect across all rates)
+                    if 'Dimension' in weight_effect_df.columns:
+                        dimension_summary = []
+                        for dim in weight_effect_df['Dimension'].unique():
+                            dim_data = weight_effect_df[weight_effect_df['Dimension'] == dim]
+                            
+                            # Calculate max effect across all rate columns for this dimension
+                            max_effects = []
+                            mean_effects = []
+                            for col in rate_cols:
+                                max_effects.append(dim_data[col].abs().max())
+                                mean_effects.append(dim_data[col].abs().mean())
+                            
+                            dimension_summary.append({
+                                'Dimension': dim,
+                                'Mean_Abs_Effect_PP': round(sum(mean_effects) / len(mean_effects), 4),
+                                'Max_Abs_Effect_PP': round(max(max_effects), 4),
+                                'Categories': len(dim_data),
+                            })
+                        
+                        weight_effect_summary_df = pd.DataFrame(dimension_summary)
+                        logger.info("Weight effect summary by dimension:")
+                        for row in dimension_summary:
+                            logger.info(f"  {row['Dimension']}: Mean Abs Effect = {row['Mean_Abs_Effect_PP']:.4f} pp, Max = {row['Max_Abs_Effect_PP']:.4f} pp")
+                    
+                    metadata['weight_effect_details'] = weight_effect_df.to_dict('records')
+                else:
+                    logger.warning("Weight effect analysis returned no results.")
+            except Exception as e:
+                logger.error(f"Failed to compute weight effect analysis: {e}")
+        
+        # Generate output file
+        entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
         if args.output:
-            output_file = args.output
+            analysis_output_file = args.output
         elif len(all_results) > 1:
-            output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         else:
-            output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            analysis_output_file = f"benchmark_{rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        publication_output = None
         
         # Generate report with all rate types
-        generate_multi_rate_excel_report(all_results, output_file, args.entity or 'PEER-ONLY', logger, metadata, weights_df, numerator_cols, bic_percentiles, privacy_validation_df, method_breakdown_df, secondary_results=secondary_results_df)
+        if output_format in ('analysis', 'both'):
+            generate_multi_rate_excel_report(
+                all_results,
+                analysis_output_file,
+                resolved_entity or 'PEER-ONLY',
+                logger,
+                metadata,
+                weights_df,
+                numerator_cols,
+                bic_percentiles,
+                privacy_validation_df,
+                method_breakdown_df,
+                secondary_results=secondary_results_df,
+                preset_comparison_df=preset_comparison_df,
+                weight_effect_df=weight_effect_df,
+                weight_effect_summary_df=weight_effect_summary_df,
+                validation_issues=validation_issues
+            )
+        
+        if output_format in ('publication', 'both'):
+            publication_results: Dict[str, pd.DataFrame] = {}
+            if len(all_results) > 1:
+                for dimension in dimensions:
+                    approval_df = all_results.get('approval', {}).get(dimension)
+                    fraud_df = all_results.get('fraud', {}).get(dimension)
+                    if approval_df is None and fraud_df is None:
+                        continue
+                    if approval_df is None:
+                        combined_df = fraud_df.copy()
+                    else:
+                        combined_df = approval_df[['Category']].copy()
+                        for col in approval_df.columns:
+                            if col != 'Category':
+                                combined_df[f'Approval_{col}'] = approval_df[col]
+                        if fraud_df is not None:
+                            for col in fraud_df.columns:
+                                if col != 'Category':
+                                    combined_df[f'Fraud_{col}'] = fraud_df[col]
+                    publication_results[dimension] = combined_df
+            else:
+                rate_type = rate_types[0]
+                publication_results = all_results.get(rate_type, {})
+            
+            pub_path = Path(analysis_output_file)
+            publication_output = str(pub_path.with_name(f"{pub_path.stem}_publication{pub_path.suffix}"))
+            report_generator = ReportGenerator(config)
+            report_generator.generate_publication_workbook(
+                results=publication_results,
+                output_file=publication_output,
+                analysis_type='rate',
+                metadata=metadata,
+                fraud_in_bps=fraud_in_bps
+            )
         
         # Export balanced CSV if requested
         if getattr(args, 'export_balanced_csv', False):
             # Store secondary_metrics in analyzer for export function to access
             analyzer.secondary_metrics = secondary_metrics
             export_balanced_csv(
-                None, output_file, logger, 
+                None, analysis_output_file, logger, 
                 analysis_type='rate', 
                 all_results=all_results,
                 df=df,
                 analyzer=analyzer,
                 dimensions=dimensions,
                 total_col=total_col,
-                numerator_cols=numerator_cols
+                numerator_cols=numerator_cols,
+                include_calculated=include_calculated_metrics
             )
         
         # Print summary
         print(f"\n{'='*80}")
         print(f"RATE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        if args.entity:
-            print(f"Entity: {args.entity}")
+        if resolved_entity:
+            print(f"Entity: {resolved_entity}")
         else:
             print(f"Mode: PEER-ONLY (No Target Entity)")
         print(f"Rate Types Analyzed: {', '.join([rt.upper() for rt in all_results.keys()])}")
         print(f"Dimensions Analyzed: {len(dimensions)}")
-        print(f"Report: {output_file}")
+        report_paths = []
+        if output_format in ('analysis', 'both'):
+            report_paths.append(analysis_output_file)
+        if output_format in ('publication', 'both') and publication_output:
+            report_paths.append(publication_output)
+        print(f"Report: {', '.join(report_paths)}")
         if len(all_results) > 1:
             print(f"Note: Both rate types use same privacy-constrained weights (based on {args.total_col})")
         print(f"{'='*80}\n")
@@ -1017,7 +1620,11 @@ def generate_excel_report(
     weights_df: Optional[Any] = None,
     method_breakdown_df: Optional[pd.DataFrame] = None,
     privacy_validation_df: Optional[pd.DataFrame] = None,
-    secondary_results: Optional[Dict[str, Any]] = None
+    secondary_results: Optional[Dict[str, Any]] = None,
+    preset_comparison_df: Optional[pd.DataFrame] = None,
+    distortion_df: Optional[pd.DataFrame] = None,
+    distortion_summary_df: Optional[pd.DataFrame] = None,
+    validation_issues: Optional[Any] = None
 ) -> None:
     """Generate Excel report with dimensional analysis results."""
     try:
@@ -1539,6 +2146,135 @@ def generate_excel_report(
         except Exception as e:
             logger.warning(f"Could not add Privacy Validation sheet: {e}")
 
+    # Add Preset Comparison sheet if available
+    if preset_comparison_df is not None and not preset_comparison_df.empty:
+        try:
+            ws_comparison = wb.create_sheet("Preset Comparison")
+            
+            # Add title
+            ws_comparison['A1'] = "PRESET COMPARISON"
+            ws_comparison['A1'].font = Font(bold=True, size=14)
+            ws_comparison.merge_cells('A1:E1')
+            
+            # Write data starting at row 3
+            for r_idx, row in enumerate(preset_comparison_df.itertuples(index=False), 3):
+                for c_idx, value in enumerate(row, 1):
+                    cell = ws_comparison.cell(row=r_idx, column=c_idx, value=value)
+                    # Highlight best preset
+                    if c_idx == len(row) and value == '★':
+                        cell.font = Font(color="228B22", bold=True)
+                        ws_comparison.cell(row=r_idx, column=1).fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
+            
+            # Add headers
+            for c_idx, col_name in enumerate(preset_comparison_df.columns, 1):
+                cell = ws_comparison.cell(row=2, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+            
+            # Auto-fit columns (skip row 1 which has merged cells)
+            from openpyxl.utils import get_column_letter
+            for c_idx in range(1, len(preset_comparison_df.columns) + 1):
+                max_length = 0
+                column_letter = get_column_letter(c_idx)
+                for r_idx in range(2, len(preset_comparison_df) + 4):  # Skip merged row 1
+                    cell_value = ws_comparison.cell(row=r_idx, column=c_idx).value
+                    try:
+                        if cell_value and len(str(cell_value)) > max_length:
+                            max_length = len(str(cell_value))
+                    except Exception:
+                        pass
+                ws_comparison.column_dimensions[column_letter].width = min(max_length + 2, 30)
+            
+            logger.info("Added Preset Comparison tab")
+        except Exception as e:
+            logger.warning(f"Could not add Preset Comparison sheet: {e}")
+
+    # Add Distortion Analysis sheet if available
+    if distortion_df is not None and not distortion_df.empty:
+        try:
+            ws_distortion = wb.create_sheet("Distortion Analysis")
+            
+            # Add title
+            ws_distortion['A1'] = "DISTORTION ANALYSIS"
+            ws_distortion['A1'].font = Font(bold=True, size=14)
+            
+            row_offset = 2
+            
+            # Add summary if available
+            if distortion_summary_df is not None and not distortion_summary_df.empty:
+                ws_distortion.cell(row=row_offset, column=1, value="SUMMARY BY DIMENSION").font = Font(bold=True, size=11)
+                row_offset += 1
+                
+                # Headers
+                for c_idx, col_name in enumerate(distortion_summary_df.columns, 1):
+                    cell = ws_distortion.cell(row=row_offset, column=c_idx, value=col_name)
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                row_offset += 1
+                
+                # Data
+                for _, row in distortion_summary_df.iterrows():
+                    for c_idx, value in enumerate(row, 1):
+                        ws_distortion.cell(row=row_offset, column=c_idx, value=value)
+                    row_offset += 1
+                
+                row_offset += 2
+            
+            # Add detailed data
+            ws_distortion.cell(row=row_offset, column=1, value="DETAILED DISTORTION BY CATEGORY").font = Font(bold=True, size=11)
+            row_offset += 1
+            
+            # Headers
+            for c_idx, col_name in enumerate(distortion_df.columns, 1):
+                cell = ws_distortion.cell(row=row_offset, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+            row_offset += 1
+            
+            # Data with conditional formatting
+            for _, row in distortion_df.iterrows():
+                for c_idx, col_name in enumerate(distortion_df.columns, 1):
+                    value = row[col_name]
+                    cell = ws_distortion.cell(row=row_offset, column=c_idx, value=value)
+                    
+                    # Highlight distortion values
+                    if col_name == 'Distortion_PP' and isinstance(value, (int, float)):
+                        high_threshold = metadata.get('distortion_thresholds', {}).get('high_distortion_pp', 1.0)
+                        low_threshold = metadata.get('distortion_thresholds', {}).get('low_distortion_pp', 0.25)
+
+                        if abs(value) > high_threshold:
+                            cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+                        elif abs(value) < low_threshold:
+                            cell.fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
+                row_offset += 1
+            
+            # Auto-fit columns
+            from openpyxl.utils import get_column_letter
+            for c_idx in range(1, len(distortion_df.columns) + 1):
+                max_length = 0
+                column_letter = get_column_letter(c_idx)
+                for r_idx in range(1, row_offset):
+                    cell_value = ws_distortion.cell(row=r_idx, column=c_idx).value
+                    try:
+                        if cell_value and len(str(cell_value)) > max_length:
+                            max_length = len(str(cell_value))
+                    except Exception:
+                        pass
+                ws_distortion.column_dimensions[column_letter].width = min(max_length + 2, 35)
+            
+            logger.info("Added Distortion Analysis tab")
+        except Exception as e:
+            logger.warning(f"Could not add Distortion Analysis sheet: {e}")
+
+    # Add Data Quality sheet if validation ran
+    if validation_issues is not None:
+        try:
+            report_generator = ReportGenerator(None)
+            has_errors = any(getattr(i, 'severity', None) == ValidationSeverity.ERROR for i in validation_issues)
+            report_generator.add_data_quality_sheet(wb, validation_issues, passed=not has_errors)
+        except Exception as e:
+            logger.warning(f"Could not add Data Quality sheet: {e}")
+
     wb.save(output_file)
     logger.info(f"Report saved to: {output_file}")
 
@@ -1554,7 +2290,11 @@ def generate_multi_rate_excel_report(
     bic_percentiles: Optional[Dict[str, float]] = None,
     privacy_validation_df: Optional[pd.DataFrame] = None,
     method_breakdown_df: Optional[pd.DataFrame] = None,
-    secondary_results: Optional[Dict[str, Any]] = None
+    secondary_results: Optional[Dict[str, Any]] = None,
+    preset_comparison_df: Optional[pd.DataFrame] = None,
+    weight_effect_df: Optional[pd.DataFrame] = None,
+    weight_effect_summary_df: Optional[pd.DataFrame] = None,
+    validation_issues: Optional[Any] = None
 ) -> None:
     """Generate Excel report with multiple rate types using shared weights.
     
@@ -1943,7 +2683,131 @@ def generate_multi_rate_excel_report(
         except Exception as e:
             logger.warning(f"Could not add Weight Methods sheet: {e}")
     
+    # Add Preset Comparison sheet if available
+    if preset_comparison_df is not None and not preset_comparison_df.empty:
+        try:
+            ws_comparison = wb.create_sheet("Preset Comparison")
+            
+            # Add title
+            ws_comparison['A1'] = "PRESET COMPARISON"
+            ws_comparison['A1'].font = Font(bold=True, size=14)
+            ws_comparison.merge_cells('A1:E1')
+            
+            # Write data starting at row 3
+            for r_idx, row in enumerate(preset_comparison_df.itertuples(index=False), 3):
+                for c_idx, value in enumerate(row, 1):
+                    cell = ws_comparison.cell(row=r_idx, column=c_idx, value=value)
+                    # Highlight best preset
+                    if c_idx == len(row) and value == '★':
+                        cell.font = Font(color="228B22", bold=True)
+                        ws_comparison.cell(row=r_idx, column=1).fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
+            
+            # Add headers
+            for c_idx, col_name in enumerate(preset_comparison_df.columns, 1):
+                cell = ws_comparison.cell(row=2, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+            
+            # Auto-fit columns (skip row 1 which has merged cells)
+            from openpyxl.utils import get_column_letter
+            for c_idx in range(1, len(preset_comparison_df.columns) + 1):
+                max_length = 0
+                column_letter = get_column_letter(c_idx)
+                for r_idx in range(2, len(preset_comparison_df) + 4):  # Skip merged row 1
+                    cell_value = ws_comparison.cell(row=r_idx, column=c_idx).value
+                    try:
+                        if cell_value and len(str(cell_value)) > max_length:
+                            max_length = len(str(cell_value))
+                    except Exception:
+                        pass
+                ws_comparison.column_dimensions[column_letter].width = min(max_length + 2, 30)
+            
+            logger.info("Added Preset Comparison tab")
+        except Exception as e:
+            logger.warning(f"Could not add Preset Comparison sheet: {e}")
+    
+    # Add Weight Effect Analysis sheet if available
+    if weight_effect_df is not None and not weight_effect_df.empty:
+        try:
+            ws_effect = wb.create_sheet("Weight Effect Analysis")
+            
+            # Add title
+            ws_effect['A1'] = "WEIGHT EFFECT ANALYSIS"
+            ws_effect['A1'].font = Font(bold=True, size=14)
+            
+            row_offset = 2
+            
+            # Add summary if available
+            if weight_effect_summary_df is not None and not weight_effect_summary_df.empty:
+                ws_effect.cell(row=row_offset, column=1, value="SUMMARY BY DIMENSION").font = Font(bold=True, size=11)
+                row_offset += 1
+                
+                # Headers
+                for c_idx, col_name in enumerate(weight_effect_summary_df.columns, 1):
+                    cell = ws_effect.cell(row=row_offset, column=c_idx, value=col_name)
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+                row_offset += 1
+                
+                # Data
+                for _, row in weight_effect_summary_df.iterrows():
+                    for c_idx, value in enumerate(row, 1):
+                        ws_effect.cell(row=row_offset, column=c_idx, value=value)
+                    row_offset += 1
+                
+                row_offset += 2
+            
+            # Add detailed data
+            ws_effect.cell(row=row_offset, column=1, value="DETAILED WEIGHT EFFECT BY CATEGORY").font = Font(bold=True, size=11)
+            row_offset += 1
+            
+            # Headers
+            for c_idx, col_name in enumerate(weight_effect_df.columns, 1):
+                cell = ws_effect.cell(row=row_offset, column=c_idx, value=col_name)
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+            row_offset += 1
+            
+            # Data with conditional formatting
+            for _, row in weight_effect_df.iterrows():
+                for c_idx, col_name in enumerate(weight_effect_df.columns, 1):
+                    value = row[col_name]
+                    cell = ws_effect.cell(row=row_offset, column=c_idx, value=value)
+                    
+                    # Highlight effect values using suffix check
+                    if col_name.endswith('_Weight_Effect_PP') and isinstance(value, (int, float)):
+                        if abs(value) > 1.0:  # High effect (>1 pp)
+                            cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+                        elif abs(value) < 0.25:  # Low effect (<0.25 pp)
+                            cell.fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
+                row_offset += 1
+            
+            # Auto-fit columns
+            from openpyxl.utils import get_column_letter
+            for c_idx in range(1, len(weight_effect_df.columns) + 1):
+                max_length = 0
+                column_letter = get_column_letter(c_idx)
+                for r_idx in range(1, row_offset):
+                    cell_value = ws_effect.cell(row=r_idx, column=c_idx).value
+                    try:
+                        if cell_value and len(str(cell_value)) > max_length:
+                            max_length = len(str(cell_value))
+                    except Exception:
+                        pass
+                ws_effect.column_dimensions[column_letter].width = min(max_length + 2, 35)
+            
+            logger.info("Added Weight Effect Analysis tab")
+        except Exception as e:
+            logger.warning(f"Could not add Weight Effect Analysis sheet: {e}")
+    
     # Save workbook
+    if validation_issues is not None:
+        try:
+            report_generator = ReportGenerator(None)
+            has_errors = any(getattr(i, 'severity', None) == ValidationSeverity.ERROR for i in validation_issues)
+            report_generator.add_data_quality_sheet(wb, validation_issues, passed=not has_errors)
+        except Exception as e:
+            logger.warning(f"Could not add Data Quality sheet: {e}")
     wb.save(output_file)
     logger.info(f"Report saved to: {output_file}")
 
@@ -2103,7 +2967,8 @@ def export_balanced_csv(
     total_col: Optional[str] = None,
     numerator_cols: Optional[Dict[str, str]] = None,
     metric_col: Optional[str] = None,
-    secondary_metrics: Optional[list] = None
+    secondary_metrics: Optional[list] = None,
+    include_calculated: bool = False
 ) -> None:
     """
     Export balanced metrics to CSV in concatenated dimension format.
@@ -2141,11 +3006,12 @@ def export_balanced_csv(
         # Get global weights or per-dimension weights
         def get_weight(dimension: str, peer: str) -> float:
             """Get weight multiplier for a peer in a dimension."""
-            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
-                return float(analyzer.per_dimension_weights[dimension][peer])
+            weight = 1.0
             if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
-                return float(analyzer.global_weights[peer].get('multiplier', 1.0))
-            return 1.0
+                weight = float(analyzer.global_weights[peer].get('multiplier', 1.0))
+            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
+                weight = float(analyzer.per_dimension_weights[dimension][peer])
+            return weight
         
         # Check if time column is available
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
@@ -2210,39 +3076,110 @@ def export_balanced_csv(
                     balanced_fraud = 0.0
                     secondary_balanced = {}
                     
+                    # Calculate raw totals if requested
+                    raw_total = 0.0
+                    raw_approval = 0.0
+                    raw_fraud = 0.0
+                    secondary_raw = {}
+
+                    # Peer-only totals for weight-effect calculations
+                    raw_peer_total = 0.0
+                    raw_peer_approval = 0.0
+                    raw_peer_fraud = 0.0
+                    balanced_peer_total = 0.0
+                    balanced_peer_approval = 0.0
+                    balanced_peer_fraud = 0.0
+                    
                     # Initialize secondary metrics dict
                     if secondary_metrics_list:
                         for sec_metric in secondary_metrics_list:
                             if sec_metric in cat_df.columns:
                                 secondary_balanced[sec_metric] = 0.0
+                                if include_calculated:
+                                    secondary_raw[sec_metric] = 0.0
                     
                     for _, row in cat_df.iterrows():
                         peer = row[entity_col]
                         weight = get_weight(dimension, peer)
+                        is_target = analyzer.target_entity is not None and peer == analyzer.target_entity
                         
                         # Weighted total (denominator)
                         balanced_total += row[total_col] * weight
+                        if not is_target:
+                            balanced_peer_total += row[total_col] * weight
                         
                         # Weighted approval numerator
                         if approval_col := numerator_cols.get('approval'):
                             if approval_col in row.index:
                                 balanced_approval += row[approval_col] * weight
+                                if not is_target:
+                                    balanced_peer_approval += row[approval_col] * weight
                         
                         # Weighted fraud numerator  
                         if fraud_col := numerator_cols.get('fraud'):
                             if fraud_col in row.index:
                                 balanced_fraud += row[fraud_col] * weight
+                                if not is_target:
+                                    balanced_peer_fraud += row[fraud_col] * weight
                         
                         # Weighted secondary metrics
                         for sec_metric in secondary_balanced.keys():
                             if sec_metric in row.index:
                                 secondary_balanced[sec_metric] += row[sec_metric] * weight
+                        
+                        # Raw totals if requested (weight = 1.0)
+                        if include_calculated:
+                            raw_total += row[total_col]
+                            if not is_target:
+                                raw_peer_total += row[total_col]
+                            
+                            if approval_col := numerator_cols.get('approval'):
+                                if approval_col in row.index:
+                                    raw_approval += row[approval_col]
+                                    if not is_target:
+                                        raw_peer_approval += row[approval_col]
+                            
+                            if fraud_col := numerator_cols.get('fraud'):
+                                if fraud_col in row.index:
+                                    raw_fraud += row[fraud_col]
+                                    if not is_target:
+                                        raw_peer_fraud += row[fraud_col]
+                                    
+                            for sec_metric in secondary_raw.keys():
+                                if sec_metric in row.index:
+                                    secondary_raw[sec_metric] += row[sec_metric]
                     
                     # Add row to export
                     row_data = {
                         'Dimension': dimension,
                         'Category': category,
                     }
+                    
+                    if include_calculated:
+                        # Add raw and balanced rates and weight effect
+                        if total_col:
+                            row_data['Raw_Total'] = raw_total
+                            row_data['Balanced_Total'] = balanced_total
+                        
+                        # Approval
+                        if numerator_cols.get('approval'):
+                            row_data['Balanced_Approval_Total'] = balanced_approval
+                            # Calculate rates in %
+                            raw_rate = (raw_peer_approval / raw_peer_total * 100) if raw_peer_total > 0 else 0.0
+                            bal_rate = (balanced_peer_approval / balanced_peer_total * 100) if balanced_peer_total > 0 else 0.0
+                            row_data['Raw_Approval_Rate_%'] = raw_rate
+                            row_data['Balanced_Approval_Rate_%'] = bal_rate
+                            row_data['Approval_Weight_Effect_PP'] = bal_rate - raw_rate
+                            
+                        # Fraud
+                        if numerator_cols.get('fraud'):
+                            row_data['Balanced_Fraud_Total'] = balanced_fraud
+                            # Calculate rates in pp for consistency with weight effect
+                            raw_fraud_rate = (raw_peer_fraud / raw_peer_total * 100) if raw_peer_total > 0 else 0.0
+                            bal_fraud_rate = (balanced_peer_fraud / balanced_peer_total * 100) if balanced_peer_total > 0 else 0.0
+                            row_data['Raw_Fraud_Rate_%'] = raw_fraud_rate
+                            row_data['Balanced_Fraud_Rate_%'] = bal_fraud_rate
+                            row_data['Fraud_Weight_Effect_PP'] = bal_fraud_rate - raw_fraud_rate
                     
                     # Add time period if applicable
                     if has_time:
@@ -2291,11 +3228,12 @@ def export_balanced_csv(
         # Get global weights or per-dimension weights
         def get_weight(dimension: str, peer: str) -> float:
             """Get weight multiplier for a peer in a dimension."""
-            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
-                return float(analyzer.per_dimension_weights[dimension][peer])
+            weight = 1.0
             if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
-                return float(analyzer.global_weights[peer].get('multiplier', 1.0))
-            return 1.0
+                weight = float(analyzer.global_weights[peer].get('multiplier', 1.0))
+            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
+                weight = float(analyzer.per_dimension_weights[dimension][peer])
+            return weight
         
         # Check if time column is available
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
@@ -2329,6 +3267,10 @@ def export_balanced_csv(
                 
             entity_dim_agg = df.groupby(group_cols).agg(agg_dict).reset_index()
             
+        target_entity = analyzer.target_entity
+        if include_calculated and not target_entity:
+            logger.info("Peer-only mode: skipping target-vs-peer share calculations in balanced CSV.")
+            
             # Get unique categories
             categories = entity_dim_agg[dimension].unique()
             
@@ -2349,30 +3291,68 @@ def export_balanced_csv(
                     if cat_df.empty:
                         continue
                     
-                    # Build row data
+                    # Calculate metrics
+                    balanced_metric_values = {}
+                    raw_metric_values = {}
+                    
+                    # Initialize values
+                    for m_type, m_col in metrics_to_calculate:
+                        balanced_metric_values[m_col] = 0.0
+                        if include_calculated:
+                            raw_metric_values[m_col] = 0.0
+                    
+                    for _, row in cat_df.iterrows():
+                        peer = row[entity_col]
+                        weight = get_weight(dimension, peer)
+                        
+                        for m_type, m_col in metrics_to_calculate:
+                            if m_col in row:
+                                val = row[m_col]
+                                balanced_metric_values[m_col] += val * weight
+                        if include_calculated:
+                            raw_metric_values[m_col] += val
+                    
+                    # Add row to export
                     row_data = {
                         'Dimension': dimension,
                         'Category': category,
                     }
                     
+                    # Add metric values
+                    for m_type, m_col in metrics_to_calculate:
+                        # Use original metric name for column header
+                        clean_name = m_col
+                        row_data[f'Balanced_{clean_name}'] = round(balanced_metric_values[m_col], 2)
+                        
+                        if include_calculated:
+                            row_data[f'Raw_{clean_name}'] = round(raw_metric_values[m_col], 2)
+                            
+                            # Calculate shares and distortion
+                            if target_entity:
+                                target_rows = cat_df[cat_df[entity_col] == target_entity]
+                                peer_rows = cat_df[cat_df[entity_col] != target_entity]
+                                target_val = float(target_rows[m_col].sum()) if not target_rows.empty else 0.0
+                                raw_peer_total = float(peer_rows[m_col].sum()) if not peer_rows.empty else 0.0
+                                balanced_peer_total = 0.0
+                                for _, prow in peer_rows.iterrows():
+                                    peer = prow[entity_col]
+                                    weight = get_weight(dimension, peer)
+                                    balanced_peer_total += float(prow[m_col]) * weight
+                                raw_denom = target_val + raw_peer_total
+                                bal_denom = target_val + balanced_peer_total
+                                raw_share = (target_val / raw_denom * 100.0) if raw_denom > 0 else 0.0
+                                bal_share = (target_val / bal_denom * 100.0) if bal_denom > 0 else 0.0
+                                row_data[f'Raw_{clean_name}_Share_%'] = round(raw_share, 4)
+                                row_data[f'Balanced_{clean_name}_Share_%'] = round(bal_share, 4)
+                                row_data[f'{clean_name}_Distortion_PP'] = round(bal_share - raw_share, 4)
+                            else:
+                                row_data[f'Raw_{clean_name}_Share_%'] = None
+                                row_data[f'Balanced_{clean_name}_Share_%'] = None
+                                row_data[f'{clean_name}_Distortion_PP'] = None
+                    
                     # Add time period if applicable
                     if has_time:
                         row_data[time_col] = time_period
-                    
-                    # Calculate balanced metric for each metric column
-                    for metric_type, metric in metrics_to_calculate:
-                        if metric not in cat_df.columns:
-                            continue
-                        
-                        balanced_metric = 0.0
-                        for _, row in cat_df.iterrows():
-                            peer = row[entity_col]
-                            weight = get_weight(dimension, peer)
-                            balanced_metric += row[metric] * weight
-                        
-                        # Column name based on metric type
-                        col_name = metric
-                        row_data[col_name] = round(balanced_metric, 2)
                     
                     export_rows.append(row_data)
         

@@ -213,6 +213,189 @@ class ReportGenerator:
             
             row += 1
     
+    def add_preset_comparison_sheet(
+        self,
+        workbook: Any,
+        comparison_df: 'pd.DataFrame',
+        analysis_type: str = 'share'
+    ) -> None:
+        """
+        Add Preset Comparison sheet to workbook.
+        
+        Parameters
+        ----------
+        workbook : openpyxl.Workbook
+            Target workbook
+        comparison_df : pd.DataFrame
+            DataFrame with columns: Preset, Mean_Distortion, Max_Distortion, Time_Seconds, Best
+        analysis_type : str
+            'share' or 'rate'
+        """
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        from openpyxl.styles import Font, PatternFill, Alignment
+        
+        ws = workbook.create_sheet("Preset Comparison")
+        
+        # Header
+        ws['A1'] = f"Preset Comparison - {analysis_type.title()} Analysis"
+        ws['A1'].font = Font(bold=True, size=14)
+        ws.merge_cells('A1:E1')
+        
+        # Column headers
+        headers = ['Preset', 'Mean Distortion (PP)', 'Max Distortion (PP)', 'Time (s)', 'Best']
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid")
+        
+        # Data rows
+        for row_idx, row_data in enumerate(dataframe_to_rows(comparison_df, index=False, header=False), 4):
+            for col_idx, value in enumerate(row_data, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                # Highlight best row
+                if len(row_data) > 4 and row_data[4] == '⭐':
+                    cell.fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 20
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 8
+        
+        logger.info("Added Preset Comparison sheet")
+    
+    def add_distortion_summary_sheet(
+        self,
+        workbook: Any,
+        summary_df: 'pd.DataFrame',
+        analysis_type: str = 'share'
+    ) -> None:
+        """
+        Add Distortion Summary sheet to workbook.
+        
+        Parameters
+        ----------
+        workbook : openpyxl.Workbook
+            Target workbook
+        summary_df : pd.DataFrame
+            DataFrame with columns: Dimension, Mean_Distortion, Min, Max, Std
+        analysis_type : str
+            'share' or 'rate'
+        """
+        from openpyxl.utils.dataframe import dataframe_to_rows
+        from openpyxl.styles import Font, PatternFill
+        
+        ws = workbook.create_sheet("Distortion Summary")
+        
+        # Header
+        ws['A1'] = f"Distortion Summary - {analysis_type.title()} Analysis"
+        ws['A1'].font = Font(bold=True, size=14)
+        ws.merge_cells('A1:E1')
+        
+        ws['A2'] = "Shows impact of privacy weighting on metric values (percentage points)"
+        ws['A2'].font = Font(italic=True, size=10)
+        
+        # Column headers
+        headers = ['Dimension', 'Mean (PP)', 'Min (PP)', 'Max (PP)', 'Std Dev']
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        
+        # Data rows
+        for row_idx, row_data in enumerate(dataframe_to_rows(summary_df, index=False, header=False), 5):
+            for col_idx, value in enumerate(row_data, 1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 20
+        for col in ['B', 'C', 'D', 'E']:
+            ws.column_dimensions[col].width = 12
+        
+        logger.info("Added Distortion Summary sheet")
+    
+    def add_data_quality_sheet(
+        self,
+        workbook: Any,
+        validation_issues: List[Any],
+        passed: bool = True
+    ) -> None:
+        """
+        Add Data Quality sheet to workbook.
+        
+        Parameters
+        ----------
+        workbook : openpyxl.Workbook
+            Target workbook
+        validation_issues : List[ValidationIssue]
+            List of validation issues (each with severity, category, message attributes)
+        passed : bool
+            Whether validation passed overall
+        """
+        from openpyxl.styles import Font, PatternFill
+        
+        ws = workbook.create_sheet("Data Quality")
+        
+        # Header
+        ws['A1'] = "Data Quality Report"
+        ws['A1'].font = Font(bold=True, size=14)
+        
+        # Status
+        status_text = "✅ PASSED" if passed else "⚠️ ISSUES FOUND"
+        status_color = "E6FFE6" if passed else "FFCCCC"
+        ws['A3'] = f"Status: {status_text}"
+        ws['A3'].font = Font(bold=True, size=12)
+        ws['A3'].fill = PatternFill(start_color=status_color, end_color=status_color, fill_type="solid")
+        
+        if not validation_issues:
+            ws['A5'] = "No issues detected."
+            return
+        
+        # Count by severity
+        error_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'ERROR' in str(i.severity))
+        warn_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'WARN' in str(i.severity))
+        info_count = len(validation_issues) - error_count - warn_count
+        
+        ws['A5'] = f"Errors: {error_count} | Warnings: {warn_count} | Info: {info_count}"
+        
+        # Column headers
+        headers = ['Severity', 'Category', 'Message']
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=7, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Issue rows
+        for row_idx, issue in enumerate(validation_issues, 8):
+            severity = str(getattr(issue, 'severity', 'UNKNOWN'))
+            category = str(getattr(issue, 'category', ''))
+            message = str(getattr(issue, 'message', str(issue)))
+            
+            ws.cell(row=row_idx, column=1, value=severity)
+            ws.cell(row=row_idx, column=2, value=category)
+            ws.cell(row=row_idx, column=3, value=message)
+            
+            # Color by severity
+            if 'ERROR' in severity:
+                color = "FFCCCC"
+            elif 'WARN' in severity:
+                color = "FFF2CC"
+            else:
+                color = "E6F3FF"
+            
+            for col in range(1, 4):
+                ws.cell(row=row_idx, column=col).fill = PatternFill(
+                    start_color=color, end_color=color, fill_type="solid"
+                )
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 12
+        ws.column_dimensions['B'].width = 20
+        ws.column_dimensions['C'].width = 60
+        
+        logger.info("Added Data Quality sheet")
+    
     def _generate_csv_report(
         self,
         results: Dict[str, Any],
@@ -300,3 +483,155 @@ class ReportGenerator:
             
             f.write("=" * 80 + "\n")
             f.write(f"Log generated: {datetime.now().isoformat()}\n")
+    
+    def generate_publication_workbook(
+        self,
+        results: Dict[str, Any],
+        output_file: str,
+        analysis_type: str = 'share',
+        metadata: Optional[Dict[str, Any]] = None,
+        fraud_in_bps: bool = True
+    ) -> None:
+        """
+        Generate publication-ready workbook with simplified formatting.
+        
+        This creates a clean, stakeholder-friendly Excel file without
+        debug sheets, weight details, or technical metadata.
+        
+        Parameters
+        ----------
+        results : Dict
+            Analysis results containing dimension DataFrames
+        output_file : str
+            Output file path
+        analysis_type : str
+            'share' or 'rate'
+        metadata : Dict, optional
+            Basic metadata (entity, date, etc.)
+        fraud_in_bps : bool
+            If True and analysis_type='rate', convert fraud rates to basis points
+        """
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils.dataframe import dataframe_to_rows
+        except ImportError:
+            logger.error("openpyxl not installed. Install with: pip install openpyxl")
+            raise
+        
+        wb = Workbook()
+        
+        # Remove default sheet
+        if 'Sheet' in wb.sheetnames:
+            wb.remove(wb['Sheet'])
+        
+        # Style definitions for publication
+        header_font = Font(bold=True, size=12)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font_white = Font(bold=True, size=12, color="FFFFFF")
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Create Executive Summary sheet
+        ws_summary = wb.create_sheet("Executive Summary")
+        ws_summary['A1'] = f"Benchmark Analysis - {analysis_type.title()}"
+        ws_summary['A1'].font = Font(bold=True, size=16)
+        ws_summary.merge_cells('A1:E1')
+        
+        if metadata:
+            row = 3
+            for key in ['entity', 'date', 'analysis_type']:
+                if key in metadata:
+                    ws_summary[f'A{row}'] = key.replace('_', ' ').title()
+                    ws_summary[f'A{row}'].font = Font(bold=True)
+                    ws_summary[f'B{row}'] = str(metadata[key])
+                    row += 1
+        
+        # Create dimension sheets (publication format)
+        for metric_name, result_data in results.items():
+            if not isinstance(result_data, (dict, pd.DataFrame)):
+                continue
+            
+            # Limit sheet name to 31 chars (Excel limit)
+            sheet_name = str(metric_name)[:31]
+            ws = wb.create_sheet(sheet_name)
+            
+            # Sheet header
+            ws['A1'] = f"{metric_name} Analysis"
+            ws['A1'].font = header_font
+            ws.merge_cells('A1:F1')
+            
+            # Get DataFrame
+            if isinstance(result_data, dict) and 'data' in result_data:
+                df = result_data['data']
+            elif isinstance(result_data, pd.DataFrame):
+                df = result_data
+            else:
+                continue
+            
+            # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
+            df = df.copy(deep=True)
+            if analysis_type == 'rate' and fraud_in_bps:
+                convert_all_rates = False
+                if metadata:
+                    analysis_label = str(metadata.get('analysis_type', '')).lower()
+                    rate_types = [str(rt).lower() for rt in metadata.get('rate_types', [])]
+                    if rate_types and all(rt == 'fraud' for rt in rate_types):
+                        convert_all_rates = True
+                    elif 'fraud_rate' in analysis_label and not rate_types:
+                        convert_all_rates = True
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'weight_effect' in col_lower or 'effect' in col_lower:
+                        continue
+                    if 'total' in col_lower:
+                        continue
+                    if not pd.api.types.is_numeric_dtype(df[col]):
+                        continue
+                    should_convert = False
+                    if convert_all_rates:
+                        if '%' in col_lower or 'rate' in col_lower or 'average' in col_lower or 'target' in col_lower or 'peer' in col_lower:
+                            should_convert = True
+                    else:
+                        if 'fraud' in col_lower and ('%' in col_lower or 'rate' in col_lower or 'average' in col_lower or 'target' in col_lower or 'peer' in col_lower):
+                            should_convert = True
+                    if should_convert:
+                        df[col] = df[col] * 100
+            
+            # Write data with formatting
+            for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):
+                for col_idx, value in enumerate(row, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.border = thin_border
+                    
+                    if row_idx == 3:  # Header row
+                        cell.font = header_font_white
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal='center')
+                    else:
+                        # Format numbers
+                        if isinstance(value, float):
+                            cell.number_format = '0.00'
+        
+        # Auto-adjust column widths (skip merged header cells safely)
+        from openpyxl.utils import get_column_letter
+        for ws in wb.worksheets:
+            for col_idx in range(1, ws.max_column + 1):
+                max_length = 0
+                column_letter = get_column_letter(col_idx)
+                for cell in ws[column_letter]:
+                    try:
+                        if cell.value is not None and len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except Exception:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save
+        wb.save(output_file)
+        logger.info(f"Publication workbook saved to: {output_file}")

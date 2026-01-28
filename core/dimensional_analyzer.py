@@ -1785,7 +1785,9 @@ class DimensionalAnalyzer:
         else: max_concentration = 50.0
         weights = {p: self.global_weights[p]['multiplier'] for p in peers}
         for dimension in dimensions:
-            dim_weights = self.per_dimension_weights.get(dimension, weights)
+            dim_weights = dict(weights)
+            if dimension in self.per_dimension_weights:
+                dim_weights.update(self.per_dimension_weights[dimension])
             weight_source = "Per-Dimension" if dimension in self.per_dimension_weights else "Global"
             weight_method = self.weight_methods.get(dimension, "Global-LP")
             if self.time_column and self.time_column in df.columns:
@@ -1828,3 +1830,404 @@ class DimensionalAnalyzer:
                         violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
                         validation_rows.append({'Dimension': dimension, 'Time_Period': None, 'Category': category, 'Peer': peer, 'Weight_Source': weight_source, 'Weight_Method': weight_method, 'Multiplier': peer_weight, 'Original_Volume': peer_vol, 'Original_Share_%': round(original_share, 4), 'Balanced_Volume': balanced_vol, 'Balanced_Share_%': round(balanced_share, 4), 'Privacy_Cap_%': max_concentration, 'Tolerance_%': self.tolerance, 'Compliant': 'Yes' if compliant else 'No', 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0})
         return pd.DataFrame(validation_rows)
+    
+    def calculate_share_distortion(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        dimensions: List[str],
+        target_entity: Optional[str] = None
+    ) -> pd.DataFrame:
+        """
+        Calculate distortion between raw and balanced market share.
+        
+        For each dimension-category(-time) combination, computes:
+        - Raw share (unweighted peer group average)
+        - Balanced share (privacy-constrained weighted average)
+        - Distortion in percentage points (balanced - raw)
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Input dataframe
+        metric_col : str
+            Column containing metric values
+        dimensions : List[str]
+            Dimensions to analyze
+        target_entity : Optional[str]
+            Target entity (uses self.target_entity if not provided)
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Distortion details with columns: Dimension, Category, Time_Period,
+            Entity, Raw_Share_%, Balanced_Share_%, Distortion_PP
+        """
+        entity = target_entity or self.target_entity
+        if not entity:
+            logger.warning("No target entity specified for distortion calculation")
+            return pd.DataFrame()
+        
+        if metric_col not in df.columns:
+            logger.error(f"Metric column '{metric_col}' not found in DataFrame")
+            return pd.DataFrame()
+        
+        if df[metric_col].isna().any():
+            nan_count = df[metric_col].isna().sum()
+            logger.warning(f"Metric column '{metric_col}' contains {nan_count} NaN values - these rows will be excluded")
+            df = df[df[metric_col].notna()].copy()
+        
+        if (df[metric_col] < 0).any():
+            neg_count = (df[metric_col] < 0).sum()
+            logger.warning(f"Metric column '{metric_col}' contains {neg_count} negative values - these rows will be excluded")
+            df = df[df[metric_col] >= 0].copy()
+        
+        if df.empty:
+            logger.warning("No valid data remaining after filtering NaN/negative values")
+            return pd.DataFrame()
+
+        def build_weight_map(dimension: str) -> Dict[str, float]:
+            weight_map: Dict[str, float] = {}
+            if self.global_weights:
+                for peer, info in self.global_weights.items():
+                    weight_map[peer] = float(info.get('multiplier', 1.0))
+            if dimension in self.per_dimension_weights:
+                for peer, mult in self.per_dimension_weights[dimension].items():
+                    weight_map[peer] = float(mult)
+            return weight_map
+        
+        distortion_rows: List[Dict[str, Any]] = []
+        
+        for dimension in dimensions:
+            # Get dimension-specific weights merged with global fallback
+            dim_weights = build_weight_map(dimension)
+            
+            if self.time_column and self.time_column in df.columns:
+                time_periods = sorted([t for t in df[self.time_column].unique() if t is not None])
+                null_count = df[self.time_column].isna().sum()
+                if null_count > 0:
+                    logger.warning(f"Time column '{self.time_column}' contains {null_count} null values - excluded from time-based analysis")
+                for time_period in time_periods:
+                    time_df = df[df[self.time_column] == time_period]
+                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
+                    
+                    for category in entity_dim_agg[dimension].unique():
+                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                        
+                        # Calculate entity share
+                        entity_vol = float(cat_df[cat_df[self.entity_column] == entity][metric_col].sum())
+                        
+                        # Raw: simple sum of all volumes
+                        total_raw_vol = float(cat_df[metric_col].sum())
+                        raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
+                        
+                        # Balanced: weighted sum of peer volumes only (excluding entity)
+                        peer_cat_df = cat_df[cat_df[self.entity_column] != entity]
+                        total_balanced_vol = entity_vol  # Entity counts as own weight
+                        for _, row in peer_cat_df.iterrows():
+                            peer = row[self.entity_column]
+                            peer_vol = float(row[metric_col])
+                            peer_weight = dim_weights.get(peer, 1.0)
+                            total_balanced_vol += peer_vol * peer_weight
+                        
+                        balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                        distortion_pp = balanced_share - raw_share
+                        
+                        distortion_rows.append({
+                            'Dimension': dimension,
+                            'Category': category,
+                            'Time_Period': time_period,
+                            'Entity': entity,
+                            'Entity_Volume': entity_vol,
+                            'Raw_Total_Volume': total_raw_vol,
+                            'Balanced_Total_Volume': total_balanced_vol,
+                            'Raw_Share_%': round(raw_share, 4),
+                            'Balanced_Share_%': round(balanced_share, 4),
+                            'Distortion_PP': round(distortion_pp, 4),
+                        })
+            else:
+                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
+                
+                for category in entity_dim_agg[dimension].unique():
+                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    
+                    entity_vol = float(cat_df[cat_df[self.entity_column] == entity][metric_col].sum())
+                    total_raw_vol = float(cat_df[metric_col].sum())
+                    raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
+                    
+                    peer_cat_df = cat_df[cat_df[self.entity_column] != entity]
+                    total_balanced_vol = entity_vol
+                    for _, row in peer_cat_df.iterrows():
+                        peer = row[self.entity_column]
+                        peer_vol = float(row[metric_col])
+                        peer_weight = dim_weights.get(peer, 1.0)
+                        total_balanced_vol += peer_vol * peer_weight
+                    
+                    balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                    distortion_pp = balanced_share - raw_share
+                    
+                    distortion_rows.append({
+                        'Dimension': dimension,
+                        'Category': category,
+                        'Time_Period': None,
+                        'Entity': entity,
+                        'Entity_Volume': entity_vol,
+                        'Raw_Total_Volume': total_raw_vol,
+                        'Balanced_Total_Volume': total_balanced_vol,
+                        'Raw_Share_%': round(raw_share, 4),
+                        'Balanced_Share_%': round(balanced_share, 4),
+                        'Distortion_PP': round(distortion_pp, 4),
+                    })
+        
+        return pd.DataFrame(distortion_rows)
+    
+    def calculate_rate_weight_effect(
+        self,
+        df: pd.DataFrame,
+        total_col: str,
+        numerator_cols: Dict[str, str],
+        dimensions: List[str]
+    ) -> pd.DataFrame:
+        """
+        Calculate weight effect on rate metrics (raw vs balanced rates).
+        
+        For each rate and dimension-category(-time) combination, computes:
+        - Raw rate (simple weighted average by volume)
+        - Balanced rate (privacy-constrained weighted average)
+        - Weight effect in percentage points
+        
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            Input dataframe
+        total_col : str
+            Column containing totals/denominators
+        numerator_cols : Dict[str, str]
+            Mapping of rate name to numerator column
+        dimensions : List[str]
+            Dimensions to analyze
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Weight effect details with columns per rate
+        """
+        def build_weight_map(dimension: str) -> Dict[str, float]:
+            weight_map: Dict[str, float] = {}
+            if self.global_weights:
+                for peer, info in self.global_weights.items():
+                    weight_map[peer] = float(info.get('multiplier', 1.0))
+            if dimension in self.per_dimension_weights:
+                for peer, mult in self.per_dimension_weights[dimension].items():
+                    weight_map[peer] = float(mult)
+            return weight_map
+        
+        effect_rows: List[Dict[str, Any]] = []
+        
+        for dimension in dimensions:
+            dim_weights = build_weight_map(dimension)
+            
+            if self.time_column and self.time_column in df.columns:
+                time_periods = sorted([t for t in df[self.time_column].unique() if t is not None])
+                null_count = df[self.time_column].isna().sum()
+                if null_count > 0:
+                    logger.warning(f"Time column '{self.time_column}' contains {null_count} null values - excluded from time-based analysis")
+                for time_period in time_periods:
+                    time_df = df[df[self.time_column] == time_period]
+                    
+                    all_num_cols = [total_col] + list(numerator_cols.values())
+                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg(
+                        {col: 'sum' for col in all_num_cols}
+                    ).reset_index()
+                    
+                    for category in entity_dim_agg[dimension].unique():
+                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                        if self.target_entity:
+                            peer_cat_df = cat_df[cat_df[self.entity_column] != self.target_entity]
+                        else:
+                            peer_cat_df = cat_df
+                        
+                        row_data = {
+                            'Dimension': dimension,
+                            'Category': category,
+                            'Time_Period': time_period,
+                        }
+                        
+                        for rate_name, num_col in numerator_cols.items():
+                            # Raw rate: sum of numerators / sum of denominators
+                            total_num = float(peer_cat_df[num_col].sum())
+                            total_denom = float(peer_cat_df[total_col].sum())
+                            raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
+                            
+                            # Balanced rate: weighted sums
+                            balanced_num = 0.0
+                            balanced_denom = 0.0
+                            for _, prow in peer_cat_df.iterrows():
+                                peer = prow[self.entity_column]
+                                w = dim_weights.get(peer, 1.0)
+                                balanced_num += float(prow[num_col]) * w
+                                balanced_denom += float(prow[total_col]) * w
+                            
+                            balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
+                            weight_effect = balanced_rate - raw_rate
+                            
+                            row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
+                            row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
+                            row_data[f'{rate_name}_Weight_Effect_PP'] = round(weight_effect, 4)
+                        
+                        effect_rows.append(row_data)
+            else:
+                all_num_cols = [total_col] + list(numerator_cols.values())
+                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg(
+                    {col: 'sum' for col in all_num_cols}
+                ).reset_index()
+                
+                for category in entity_dim_agg[dimension].unique():
+                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    if self.target_entity:
+                        peer_cat_df = cat_df[cat_df[self.entity_column] != self.target_entity]
+                    else:
+                        peer_cat_df = cat_df
+                    
+                    row_data = {
+                        'Dimension': dimension,
+                        'Category': category,
+                        'Time_Period': None,
+                    }
+                    
+                    for rate_name, num_col in numerator_cols.items():
+                        total_num = float(peer_cat_df[num_col].sum())
+                        total_denom = float(peer_cat_df[total_col].sum())
+                        raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
+                        
+                        balanced_num = 0.0
+                        balanced_denom = 0.0
+                        for _, prow in peer_cat_df.iterrows():
+                            peer = prow[self.entity_column]
+                            w = dim_weights.get(peer, 1.0)
+                            balanced_num += float(prow[num_col]) * w
+                            balanced_denom += float(prow[total_col]) * w
+                        
+                        balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
+                        weight_effect = balanced_rate - raw_rate
+                        
+                        row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
+                        row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
+                        row_data[f'{rate_name}_Weight_Effect_PP'] = round(weight_effect, 4)
+                    
+                    effect_rows.append(row_data)
+        
+        return pd.DataFrame(effect_rows)
+    
+    def calculate_distortion_summary(
+        self,
+        distortion_df: pd.DataFrame,
+        analysis_type: str = 'share'
+    ) -> pd.DataFrame:
+        """
+        Calculate summary statistics for distortion or weight effect.
+        
+        Computes mean, min, max, std for each:
+        - Dimension
+        - Category
+        - Time period (if present)
+        - Overall
+        
+        Parameters:
+        -----------
+        distortion_df : pd.DataFrame
+            Output from calculate_share_distortion() or calculate_rate_weight_effect()
+        analysis_type : str
+            'share' or 'rate' - determines which columns to summarize
+            
+        Returns:
+        --------
+        pd.DataFrame
+            Summary statistics with aggregation level column
+        """
+        if distortion_df.empty:
+            return pd.DataFrame()
+        
+        summary_rows: List[Dict[str, Any]] = []
+        
+        if analysis_type == 'share':
+            metric_col = 'Distortion_PP'
+            if metric_col not in distortion_df.columns:
+                logger.warning(f"Column {metric_col} not found in distortion dataframe")
+                return pd.DataFrame()
+            
+            # Overall summary
+            summary_rows.append({
+                'Aggregation': 'Overall',
+                'Level': 'All Data',
+                'Mean_Distortion_PP': round(distortion_df[metric_col].mean(), 4),
+                'Min_Distortion_PP': round(distortion_df[metric_col].min(), 4),
+                'Max_Distortion_PP': round(distortion_df[metric_col].max(), 4),
+                'Std_Distortion_PP': round(distortion_df[metric_col].std(), 4) if len(distortion_df) > 1 else 0.0,
+                'Count': len(distortion_df),
+            })
+            
+            # By dimension
+            for dim in distortion_df['Dimension'].unique():
+                dim_df = distortion_df[distortion_df['Dimension'] == dim]
+                summary_rows.append({
+                    'Aggregation': 'By Dimension',
+                    'Level': dim,
+                    'Mean_Distortion_PP': round(dim_df[metric_col].mean(), 4),
+                    'Min_Distortion_PP': round(dim_df[metric_col].min(), 4),
+                    'Max_Distortion_PP': round(dim_df[metric_col].max(), 4),
+                    'Std_Distortion_PP': round(dim_df[metric_col].std(), 4) if len(dim_df) > 1 else 0.0,
+                    'Count': len(dim_df),
+                })
+            
+            # By time (if present)
+            if 'Time_Period' in distortion_df.columns and distortion_df['Time_Period'].notna().any():
+                for time_period in distortion_df['Time_Period'].dropna().unique():
+                    time_df = distortion_df[distortion_df['Time_Period'] == time_period]
+                    summary_rows.append({
+                        'Aggregation': 'By Time Period',
+                        'Level': str(time_period),
+                        'Mean_Distortion_PP': round(time_df[metric_col].mean(), 4),
+                        'Min_Distortion_PP': round(time_df[metric_col].min(), 4),
+                        'Max_Distortion_PP': round(time_df[metric_col].max(), 4),
+                        'Std_Distortion_PP': round(time_df[metric_col].std(), 4) if len(time_df) > 1 else 0.0,
+                        'Count': len(time_df),
+                    })
+        else:
+            # Rate analysis - summarize weight effect columns
+            effect_cols = [col for col in distortion_df.columns if col.endswith('_Weight_Effect_PP')]
+            if not effect_cols:
+                logger.warning("No weight effect columns found in distortion dataframe")
+                return pd.DataFrame()
+            
+            for rate_col in effect_cols:
+                rate_name = rate_col.replace('_Weight_Effect_PP', '')
+                
+                # Overall summary
+                summary_rows.append({
+                    'Aggregation': 'Overall',
+                    'Level': 'All Data',
+                    'Rate': rate_name,
+                    'Mean_Weight_Effect_PP': round(distortion_df[rate_col].mean(), 4),
+                    'Min_Weight_Effect_PP': round(distortion_df[rate_col].min(), 4),
+                    'Max_Weight_Effect_PP': round(distortion_df[rate_col].max(), 4),
+                    'Std_Weight_Effect_PP': round(distortion_df[rate_col].std(), 4) if len(distortion_df) > 1 else 0.0,
+                    'Count': len(distortion_df),
+                })
+                
+                # By dimension
+                for dim in distortion_df['Dimension'].unique():
+                    dim_df = distortion_df[distortion_df['Dimension'] == dim]
+                    summary_rows.append({
+                        'Aggregation': 'By Dimension',
+                        'Level': dim,
+                        'Rate': rate_name,
+                        'Mean_Weight_Effect_PP': round(dim_df[rate_col].mean(), 4),
+                        'Min_Weight_Effect_PP': round(dim_df[rate_col].min(), 4),
+                        'Max_Weight_Effect_PP': round(dim_df[rate_col].max(), 4),
+                        'Std_Weight_Effect_PP': round(dim_df[rate_col].std(), 4) if len(dim_df) > 1 else 0.0,
+                        'Count': len(dim_df),
+                    })
+        
+        return pd.DataFrame(summary_rows)
+

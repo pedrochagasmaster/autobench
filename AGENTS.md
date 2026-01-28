@@ -232,6 +232,88 @@ max_weight = config.get("optimization", "bounds", "max_weight", default=10.0)
 
 ---
 
+## 🖥️ TUI Integration (`tui_app.py`)
+
+### Validation Workflow
+
+The TUI implements a **validation-first** flow using `ValidationModal`:
+1. User clicks "Run Analysis"
+2. If validation enabled: Load DataFrame → Validate → Show modal if issues
+3. Modal allows Proceed (if only warnings) or Cancel
+4. On Proceed: Pass DataFrame to backend (avoids re-loading)
+
+### Key TUI Widgets
+
+| Widget | ID | Purpose |
+|--------|----|---------|
+| `Checkbox` | `validate_input` | Enable/disable input validation (default: True) |
+| `Checkbox` | `compare_presets` | Run preset comparison |
+| `Checkbox` | `analyze_distortion` | Include distortion sheets |
+| `Checkbox` | `include_calculated` | Add raw/distortion columns to CSV |
+| `Checkbox` | `fraud_in_bps` | Rate tab only: BPS formatting |
+| `Select` | `output_format` | analysis/publication/both |
+| `ValidationModal` | — | Shows validation errors/warnings |
+
+### Backend Integration Notes
+
+- `benchmark.py` modified to accept `args.df` (pre-loaded DataFrame)
+- Prevents double data loading after validation
+- All new flags passed via `cli_overrides` to ConfigManager
+
+---
+
+## ✨ Enhanced Analysis Features (New in v3.0)
+
+### Input Validation
+
+**Implementation**: `core/data_loader.py` → `validate_share_input()`, `validate_rate_input()`
+
+**Returns**: `List[ValidationIssue]` with severity (ERROR/WARNING/INFO)
+
+**CLI**: `--validate-input` (default) / `--no-validate-input`
+
+**Checks**:
+- Column existence and types
+- Minimum peer count (4+)
+- Null value detection
+- Entity name consistency
+
+### Distortion Analysis
+
+**Implementation**: `benchmark.py` → `calculate_distortion_summary()`
+
+**CLI**: `--analyze-distortion`
+
+**Outputs**:
+- **Distortion Summary Sheet**: Aggregate stats by dimension
+- Enhanced CSV with `Distortion_PP` columns
+
+### Preset Comparison
+
+**Implementation**: `benchmark.py` → `run_preset_comparison()`
+
+**CLI**: `--compare-presets`
+
+**Outputs**:
+- Preset Comparison sheet with mean distortion per preset
+- ⭐ Best preset marker (lowest distortion)
+
+### Output Formats
+
+**CLI**: `--output-format {analysis|publication|both}` or `--publication-format`
+
+**Config**: `output.output_format`
+
+### Enhanced CSV Export
+
+**CLI**: `--export-balanced-csv --include-calculated`
+
+**Config**: `output.include_calculated_metrics`
+
+**Columns added**: `Raw_Metric`, `Raw_Share_%`, `Balanced_Share_%`, `Distortion_PP`
+
+---
+
 ## 🔧 Key Classes Reference
 
 ### DimensionalAnalyzer

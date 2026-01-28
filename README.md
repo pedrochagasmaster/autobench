@@ -222,6 +222,119 @@ Before running analysis, verify:
 
 ---
 
+## ✨ Enhanced Analysis Features
+
+### 🔍 Data Validation
+
+Built-in validation ensures data quality before analysis starts:
+
+```powershell
+py benchmark.py share --csv data.csv --metric txn_cnt --validate-input
+```
+
+**Checks performed:**
+- ✅ Required columns exist
+- ✅ No null values in critical fields
+- ✅ Sufficient peer count for privacy compliance
+- ✅ Metric values are numeric and non-negative
+- ⚠️ Warns on entity name inconsistencies
+
+**Validation Results:**
+- 🔴 **ERROR**: Analysis aborts — must fix data
+- 🟡 **WARNING**: Analysis proceeds with logged warnings
+- 🟢 **INFO**: Quality notes, analysis continues
+
+> **TUI Integration:** The TUI shows a validation modal with interactive issue review.
+
+---
+
+### 📊 Distortion Analysis
+
+Understand how privacy weights affect your results:
+
+```powershell
+py benchmark.py share --csv data.csv --metric txn_cnt --analyze-distortion
+```
+
+**Outputs:**
+- **Distortion Summary Sheet**: Mean/min/max/std distortion by dimension
+- **Enhanced CSV**: Includes `Raw_Metric`, `Balanced_Share_%`, `Distortion_PP` columns
+- Per-category distortion metrics for quality assessment
+
+**Use for:**
+- Assessing impact of privacy weighting
+- Identifying dimensions with high distortion
+- Quality control for stakeholder presentations
+
+---
+
+### 🔄 Preset Comparison
+
+Test all optimization presets simultaneously to find the best fit:
+
+```powershell
+py benchmark.py share --csv data.csv --metric txn_cnt --compare-presets
+```
+
+**Report includes:**
+- Comparison sheet showing distortion for each preset
+- ⭐ **Best preset** marked automatically (lowest mean distortion)
+- Execution time for each preset
+
+**Presets compared:**
+- `balanced_default`
+- `compliance_strict`
+- `low_distortion_optimized`
+- `minimal_distortion`
+- `research_exploratory`
+- `strategic_consistency`
+
+---
+
+### 📋 Output Formats
+
+Generate analysis-ready or publication-ready reports:
+
+```powershell
+# Analysis format (default) — includes all diagnostic sheets
+py benchmark.py share --csv data.csv --metric txn_cnt --output-format analysis
+
+# Publication format — cleaned for external stakeholders
+py benchmark.py share --csv data.csv --metric txn_cnt --output-format publication
+
+# Both formats
+py benchmark.py share --csv data.csv --metric txn_cnt --output-format both
+```
+
+**Convenience alias:**
+```powershell
+py benchmark.py share --csv data.csv --metric txn_cnt --publication-format
+```
+
+---
+
+### 💾 Enhanced CSV Export
+
+Export privacy-weighted data with calculated metrics:
+
+```powershell
+py benchmark.py share --csv data.csv --metric txn_cnt --export-balanced-csv --include-calculated
+```
+
+**CSV includes:**
+- `Balanced_Metric`: Privacy-weighted values
+- `Raw_Metric`: Original unweighted values
+- `Raw_Metric_Share_%`: Unweighted percentage
+- `Balanced_Metric_Share_%`: Privacy-weighted percentage
+- `Metric_Distortion_PP`: Impact of privacy weighting (percentage points)
+
+**Perfect for:**
+- Importing to Tableau/PowerBI/Excel pivots
+- Comparing raw vs weighted metrics
+- Audit trails and data lineage
+
+---
+
 ## 📋 CLI Reference
 
 ### Essential Commands
@@ -261,6 +374,14 @@ py benchmark.py config generate OUTPUT.yaml    # Create custom config
 | `--output` | Optional | Output file path |
 | `--debug` | Flag | Include debug sheets |
 | `--export-balanced-csv` | Flag | Export balanced CSV alongside Excel |
+| `--validate-input` | Flag | Enable data validation (default: enabled) |
+| `--no-validate-input` | Flag | Disable data validation |
+| `--compare-presets` | Flag | Compare all presets and identify best |
+| `--analyze-distortion` | Flag | Include distortion analysis sheets |
+| `--output-format` | Choice | `analysis`, `publication`, or `both` |
+| `--publication-format` | Flag | Alias for `--output-format=publication` |
+| `--include-calculated` | Flag | Add raw/distortion columns to CSV |
+| `--fraud-in-bps` | Rate | Report fraud in basis points (default: yes) |
 
 </details>
 
