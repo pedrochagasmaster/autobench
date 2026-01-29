@@ -124,9 +124,34 @@ class ConfigValidator:
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
         
-        for bool_field in ['include_debug_sheets', 'include_privacy_validation']:
+        for bool_field in [
+            'include_debug_sheets',
+            'include_privacy_validation',
+            'include_impact_summary',
+            'include_preset_comparison',
+            'include_calculated_metrics',
+            'include_audit_log',
+        ]:
             if bool_field in output_config and not isinstance(output_config[bool_field], bool):
                 errors.append(f"output.{bool_field} must be a boolean")
+
+        if 'impact_thresholds' in output_config:
+            thresholds = output_config['impact_thresholds']
+            if not isinstance(thresholds, dict):
+                errors.append("output.impact_thresholds must be a dictionary")
+            else:
+                for key in ['high_pp', 'low_pp']:
+                    if key in thresholds and not isinstance(thresholds[key], (int, float)):
+                        errors.append(f"output.impact_thresholds.{key} must be a number")
+
+        if 'distortion_thresholds' in output_config:
+            thresholds = output_config['distortion_thresholds']
+            if not isinstance(thresholds, dict):
+                errors.append("output.distortion_thresholds must be a dictionary")
+            else:
+                for key in ['high_distortion_pp', 'low_distortion_pp']:
+                    if key in thresholds and not isinstance(thresholds[key], (int, float)):
+                        errors.append(f"output.distortion_thresholds.{key} must be a number")
         
         return errors
     
@@ -195,6 +220,10 @@ class ConfigValidator:
                     mode = constraints['consistency_mode']
                     if mode not in cls.VALID_CONSISTENCY_MODES:
                         errors.append(f"optimization.constraints.consistency_mode must be one of: {', '.join(cls.VALID_CONSISTENCY_MODES)}")
+
+                if 'enforce_additional_constraints' in constraints:
+                    if not isinstance(constraints['enforce_additional_constraints'], bool):
+                        errors.append("optimization.constraints.enforce_additional_constraints must be a boolean")
         
         # Validate subset search
         if 'subset_search' in opt_config:

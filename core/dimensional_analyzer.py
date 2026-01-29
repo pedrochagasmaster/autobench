@@ -10,6 +10,8 @@ import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
 import logging
 
+from .privacy_validator import PrivacyValidator
+
 # Optional SciPy LP solver
 try:
     from scipy.optimize import linprog  # type: ignore
@@ -57,6 +59,7 @@ class DimensionalAnalyzer:
         # Volume-weighted penalties
         volume_weighted_penalties: bool = False,
         volume_weighting_exponent: float = 1.0,
+        enforce_additional_constraints: bool = True,
     ):
         """
         Initialize dimensional analyzer.
@@ -102,7 +105,9 @@ class DimensionalAnalyzer:
         volume_weighted_penalties : bool
             If True, weight slack penalties by category volume (higher penalties for high-volume categories)
         volume_weighting_exponent : float
-            Exponent for volume weighting: penalty ∝ volume^exponent (default: 1.0 = linear)
+            Exponent for volume weighting: penalty proportional to volume^exponent (default: 1.0 = linear)
+        enforce_additional_constraints : bool
+            If True, enforce Control 3.2 additional constraints (6/30, 7/35, 10/40) in heuristic optimization
         """
         self.target_entity = target_entity
         self.entity_column = entity_column
@@ -138,14 +143,17 @@ class DimensionalAnalyzer:
         # Volume-weighted penalties
         self.volume_weighted_penalties: bool = bool(volume_weighted_penalties)
         self.volume_weighting_exponent: float = float(volume_weighting_exponent)
+        self.enforce_additional_constraints: bool = bool(enforce_additional_constraints)
         self.slack_subset_triggered: bool = False
         # Structural diagnostics placeholders
         self.structural_detail_df: pd.DataFrame = pd.DataFrame()
         self.structural_summary_df: pd.DataFrame = pd.DataFrame()
         # Rank changes (Milestone 2)
         self.rank_changes_df: pd.DataFrame = pd.DataFrame()
-        # Privacy compliance validation (debug mode)
+        # Privacy compliance validation (enabled by output settings)
         self.privacy_validation_df: pd.DataFrame = pd.DataFrame()
+        self.privacy_rule_name: Optional[str] = None
+        self.additional_constraint_violations: List[Dict[str, Any]] = []
         logger.info(f"Initialized DimensionalAnalyzer for entity: {target_entity}")
         if debug_mode:
             logger.info("Debug mode enabled - will include unweighted averages and weights tracking")
@@ -504,11 +512,10 @@ class DimensionalAnalyzer:
         # 2. Monthly category constraints: privacy rules for each month-dimension-category combination  
         for time_period in time_periods:
             time_df = df[df[self.time_column] == time_period]
-            
             for dim in dimensions:
                 if dim == self.time_column:
                     continue  # Skip the time column itself as a regular dimension
-                    
+                
                 # Aggregate by entity and dimension for this time period
                 entity_dim_agg = time_df.groupby([self.entity_column, dim]).agg({metric_col: 'sum'}).reset_index()
                 categories = entity_dim_agg[dim].unique()
@@ -556,6 +563,95 @@ class DimensionalAnalyzer:
         logger.info(f"Built {len(all_categories)} time-aware category constraints for {len(peers)} peers across {len(time_periods)} time periods")
         
         return all_categories, peer_volumes, peers
+
+    def _get_privacy_rule(self, peer_count: int) -> Tuple[str, float]:
+        """Select privacy rule and max concentration for a given peer count."""
+        rule_name = PrivacyValidator.select_rule(peer_count)
+        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        max_concentration = float(rule_cfg.get('max_concentration', 50.0))
+        return rule_name, max_concentration
+
+    # Constants
+    VIOLATION_PENALTY_WEIGHT = 100.0
+
+    def _additional_constraints_penalty(self, shares: List[float], rule_name: str) -> float:
+        """Compute penalty for additional Control 3.2 constraints.
+        
+        Note: The min_entities check is static and should be performed before calling this
+        in a hot loop, but we keep a fallback check here just in case.
+        """
+        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        if not rule_cfg or not rule_cfg.get('additional'):
+            return 0.0
+
+        # Optimization: shares are already floats, sort directly
+        # We need the sorted values to check top N shares
+        shares_sorted = sorted(shares, reverse=True)
+        penalty = 0.0
+
+        if rule_name == '6/30':
+            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+            penalty += max(0.0, 7.0 - third) ** 2
+        elif rule_name == '7/35':
+            second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
+            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+            penalty += max(0.0, 15.0 - second) ** 2
+            penalty += max(0.0, 8.0 - third) ** 2
+        elif rule_name == '10/40':
+            second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
+            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+            penalty += max(0.0, 20.0 - second) ** 2
+            penalty += max(0.0, 10.0 - third) ** 2
+
+        return penalty
+
+    def _find_additional_constraint_violations(
+        self,
+        dim_categories: List[Dict[str, Any]],
+        peers: List[str],
+        weights: Dict[str, float],
+        rule_name: str
+    ) -> List[Dict[str, Any]]:
+        """Evaluate additional constraints per category and return violations."""
+        violations: List[Dict[str, Any]] = []
+
+        # Build unique constraint keys (dimension, category, time_period)
+        unique_keys = set()
+        for cat in dim_categories:
+            key = (cat['dimension'], cat['category'], cat.get('time_period'))
+            unique_keys.add(key)
+
+        for key in unique_keys:
+            dim, category, time_period = key
+            matching_cats = [
+                c for c in dim_categories
+                if c['dimension'] == dim
+                and c['category'] == category
+                and c.get('time_period') == time_period
+            ]
+            peer_volumes = {p: 0.0 for p in peers}
+            for cat in matching_cats:
+                peer_volumes[cat['peer']] = float(cat.get('category_volume', 0.0))
+
+            total_weighted = sum(peer_volumes[p] * weights.get(p, 1.0) for p in peers)
+            if total_weighted <= 0:
+                shares = [0.0 for _ in peers]
+            else:
+                shares = [
+                    (peer_volumes[p] * weights.get(p, 1.0) / total_weighted * 100.0)
+                    for p in peers
+                ]
+
+            passed, details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+            if not passed:
+                violations.append({
+                    'Dimension': dim,
+                    'Category': category,
+                    'Time_Period': time_period,
+                    'Details': "; ".join(details) if details else "Additional constraints not met",
+                })
+
+        return violations
 
     def _dimension_unbalance_scores(self, all_categories: List[Dict[str, Any]]) -> Dict[str, float]:
         """Compute unbalance score per dimension: max raw concentration within any category (peer_cat_vol / sum_peers_cat_vol)."""
@@ -846,7 +942,8 @@ class DimensionalAnalyzer:
         dim_categories: List[Dict[str, Any]],
         max_concentration: float,
         peer_volumes: Dict[str, float],
-        target_weights: Optional[Dict[str, float]] = None
+        target_weights: Optional[Dict[str, float]] = None,
+        rule_name: Optional[str] = None
     ) -> Dict[str, float]:
         """Bayesian-inspired optimization solver for a single dimension's categories.
         Returns a peer->multiplier dict within [min_weight, max_weight].
@@ -854,6 +951,7 @@ class DimensionalAnalyzer:
         Uses scipy.optimize.minimize with L-BFGS-B to find weights that minimize:
         1. Constraint violations (primary objective)
         2. Deviation from target_weights (secondary, if provided)
+        3. Additional Control 3.2 constraints (when enabled)
         
         This is much more efficient than iterative heuristics since the LP solver
         has already placed weights near optimal boundaries.
@@ -880,27 +978,53 @@ class DimensionalAnalyzer:
                 and c.get('time_period') == time_period
             ]
         
+        peer_index = {peer: i for i, peer in enumerate(peers)}
+        if rule_name is None:
+            rule_name = PrivacyValidator.select_rule(len(peers))
+
+        # Check for structural feasibility before optimization
+        min_entities_check = True
+        if self.enforce_additional_constraints and rule_name:
+            rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+            if rule_cfg and rule_cfg.get('additional'):
+                min_entities = int(rule_cfg.get('min_entities', 0))
+                if len(peers) < min_entities:
+                     min_entities_check = False
+        
         # Objective function: minimize violations + deviation from target
         def objective(weight_array):
-            weights_dict = {peer: weight_array[i] for i, peer in enumerate(peers)}
-            
             # Primary: sum of squared constraint violations
             violation_penalty = 0.0
+            additional_penalty = 0.0
             max_share = max_concentration + self.tolerance
             
             for key, cat_indices in constraint_map.items():
                 matching_cats = [dim_categories[i] for i in cat_indices]
-                total_weighted = sum(c['category_volume'] * weights_dict[c['peer']] for c in matching_cats)
-                
+                peer_cat_vols = {p: 0.0 for p in peers}
+                for cat in matching_cats:
+                    peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
+
+                total_weighted = sum(peer_cat_vols[p] * weight_array[peer_index[p]] for p in peers)
+                shares: List[float] = []
+
                 if total_weighted > 0:
-                    for cat in matching_cats:
-                        p = cat['peer']
-                        cat_vol_weighted = cat['category_volume'] * weights_dict[p]
-                        adjusted_share = (cat_vol_weighted / total_weighted * 100)
-                        
+                    for p in peers:
+                        cat_vol_weighted = peer_cat_vols[p] * weight_array[peer_index[p]]
+                        adjusted_share = (cat_vol_weighted / total_weighted * 100.0)
+                        shares.append(adjusted_share)
                         if adjusted_share > max_share:
                             excess = adjusted_share - max_share
                             violation_penalty += excess ** 2  # Quadratic penalty
+                else:
+                    shares = [0.0 for _ in peers]
+
+                if self.enforce_additional_constraints and rule_name:
+                    if not min_entities_check:
+                         # Structural failure, add heavy penalty
+                         shortfall = max(int(PrivacyValidator.get_rule_config(rule_name).get('min_entities', 0)) - len(peers), 0)
+                         additional_penalty += float(shortfall * shortfall * 100.0)
+                    else:
+                         additional_penalty += self._additional_constraints_penalty(shares, rule_name)
             
             # Secondary: stay close to target_weights (if provided)
             deviation_penalty = 0.0
@@ -909,8 +1033,8 @@ class DimensionalAnalyzer:
                     target = target_weights.get(peer, 1.0)
                     deviation_penalty += (weight_array[i] - target) ** 2
             
-            # Balance penalties: violations are 100x more important
-            return violation_penalty * 100.0 + deviation_penalty
+            # Balance penalties
+            return (violation_penalty + additional_penalty) * self.VIOLATION_PENALTY_WEIGHT + deviation_penalty
         
         # Initialize from target_weights or LP-suggested values
         if target_weights:
@@ -944,25 +1068,39 @@ class DimensionalAnalyzer:
         
         # Final validation: check remaining violations
         final_violations = []
+        additional_violations = []
         for (dim, category, time_period) in unique_keys_list:
             cat_indices = constraint_map[(dim, category, time_period)]
             matching_cats = [dim_categories[i] for i in cat_indices]
-            total_weighted = sum(c['category_volume'] * weights[c['peer']] for c in matching_cats)
-            
+            peer_cat_vols = {p: 0.0 for p in peers}
+            for cat in matching_cats:
+                peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
+            total_weighted = sum(peer_cat_vols[p] * weights[p] for p in peers)
+
             if total_weighted > 0:
-                for cat in matching_cats:
-                    p = cat['peer']
-                    cat_vol_weighted = cat['category_volume'] * weights[p]
-                    adjusted_share = (cat_vol_weighted / total_weighted * 100)
-                    
+                shares = []
+                for p in peers:
+                    cat_vol_weighted = peer_cat_vols[p] * weights[p]
+                    adjusted_share = (cat_vol_weighted / total_weighted * 100.0)
+                    shares.append(adjusted_share)
                     if adjusted_share > max_concentration + self.tolerance:
                         final_violations.append({
-                            'peer': p, 
-                            'dim': dim, 
-                            'cat': category, 
+                            'peer': p,
+                            'dim': dim,
+                            'cat': category,
                             'time': time_period,
                             'share': adjusted_share,
                             'excess': adjusted_share - max_concentration - self.tolerance
+                        })
+
+                if self.enforce_additional_constraints and rule_name:
+                    passed, details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+                    if not passed:
+                        additional_violations.append({
+                            'dim': dim,
+                            'cat': category,
+                            'time': time_period,
+                            'details': details,
                         })
         
         if final_violations:
@@ -975,6 +1113,13 @@ class DimensionalAnalyzer:
                 time_str = f" time={v['time']}" if v['time'] else ""
                 logger.debug(f"  {v['peer']} in {v['dim']}={v['cat']}{time_str}: "
                            f"{v['share']:.2f}% (excess: {v['excess']:.2f}pp)")
+
+        if additional_violations:
+            logger.warning(f"Bayesian optimization completed with {len(additional_violations)} additional-constraint violations.")
+            for v in additional_violations[:3]:
+                time_str = f" time={v['time']}" if v['time'] else ""
+                details = "; ".join(v.get('details', []))
+                logger.debug(f"  {v['dim']}={v['cat']}{time_str}: {details}")
         
         return weights
 
@@ -1004,18 +1149,8 @@ class DimensionalAnalyzer:
         # Build initial categories for provided dimensions
         all_categories, peer_volumes, peers = self._build_categories(df, metric_col, dimensions)
         peer_count = len(peers)
-        if peer_count >= 10:
-            max_concentration = 40.0
-        elif peer_count >= 7:
-            max_concentration = 35.0
-        elif peer_count >= 6:
-            max_concentration = 30.0
-        elif peer_count >= 5:
-            max_concentration = 25.0
-        elif peer_count >= 4:
-            max_concentration = 35.0
-        else:
-            max_concentration = 50.0
+        rule_name, max_concentration = self._get_privacy_rule(peer_count)
+        self.privacy_rule_name = rule_name
 
         # Structural diagnostics upfront for reporting
         try:
@@ -1026,6 +1161,7 @@ class DimensionalAnalyzer:
             logger.warning(f"Structural diagnostics failed: {e}")
 
         logger.info(f"Calculating global privacy-constrained weights for {peer_count} peers")
+        logger.info(f"Privacy rule: {rule_name}")
         logger.info(f"Max concentration: {max_concentration}%")
         logger.info(f"Checking all categories across dimensions: {dimensions}")
         logger.info(f"Found {len(all_categories)} dimension/category combinations")
@@ -1084,7 +1220,14 @@ class DimensionalAnalyzer:
                             else:
                                 # Heuristic per-dimension fallback - use global weights as target
                                 target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                rd_h = self._solve_dimension_weights_heuristic(peers, rd_cats, max_concentration, rd_peer_vols, target_multipliers)
+                                rd_h = self._solve_dimension_weights_heuristic(
+                                    peers,
+                                    rd_cats,
+                                    max_concentration,
+                                    rd_peer_vols,
+                                    target_multipliers,
+                                    rule_name=rule_name
+                                )
                                 if rd_h:
                                     self.per_dimension_weights[rd] = rd_h
                                     self.weight_methods[rd] = "Per-Dimension-Bayesian"
@@ -1124,7 +1267,14 @@ class DimensionalAnalyzer:
                             else:
                                 # Heuristic per-dimension fallback - use global weights as target
                                 target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                rd_h = self._solve_dimension_weights_heuristic(peers, rd_cats, max_concentration, rd_peer_vols, target_multipliers)
+                                rd_h = self._solve_dimension_weights_heuristic(
+                                    peers,
+                                    rd_cats,
+                                    max_concentration,
+                                    rd_peer_vols,
+                                    target_multipliers,
+                                    rule_name=rule_name
+                                )
                                 if rd_h:
                                     self.per_dimension_weights[rd] = rd_h
                                     self.weight_methods[rd] = "Per-Dimension-Bayesian"
@@ -1168,7 +1318,14 @@ class DimensionalAnalyzer:
                                 else:
                                     # Heuristic per-dimension fallback - use global weights as target
                                     target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                    rd_h = self._solve_dimension_weights_heuristic(peers, rd_cats, max_concentration, rd_peer_vols, target_multipliers)
+                                    rd_h = self._solve_dimension_weights_heuristic(
+                                        peers,
+                                        rd_cats,
+                                        max_concentration,
+                                        rd_peer_vols,
+                                        target_multipliers,
+                                        rule_name=rule_name
+                                    )
                                     if rd_h:
                                         self.per_dimension_weights[rd] = rd_h
                                         self.weight_methods[rd] = "Per-Dimension-Bayesian"
@@ -1189,6 +1346,34 @@ class DimensionalAnalyzer:
         self.removed_dimensions = removed_dimensions
 
         if converged:
+            # Enforce additional constraints (if configured) via heuristic re-optimization
+            self.additional_constraint_violations = []
+            if self.enforce_additional_constraints and rule_name in ('6/30', '7/35', '10/40'):
+                violations = self._find_additional_constraint_violations(all_categories, peers, weights, rule_name)
+                self.additional_constraint_violations = violations
+                if violations:
+                    logger.warning(f"Additional constraints violated in {len(violations)} categories; running heuristic optimization to correct.")
+                    target_multipliers = {p: weights[p] for p in peers} if weights else None
+                    heuristic_weights = self._solve_dimension_weights_heuristic(
+                        peers,
+                        all_categories,
+                        max_concentration,
+                        peer_volumes,
+                        target_multipliers,
+                        rule_name=rule_name
+                    )
+                    if heuristic_weights:
+                        weights = heuristic_weights
+                        self.additional_constraint_violations = self._find_additional_constraint_violations(
+                            all_categories, peers, weights, rule_name
+                        )
+                        if self.additional_constraint_violations:
+                            logger.warning(
+                                f"Additional constraints still violated in {len(self.additional_constraint_violations)} categories after heuristic optimization."
+                            )
+                    else:
+                        logger.warning("Heuristic optimization failed; keeping LP weights with additional-constraint violations.")
+
             # Store and validate
             self._store_final_weights(peers, peer_volumes, weights)
             
@@ -1344,7 +1529,14 @@ class DimensionalAnalyzer:
                         if vd_sol is None:
                             # Fallback to Bayesian optimization with global weights as target
                             target_multipliers = {p: weights[p] for p in peers}
-                            vd_h = self._solve_dimension_weights_heuristic(peers, vd_cats, max_concentration, vd_peer_vols, target_multipliers)
+                            vd_h = self._solve_dimension_weights_heuristic(
+                                peers,
+                                vd_cats,
+                                max_concentration,
+                                vd_peer_vols,
+                                target_multipliers,
+                                rule_name=rule_name
+                            )
                             if vd_h:
                                 self.per_dimension_weights[vd] = vd_h
                                 self.weight_methods[vd] = "Per-Dimension-Bayesian"
@@ -1501,7 +1693,7 @@ class DimensionalAnalyzer:
         if self.debug_mode:
             result['Original Peer Average (%)'] = round(original_peer_avg, 6)
             result['Original Total Volume'] = round(peer_category_total, 2)
-            result['Weight Effect (pp)'] = round(peer_balanced_avg - original_peer_avg, 6)
+            result['Impact (pp)'] = round(peer_balanced_avg - original_peer_avg, 6)
         
         # Add target-specific columns only if we have a target entity
         if self.target_entity is not None:
@@ -1632,7 +1824,7 @@ class DimensionalAnalyzer:
             result['Original Total Numerator'] = round(total_num, 2)
             result['Original Total Denominator'] = round(total_den, 2)
 
-            result['Weight Effect (pp)'] = round(peer_balanced_rate - original_peer_rate, 6)
+            result['Impact (pp)'] = round(peer_balanced_rate - original_peer_rate, 6)
         
         # Add target-specific columns only if we have a target entity
         if self.target_entity is not None:
@@ -1772,17 +1964,12 @@ class DimensionalAnalyzer:
 
     def build_privacy_validation_dataframe(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> pd.DataFrame:
         """Build detailed privacy validation dataframe showing original and balanced shares for each dimension-category-(time) combination."""
-        if not self.debug_mode or not self.consistent_weights:
+        if not self.consistent_weights or not self.global_weights:
             return pd.DataFrame()
         validation_rows: List[Dict[str, Any]] = []
         peers = list(self.global_weights.keys())
         peer_count = len(peers)
-        if peer_count >= 10: max_concentration = 40.0
-        elif peer_count >= 7: max_concentration = 35.0
-        elif peer_count >= 6: max_concentration = 30.0
-        elif peer_count >= 5: max_concentration = 25.0
-        elif peer_count >= 4: max_concentration = 35.0
-        else: max_concentration = 50.0
+        rule_name, max_concentration = self._get_privacy_rule(peer_count)
         weights = {p: self.global_weights[p]['multiplier'] for p in peers}
         for dimension in dimensions:
             dim_weights = dict(weights)
@@ -1803,14 +1990,46 @@ class DimensionalAnalyzer:
                             peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
                         total_original_vol = sum(p['volume'] for p in peer_data)
                         total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
+                        balanced_shares: List[float] = []
                         for peer_info in peer_data:
-                            peer, peer_vol, peer_weight = peer_info['peer'], peer_info['volume'], dim_weights.get(peer_info['peer'], 1.0)
+                            peer_weight = dim_weights.get(peer_info['peer'], 1.0)
+                            balanced_vol = peer_info['volume'] * peer_weight
+                            balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                            balanced_shares.append(balanced_share)
+
+                        additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
+                            balanced_shares, rule_name
+                        )
+                        additional_detail = "; ".join(additional_details) if additional_details else ""
+
+                        for idx, peer_info in enumerate(peer_data):
+                            peer, peer_vol = peer_info['peer'], peer_info['volume']
+                            peer_weight = dim_weights.get(peer, 1.0)
                             original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
                             balanced_vol = peer_vol * peer_weight
-                            balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                            compliant = balanced_share <= max_concentration + self.tolerance
+                            balanced_share = balanced_shares[idx]
+                            compliant = (balanced_share <= max_concentration + self.tolerance) and additional_passed
                             violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
-                            validation_rows.append({'Dimension': dimension, 'Time_Period': time_period, 'Category': category, 'Peer': peer, 'Weight_Source': weight_source, 'Weight_Method': weight_method, 'Multiplier': peer_weight, 'Original_Volume': peer_vol, 'Original_Share_%': round(original_share, 4), 'Balanced_Volume': balanced_vol, 'Balanced_Share_%': round(balanced_share, 4), 'Privacy_Cap_%': max_concentration, 'Tolerance_%': self.tolerance, 'Compliant': 'Yes' if compliant else 'No', 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0})
+                            validation_rows.append({
+                                'Dimension': dimension,
+                                'Time_Period': time_period,
+                                'Category': category,
+                                'Peer': peer,
+                                'Rule_Name': rule_name,
+                                'Weight_Source': weight_source,
+                                'Weight_Method': weight_method,
+                                'Multiplier': peer_weight,
+                                'Original_Volume': peer_vol,
+                                'Original_Share_%': round(original_share, 4),
+                                'Balanced_Volume': balanced_vol,
+                                'Balanced_Share_%': round(balanced_share, 4),
+                                'Privacy_Cap_%': max_concentration,
+                                'Tolerance_%': self.tolerance,
+                                'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
+                                'Additional_Constraint_Detail': additional_detail,
+                                'Compliant': 'Yes' if compliant else 'No',
+                                'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
+                            })
             else:
                 entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
                 for category in entity_dim_agg[dimension].unique():
@@ -1821,17 +2040,49 @@ class DimensionalAnalyzer:
                         peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
                     total_original_vol = sum(p['volume'] for p in peer_data)
                     total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
+                    balanced_shares: List[float] = []
                     for peer_info in peer_data:
-                        peer, peer_vol, peer_weight = peer_info['peer'], peer_info['volume'], dim_weights.get(peer_info['peer'], 1.0)
+                        peer_weight = dim_weights.get(peer_info['peer'], 1.0)
+                        balanced_vol = peer_info['volume'] * peer_weight
+                        balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                        balanced_shares.append(balanced_share)
+
+                    additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
+                        balanced_shares, rule_name
+                    )
+                    additional_detail = "; ".join(additional_details) if additional_details else ""
+
+                    for idx, peer_info in enumerate(peer_data):
+                        peer, peer_vol = peer_info['peer'], peer_info['volume']
+                        peer_weight = dim_weights.get(peer, 1.0)
                         original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
                         balanced_vol = peer_vol * peer_weight
-                        balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                        compliant = balanced_share <= max_concentration + self.tolerance
+                        balanced_share = balanced_shares[idx]
+                        compliant = (balanced_share <= max_concentration + self.tolerance) and additional_passed
                         violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
-                        validation_rows.append({'Dimension': dimension, 'Time_Period': None, 'Category': category, 'Peer': peer, 'Weight_Source': weight_source, 'Weight_Method': weight_method, 'Multiplier': peer_weight, 'Original_Volume': peer_vol, 'Original_Share_%': round(original_share, 4), 'Balanced_Volume': balanced_vol, 'Balanced_Share_%': round(balanced_share, 4), 'Privacy_Cap_%': max_concentration, 'Tolerance_%': self.tolerance, 'Compliant': 'Yes' if compliant else 'No', 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0})
+                        validation_rows.append({
+                            'Dimension': dimension,
+                            'Time_Period': None,
+                            'Category': category,
+                            'Peer': peer,
+                            'Rule_Name': rule_name,
+                            'Weight_Source': weight_source,
+                            'Weight_Method': weight_method,
+                            'Multiplier': peer_weight,
+                            'Original_Volume': peer_vol,
+                            'Original_Share_%': round(original_share, 4),
+                            'Balanced_Volume': balanced_vol,
+                            'Balanced_Share_%': round(balanced_share, 4),
+                            'Privacy_Cap_%': max_concentration,
+                            'Tolerance_%': self.tolerance,
+                            'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
+                            'Additional_Constraint_Detail': additional_detail,
+                            'Compliant': 'Yes' if compliant else 'No',
+                            'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
+                        })
         return pd.DataFrame(validation_rows)
     
-    def calculate_share_distortion(
+    def calculate_share_impact(
         self,
         df: pd.DataFrame,
         metric_col: str,
@@ -1839,12 +2090,12 @@ class DimensionalAnalyzer:
         target_entity: Optional[str] = None
     ) -> pd.DataFrame:
         """
-        Calculate distortion between raw and balanced market share.
+        Calculate impact between raw and balanced market share.
         
         For each dimension-category(-time) combination, computes:
         - Raw share (unweighted peer group average)
         - Balanced share (privacy-constrained weighted average)
-        - Distortion in percentage points (balanced - raw)
+        - Impact in percentage points (balanced - raw)
         
         Parameters:
         -----------
@@ -1860,12 +2111,12 @@ class DimensionalAnalyzer:
         Returns:
         --------
         pd.DataFrame
-            Distortion details with columns: Dimension, Category, Time_Period,
-            Entity, Raw_Share_%, Balanced_Share_%, Distortion_PP
+            Impact details with columns: Dimension, Category, Time_Period,
+            Entity, Raw_Share_%, Balanced_Share_%, Impact_PP
         """
         entity = target_entity or self.target_entity
         if not entity:
-            logger.warning("No target entity specified for distortion calculation")
+            logger.warning("No target entity specified for impact calculation")
             return pd.DataFrame()
         
         if metric_col not in df.columns:
@@ -1896,7 +2147,7 @@ class DimensionalAnalyzer:
                     weight_map[peer] = float(mult)
             return weight_map
         
-        distortion_rows: List[Dict[str, Any]] = []
+        impact_rows: List[Dict[str, Any]] = []
         
         for dimension in dimensions:
             # Get dimension-specific weights merged with global fallback
@@ -1931,9 +2182,9 @@ class DimensionalAnalyzer:
                             total_balanced_vol += peer_vol * peer_weight
                         
                         balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                        distortion_pp = balanced_share - raw_share
+                        impact_pp = balanced_share - raw_share
                         
-                        distortion_rows.append({
+                        impact_rows.append({
                             'Dimension': dimension,
                             'Category': category,
                             'Time_Period': time_period,
@@ -1943,7 +2194,7 @@ class DimensionalAnalyzer:
                             'Balanced_Total_Volume': total_balanced_vol,
                             'Raw_Share_%': round(raw_share, 4),
                             'Balanced_Share_%': round(balanced_share, 4),
-                            'Distortion_PP': round(distortion_pp, 4),
+                            'Impact_PP': round(impact_pp, 4),
                         })
             else:
                 entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
@@ -1964,9 +2215,9 @@ class DimensionalAnalyzer:
                         total_balanced_vol += peer_vol * peer_weight
                     
                     balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                    distortion_pp = balanced_share - raw_share
+                    impact_pp = balanced_share - raw_share
                     
-                    distortion_rows.append({
+                    impact_rows.append({
                         'Dimension': dimension,
                         'Category': category,
                         'Time_Period': None,
@@ -1976,12 +2227,26 @@ class DimensionalAnalyzer:
                         'Balanced_Total_Volume': total_balanced_vol,
                         'Raw_Share_%': round(raw_share, 4),
                         'Balanced_Share_%': round(balanced_share, 4),
-                        'Distortion_PP': round(distortion_pp, 4),
+                        'Impact_PP': round(impact_pp, 4),
                     })
         
-        return pd.DataFrame(distortion_rows)
+        return pd.DataFrame(impact_rows)
+
+    def calculate_share_distortion(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        dimensions: List[str],
+        target_entity: Optional[str] = None
+    ) -> pd.DataFrame:
+        """Deprecated wrapper for calculate_share_impact."""
+        logger.warning("calculate_share_distortion is deprecated. Use calculate_share_impact instead.")
+        df_impact = self.calculate_share_impact(df, metric_col, dimensions, target_entity)
+        if 'Impact_PP' in df_impact.columns:
+            df_impact['Distortion_PP'] = df_impact['Impact_PP']
+        return df_impact
     
-    def calculate_rate_weight_effect(
+    def calculate_rate_impact(
         self,
         df: pd.DataFrame,
         total_col: str,
@@ -1989,12 +2254,12 @@ class DimensionalAnalyzer:
         dimensions: List[str]
     ) -> pd.DataFrame:
         """
-        Calculate weight effect on rate metrics (raw vs balanced rates).
+        Calculate impact on rate metrics (raw vs balanced rates).
         
         For each rate and dimension-category(-time) combination, computes:
         - Raw rate (simple weighted average by volume)
         - Balanced rate (privacy-constrained weighted average)
-        - Weight effect in percentage points
+        - Impact in percentage points
         
         Parameters:
         -----------
@@ -2010,7 +2275,7 @@ class DimensionalAnalyzer:
         Returns:
         --------
         pd.DataFrame
-            Weight effect details with columns per rate
+            Impact details with columns per rate
         """
         def build_weight_map(dimension: str) -> Dict[str, float]:
             weight_map: Dict[str, float] = {}
@@ -2022,7 +2287,7 @@ class DimensionalAnalyzer:
                     weight_map[peer] = float(mult)
             return weight_map
         
-        effect_rows: List[Dict[str, Any]] = []
+        impact_rows: List[Dict[str, Any]] = []
         
         for dimension in dimensions:
             dim_weights = build_weight_map(dimension)
@@ -2069,13 +2334,13 @@ class DimensionalAnalyzer:
                                 balanced_denom += float(prow[total_col]) * w
                             
                             balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
-                            weight_effect = balanced_rate - raw_rate
+                            impact_pp = balanced_rate - raw_rate
                             
                             row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
                             row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
-                            row_data[f'{rate_name}_Weight_Effect_PP'] = round(weight_effect, 4)
+                            row_data[f'{rate_name}_Impact_PP'] = round(impact_pp, 4)
                         
-                        effect_rows.append(row_data)
+                        impact_rows.append(row_data)
             else:
                 all_num_cols = [total_col] + list(numerator_cols.values())
                 entity_dim_agg = df.groupby([self.entity_column, dimension]).agg(
@@ -2109,23 +2374,40 @@ class DimensionalAnalyzer:
                             balanced_denom += float(prow[total_col]) * w
                         
                         balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
-                        weight_effect = balanced_rate - raw_rate
+                        impact_pp = balanced_rate - raw_rate
                         
                         row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
                         row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
-                        row_data[f'{rate_name}_Weight_Effect_PP'] = round(weight_effect, 4)
+                        row_data[f'{rate_name}_Impact_PP'] = round(impact_pp, 4)
                     
-                    effect_rows.append(row_data)
+                    impact_rows.append(row_data)
         
-        return pd.DataFrame(effect_rows)
-    
-    def calculate_distortion_summary(
+        return pd.DataFrame(impact_rows)
+
+    def calculate_rate_weight_effect(
         self,
-        distortion_df: pd.DataFrame,
+        df: pd.DataFrame,
+        total_col: str,
+        numerator_cols: Dict[str, str],
+        dimensions: List[str]
+    ) -> pd.DataFrame:
+        """Deprecated wrapper for calculate_rate_impact."""
+        logger.warning("calculate_rate_weight_effect is deprecated. Use calculate_rate_impact instead.")
+        df_impact = self.calculate_rate_impact(df, total_col, numerator_cols, dimensions)
+        # Add legacy columns for backward compatibility
+        for col in list(df_impact.columns):
+            if col.endswith('_Impact_PP'):
+                legacy_col = col.replace('_Impact_PP', '_Weight_Effect_PP')
+                df_impact[legacy_col] = df_impact[col]
+        return df_impact
+    
+    def calculate_impact_summary(
+        self,
+        impact_df: pd.DataFrame,
         analysis_type: str = 'share'
     ) -> pd.DataFrame:
         """
-        Calculate summary statistics for distortion or weight effect.
+        Calculate summary statistics for impact.
         
         Computes mean, min, max, std for each:
         - Dimension
@@ -2135,8 +2417,8 @@ class DimensionalAnalyzer:
         
         Parameters:
         -----------
-        distortion_df : pd.DataFrame
-            Output from calculate_share_distortion() or calculate_rate_weight_effect()
+        impact_df : pd.DataFrame
+            Output from calculate_share_impact() or calculate_rate_impact()
         analysis_type : str
             'share' or 'rate' - determines which columns to summarize
             
@@ -2145,89 +2427,102 @@ class DimensionalAnalyzer:
         pd.DataFrame
             Summary statistics with aggregation level column
         """
-        if distortion_df.empty:
+        if impact_df.empty:
             return pd.DataFrame()
         
         summary_rows: List[Dict[str, Any]] = []
         
         if analysis_type == 'share':
-            metric_col = 'Distortion_PP'
-            if metric_col not in distortion_df.columns:
-                logger.warning(f"Column {metric_col} not found in distortion dataframe")
+            metric_col = 'Impact_PP'
+            if metric_col not in impact_df.columns and 'Distortion_PP' in impact_df.columns:
+                metric_col = 'Distortion_PP'  # Backward compatibility
+            if metric_col not in impact_df.columns:
+                logger.warning(f"Column {metric_col} not found in impact dataframe")
                 return pd.DataFrame()
             
             # Overall summary
             summary_rows.append({
                 'Aggregation': 'Overall',
                 'Level': 'All Data',
-                'Mean_Distortion_PP': round(distortion_df[metric_col].mean(), 4),
-                'Min_Distortion_PP': round(distortion_df[metric_col].min(), 4),
-                'Max_Distortion_PP': round(distortion_df[metric_col].max(), 4),
-                'Std_Distortion_PP': round(distortion_df[metric_col].std(), 4) if len(distortion_df) > 1 else 0.0,
-                'Count': len(distortion_df),
+                'Mean_Impact_PP': round(impact_df[metric_col].mean(), 4),
+                'Min_Impact_PP': round(impact_df[metric_col].min(), 4),
+                'Max_Impact_PP': round(impact_df[metric_col].max(), 4),
+                'Std_Impact_PP': round(impact_df[metric_col].std(), 4) if len(impact_df) > 1 else 0.0,
+                'Count': len(impact_df),
             })
             
             # By dimension
-            for dim in distortion_df['Dimension'].unique():
-                dim_df = distortion_df[distortion_df['Dimension'] == dim]
+            for dim in impact_df['Dimension'].unique():
+                dim_df = impact_df[impact_df['Dimension'] == dim]
                 summary_rows.append({
                     'Aggregation': 'By Dimension',
                     'Level': dim,
-                    'Mean_Distortion_PP': round(dim_df[metric_col].mean(), 4),
-                    'Min_Distortion_PP': round(dim_df[metric_col].min(), 4),
-                    'Max_Distortion_PP': round(dim_df[metric_col].max(), 4),
-                    'Std_Distortion_PP': round(dim_df[metric_col].std(), 4) if len(dim_df) > 1 else 0.0,
+                    'Mean_Impact_PP': round(dim_df[metric_col].mean(), 4),
+                    'Min_Impact_PP': round(dim_df[metric_col].min(), 4),
+                    'Max_Impact_PP': round(dim_df[metric_col].max(), 4),
+                    'Std_Impact_PP': round(dim_df[metric_col].std(), 4) if len(dim_df) > 1 else 0.0,
                     'Count': len(dim_df),
                 })
             
             # By time (if present)
-            if 'Time_Period' in distortion_df.columns and distortion_df['Time_Period'].notna().any():
-                for time_period in distortion_df['Time_Period'].dropna().unique():
-                    time_df = distortion_df[distortion_df['Time_Period'] == time_period]
+            if 'Time_Period' in impact_df.columns and impact_df['Time_Period'].notna().any():
+                for time_period in impact_df['Time_Period'].dropna().unique():
+                    time_df = impact_df[impact_df['Time_Period'] == time_period]
                     summary_rows.append({
                         'Aggregation': 'By Time Period',
                         'Level': str(time_period),
-                        'Mean_Distortion_PP': round(time_df[metric_col].mean(), 4),
-                        'Min_Distortion_PP': round(time_df[metric_col].min(), 4),
-                        'Max_Distortion_PP': round(time_df[metric_col].max(), 4),
-                        'Std_Distortion_PP': round(time_df[metric_col].std(), 4) if len(time_df) > 1 else 0.0,
+                        'Mean_Impact_PP': round(time_df[metric_col].mean(), 4),
+                        'Min_Impact_PP': round(time_df[metric_col].min(), 4),
+                        'Max_Impact_PP': round(time_df[metric_col].max(), 4),
+                        'Std_Impact_PP': round(time_df[metric_col].std(), 4) if len(time_df) > 1 else 0.0,
                         'Count': len(time_df),
                     })
         else:
-            # Rate analysis - summarize weight effect columns
-            effect_cols = [col for col in distortion_df.columns if col.endswith('_Weight_Effect_PP')]
+            # Rate analysis - summarize impact columns
+            effect_cols = [col for col in impact_df.columns if col.endswith('_Impact_PP')]
             if not effect_cols:
-                logger.warning("No weight effect columns found in distortion dataframe")
+                # Backward compatibility
+                effect_cols = [col for col in impact_df.columns if col.endswith('_Weight_Effect_PP')]
+            if not effect_cols:
+                logger.warning("No impact columns found in impact dataframe")
                 return pd.DataFrame()
             
             for rate_col in effect_cols:
-                rate_name = rate_col.replace('_Weight_Effect_PP', '')
+                rate_name = rate_col.replace('_Impact_PP', '').replace('_Weight_Effect_PP', '')
                 
                 # Overall summary
                 summary_rows.append({
                     'Aggregation': 'Overall',
                     'Level': 'All Data',
                     'Rate': rate_name,
-                    'Mean_Weight_Effect_PP': round(distortion_df[rate_col].mean(), 4),
-                    'Min_Weight_Effect_PP': round(distortion_df[rate_col].min(), 4),
-                    'Max_Weight_Effect_PP': round(distortion_df[rate_col].max(), 4),
-                    'Std_Weight_Effect_PP': round(distortion_df[rate_col].std(), 4) if len(distortion_df) > 1 else 0.0,
-                    'Count': len(distortion_df),
+                    'Mean_Impact_PP': round(impact_df[rate_col].mean(), 4),
+                    'Min_Impact_PP': round(impact_df[rate_col].min(), 4),
+                    'Max_Impact_PP': round(impact_df[rate_col].max(), 4),
+                    'Std_Impact_PP': round(impact_df[rate_col].std(), 4) if len(impact_df) > 1 else 0.0,
+                    'Count': len(impact_df),
                 })
                 
                 # By dimension
-                for dim in distortion_df['Dimension'].unique():
-                    dim_df = distortion_df[distortion_df['Dimension'] == dim]
+                for dim in impact_df['Dimension'].unique():
+                    dim_df = impact_df[impact_df['Dimension'] == dim]
                     summary_rows.append({
                         'Aggregation': 'By Dimension',
                         'Level': dim,
                         'Rate': rate_name,
-                        'Mean_Weight_Effect_PP': round(dim_df[rate_col].mean(), 4),
-                        'Min_Weight_Effect_PP': round(dim_df[rate_col].min(), 4),
-                        'Max_Weight_Effect_PP': round(dim_df[rate_col].max(), 4),
-                        'Std_Weight_Effect_PP': round(dim_df[rate_col].std(), 4) if len(dim_df) > 1 else 0.0,
+                        'Mean_Impact_PP': round(dim_df[rate_col].mean(), 4),
+                        'Min_Impact_PP': round(dim_df[rate_col].min(), 4),
+                        'Max_Impact_PP': round(dim_df[rate_col].max(), 4),
+                        'Std_Impact_PP': round(dim_df[rate_col].std(), 4) if len(dim_df) > 1 else 0.0,
                         'Count': len(dim_df),
                     })
         
         return pd.DataFrame(summary_rows)
+
+    def calculate_distortion_summary(
+        self,
+        distortion_df: pd.DataFrame,
+        analysis_type: str = 'share'
+    ) -> pd.DataFrame:
+        """Backward-compatible wrapper for impact summary."""
+        return self.calculate_impact_summary(distortion_df, analysis_type)
 

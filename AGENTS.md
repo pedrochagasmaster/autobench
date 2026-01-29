@@ -126,16 +126,17 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 
 ```
 📁 Project Root
-├── benchmark.py              # CLI entry point (2437 lines)
-├── tui_app.py                # TUI application (1166 lines)
+├── benchmark.py              # CLI entry point (~3000 lines)
+├── tui_app.py                # TUI application (~1400 lines)
 ├── requirements.txt          # Dependencies
 ├── AGENTS.md                 # This file
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
-│   ├── dimensional_analyzer.py  # Core algorithm (1831 lines) ⭐ CRITICAL
-│   ├── data_loader.py           # Data ingestion (387 lines)
+│   ├── dimensional_analyzer.py  # Core algorithm (~2200 lines) ⭐ CRITICAL
+│   ├── data_loader.py           # Data ingestion + validation (~755 lines)
 │   ├── privacy_validator.py     # Privacy enforcement (412 lines)
-│   └── report_generator.py      # Excel generation
+│   ├── report_generator.py      # Excel generation (~650 lines)
+│   └── validation_runner.py     # Validation orchestration (121 lines)
 ├── 📁 utils/
 │   ├── __init__.py              # Exports: ConfigManager, setup_logging
 │   ├── config_manager.py        # Config handling (554 lines)

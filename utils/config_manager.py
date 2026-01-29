@@ -392,11 +392,16 @@ class ConfigManager:
             'output': {
                 'format': 'xlsx',
                 'output_format': 'analysis',  # 'analysis', 'publication', or 'both'
-                'include_debug_sheets': False,
-                'include_privacy_validation': False,
-                'include_distortion_summary': False,
+                'include_debug_sheets': True,
+                'include_privacy_validation': True,
+                'include_impact_summary': True,
                 'include_preset_comparison': False,
                 'include_calculated_metrics': False,
+                'include_audit_log': True,
+                'impact_thresholds': {
+                    'high_pp': 1.0,
+                    'low_pp': 0.25,
+                },
                 'distortion_thresholds': {
                     'high_distortion_pp': 1.0,
                     'low_distortion_pp': 0.25,
@@ -418,6 +423,7 @@ class ConfigManager:
                 'constraints': {
                     'volume_preservation': 0.5,
                     'consistency_mode': 'global',
+                    'enforce_additional_constraints': True,
                 },
                 'subset_search': {
                     'enabled': True,
@@ -489,6 +495,18 @@ class ConfigManager:
         override_copy = {k: v for k, v in override.items() if k not in metadata_fields}
         
         deep_merge(self.config, override_copy)
+
+        # Backward compatibility: map legacy distortion keys to impact keys
+        output_cfg = self.config.get('output', {})
+        if isinstance(output_cfg, dict):
+            if 'include_impact_summary' not in output_cfg and 'include_distortion_summary' in output_cfg:
+                output_cfg['include_impact_summary'] = output_cfg.get('include_distortion_summary', False)
+            if 'impact_thresholds' not in output_cfg and 'distortion_thresholds' in output_cfg:
+                legacy = output_cfg.get('distortion_thresholds', {}) or {}
+                output_cfg['impact_thresholds'] = {
+                    'high_pp': legacy.get('high_distortion_pp', 1.0),
+                    'low_pp': legacy.get('low_distortion_pp', 0.25),
+                }
     
     def _apply_cli_overrides(self, overrides: Dict[str, Any]) -> None:
         """Apply CLI argument overrides.
@@ -518,7 +536,7 @@ class ConfigManager:
             # New enhanced analysis flags
             'validate_input': ('input', 'validate_input'),
             'compare_presets': ('output', 'include_preset_comparison'),
-            'analyze_distortion': ('output', 'include_distortion_summary'),
+            'analyze_distortion': ('output', 'include_impact_summary'),
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),

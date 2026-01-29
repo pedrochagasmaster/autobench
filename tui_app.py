@@ -430,7 +430,7 @@ class BenchmarkApp(App):
             # ═══════════════════════════════════════════════════════════════
             yield Label("Advanced Analysis Features", classes="section-title")
             with Horizontal(classes="input-group"):
-                yield Checkbox("Analyze distortion", id="analyze_distortion")
+                yield Checkbox("Analyze impact", value=True, id="analyze_distortion")
                 yield Checkbox("Compare presets", id="compare_presets")
             
             with Horizontal(classes="input-group"):
@@ -594,8 +594,8 @@ class BenchmarkApp(App):
 
                     yield Label("Dimension Options", classes="subsection-title")
                     with Horizontal(classes="input-group"):
-                        yield Checkbox("Auto-detect Dimensions", value=True, id="rate_auto_dim")
-                        yield Checkbox("Include Debug Sheets", value=False, id="rate_debug")
+                        yield Checkbox("Auto-detect Dimensions", value=False, id="rate_auto_dim")
+                        yield Checkbox("Include Debug Sheets", value=True, id="rate_debug")
                         yield Checkbox("Export Balanced CSV", value=False, id="rate_export_csv")
                         yield Checkbox("Fraud in BPS", value=True, id="fraud_in_bps")
                     

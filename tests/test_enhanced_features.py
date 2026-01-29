@@ -2,8 +2,8 @@
 Unit tests for enhanced analysis features.
 
 Covers:
-- Target-vs-peer distortion math (share)
-- Target-vs-peer weight effect math (rate)
+- Target-vs-peer impact math (share)
+- Target-vs-peer impact math (rate)
 - Per-dimension weight fallback to global weights
 - Validation hard-fail path
 - Publication output generation
@@ -29,8 +29,8 @@ from benchmark import run_share_analysis, run_rate_analysis, run_preset_comparis
 from utils.config_manager import ConfigManager
 
 
-class TestDistortionMath(unittest.TestCase):
-    def test_share_distortion_target_vs_peers(self) -> None:
+class TestImpactMath(unittest.TestCase):
+    def test_share_impact_target_vs_peers(self) -> None:
         df = pd.DataFrame({
             'issuer_name': ['Target', 'Peer1', 'Peer2'],
             'card_type': ['A', 'A', 'A'],
@@ -45,19 +45,19 @@ class TestDistortionMath(unittest.TestCase):
             'Peer1': {'multiplier': 2.0},
             'Peer2': {'multiplier': 1.0},
         }
-        distortion_df = analyzer.calculate_share_distortion(
+        impact_df = analyzer.calculate_share_impact(
             df=df,
             metric_col='txn_cnt',
             dimensions=['card_type'],
             target_entity='Target'
         )
-        self.assertEqual(len(distortion_df), 1)
-        distortion = float(distortion_df.loc[0, 'Distortion_PP'])
+        self.assertEqual(len(impact_df), 1)
+        impact = float(impact_df.loc[0, 'Impact_PP'])
         # Raw share = 100 / (100 + 400) = 20%
         # Balanced share = 100 / (100 + (100*2 + 300*1)) = 100 / 600 = 16.6667%
-        self.assertAlmostEqual(distortion, -3.3333, places=3)
+        self.assertAlmostEqual(impact, -3.3333, places=3)
 
-    def test_rate_weight_effect_excludes_target(self) -> None:
+    def test_rate_impact_excludes_target(self) -> None:
         df = pd.DataFrame({
             'issuer_name': ['Target', 'Peer1', 'Peer2'],
             'card_type': ['A', 'A', 'A'],
@@ -73,17 +73,17 @@ class TestDistortionMath(unittest.TestCase):
             'Peer1': {'multiplier': 2.0},
             'Peer2': {'multiplier': 1.0},
         }
-        effect_df = analyzer.calculate_rate_weight_effect(
+        impact_df = analyzer.calculate_rate_impact(
             df=df,
             total_col='total',
             numerator_cols={'approval': 'approved'},
             dimensions=['card_type']
         )
-        self.assertEqual(len(effect_df), 1)
-        effect = float(effect_df.loc[0, 'approval_Weight_Effect_PP'])
+        self.assertEqual(len(impact_df), 1)
+        impact = float(impact_df.loc[0, 'approval_Impact_PP'])
         # Raw peer rate = (90 + 30) / (100 + 300) = 30%
         # Balanced peer rate = (90*2 + 30*1) / (100*2 + 300*1) = 42%
-        self.assertAlmostEqual(effect, 12.0, places=2)
+        self.assertAlmostEqual(impact, 12.0, places=2)
 
     def test_per_dimension_weight_fallback(self) -> None:
         df = pd.DataFrame({
@@ -104,17 +104,17 @@ class TestDistortionMath(unittest.TestCase):
         analyzer.per_dimension_weights = {
             'card_type': {'Peer1': 2.0}
         }
-        effect_df = analyzer.calculate_rate_weight_effect(
+        impact_df = analyzer.calculate_rate_impact(
             df=df,
             total_col='total',
             numerator_cols={'approval': 'approved'},
             dimensions=['card_type']
         )
-        effect = float(effect_df.loc[0, 'approval_Weight_Effect_PP'])
+        impact = float(impact_df.loc[0, 'approval_Impact_PP'])
         # Raw peer rate = 30%
         # Balanced peer rate uses Peer1 weight=2.0, Peer2 fallback=0.5
         # (90*2 + 30*0.5) / (100*2 + 300*0.5) = 195 / 350 = 55.7143%
-        self.assertAlmostEqual(effect, 25.7143, places=3)
+        self.assertAlmostEqual(impact, 25.7143, places=3)
 
 
 class TestValidationAndOutputs(unittest.TestCase):
@@ -366,7 +366,7 @@ class TestTimeColumnHandling:
     """Test time column edge cases."""
 
     def test_time_column_with_nulls(self):
-        """Test distortion calc when time column has None values."""
+        """Test impact calc when time column has None values."""
         df = pd.DataFrame({
             'issuer_name': ['A', 'B', 'A', 'B', 'A', 'B'],
             'metric': [100, 200, 150, 180, 90, 60],
@@ -380,7 +380,7 @@ class TestTimeColumnHandling:
             time_column='period'
         )
 
-        result = analyzer.calculate_share_distortion(
+        result = analyzer.calculate_share_impact(
             df=df,
             metric_col='metric',
             dimensions=['dimension'],
@@ -406,7 +406,7 @@ class TestDefensiveCalculations:
             entity_column='issuer_name'
         )
 
-        result = analyzer.calculate_share_distortion(
+        result = analyzer.calculate_share_impact(
             df=df,
             metric_col='metric',
             dimensions=['dimension'],

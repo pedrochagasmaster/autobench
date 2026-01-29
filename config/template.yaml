@@ -25,10 +25,21 @@ output:
   format: "xlsx"
   
   # Include debug sheets with unweighted metrics
-  include_debug_sheets: false
+  include_debug_sheets: true
   
   # Include detailed privacy validation sheet
-  include_privacy_validation: false
+  include_privacy_validation: true
+
+  # Include impact analysis sheets (raw vs balanced)
+  include_impact_summary: true
+
+  # Include audit log output
+  include_audit_log: true
+
+  # Impact highlighting thresholds (percentage points)
+  impact_thresholds:
+    high_pp: 1.0
+    low_pp: 0.25
   
   # Logging level: DEBUG, INFO, WARNING, ERROR
   log_level: "INFO"
@@ -86,6 +97,9 @@ optimization:
     # 0.0 = No rank preservation (weights can freely reorder peers)
     # 1.0 = Strong rank preservation (maintain original peer ordering)
     volume_preservation: 0.5
+    
+    # Enforce additional Control 3.2 rule conditions (6/30, 7/35, 10/40)
+    enforce_additional_constraints: true
   
   # Subset search settings (only applies to default global weighting mode)
   # Subset search tries to find optimal dimension combinations when all dimensions together

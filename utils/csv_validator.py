@@ -82,8 +82,39 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     return dimension_data
 
 
-def calculate_rate_from_csv(csv_df: pd.DataFrame, dimension: str, category: str, 
-                            time_period: Optional[str], rate_type: str) -> Optional[float]:
+def extract_summary_metadata(excel_path: Path) -> Dict[str, str]:
+    """Extract key/value metadata from Summary sheet."""
+    if not excel_path.exists():
+        raise FileNotFoundError(f"Excel file not found: {excel_path}")
+
+    wb = load_workbook(excel_path, data_only=True)
+    if 'Summary' not in wb.sheetnames:
+        wb.close()
+        return {}
+
+    ws = wb['Summary']
+    metadata: Dict[str, str] = {}
+    for row in ws.iter_rows(values_only=True):
+        if not row or row[0] is None:
+            continue
+        key = str(row[0]).strip()
+        if len(row) > 1 and row[1] is not None:
+            metadata[key] = str(row[1]).strip()
+    wb.close()
+    return metadata
+
+
+def calculate_rate_from_csv(
+    csv_df: pd.DataFrame,
+    dimension: str,
+    category: str,
+    time_period: Optional[str],
+    rate_type: str,
+    total_col: str,
+    approval_col: Optional[str],
+    fraud_col: Optional[str],
+    time_col: Optional[str],
+) -> Optional[float]:
     """Calculate rate from CSV balanced totals.
     
     Args:
@@ -99,9 +130,9 @@ def calculate_rate_from_csv(csv_df: pd.DataFrame, dimension: str, category: str,
     # Filter to matching row
     mask = (csv_df['Dimension'] == dimension) & (csv_df['Category'] == str(category))
     
-    if time_period is not None and 'year_month' in csv_df.columns:
+    if time_period is not None and time_col and time_col in csv_df.columns:
         # Convert time_period to match CSV format if needed
-        mask = mask & (csv_df['year_month'] == time_period)
+        mask = mask & (csv_df[time_col] == time_period)
     
     matched = csv_df[mask]
     
@@ -115,12 +146,16 @@ def calculate_rate_from_csv(csv_df: pd.DataFrame, dimension: str, category: str,
     row = matched.iloc[0]
     
     # Get balanced totals
-    balanced_total = row.get('Balanced_Total')
+    balanced_total = row.get(total_col)
     
     if rate_type == 'approval':
-        balanced_numerator = row.get('Balanced_Approval_Total')
+        if approval_col is None:
+            return None
+        balanced_numerator = row.get(approval_col)
     elif rate_type == 'fraud':
-        balanced_numerator = row.get('Balanced_Fraud_Total')
+        if fraud_col is None:
+            return None
+        balanced_numerator = row.get(fraud_col)
     else:
         raise ValueError(f"Unknown rate_type: {rate_type}")
     
@@ -132,8 +167,26 @@ def calculate_rate_from_csv(csv_df: pd.DataFrame, dimension: str, category: str,
     return rate
 
 
-def extract_rate_from_excel(excel_df: pd.DataFrame, category: str, 
-                            rate_type: str, time_period: Optional[str] = None) -> Optional[float]:
+def _normalize_time_value(value: object) -> str:
+    """Normalize time value for comparison."""
+    if value is None:
+        return ""
+    try:
+        parsed = pd.to_datetime(value, errors='coerce')
+        if pd.isna(parsed):
+            return str(value)
+        return parsed.date().isoformat()
+    except Exception:
+        return str(value)
+
+
+def extract_rate_from_excel(
+    excel_df: pd.DataFrame,
+    category: str,
+    rate_type: str,
+    time_period: Optional[str] = None,
+    time_col_hint: Optional[str] = None,
+) -> Optional[float]:
     """Extract rate value from Excel dimension sheet.
     
     Args:
@@ -163,6 +216,11 @@ def extract_rate_from_excel(excel_df: pd.DataFrame, category: str,
         rate_cols = [col for col in excel_df.columns if pattern3 in str(col)]
     
     if not rate_cols:
+        # Pattern 4: Generic single-rate format "Balanced Peer Average (%)"
+        if 'Balanced Peer Average (%)' in excel_df.columns:
+            rate_cols = ['Balanced Peer Average (%)']
+
+    if not rate_cols:
         return None
     
     rate_col = rate_cols[0]
@@ -170,24 +228,41 @@ def extract_rate_from_excel(excel_df: pd.DataFrame, category: str,
     # Find time column for multi-rate format if needed
     time_col = None
     if time_period is not None:
-        time_col_pattern = f"{rate_type.capitalize()}_year_month"
-        time_cols = [col for col in excel_df.columns if time_col_pattern in str(col)]
-        if time_cols:
-            time_col = time_cols[0]
-        elif 'Time_Period' in excel_df.columns:
-            time_col = 'Time_Period'
+        if time_col_hint and time_col_hint in excel_df.columns:
+            time_col = time_col_hint
+        else:
+            time_col_pattern = f"{rate_type.capitalize()}_year_month"
+            time_cols = [col for col in excel_df.columns if time_col_pattern in str(col)]
+            if time_cols:
+                time_col = time_cols[0]
+            elif 'Time_Period' in excel_df.columns:
+                time_col = 'Time_Period'
+            else:
+                # Common time column names
+                for candidate in ['year_month', 'ano_mes', 'time_period', 'period', 'Time', 'Date']:
+                    if candidate in excel_df.columns:
+                        time_col = candidate
+                        break
+                # If still unknown, infer a single non-numeric, non-category column
+                if time_col is None:
+                    potential_cols = [
+                        col for col in excel_df.columns
+                        if col not in {'Category', rate_col}
+                        and not pd.api.types.is_numeric_dtype(excel_df[col])
+                    ]
+                    if len(potential_cols) == 1:
+                        time_col = potential_cols[0]
     
     # Filter to matching row
     # Convert both to strings for comparison (Excel may have numeric categories)
     excel_df_copy = excel_df.copy()
     excel_df_copy['Category'] = excel_df_copy['Category'].astype(str)
     mask = excel_df_copy['Category'] == str(category)
-    
+
     if time_period is not None and time_col is not None:
-        # Convert time_period to match Excel format (may be datetime)
-        time_period_str = str(time_period)
-        excel_df_copy[time_col] = excel_df_copy[time_col].astype(str)
-        mask = mask & (excel_df_copy[time_col] == time_period_str)
+        time_period_norm = _normalize_time_value(time_period)
+        excel_df_copy[time_col] = excel_df_copy[time_col].apply(_normalize_time_value)
+        mask = mask & (excel_df_copy[time_col] == time_period_norm)
     
     matched = excel_df_copy[mask]  # Use the copy with string conversions
     
@@ -212,8 +287,17 @@ def extract_rate_from_excel(excel_df: pd.DataFrame, category: str,
     return rate_value
 
 
-def validate_dimension(dimension: str, csv_df: pd.DataFrame, excel_df: pd.DataFrame,
-                      rate_types: List[str], tolerance: float, has_time: bool) -> Dict[str, any]:
+def validate_dimension(
+    dimension: str,
+    csv_df: pd.DataFrame,
+    excel_df: pd.DataFrame,
+    rate_types: List[str],
+    tolerance: float,
+    time_col: Optional[str],
+    total_col: str,
+    approval_col: Optional[str],
+    fraud_col: Optional[str],
+) -> Dict[str, any]:
     """Validate all categories in a dimension.
     
     Returns:
@@ -234,19 +318,35 @@ def validate_dimension(dimension: str, csv_df: pd.DataFrame, excel_df: pd.DataFr
     for category in csv_categories:
         # Get time periods if applicable
         time_periods = [None]
-        if has_time and 'year_month' in csv_df.columns:
+        if time_col and time_col in csv_df.columns:
             mask = (csv_df['Dimension'] == dimension) & (csv_df['Category'] == str(category))
-            time_periods = csv_df[mask]['year_month'].unique()
+            time_periods = csv_df[mask][time_col].unique()
         
         for time_period in time_periods:
             for rate_type in rate_types:
                 results['total_checks'] += 1
                 
                 # Calculate rate from CSV
-                csv_rate = calculate_rate_from_csv(csv_df, dimension, category, time_period, rate_type)
+                csv_rate = calculate_rate_from_csv(
+                    csv_df,
+                    dimension,
+                    category,
+                    time_period,
+                    rate_type,
+                    total_col,
+                    approval_col,
+                    fraud_col,
+                    time_col,
+                )
                 
                 # Extract rate from Excel
-                excel_rate = extract_rate_from_excel(excel_df, category, rate_type, time_period)
+                excel_rate = extract_rate_from_excel(
+                    excel_df,
+                    category,
+                    rate_type,
+                    time_period,
+                    time_col_hint=time_col,
+                )
                 
                 if csv_rate is None or excel_rate is None:
                     results['skipped'] += 1
@@ -313,38 +413,78 @@ EXAMPLES:
     try:
         print("Loading CSV data...")
         csv_df = load_csv_data(csv_path)
-        print(f"  ✓ Loaded {len(csv_df)} rows")
-        
+        print(f"  OK Loaded {len(csv_df)} rows")
+
         print("Loading Excel data...")
         excel_data = load_excel_data(excel_path)
-        print(f"  ✓ Loaded {len(excel_data)} dimension sheets")
-        
+        print(f"  OK Loaded {len(excel_data)} dimension sheets")
+
+        summary_metadata = extract_summary_metadata(excel_path)
+
     except Exception as e:
-        print(f"✗ Error loading data: {e}")
+        print(f"ERROR loading data: {e}")
         return 1
-    
-    # Detect rate types from CSV columns
-    rate_types = []
-    if 'Balanced_Approval_Total' in csv_df.columns:
-        rate_types.append('approval')
-    if 'Balanced_Fraud_Total' in csv_df.columns:
-        rate_types.append('fraud')
-    
-    if not rate_types:
-        print("✗ No rate columns found in CSV")
-        return 1
-    
-    print(f"Rate Types: {', '.join(rate_types)}")
-    
-    # Check for time column
-    has_time = 'year_month' in csv_df.columns
-    if has_time:
-        print(f"Time-Aware: Yes (year_month column detected)")
+
+    # Detect CSV schema and rate types
+    rate_types: List[str] = []
+    total_col = None
+    approval_col = None
+    fraud_col = None
+
+    if 'Balanced_Total' in csv_df.columns:
+        total_col = 'Balanced_Total'
+        if 'Balanced_Approval_Total' in csv_df.columns:
+            approval_col = 'Balanced_Approval_Total'
+            rate_types.append('approval')
+        if 'Balanced_Fraud_Total' in csv_df.columns:
+            fraud_col = 'Balanced_Fraud_Total'
+            rate_types.append('fraud')
     else:
-        print(f"Time-Aware: No")
-    
+        summary_total = summary_metadata.get('Total Column') or summary_metadata.get('Total Column (Shared Denominator)')
+        summary_approval = summary_metadata.get('Approval Column')
+        summary_fraud = summary_metadata.get('Fraud Column')
+        if summary_total and summary_total in csv_df.columns:
+            total_col = summary_total
+        if summary_approval and summary_approval in csv_df.columns:
+            approval_col = summary_approval
+            rate_types.append('approval')
+        if summary_fraud and summary_fraud in csv_df.columns:
+            fraud_col = summary_fraud
+            rate_types.append('fraud')
+
+    if not total_col or not rate_types:
+        print("ERROR No rate columns found in CSV")
+        print("  Expected Balanced_* columns or summary-based metric columns.")
+        return 1
+
+    print(f"Rate Types: {', '.join(rate_types)}")
+
+    # Check for time column
+    time_col = None
+    time_name_candidates = ['year_month', 'ano_mes', 'time_period', 'period']
+    for name in time_name_candidates:
+        if name in csv_df.columns:
+            time_col = name
+            break
+    if time_col is None:
+        non_value_cols = {'Dimension', 'Category', total_col}
+        if approval_col:
+            non_value_cols.add(approval_col)
+        if fraud_col:
+            non_value_cols.add(fraud_col)
+        potential_time_cols = [
+            c for c in csv_df.columns
+            if c not in non_value_cols and not pd.api.types.is_numeric_dtype(csv_df[c])
+        ]
+        if len(potential_time_cols) == 1:
+            time_col = potential_time_cols[0]
+
+    if time_col:
+        print(f"Time-Aware: Yes ({time_col} column detected)")
+    else:
+        print("Time-Aware: No")
+
     print()
-    
     # Validate each dimension
     all_results = []
     
@@ -358,24 +498,34 @@ EXAMPLES:
                 break
         
         if excel_df is None:
-            print(f"⚠ Skipping {dimension}: No matching Excel sheet found")
+            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
             continue
         
         print(f"Validating dimension: {dimension}")
-        results = validate_dimension(dimension, csv_df, excel_df, rate_types, args.tolerance, has_time)
+        results = validate_dimension(
+            dimension,
+            csv_df,
+            excel_df,
+            rate_types,
+            args.tolerance,
+            time_col,
+            total_col,
+            approval_col,
+            fraud_col,
+        )
         all_results.append(results)
         
         # Print summary
-        status = "✓ PASS" if results['failed'] == 0 else "✗ FAIL"
+        status = "PASS" if results['failed'] == 0 else "FAIL"
         print(f"  {status} - {results['passed']}/{results['total_checks']} checks passed")
         
         if results['failed'] > 0:
             print(f"    Failed: {results['failed']}")
             if args.verbose:
                 for failure in results['failures']:
-                    print(f"      • {failure['category']} ({failure['rate_type']}): "
+                    print(f"      - {failure['category']} ({failure['rate_type']}): "
                           f"CSV={failure['csv_rate']:.4%} vs Excel={failure['excel_rate']:.4%} "
-                          f"(Δ={failure['difference_pct']:.4f}%)")
+                          f"(Delta={failure['difference_pct']:.4f}%)")
         
         if results['skipped'] > 0:
             print(f"    Skipped: {results['skipped']} (missing data)")
@@ -398,14 +548,14 @@ EXAMPLES:
     print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
     
     if total_failed == 0:
-        print(f"\n✓ ALL VALIDATIONS PASSED!")
+        print("\nALL VALIDATIONS PASSED")
         print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")
         print(f"{'='*80}\n")
         return 0
     else:
-        print(f"\n✗ VALIDATION FAILED")
+        print("\nVALIDATION FAILED")
         print(f"  {total_failed} rate calculations do not match within tolerance")
-        print(f"  Review failures above or run with --verbose for details")
+        print("  Review failures above or run with --verbose for details")
         print(f"{'='*80}\n")
         return 1
 

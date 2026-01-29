@@ -88,6 +88,115 @@ class PrivacyValidator:
             'max_concentration': 35.0
         }
     }
+
+    @classmethod
+    def select_rule(cls, peer_count: int, merchant_mode: bool = False) -> str:
+        """Select privacy rule name based on peer count.
+
+        Note: 4/35 is applied only for merchant benchmarking. Since merchant_mode
+        is not wired through most flows yet, we follow the existing behavior of
+        selecting 4/35 when peers are 4+ but <5.
+        """
+        if peer_count >= 10:
+            return '10/40'
+        if peer_count >= 7:
+            return '7/35'
+        if peer_count >= 6:
+            return '6/30'
+        if peer_count >= 5:
+            return '5/25'
+        if peer_count >= 4:
+            return '4/35'
+        return 'insufficient'
+
+    @classmethod
+    def get_rule_config(cls, rule_name: str) -> Dict[str, float]:
+        """Return rule configuration (min_entities, max_concentration, additional)."""
+        return cls.RULES.get(rule_name, {})
+
+    @classmethod
+    def evaluate_additional_constraints(
+        cls,
+        shares: List[float],
+        rule_name: str
+    ) -> Tuple[bool, List[str]]:
+        """Evaluate additional Control 3.2 constraints for a list of shares.
+
+        Parameters
+        ----------
+        shares : List[float]
+            Percent shares for the peer group (already balanced), 0-100.
+        rule_name : str
+            Rule identifier (e.g., '6/30', '7/35').
+
+        Returns
+        -------
+        Tuple[bool, List[str]]
+            (passed, details). details contains human-readable failures.
+        """
+        rule = cls.RULES.get(rule_name)
+        if not rule:
+            # No additional constraints for unknown or insufficient rule
+            return True, []
+
+        details: List[str] = []
+        passed = True
+
+        min_entities = int(rule.get('min_entities', 0))
+        if len(shares) < min_entities:
+            passed = False
+            details.append(f"Need at least {min_entities} participants, found {len(shares)}")
+            # Even if participant count is insufficient, return now.
+            return passed, details
+
+        shares_sorted = sorted([float(s) for s in shares], reverse=True)
+        additional = rule.get('additional', {})
+
+        # 6/30: at least 3 participants >= 7%
+        if 'min_count_above_threshold' in additional:
+            min_count, threshold = additional['min_count_above_threshold']
+            count_above = sum(1 for s in shares_sorted if s >= threshold)
+            if count_above < min_count:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count} participants >= {threshold}%, found {count_above}"
+                )
+
+        # 7/35: at least 2 >= 15% and 1 additional >= 8%
+        if 'min_count_15' in additional:
+            min_count_15 = additional.get('min_count_15', 0)
+            min_count_8 = additional.get('min_count_8', 0)
+            count_15 = sum(1 for s in shares_sorted if s >= 15.0)
+            count_8 = sum(1 for s in shares_sorted if s >= 8.0)
+            if count_15 < min_count_15:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_15} participants >= 15%, found {count_15}"
+                )
+            if count_8 < (min_count_15 + min_count_8):
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_8} additional participants >= 8%, found {max(count_8 - min_count_15, 0)}"
+                )
+
+        # 10/40: at least 2 >= 20% and 1 additional >= 10%
+        if 'min_count_20' in additional:
+            min_count_20 = additional.get('min_count_20', 0)
+            min_count_10 = additional.get('min_count_10', 0)
+            count_20 = sum(1 for s in shares_sorted if s >= 20.0)
+            count_10 = sum(1 for s in shares_sorted if s >= 10.0)
+            if count_20 < min_count_20:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_20} participants >= 20%, found {count_20}"
+                )
+            if count_10 < (min_count_20 + min_count_10):
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_10} additional participants >= 10%, found {max(count_10 - min_count_20, 0)}"
+                )
+
+        return passed, details
     
     def __init__(
         self,
