@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import pandas as pd
+import numpy as np
 from openpyxl import load_workbook
 
 # Setup logging
@@ -72,16 +73,16 @@ class GateTestRunner:
             header_row_idx = None
             headers = []
             
-            # Scan first 5 rows for "Category"
-            for i, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), 1):
+            # Scan first 10 rows for "Category" or "Metric"
+            for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
                 row_strs = [str(c) for c in row if c is not None]
-                if "Category" in row_strs:
+                if "Category" in row_strs or "Metric" in row_strs:
                     header_row_idx = i
                     headers = row_strs
                     break
             
             if not header_row_idx:
-                failures.append(f"Sheet '{sheet_name}': Could not find header row (missing 'Category' column)")
+                failures.append(f"Sheet '{sheet_name}': Could not find header row (missing 'Category' or 'Metric' column)")
                 continue
             
             # Read data
@@ -90,7 +91,9 @@ class GateTestRunner:
                 # Check if row is empty
                 if not any(row): continue
                 # Map to headers (truncate row to len headers)
-                row_dict = dict(zip(headers, row[:len(headers)]))
+                # Ensure we handle cases where row is shorter than headers or vice versa
+                row_vals = row[:len(headers)]
+                row_dict = dict(zip(headers, row_vals))
                 data_rows.append(row_dict)
             
             if not data_rows:
@@ -100,6 +103,17 @@ class GateTestRunner:
             df = pd.DataFrame(data_rows)
             
             # Defined Checks
+            # 0. Duplicates Check
+            # Identify key columns for uniqueness check
+            key_candidates = ["Category", "Time", "Month", "Year", "Quarter", "Period", "ano_mes", "Date", "date"]
+            keys = [c for c in df.columns if c in key_candidates]
+            if keys:
+                # If we have keys, check for duplicates
+                if df.duplicated(subset=keys).any():
+                    # Get sample duplicates
+                    dupes = df[df.duplicated(subset=keys, keep=False)].head(2)
+                    failures.append(f"Sheet '{sheet_name}': Contains duplicate rows for keys {keys}. Sample:\n{dupes}")
+
             # 1. Excel Errors
             for col in df.columns:
                 if df[col].astype(str).str.contains("#").any():
@@ -123,6 +137,43 @@ class GateTestRunner:
                 except Exception:
                     pass
             
+            # 2b. Positive Values (Volume, Count)
+            pos_cols = [c for c in df.columns if any(x in c.lower() for x in ["volume", "count", "transactions", "clients"])]
+            for col in pos_cols:
+                try:
+                    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+                    if (vals < 0).any():
+                         failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains negative values")
+                except Exception:
+                    pass
+
+            # 2c. Infinity/NaN Check
+            # Check for infinite values in numeric columns
+            numeric_df = df.select_dtypes(include=['number'])
+            # Also convert object columns that look numeric
+            for col in df.columns:
+                if col not in numeric_df.columns:
+                    try:
+                        # lightweight check if it converts
+                        pd.to_numeric(df[col], errors='raise') 
+                        # If success, check for inf
+                        vals = pd.to_numeric(df[col], errors='coerce')
+                        if np.isinf(vals).any():
+                             failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Infinite values")
+                    except Exception:
+                        pass
+            
+            if hasattr(np, 'inf'):
+                # Direct check on dataframe if mixed types allow
+                try:
+                    # filtering for numeric columns first is safer
+                    num_cols = df.select_dtypes(include=[np.number]).columns
+                    if not num_cols.empty:
+                        if np.isinf(df[num_cols]).any().any():
+                             failures.append(f"Sheet '{sheet_name}': Contains Infinite values in numeric columns")
+                except Exception:
+                    pass
+
             # 3. Variance Check (Avoid "Flat" results)
             # Only check "Balanced" columns
             balanced_cols = [c for c in df.columns if "Balanced" in c and "%" in c]
@@ -134,6 +185,51 @@ class GateTestRunner:
                             # Warn only, might be valid for specific cases
                             logger.warning(f"Sheet '{sheet_name}' Column '{col}': All values are identical ({vals.iloc[0]}). Verify if this is expected.")
                             # failures.append(f"Sheet '{sheet_name}' Column '{col}': Zero variance (all {vals.iloc[0]}).")
+                except Exception:
+                    pass
+            
+            # 3b. Math Consistency Check (Distance = Target - Peer)
+            # Identify columns
+            target_col = next((c for c in df.columns if "Target" in c and "%" in c), None)
+            peer_col = next((c for c in df.columns if "Balanced Peer" in c and "%" in c), None)
+            dist_col = next((c for c in df.columns if "Distance" in c and ("pp" in c or "%" in c)), None)
+            
+            if target_col and peer_col and dist_col:
+                try:
+                    t_vals = pd.to_numeric(df[target_col], errors='coerce').fillna(0)
+                    p_vals = pd.to_numeric(df[peer_col], errors='coerce').fillna(0)
+                    d_vals = pd.to_numeric(df[dist_col], errors='coerce').fillna(0)
+                    
+                    # Calculate expected distance
+                    # Logic: Distance is usually (Target - Peer) or (Target - Baseline)
+                    # Let's verify T - P
+                    calc_dist = t_vals - p_vals
+                    delta = (calc_dist - d_vals).abs()
+                    
+                    # Check if any deviation > 0.01 (floating point tolerance)
+                    if (delta > 0.01).any():
+                        # Get max deviation to report
+                        max_dev = delta.max()
+                        failures.append(f"Sheet '{sheet_name}': Math Mismatch. 'Distance' != 'Target' - 'Peer'. Max delta: {max_dev:.4f}")
+                except Exception as e:
+                    logger.warning(f"Could not verify math consistency in {sheet_name}: {e}")
+
+            # 3c. Time Series Gap Detection
+            time_col = next((c for c in df.columns if c in ["ano_mes", "Date", "date", "Time"]), None)
+            if time_col:
+                try:
+                    # Convert to datetime
+                    dates = pd.to_datetime(df[time_col], errors='coerce').dropna().unique()
+                    if len(dates) > 1:
+                        dates = sorted(dates)
+                        # Check diffs
+                        diffs = pd.Series(dates).diff().dt.days.dropna()
+                        # Assuming monthly data, gaps should be ~28-31 days. 
+                        # If we see a gap > 45 days, it implies a missing month.
+                        max_gap = diffs.max()
+                        if max_gap > 45:
+                             logger.warning(f"Sheet '{sheet_name}': Potential time series gap detected. Max gap between dates: {max_gap} days.")
+                             # failures.append(f"Sheet '{sheet_name}': Time series gap > 45 days ({max_gap} days).")
                 except Exception:
                     pass
 
@@ -163,6 +259,43 @@ class GateTestRunner:
                                 failures.append(f"Sheet '{sheet_name}': Balanced Mix sums to {total_sum:.2f}%, expected ~100%")
                     except Exception as e:
                         logger.warning(f"Could not verify sum for {col}: {e}")
+        
+        # Check Data Quality sheet if present
+        if "Data Quality" in wb.sheetnames:
+            try:
+                dq_ws = wb["Data Quality"]
+                dq_data = []
+                
+                # Scan for header row containing "Severity" or "Issue"
+                header_row_idx = None
+                headers = []
+                for i, row in enumerate(dq_ws.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+                    row_strs = [str(c) for c in row if c is not None]
+                    if "Severity" in row_strs or "Issue" in row_strs:
+                        header_row_idx = i
+                        headers = row_strs
+                        break
+                
+                if header_row_idx:
+                    for row in dq_ws.iter_rows(min_row=header_row_idx+1, values_only=True):
+                         if any(row):
+                             dq_data.append(dict(zip(headers, row[:len(headers)])))
+                else:
+                    # Fallback or warn if not found, but only if sheet is not empty
+                    if dq_ws.max_row > 1:
+                        logger.warning(f"Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
+
+                for item in dq_data:
+                    # Assuming columns like "Severity", "Message"
+                    if "Severity" not in item:
+                         if dq_data.index(item) == 0:
+                             logger.warning(f"Data Quality sheet found but 'Severity' column missing. Keys: {list(item.keys())}")
+                    
+                    severity = str(item.get("Severity", "")).lower()
+                    if severity in ["high", "critical"]:
+                         failures.append(f"Data Quality Issue ({severity}): {item.get('Issue', 'Unknown')} - {item.get('Description', '')}")
+            except Exception as e:
+                logger.warning(f"Could not parse Data Quality sheet: {e}")
 
         return failures
 
@@ -426,12 +559,18 @@ class GateTestRunner:
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
-                proc = subprocess.run(cmd_list, cwd=self.root_dir, capture_output=True, text=True)
+                proc = subprocess.run(cmd_list, cwd=self.root_dir, capture_output=True, text=True, timeout=300)
                 
                 duration = time.time() - start_time
                 if duration > 60:
                     logger.warning(f"Case {case_id} took {duration:.1f}s (Threshold: 60s)")
                 
+                # Check for Tracebacks in stderr even if return code is 0 (some tools capture/suppress exceptions)
+                if "Traceback (most recent call last)" in proc.stderr:
+                    logger.error(f"Case {case_id} failed silently with Traceback:\n{proc.stderr}")
+                    results["errors"] += 1
+                    continue
+
                 if proc.returncode != 0:
                     logger.error(f"Execution failed for {case_id}")
                     logger.error(proc.stderr)
