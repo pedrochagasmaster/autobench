@@ -1,0 +1,9 @@
+{"id": "config_list", "command": "py benchmark.py config list", "params": {}, "expectations": ["list_presets_output"]}
+{"id": "config_show_balanced_default", "command": "py benchmark.py config show balanced_default", "params": {"preset": "balanced_default"}, "expectations": ["preset_details_output"]}
+{"id": "config_show_compliance_strict", "command": "py benchmark.py config show compliance_strict", "params": {"preset": "compliance_strict"}, "expectations": ["preset_details_output"]}
+{"id": "config_show_low_distortion", "command": "py benchmark.py config show low_distortion", "params": {"preset": "low_distortion"}, "expectations": ["preset_details_output"]}
+{"id": "config_show_minimal_distortion", "command": "py benchmark.py config show minimal_distortion", "params": {"preset": "minimal_distortion"}, "expectations": ["preset_details_output"]}
+{"id": "config_show_research_exploratory", "command": "py benchmark.py config show research_exploratory", "params": {"preset": "research_exploratory"}, "expectations": ["preset_details_output"]}
+{"id": "config_show_strategic_consistency", "command": "py benchmark.py config show strategic_consistency", "params": {"preset": "strategic_consistency"}, "expectations": ["preset_details_output"]}
+{"id": "config_validate_template", "command": "py benchmark.py config validate config\\template.yaml", "params": {"config": "config\\template.yaml"}, "expectations": ["validate_template_ok"]}
+{"id": "config_generate_template", "command": "py benchmark.py config generate test_gate\\config\\generated_template.yaml", "params": {"output": "test_gate\\config\\generated_template.yaml"}, "expectations": ["template_created"]}

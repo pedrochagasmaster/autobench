@@ -604,6 +604,21 @@ fl_token,Non-tokenized,2024-01,203796570874.8,151927893365.16,185177975.02
 
 ## 🐛 Debugging & Testing
 
+### 🛡️ Mandatory Verification
+
+After **any** code change, you must run the gate test suite. This performs a full system check:
+1. Generates 17+ representative scenarios (Share/Rate, Peer-Only/Target, etc.)
+2. Executes them to verify runtime stability.
+3. **Deeply verifies** outputs: checks Excel sheet structure, value ranges (0-100%), and cross-validates CSV exports against Excel reports (Control 3.2 compliance).
+
+```powershell
+# 1. Run Gate Test (System Integration)
+python scripts/perform_gate_test.py
+
+# 2. Run Unit Tests
+pytest
+```
+
 ### Validate CSV Output
 
 ```powershell

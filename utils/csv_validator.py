@@ -122,7 +122,7 @@ def calculate_rate_from_csv(
         dimension: Dimension name
         category: Category value
         time_period: Time period value (or None if no time column)
-        rate_type: 'approval' or 'fraud'
+        rate_type: 'approval', 'fraud', or 'share'
     
     Returns:
         Calculated rate as decimal (e.g., 0.75 for 75%)
@@ -144,6 +144,14 @@ def calculate_rate_from_csv(
         return None
     
     row = matched.iloc[0]
+
+    # Handle Share Analysis (Direct Rate)
+    if rate_type == 'share':
+        # total_col holds the column name for share %
+        if total_col in row:
+            val = row[total_col]
+            return val / 100.0 if pd.notna(val) else None
+        return None
     
     # Get balanced totals
     balanced_total = row.get(total_col)
@@ -204,6 +212,10 @@ def extract_rate_from_excel(
     # Pattern 1: Multi-rate format "Approval_Balanced Peer Average (%)"
     pattern1 = f"{rate_type.capitalize()}_Balanced Peer Average"
     rate_cols = [col for col in excel_df.columns if pattern1 in str(col) and '%' in str(col)]
+    
+    if not rate_cols and rate_type == 'share':
+         if 'Balanced_Share_%' in excel_df.columns:
+             rate_cols = ['Balanced_Share_%']
     
     if not rate_cols:
         # Pattern 2: Single rate format "Peer_Balanced_Approval_%"
@@ -431,6 +443,14 @@ EXAMPLES:
     approval_col = None
     fraud_col = None
 
+    # Detect Share Analysis (Dynamic metric name)
+    # Look for column: Balanced_{metric}_Share_%
+    share_col = None
+    for col in csv_df.columns:
+        if col.startswith("Balanced_") and col.endswith("_Share_%"):
+            share_col = col
+            break
+            
     if 'Balanced_Total' in csv_df.columns:
         total_col = 'Balanced_Total'
         if 'Balanced_Approval_Total' in csv_df.columns:
@@ -439,6 +459,10 @@ EXAMPLES:
         if 'Balanced_Fraud_Total' in csv_df.columns:
             fraud_col = 'Balanced_Fraud_Total'
             rate_types.append('fraud')
+    elif share_col:
+        # Share analysis
+        rate_types.append('share')
+        total_col = share_col # Use this as the "value" column for share rate
     else:
         summary_total = summary_metadata.get('Total Column') or summary_metadata.get('Total Column (Shared Denominator)')
         summary_approval = summary_metadata.get('Approval Column')

@@ -30,6 +30,9 @@ from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
 
+# Best preset marker for comparison tables
+BEST_PRESET_MARKER = '*'
+
 
 def get_presets_help() -> str:
     """Generate help text for available presets."""
@@ -133,6 +136,8 @@ EXAMPLES:
     dim_group = share_parser.add_mutually_exclusive_group()
     dim_group.add_argument('--dimensions', nargs='+',
                           help='Specific dimensions to analyze (e.g., flag_domestic cp_cnp)')
+    # NOTE: default=None with store_true allows distinguishing "not provided" from
+    # "explicitly False", enabling clean CLI-to-config override logic
     dim_group.add_argument('--auto', action='store_true', default=None,
                           help='Auto-detect all available dimensions')
     
@@ -347,10 +352,10 @@ def handle_config_command(args: argparse.Namespace) -> int:
     elif args.config_command == 'validate':
         is_valid, errors = validate_config_file(Path(args.config_file))
         if is_valid:
-            print(f"✓ Configuration file is valid: {args.config_file}")
+            print(f"[OK] Configuration file is valid: {args.config_file}")
             return 0
         else:
-            print(f"✗ Configuration validation failed:")
+            print(f"[FAIL] Configuration validation failed:")
             for error in errors:
                 print(f"  {error}")
             return 1
@@ -360,23 +365,23 @@ def handle_config_command(args: argparse.Namespace) -> int:
         output_path = Path(args.output_file)
         
         if not template_path.exists():
-            print(f"✗ Template file not found: {template_path}")
+            print(f"[FAIL] Template file not found: {template_path}")
             print(f"  Please ensure the config/template.yaml file exists.")
             return 1
         
         if output_path.exists():
-            print(f"✗ File already exists: {output_path}")
+            print(f"[FAIL] File already exists: {output_path}")
             print(f"  Please choose a different filename or delete the existing file.")
             return 1
         
         try:
             shutil.copy(template_path, output_path)
-            print(f"✓ Configuration template created: {output_path}")
+            print(f"[OK] Configuration template created: {output_path}")
             print(f"  Edit this file to customize your analysis settings.")
             print(f"  Validate with: benchmark config validate {output_path}")
             return 0
         except Exception as e:
-            print(f"✗ Failed to create config file: {e}")
+            print(f"[FAIL] Failed to create config file: {e}")
             return 1
     
     else:
@@ -599,7 +604,7 @@ def run_preset_comparison(
             if not valid_values.empty:
                 min_idx = comparison_df[impact_col].idxmin()
                 comparison_df['Best'] = ''
-                comparison_df.loc[min_idx, 'Best'] = '*'
+                comparison_df.loc[min_idx, 'Best'] = BEST_PRESET_MARKER
                 best_preset = comparison_df.loc[min_idx, 'Preset']
                 logger.info(f"\nBest preset (lowest mean abs impact): {best_preset}")
             else:
@@ -882,9 +887,6 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 ),
             },
         }
-        metadata['privacy_rule'] = getattr(analyzer, 'privacy_rule_name', None)
-        metadata['additional_constraints_enforced'] = getattr(analyzer, 'enforce_additional_constraints', False)
-        metadata['additional_constraint_violations_count'] = len(getattr(analyzer, 'additional_constraint_violations', []) or [])
         metadata['privacy_rule'] = getattr(analyzer, 'privacy_rule_name', None)
         metadata['additional_constraints_enforced'] = getattr(analyzer, 'enforce_additional_constraints', False)
         metadata['additional_constraint_violations_count'] = len(getattr(analyzer, 'additional_constraint_violations', []) or [])

@@ -303,6 +303,113 @@ def write_cases(out_dir: Path, cases: List[Dict], commands: List[str]) -> None:
             f.write(cmd + "\n")
 
 
+def generate_gate_cases(
+    analysis_type: str,
+    base_args: List[str],
+    output_dir: Path,
+    csv_path: Path,
+    entity: Optional[str],
+    entity_col: str,
+    dimensions: List[str],
+    time_col: Optional[str],
+    presets: List[str],
+    config_path: Optional[Path],
+    secondary_metrics: List[str] = None,
+    fraud_col: Optional[str] = None,
+) -> Tuple[List[Dict], List[str]]:
+    """
+    Generate a minimal set of "gate" cases that cover most code paths
+    without combinatorial explosion.
+    """
+    cases: List[Dict] = []
+    commands: List[str] = []
+
+    # Helper to clean up flag building
+    def make_gate_case(cid_suffix: str, extra_params: Dict, extra_flags: List[str]):
+        case_id = f"{analysis_type}_gate_{cid_suffix}"
+        output_path = output_dir / f"{case_id}.xlsx"
+        
+        # Base params (defaults)
+        params = {
+            "csv": str(csv_path),
+            "entity": entity,
+            "entity_col": entity_col,
+            "dimensions": dimensions,
+            "output_format": "analysis",
+            "validate_input": True,
+            "output": str(output_path),
+            **extra_params
+        }
+        
+        # Base flags
+        flags = ["--csv", str(csv_path), "--entity-col", entity_col]
+        
+        # Handle Entity (allow override in extra_params, else default to entity if present)
+        if "entity" in extra_params:
+            if extra_params["entity"] is not None:
+                flags.extend(["--entity", extra_params["entity"]])
+        elif entity:
+            flags.extend(["--entity", entity])
+            
+        # Handle Dimensions (allow override)
+        if "dimensions" in extra_params:
+            if extra_params["dimensions"]:
+                flags.extend(["--dimensions", *extra_params["dimensions"]])
+        elif "auto" in extra_params and extra_params["auto"]:
+            flags.append("--auto")
+        else:
+             flags.extend(["--dimensions", *dimensions])
+
+        if time_col:
+            flags.extend(["--time-col", time_col])
+            
+        flags.extend(["--output", str(output_path)])
+        flags.extend(extra_flags)
+        
+        cmd = build_command(base_args, flags)
+        expectations = expectations_for_case(params, analysis_type, output_path)
+        cases.append(make_case(case_id, cmd, params, expectations))
+        commands.append(cmd)
+
+    # Case 1: Baseline (Target + Manual Dims + Analysis + Validate)
+    make_gate_case("baseline", {}, ["--output-format", "analysis", "--validate-input"])
+
+    # Case 2: Peer + Auto Dims + Publication + No Validate
+    # Note: entity=None implies peer-only
+    make_gate_case(
+        "peer_auto_pub", 
+        {"entity": None, "dimensions": None, "auto": True, "output_format": "publication", "validate_input": False}, 
+        ["--auto", "--output-format", "publication", "--no-validate-input"]
+    )
+
+    # Case 3: Preset + Impact/Distortion (if available)
+    if presets:
+        preset = presets[0]
+        make_gate_case(
+            "preset_impact",
+            {"preset": preset, "analyze_distortion": True},
+            ["--preset", preset, "--analyze-distortion"]
+        )
+
+    # Case 4: Config + Balanced CSV (with calc)
+    if config_path:
+        make_gate_case(
+            "config_csv",
+            {"config": str(config_path), "export_balanced_csv": True, "include_calculated": True},
+            ["--config", str(config_path), "--export-balanced-csv", "--include-calculated"]
+        )
+        
+    # Case 5: Rate Specific - Fraud (if applicable)
+    if analysis_type == "rate" and fraud_col:
+        make_gate_case(
+            "fraud_bps",
+            {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
+            ["--fraud-in-bps", "--output-format", "publication"]
+        )
+
+    return cases, commands
+
+
 def generate_core_cases(
     analysis_type: str,
     base_args: List[str],
@@ -552,7 +659,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate CLI sweep cases for benchmark.py")
     parser.add_argument("--csv", help="Path to input CSV. Defaults to first CSV in data/.")
     parser.add_argument("--out-dir", default="test_sweeps", help="Output directory for sweep cases")
-    parser.add_argument("--mode", choices=["core", "exhaustive"], default="core", help="Sweep mode")
+    parser.add_argument("--mode", choices=["core", "exhaustive", "gate"], default="core", help="Sweep mode")
     parser.add_argument("--max-cases", type=int, default=5000, help="Safety cap for exhaustive mode")
     parser.add_argument("--allow-large", action="store_true", help="Allow case count to exceed max-cases")
     parser.add_argument("--entity-col", help="Override entity column name")
@@ -635,7 +742,23 @@ def main() -> int:
     share_cases: List[Dict] = []
     share_commands: List[str] = []
 
-    if args.mode == "core":
+    if args.mode == "gate":
+        cases, commands = generate_gate_cases(
+            "share",
+            share_base,
+            share_outputs,
+            csv_path,
+            entity_value,
+            entity_col,
+            dimensions,
+            time_col,
+            presets,
+            config_path,
+            secondary_metrics,
+        )
+        share_cases.extend(cases)
+        share_commands.extend(commands)
+    elif args.mode == "core":
         cases, commands = generate_core_cases(
             "share",
             share_base,
@@ -699,7 +822,24 @@ def main() -> int:
     rate_cases: List[Dict] = []
     rate_commands: List[str] = []
 
-    if args.mode == "core":
+    if args.mode == "gate":
+        cases, commands = generate_gate_cases(
+            "rate",
+            rate_base,
+            rate_outputs,
+            csv_path,
+            entity_value,
+            entity_col,
+            dimensions,
+            time_col,
+            presets,
+            config_path,
+            secondary_metrics,
+            fraud_col=fraud_col,
+        )
+        rate_cases.extend(cases)
+        rate_commands.extend(commands)
+    elif args.mode == "core":
         cases, commands = generate_core_cases(
             "rate",
             rate_base,

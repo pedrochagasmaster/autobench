@@ -1,0 +1,164 @@
+# Privacy-Compliant Benchmarking Tool - Configuration Template
+# Version: 3.0
+# 
+# Copy this file and customize for your analysis needs.
+# For preset configurations, see: benchmark config list
+
+version: "3.0"
+
+# ============================================================================
+# NOTE: Column names are specified via CLI flags, not in config files
+# ============================================================================
+# Use these CLI flags to specify your data columns:
+#   --entity-col: Column containing entity identifiers (e.g., "issuer_name")
+#   --metric: Column to analyze (e.g., "tpv", "transaction_amount")
+#   --time-col: Column for time-aware analysis (e.g., "ano_mes")
+#   --dimensions: Dimension columns for analysis (e.g., "credit_debit_flag tipo_compra")
+#
+# Column names must match exactly as they appear in your dataset (after normalization)
+
+# ============================================================================
+# OUTPUT SETTINGS
+# ============================================================================
+output:
+  # Output format (currently only xlsx supported)
+  format: "xlsx"
+  
+  # Include debug sheets with unweighted metrics
+  include_debug_sheets: true
+  
+  # Include detailed privacy validation sheet
+  include_privacy_validation: true
+
+  # Include impact analysis sheets (raw vs balanced)
+  include_impact_summary: true
+
+  # Include audit log output
+  include_audit_log: true
+
+  # Impact highlighting thresholds (percentage points)
+  impact_thresholds:
+    high_pp: 1.0
+    low_pp: 0.25
+  
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+
+# ============================================================================
+# PRIVACY SETTINGS
+# ============================================================================
+# Privacy rules are automatically determined based on the number of peers
+# in the dataset according to Mastercard Control 3.2:
+# - 4 peers: max 35% concentration
+# - 5 peers: max 25% concentration  
+# - 6 peers: max 30% concentration
+# - 7 peers: max 35% concentration
+# - 10+ peers: max 40% concentration
+#
+# No configuration needed - the tool automatically applies the correct rule.
+
+# ============================================================================
+# OPTIMIZATION SETTINGS
+# ============================================================================
+# Note: Global weighting mode (consistent weights) is now the DEFAULT
+#   Default: Single set of weights used across all dimensions (global weights)
+#   With --per-dimension-weights flag: Each dimension optimized independently
+optimization:
+  # Linear Programming settings
+  linear_programming:
+    # Maximum iterations for LP solver
+    max_iterations: 1000
+    
+    # Tolerance for privacy violations (percentage points)
+    # Higher tolerance = more flexibility, less strict privacy
+    tolerance: 1.0
+    
+    # Volume-weighted slack penalties
+    # When true, violations in high-volume categories are penalized more heavily
+    # This minimizes violations where they have the most business impact
+    volume_weighted_penalties: false
+    
+    # Exponent for volume weighting (only used if volume_weighted_penalties=true)
+    # 1.0 = linear weighting, 2.0 = quadratic (stronger emphasis on large volumes)
+    volume_weighting_exponent: 1.0
+  
+  # Weight bounds
+  bounds:
+    # Maximum weight multiplier for any peer
+    max_weight: 10.0
+    
+    # Minimum weight multiplier for any peer
+    min_weight: 0.01
+  
+  # Constraint settings
+  constraints:
+    # Rank preservation strength (0.0-1.0)
+    # Controls how strongly the optimizer preserves the original peer ranking by volume
+    # 0.0 = No rank preservation (weights can freely reorder peers)
+    # 1.0 = Strong rank preservation (maintain original peer ordering)
+    volume_preservation: 0.5
+    
+    # Enforce additional Control 3.2 rule conditions (6/30, 7/35, 10/40)
+    enforce_additional_constraints: true
+  
+  # Subset search settings (only applies to default global weighting mode)
+  # Subset search tries to find optimal dimension combinations when all dimensions together
+  # violate privacy constraints
+  #
+  # For detailed explanation of how these parameters interact, see: SUBSET_SEARCH_SCENARIOS.md
+  subset_search:
+    # Enable subset search when LP completely fails to find a solution
+    # If true and LP fails: Search for largest feasible dimension subset
+    # If false and LP fails: Fall back to per-dimension optimization
+    enabled: true
+    
+    # Search strategy: greedy, random
+    # greedy = iteratively remove most unbalanced dimension (fastest, deterministic)
+    # random = test random dimension combinations (more thorough, non-deterministic)
+    strategy: "greedy"
+    
+    # Maximum subset combinations to test (for random strategy)
+    max_attempts: 200
+    
+    # Trigger subset search even when LP succeeds but uses privacy cap slack
+    # If true: Search for better solution when LP succeeds but violates max_slack_threshold
+    # If false: Accept LP solution even if it uses slack
+    # Note: This is INDEPENDENT of 'enabled' - controls different trigger condition
+    trigger_on_slack: true
+    
+    # Maximum slack threshold (in percentage points)
+    # If LP cap slack sum exceeds this and trigger_on_slack=true, trigger subset search
+    # 0.0 = trigger on any slack usage (strictest)
+    # 2.0 = trigger only on violations > 2 percentage points (moderate)
+    # Only used when trigger_on_slack=true
+    max_slack_threshold: 0.0
+    
+    # Try LP with rank_preservation=0 before dropping dimensions
+    # If true: When LP fails, first try without rank preservation penalty
+    # If false: Go directly to subset search when LP fails
+    # Only used when enabled=true
+    #
+    # Recommended scenarios:
+    # - prefer_slacks_first=true: Keep all dimensions if possible, even if peer ordering changes
+    # - prefer_slacks_first=false: Drop dimensions sooner to maintain rank preservation
+    prefer_slacks_first: false
+  
+  # Bayesian optimization settings (fallback when LP fails)
+  bayesian:
+    # Maximum iterations
+    max_iterations: 500
+    
+    # Learning rate
+    learning_rate: 0.01
+
+# ============================================================================
+# ANALYSIS SETTINGS
+# ============================================================================
+analysis:
+  # Best-in-class percentile (0.0-1.0)
+  # For approval rates and share analysis: Uses this value (0.85 = 85th percentile, higher is better)
+  # For fraud rates: Automatically uses (1 - this value) = 0.15 = 15th percentile (lower is better)
+  best_in_class_percentile: 0.85
+  
+  # Auto-detect dimensions from data (if --auto flag used)
+  auto_detect_dimensions: false
