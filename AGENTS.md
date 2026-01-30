@@ -130,6 +130,7 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── tui_app.py                # TUI application (~1400 lines)
 ├── requirements.txt          # Dependencies
 ├── AGENTS.md                 # This file
+├── 📁 docs/                  # Project documentation (Plans, Reviews, Gains)
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
 │   ├── dimensional_analyzer.py  # Core algorithm (~2200 lines) ⭐ CRITICAL
@@ -152,6 +153,10 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 │   ├── compliance_strict.yaml     # tolerance=0.0, greedy search
 │   ├── research_exploratory.yaml  # Relaxed constraints
 │   └── strategic_consistency.yaml # tolerance=25.0, volume-weighted
+├── 📁 scripts/               # Helper scripts (Gate Test, Sweep Generator)
+├── 📁 tests/                 # Unit tests
+├── 📁 test_sweeps/           # Generated sweep test cases
+├── 📁 tool_extension_project/ # Extension project components
 ├── 📁 data/                  # Input data (gitignored)
 ├── 📁 outputs/               # Generated reports (gitignored)
 └── 📁 old/                   # Legacy code (reference only)
@@ -178,6 +183,8 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 | `balanced_default` | Day-to-day | 2.0 | ❌ | random |
 | `strategic_consistency` | Dashboards | 25.0 | ✅ 1.5x | ❌ |
 | `research_exploratory` | Difficult data | 5.0 | ❌ | random |
+| `low_distortion` | Low Distortion | 10.0 | ✅ 1.0x | ❌ |
+| `minimal_distortion` | Max Accuracy | 100.0 | ✅ 2.0x | ❌ |
 
 ### Config Schema (v3.0)
 
@@ -624,6 +631,23 @@ pytest
 ```powershell
 py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
 ```
+
+### 🧹 CLI Sweep Testing
+
+For comprehensive coverage, use the sweep generator to create and run hundreds of test cases:
+
+```powershell
+# Generate core test cases
+python scripts/generate_cli_sweep.py --mode core --out-dir test_sweeps
+
+# Run generated commands
+test_sweeps/commands.ps1
+```
+
+**Modes**:
+- `gate`: Minimal set for integrity checks
+- `core`: Standard coverage (default)
+- `exhaustive`: Large scale parameter sweep
 
 ### Common Errors
 

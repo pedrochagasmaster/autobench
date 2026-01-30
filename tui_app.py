@@ -116,6 +116,16 @@ class PresetHelpScreen(ModalScreen):
 - **Best For:** Day-to-day analysis.
 - **Trade-off:** Good balance, allows very small violations (2%).
 
+### low_distortion
+- **Intent:** "I want low distortion while keeping privacy constraints."
+- **Best For:** Accuracy-focused analysis with modest consistency needs.
+- **Trade-off:** Allows higher tolerance to keep results close to raw data.
+
+### minimal_distortion
+- **Intent:** "Maximize accuracy even if consistency suffers."
+- **Best For:** Research or validation where raw fidelity matters most.
+- **Trade-off:** Highest tolerance and volume-weighted penalties.
+
 ### research_exploratory
 - **Intent:** "This dataset is difficult, just give me numbers."
 - **Best For:** Data exploration, difficult datasets.
