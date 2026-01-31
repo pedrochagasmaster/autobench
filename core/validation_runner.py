@@ -12,6 +12,24 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 logger = logging.getLogger(__name__)
 
 
+def _summarize_issues(issues: List[ValidationIssue]) -> Tuple[int, int, int]:
+    errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
+    warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
+    infos = [i for i in issues if i.severity == ValidationSeverity.INFO]
+    return len(errors), len(warnings), len(infos)
+
+
+def _log_validation_issue(issue: ValidationIssue) -> None:
+    severity_loggers = {
+        ValidationSeverity.ERROR: logger.error,
+        ValidationSeverity.WARNING: logger.warning,
+        ValidationSeverity.INFO: logger.info,
+    }
+    log_fn = severity_loggers.get(issue.severity, logger.info)
+    severity_label = getattr(issue.severity, 'value', str(issue.severity))
+    log_fn(f"VALIDATION {severity_label} [{issue.category}]: {issue.message}")
+
+
 def run_input_validation(
     df: pd.DataFrame,
     config: 'ConfigManager',
@@ -66,7 +84,7 @@ def run_input_validation(
 
     logger.info("Running input data validation...")
 
-    val_dimensions = dimensions if dimensions else data_loader.get_available_dimensions(df)
+    val_dimensions = dimensions or data_loader.get_available_dimensions(df)
     thresholds = config.get('input', 'validation_thresholds', default={})
 
     if analysis_type == 'share':
@@ -94,26 +112,19 @@ def run_input_validation(
         logger.error(f"Unknown analysis type: {analysis_type}")
         return [], True
 
-    errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
-    warnings = [i for i in issues if i.severity == ValidationSeverity.WARNING]
-    infos = [i for i in issues if i.severity == ValidationSeverity.INFO]
-
     for issue in issues:
-        if issue.severity == ValidationSeverity.ERROR:
-            logger.error(f"VALIDATION ERROR [{issue.category}]: {issue.message}")
-        elif issue.severity == ValidationSeverity.WARNING:
-            logger.warning(f"VALIDATION WARNING [{issue.category}]: {issue.message}")
-        else:
-            logger.info(f"VALIDATION INFO [{issue.category}]: {issue.message}")
+        _log_validation_issue(issue)
 
-    if errors:
-        logger.error(f"Found {len(errors)} ERROR(s), {len(warnings)} WARNING(s), {len(infos)} INFO(s)")
+    error_count, warning_count, info_count = _summarize_issues(issues)
+
+    if error_count:
+        logger.error(f"Found {error_count} ERROR(s), {warning_count} WARNING(s), {info_count} INFO(s)")
         logger.error("Analysis ABORTED due to validation errors. Fix the data and retry.")
         return issues, True
-    elif warnings:
-        logger.warning(f"Found {len(warnings)} WARNING(s), {len(infos)} INFO(s). Proceeding with analysis.")
-    elif infos:
-        logger.info(f"Found {len(infos)} INFO(s). Data quality is good.")
+    elif warning_count:
+        logger.warning(f"Found {warning_count} WARNING(s), {info_count} INFO(s). Proceeding with analysis.")
+    elif info_count:
+        logger.info(f"Found {info_count} INFO(s). Data quality is good.")
     else:
         logger.info("Input validation passed with no issues.")
 

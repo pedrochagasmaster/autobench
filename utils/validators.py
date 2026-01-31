@@ -224,6 +224,31 @@ class ConfigValidator:
                 if 'enforce_additional_constraints' in constraints:
                     if not isinstance(constraints['enforce_additional_constraints'], bool):
                         errors.append("optimization.constraints.enforce_additional_constraints must be a boolean")
+
+                if 'dynamic_constraints' in constraints:
+                    dyn = constraints['dynamic_constraints']
+                    if not isinstance(dyn, dict):
+                        errors.append("optimization.constraints.dynamic_constraints must be a dictionary")
+                    else:
+                        if 'enabled' in dyn and not isinstance(dyn['enabled'], bool):
+                            errors.append("optimization.constraints.dynamic_constraints.enabled must be a boolean")
+                        int_fields = ['min_peer_count']
+                        for field in int_fields:
+                            if field in dyn and (not isinstance(dyn[field], int) or dyn[field] < 0):
+                                errors.append(f"optimization.constraints.dynamic_constraints.{field} must be a non-negative integer")
+                        float_fields = [
+                            'min_effective_peer_count',
+                            'min_category_volume_share',
+                            'min_overall_volume_share',
+                            'min_representativeness',
+                            'threshold_scale_floor',
+                            'count_scale_floor',
+                            'penalty_floor',
+                            'penalty_power',
+                        ]
+                        for field in float_fields:
+                            if field in dyn and (not isinstance(dyn[field], (int, float)) or dyn[field] < 0):
+                                errors.append(f"optimization.constraints.dynamic_constraints.{field} must be >= 0")
         
         # Validate subset search
         if 'subset_search' in opt_config:

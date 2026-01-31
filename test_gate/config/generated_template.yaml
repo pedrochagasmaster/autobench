@@ -100,6 +100,28 @@ optimization:
     
     # Enforce additional Control 3.2 rule conditions (6/30, 7/35, 10/40)
     enforce_additional_constraints: true
+
+    # Dynamic constraints to handle sparse or unrepresentative buckets
+    dynamic_constraints:
+      enabled: true
+      # Minimum peer count in a category/time bucket to enforce additional constraints
+      min_peer_count: 4
+      # Minimum effective peer count (1/sum(share^2)) to enforce additional constraints
+      min_effective_peer_count: 3.0
+      # Minimum share of volume within the dimension/time slice
+      min_category_volume_share: 0.001
+      # Minimum share of overall volume
+      min_overall_volume_share: 0.0005
+      # Minimum representativeness score to enforce additional constraints
+      min_representativeness: 0.1
+      # Floor for scaling additional-constraint thresholds in sparse buckets
+      threshold_scale_floor: 0.6
+      # Floor for scaling required participant counts in sparse buckets
+      count_scale_floor: 0.5
+      # Minimum penalty weight for low-representativeness buckets
+      penalty_floor: 0.25
+      # Exponent for representativeness penalty weighting
+      penalty_power: 1.0
   
   # Subset search settings (only applies to default global weighting mode)
   # Subset search tries to find optimal dimension combinations when all dimensions together

@@ -24,7 +24,6 @@ Rule Specifications:
 """
 
 import pandas as pd
-import numpy as np
 from typing import List, Tuple, Optional, Dict
 import logging
 
@@ -88,6 +87,72 @@ class PrivacyValidator:
             'max_concentration': 35.0
         }
     }
+
+    COMPARISON_EPSILON = 1e-3
+
+    @staticmethod
+    def _count_at_or_above(values: List[float], threshold: float) -> int:
+        epsilon = PrivacyValidator.COMPARISON_EPSILON
+        return sum(1 for value in values if value + epsilon >= threshold)
+
+    def _check_min_participants(self, peer_group: pd.DataFrame) -> Tuple[bool, List[str]]:
+        warnings: List[str] = []
+        num_entities = len(peer_group)
+        if num_entities < self.min_participants:
+            warnings.append(
+                f"Insufficient entities: {num_entities} < {self.min_participants}"
+            )
+            return False, warnings
+        return True, warnings
+
+    def _build_concentration_frame(
+        self,
+        peer_group: pd.DataFrame,
+        metric: str,
+        entity_column: str
+    ) -> Tuple[Optional[pd.DataFrame], List[str]]:
+        warnings: List[str] = []
+        if metric not in peer_group.columns:
+            warnings.append(f"Metric '{metric}' not found in data")
+            return None, warnings
+
+        total = peer_group[metric].sum()
+        if total == 0:
+            warnings.append(f"Total for metric '{metric}' is zero")
+            return None, warnings
+
+        peer_group_copy = peer_group.copy()
+        peer_group_copy['concentration'] = (peer_group_copy[metric] / total) * 100
+        return peer_group_copy, warnings
+
+    def _check_entity_concentration(
+        self,
+        peer_group: pd.DataFrame,
+        metric: str,
+        entity_column: str
+    ) -> Tuple[bool, List[str]]:
+        warnings: List[str] = []
+        is_compliant = True
+
+        for _, row in peer_group.iterrows():
+            entity_name = row[entity_column]
+            concentration = row['concentration']
+
+            if entity_name in self.protected_entities:
+                if concentration > self.protected_max_concentration:
+                    warnings.append(
+                        f"Protected entity '{entity_name}' exceeds {self.protected_max_concentration}% "
+                        f"for '{metric}': {concentration:.2f}%"
+                    )
+                    is_compliant = False
+            elif concentration > self.max_concentration:
+                warnings.append(
+                    f"Entity '{entity_name}' exceeds {self.max_concentration}% "
+                    f"for '{metric}': {concentration:.2f}%"
+                )
+                is_compliant = False
+
+        return is_compliant, warnings
 
     @classmethod
     def select_rule(cls, peer_count: int, merchant_mode: bool = False) -> str:
@@ -155,7 +220,7 @@ class PrivacyValidator:
         # 6/30: at least 3 participants >= 7%
         if 'min_count_above_threshold' in additional:
             min_count, threshold = additional['min_count_above_threshold']
-            count_above = sum(1 for s in shares_sorted if s >= threshold)
+            count_above = cls._count_at_or_above(shares_sorted, threshold)
             if count_above < min_count:
                 passed = False
                 details.append(
@@ -166,8 +231,8 @@ class PrivacyValidator:
         if 'min_count_15' in additional:
             min_count_15 = additional.get('min_count_15', 0)
             min_count_8 = additional.get('min_count_8', 0)
-            count_15 = sum(1 for s in shares_sorted if s >= 15.0)
-            count_8 = sum(1 for s in shares_sorted if s >= 8.0)
+            count_15 = cls._count_at_or_above(shares_sorted, 15.0)
+            count_8 = cls._count_at_or_above(shares_sorted, 8.0)
             if count_15 < min_count_15:
                 passed = False
                 details.append(
@@ -183,8 +248,8 @@ class PrivacyValidator:
         if 'min_count_20' in additional:
             min_count_20 = additional.get('min_count_20', 0)
             min_count_10 = additional.get('min_count_10', 0)
-            count_20 = sum(1 for s in shares_sorted if s >= 20.0)
-            count_10 = sum(1 for s in shares_sorted if s >= 10.0)
+            count_20 = cls._count_at_or_above(shares_sorted, 20.0)
+            count_10 = cls._count_at_or_above(shares_sorted, 10.0)
             if count_20 < min_count_20:
                 passed = False
                 details.append(
@@ -264,60 +329,32 @@ class PrivacyValidator:
         Tuple[bool, List[str]]
             (is_compliant, list_of_warnings)
         """
-        warnings = []
+        warnings: List[str] = []
         is_compliant = True
-        
+
         # Check minimum participants
-        num_entities = len(peer_group)
-        if num_entities < self.min_participants:
-            warnings.append(
-                f"Insufficient entities: {num_entities} < {self.min_participants}"
-            )
-            is_compliant = False
-            return is_compliant, warnings
-        
+        min_ok, min_warnings = self._check_min_participants(peer_group)
+        if not min_ok:
+            warnings.extend(min_warnings)
+            return False, warnings
+
         # Check concentration for each metric
         for metric in metrics:
-            if metric not in peer_group.columns:
-                warnings.append(f"Metric '{metric}' not found in data")
+            conc_df, metric_warnings = self._build_concentration_frame(peer_group, metric, entity_column)
+            if metric_warnings:
+                warnings.extend(metric_warnings)
+            if conc_df is None:
                 continue
-            
-            # Calculate total
-            total = peer_group[metric].sum()
-            
-            if total == 0:
-                warnings.append(f"Total for metric '{metric}' is zero")
-                continue
-            
-            # Calculate concentration percentages
-            peer_group_copy = peer_group.copy()
-            peer_group_copy['concentration'] = (peer_group_copy[metric] / total) * 100
-            
-            # Check each entity's concentration
-            for idx, row in peer_group_copy.iterrows():
-                entity_name = row[entity_column]
-                concentration = row['concentration']
-                
-                # Apply protected entity limit if applicable
-                if entity_name in self.protected_entities:
-                    if concentration > self.protected_max_concentration:
-                        warnings.append(
-                            f"Protected entity '{entity_name}' exceeds {self.protected_max_concentration}% "
-                            f"for '{metric}': {concentration:.2f}%"
-                        )
-                        is_compliant = False
-                # Apply standard limit
-                elif concentration > self.max_concentration:
-                    warnings.append(
-                        f"Entity '{entity_name}' exceeds {self.max_concentration}% "
-                        f"for '{metric}': {concentration:.2f}%"
-                    )
-                    is_compliant = False
-            
+
+            metric_ok, metric_warnings = self._check_entity_concentration(conc_df, metric, entity_column)
+            if not metric_ok:
+                is_compliant = False
+            warnings.extend(metric_warnings)
+
             # Check additional constraints based on rule
             if self.additional_constraints:
                 constraint_check, constraint_warnings = self._check_additional_constraints(
-                    peer_group_copy, metric, entity_column
+                    conc_df, metric, entity_column
                 )
                 if not constraint_check:
                     is_compliant = False
@@ -359,7 +396,7 @@ class PrivacyValidator:
         # Rule 6/30: At least 3 entities ≥ 7%
         if 'min_count_above_threshold' in self.additional_constraints:
             min_count, threshold = self.additional_constraints['min_count_above_threshold']
-            count_above = (peer_group['concentration'] >= threshold).sum()
+            count_above = self._count_at_or_above(peer_group['concentration'].tolist(), threshold)
             
             if count_above < min_count:
                 warnings.append(
@@ -369,8 +406,8 @@ class PrivacyValidator:
         
         # Rule 7/35: At least 2 entities ≥ 15% AND 1 entity ≥ 8%
         if 'min_count_15' in self.additional_constraints:
-            count_15 = (peer_group['concentration'] >= 15.0).sum()
-            count_8 = (peer_group['concentration'] >= 8.0).sum()
+            count_15 = self._count_at_or_above(peer_group['concentration'].tolist(), 15.0)
+            count_8 = self._count_at_or_above(peer_group['concentration'].tolist(), 8.0)
             
             if count_15 < self.additional_constraints['min_count_15']:
                 warnings.append(
@@ -388,8 +425,8 @@ class PrivacyValidator:
         
         # Rule 10/40: At least 2 entities ≥ 20% AND 1 entity ≥ 10%
         if 'min_count_20' in self.additional_constraints:
-            count_20 = (peer_group['concentration'] >= 20.0).sum()
-            count_10 = (peer_group['concentration'] >= 10.0).sum()
+            count_20 = self._count_at_or_above(peer_group['concentration'].tolist(), 20.0)
+            count_10 = self._count_at_or_above(peer_group['concentration'].tolist(), 10.0)
             
             if count_20 < self.additional_constraints['min_count_20']:
                 warnings.append(

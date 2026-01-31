@@ -482,6 +482,7 @@ def run_preset_comparison(
             config = ConfigManager(preset=preset_name)
             opt_config = config.config['optimization']
             analysis_config = config.config['analysis']
+            dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
             
             # Create analyzer with preset parameters
             analyzer = DimensionalAnalyzer(
@@ -505,6 +506,16 @@ def run_preset_comparison(
                 volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
                 volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
                 enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
+                dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
+                min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
+                min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
+                min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
+                min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
+                min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
+                dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
+                dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
+                representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
+                representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
             )
             
             # Calculate global weights
@@ -731,6 +742,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get configuration values
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
+        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
         
         # Log configuration source
         if getattr(args, 'preset', None):
@@ -768,6 +781,16 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
             enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
+            dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
+            min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
+            min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
+            min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
+            min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
+            min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
+            dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
+            dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
+            representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
+            representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
         )
         
         # Determine dimensions
@@ -890,6 +913,15 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         metadata['privacy_rule'] = getattr(analyzer, 'privacy_rule_name', None)
         metadata['additional_constraints_enforced'] = getattr(analyzer, 'enforce_additional_constraints', False)
         metadata['additional_constraint_violations_count'] = len(getattr(analyzer, 'additional_constraint_violations', []) or [])
+        metadata['dynamic_constraints_enabled'] = getattr(analyzer, 'dynamic_constraints_enabled', False)
+        metadata['dynamic_constraints_stats'] = getattr(analyzer, 'dynamic_constraint_stats', {})
+        metadata['dynamic_constraints_config'] = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+        metadata['privacy_rule'] = getattr(analyzer, 'privacy_rule_name', None)
+        metadata['additional_constraints_enforced'] = getattr(analyzer, 'enforce_additional_constraints', False)
+        metadata['additional_constraint_violations_count'] = len(getattr(analyzer, 'additional_constraint_violations', []) or [])
+        metadata['dynamic_constraints_enabled'] = getattr(analyzer, 'dynamic_constraints_enabled', False)
+        metadata['dynamic_constraints_stats'] = getattr(analyzer, 'dynamic_constraint_stats', {})
+        metadata['dynamic_constraints_config'] = dyn_constraints
         
         # Calculate rank preservation strength for metadata (new for v2.0)
         if consistent_weights:
@@ -1294,6 +1326,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get configuration values
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
+        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
         
         # Initialize analyzer ONCE with first rate type's BIC (we'll override per-dimension)
         # The key insight: weights are based on total_col, not the numerator
@@ -1319,6 +1352,16 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
             enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
+            dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
+            min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
+            min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
+            min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
+            min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
+            min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
+            dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
+            dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
+            representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
+            representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
         )
         
         # Calculate global weights ONCE based on total_col

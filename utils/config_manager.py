@@ -424,6 +424,18 @@ class ConfigManager:
                     'volume_preservation': 0.5,
                     'consistency_mode': 'global',
                     'enforce_additional_constraints': True,
+                    'dynamic_constraints': {
+                        'enabled': True,
+                        'min_peer_count': 4,
+                        'min_effective_peer_count': 3.0,
+                        'min_category_volume_share': 0.001,
+                        'min_overall_volume_share': 0.0005,
+                        'min_representativeness': 0.1,
+                        'threshold_scale_floor': 0.6,
+                        'count_scale_floor': 0.5,
+                        'penalty_floor': 0.25,
+                        'penalty_power': 1.0,
+                    },
                 },
                 'subset_search': {
                     'enabled': True,

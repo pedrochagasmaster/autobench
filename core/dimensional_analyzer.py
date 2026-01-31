@@ -60,6 +60,17 @@ class DimensionalAnalyzer:
         volume_weighted_penalties: bool = False,
         volume_weighting_exponent: float = 1.0,
         enforce_additional_constraints: bool = True,
+        # Dynamic constraint handling for sparse/low-representativeness buckets
+        dynamic_constraints_enabled: bool = True,
+        min_peer_count_for_constraints: int = 4,
+        min_effective_peer_count: float = 3.0,
+        min_category_volume_share: float = 0.001,
+        min_overall_volume_share: float = 0.0005,
+        min_representativeness: float = 0.1,
+        dynamic_threshold_scale_floor: float = 0.6,
+        dynamic_count_scale_floor: float = 0.5,
+        representativeness_penalty_floor: float = 0.25,
+        representativeness_penalty_power: float = 1.0,
     ):
         """
         Initialize dimensional analyzer.
@@ -108,6 +119,26 @@ class DimensionalAnalyzer:
             Exponent for volume weighting: penalty proportional to volume^exponent (default: 1.0 = linear)
         enforce_additional_constraints : bool
             If True, enforce Control 3.2 additional constraints (6/30, 7/35, 10/40) in heuristic optimization
+        dynamic_constraints_enabled : bool
+            If True, adapt additional-constraint enforcement based on peer count and representativeness
+        min_peer_count_for_constraints : int
+            Minimum peers in a category/time bucket to enforce additional constraints
+        min_effective_peer_count : float
+            Minimum effective peer count (1/sum(s^2)) to enforce additional constraints
+        min_category_volume_share : float
+            Minimum share of volume within the dimension/time slice to enforce additional constraints
+        min_overall_volume_share : float
+            Minimum share of overall volume to enforce additional constraints
+        min_representativeness : float
+            Minimum representativeness score to enforce additional constraints
+        dynamic_threshold_scale_floor : float
+            Lower bound for scaling additional-constraint thresholds in sparse buckets
+        dynamic_count_scale_floor : float
+            Lower bound for scaling additional-constraint counts in sparse buckets
+        representativeness_penalty_floor : float
+            Minimum penalty weight applied to low-representativeness buckets
+        representativeness_penalty_power : float
+            Exponent for representativeness penalty weighting
         """
         self.target_entity = target_entity
         self.entity_column = entity_column
@@ -144,6 +175,16 @@ class DimensionalAnalyzer:
         self.volume_weighted_penalties: bool = bool(volume_weighted_penalties)
         self.volume_weighting_exponent: float = float(volume_weighting_exponent)
         self.enforce_additional_constraints: bool = bool(enforce_additional_constraints)
+        self.dynamic_constraints_enabled: bool = bool(dynamic_constraints_enabled)
+        self.min_peer_count_for_constraints: int = int(min_peer_count_for_constraints)
+        self.min_effective_peer_count: float = float(min_effective_peer_count)
+        self.min_category_volume_share: float = float(min_category_volume_share)
+        self.min_overall_volume_share: float = float(min_overall_volume_share)
+        self.min_representativeness: float = float(min_representativeness)
+        self.dynamic_threshold_scale_floor: float = float(dynamic_threshold_scale_floor)
+        self.dynamic_count_scale_floor: float = float(dynamic_count_scale_floor)
+        self.representativeness_penalty_floor: float = float(representativeness_penalty_floor)
+        self.representativeness_penalty_power: float = float(representativeness_penalty_power)
         self.slack_subset_triggered: bool = False
         # Structural diagnostics placeholders
         self.structural_detail_df: pd.DataFrame = pd.DataFrame()
@@ -154,17 +195,39 @@ class DimensionalAnalyzer:
         self.privacy_validation_df: pd.DataFrame = pd.DataFrame()
         self.privacy_rule_name: Optional[str] = None
         self.additional_constraint_violations: List[Dict[str, Any]] = []
-        logger.info(f"Initialized DimensionalAnalyzer for entity: {target_entity}")
-        if debug_mode:
+        self.dynamic_constraint_stats: Dict[str, int] = {
+            'enforced': 0,
+            'relaxed': 0,
+            'skipped_low_peers': 0,
+            'skipped_low_effective_peers': 0,
+            'skipped_low_volume': 0,
+            'skipped_low_representativeness': 0,
+        }
+        self._log_init_settings()
+
+    def _log_init_settings(self) -> None:
+        logger.info(f"Initialized DimensionalAnalyzer for entity: {self.target_entity}")
+        if self.debug_mode:
             logger.info("Debug mode enabled - will include unweighted averages and weights tracking")
-        if consistent_weights:
+        if self.consistent_weights:
             logger.info("Consistent weights mode enabled - same privacy-constrained weights across all dimensions")
             if self.volume_weighted_penalties:
-                logger.info(f"Volume-weighted penalties ENABLED - violations in high-volume categories penalized more heavily (exponent={self.volume_weighting_exponent})")
+                logger.info(
+                    "Volume-weighted penalties ENABLED - violations in high-volume categories penalized more heavily "
+                    "(exponent=%s)",
+                    self.volume_weighting_exponent
+                )
+            if self.dynamic_constraints_enabled:
+                logger.info(
+                    "Dynamic constraints ENABLED - min_peers=%s, min_effective_peers=%s, min_rep=%s",
+                    self.min_peer_count_for_constraints,
+                    self.min_effective_peer_count,
+                    self.min_representativeness
+                )
             logger.info(
                 "Weight parameters: max_iterations=%s, tolerance=%s%%, "
                 "max_weight=%sx, min_weight=%sx, rank_preservation=%s",
-                max_iterations, tolerance, max_weight, min_weight, self.rank_preservation_strength
+                self.max_iterations, self.tolerance, self.max_weight, self.min_weight, self.rank_preservation_strength
             )
     
     def calculate_global_weights(self, df: pd.DataFrame, metric_col: str) -> None:
@@ -573,8 +636,367 @@ class DimensionalAnalyzer:
 
     # Constants
     VIOLATION_PENALTY_WEIGHT = 100.0
+    COMPARISON_EPSILON = 1e-6
 
-    def _additional_constraints_penalty(self, shares: List[float], rule_name: str) -> float:
+    def _is_slack_excess(self, sum_slack: float) -> bool:
+        return sum_slack > float(self.max_cap_slack) + self.COMPARISON_EPSILON
+
+    def _is_share_violation(self, adjusted_share: float, max_concentration: float) -> bool:
+        return adjusted_share > (max_concentration + self.tolerance + self.COMPARISON_EPSILON)
+
+    def _nudge_borderline_cap_excess(
+        self,
+        weights: Dict[str, float],
+        all_categories: List[Dict[str, Any]],
+        max_concentration: float,
+        dimension_filter: Optional[List[str]] = None,
+    ) -> Dict[str, float]:
+        """Reduce tiny cap excesses by nudging top violators within bounds.
+
+        This only adjusts weights when the max excess is within a small threshold
+        and preserves min/max bounds for all peers.
+        """
+        max_allowed = max_concentration + self.tolerance
+        max_excess = 0.0
+        worst_peer: Optional[str] = None
+        worst_category: Optional[Dict[str, Any]] = None
+        worst_total_weighted = 0.0
+
+        grouped_cats: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = {}
+        for cat in all_categories:
+            key = (cat.get('dimension'), cat.get('category'), cat.get('time_period'))
+            if key not in grouped_cats:
+                grouped_cats[key] = []
+            grouped_cats[key].append(cat)
+
+        for cat in all_categories:
+            if dimension_filter:
+                if cat['dimension'] in dimension_filter:
+                    pass
+                elif self.time_column and any(
+                    cat['dimension'].startswith(f"{dim}_{self.time_column}")
+                    for dim in dimension_filter
+                ):
+                    pass
+                else:
+                    continue
+            if cat['peer'] not in weights:
+                continue
+
+            key = (cat.get('dimension'), cat.get('category'), cat.get('time_period'))
+            matching_cats = grouped_cats.get(key, [])
+
+            total_weighted = sum(c['category_volume'] * weights[c['peer']] for c in matching_cats)
+            if total_weighted <= 0:
+                continue
+
+            peer = cat['peer']
+            peer_weighted = cat['category_volume'] * weights[peer]
+            adjusted_share = (peer_weighted / total_weighted * 100.0)
+            excess = adjusted_share - max_allowed
+            if excess > max_excess:
+                max_excess = excess
+                worst_peer = peer
+                worst_category = cat
+                worst_total_weighted = total_weighted
+
+        if not worst_peer:
+            return weights
+
+        if max_excess <= 0:
+            return weights
+
+        if max_excess > 1e-3:
+            return weights
+
+        current = weights.get(worst_peer, 1.0)
+        if not worst_category or worst_total_weighted <= 0:
+            return weights
+
+        peer_weighted = worst_category['category_volume'] * current
+        others = max(worst_total_weighted - peer_weighted, 0.0)
+        target_share = max_allowed
+        if peer_weighted <= 0 or others <= 0:
+            return weights
+
+        scale = (target_share * others) / (peer_weighted * (100.0 - target_share))
+        scale = max(0.0, min(scale, 1.0))
+        new_weight = max(self.min_weight, min(current * scale, self.max_weight))
+        if abs(new_weight - current) < 1e-9:
+            return weights
+
+        adjusted = dict(weights)
+        adjusted[worst_peer] = new_weight
+        return adjusted
+
+    @staticmethod
+    def _participant_count(peer_volumes: Dict[str, float]) -> int:
+        return sum(1 for volume in peer_volumes.values() if volume > 0)
+
+    def _reset_dynamic_constraint_stats(self) -> None:
+        self.dynamic_constraint_stats = {
+            'enforced': 0,
+            'relaxed': 0,
+            'skipped_low_peers': 0,
+            'skipped_low_effective_peers': 0,
+            'skipped_low_volume': 0,
+            'skipped_low_representativeness': 0,
+        }
+
+    def _build_constraint_stats(
+        self,
+        dim_categories: List[Dict[str, Any]],
+        peers: List[str],
+        peer_volumes: Dict[str, float]
+    ) -> Dict[Tuple[str, Any, Optional[Any]], Dict[str, float]]:
+        overall_total = float(sum(peer_volumes.values()))
+        dim_time_totals: Dict[Tuple[str, Optional[Any]], float] = {}
+        category_totals: Dict[Tuple[str, Any, Optional[Any]], float] = {}
+        peer_sets: Dict[Tuple[str, Any, Optional[Any]], set] = {}
+        volumes_by_key: Dict[Tuple[str, Any, Optional[Any]], List[float]] = {}
+
+        for cat in dim_categories:
+            key = (cat['dimension'], cat['category'], cat.get('time_period'))
+            dim_time_key = (cat['dimension'], cat.get('time_period'))
+            vol = float(cat.get('category_volume', 0.0))
+            category_totals[key] = category_totals.get(key, 0.0) + vol
+            dim_time_totals[dim_time_key] = dim_time_totals.get(dim_time_key, 0.0) + vol
+            if key not in peer_sets:
+                peer_sets[key] = set()
+                volumes_by_key[key] = []
+            if vol > 0:
+                peer_sets[key].add(cat['peer'])
+            volumes_by_key[key].append(vol)
+
+        stats: Dict[Tuple[str, Any, Optional[Any]], Dict[str, float]] = {}
+        peer_total = max(len(peers), 1)
+        for key, total in category_totals.items():
+            dim_time_key = (key[0], key[2])
+            dim_total = float(dim_time_totals.get(dim_time_key, 0.0))
+            participants = float(len(peer_sets.get(key, set())))
+            eff_peers = 0.0
+            if total > 0:
+                shares_sq = 0.0
+                for v in volumes_by_key.get(key, []):
+                    share = v / total
+                    shares_sq += share * share
+                eff_peers = (1.0 / shares_sq) if shares_sq > 0 else 0.0
+            volume_share = (total / dim_total) if dim_total > 0 else 0.0
+            overall_share = (total / overall_total) if overall_total > 0 else 0.0
+            peer_fraction = participants / float(peer_total)
+            coverage = max(volume_share, overall_share)
+            representativeness = (peer_fraction * coverage) ** 0.5 if peer_fraction > 0 and coverage > 0 else 0.0
+            representativeness = max(0.0, min(1.0, representativeness))
+            stats[key] = {
+                'participants': participants,
+                'effective_peers': eff_peers,
+                'category_total': total,
+                'dimension_total': dim_total,
+                'volume_share': volume_share,
+                'overall_share': overall_share,
+                'representativeness': representativeness,
+            }
+        return stats
+
+    def _representativeness_weight(self, stats: Optional[Dict[str, float]]) -> float:
+        if not stats:
+            return 1.0
+        rep = float(stats.get('representativeness', 0.0))
+        scaled = rep ** self.representativeness_penalty_power if rep > 0 else 0.0
+        return max(self.representativeness_penalty_floor, scaled)
+
+    def _get_dynamic_additional_thresholds(
+        self,
+        rule_name: str,
+        participants: int,
+        representativeness: float,
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        additional = rule_cfg.get('additional') if rule_cfg else None
+        if not additional:
+            return None, False
+
+        min_entities = int(rule_cfg.get('min_entities', 0))
+        if min_entities <= 0:
+            return None, False
+
+        peer_scale = min(1.0, participants / float(min_entities)) if min_entities > 0 else 1.0
+        rep_scale = max(self.dynamic_threshold_scale_floor, min(1.0, representativeness))
+        count_scale = max(self.dynamic_count_scale_floor, min(1.0, peer_scale, representativeness))
+
+        relaxed = rep_scale < 1.0 or count_scale < 1.0
+        if rule_name == '6/30':
+            min_count, threshold = additional.get('min_count_above_threshold', (3, 7.0))
+            dyn_count = max(1, int(round(min_count * count_scale)))
+            dyn_threshold = float(threshold) * rep_scale
+            return {
+                'min_count_above_threshold': (dyn_count, dyn_threshold)
+            }, relaxed
+        if rule_name == '7/35':
+            min_count_15 = int(additional.get('min_count_15', 2))
+            min_count_8 = int(additional.get('min_count_8', 1))
+            dyn_count_15 = max(1, int(round(min_count_15 * count_scale)))
+            dyn_count_8 = max(0, int(round(min_count_8 * count_scale)))
+            return {
+                'min_count_15': dyn_count_15,
+                'min_count_8': dyn_count_8,
+                'threshold_15': 15.0 * rep_scale,
+                'threshold_8': 8.0 * rep_scale,
+            }, relaxed
+        if rule_name == '10/40':
+            min_count_20 = int(additional.get('min_count_20', 2))
+            min_count_10 = int(additional.get('min_count_10', 1))
+            dyn_count_20 = max(1, int(round(min_count_20 * count_scale)))
+            dyn_count_10 = max(0, int(round(min_count_10 * count_scale)))
+            return {
+                'min_count_20': dyn_count_20,
+                'min_count_10': dyn_count_10,
+                'threshold_20': 20.0 * rep_scale,
+                'threshold_10': 10.0 * rep_scale,
+            }, relaxed
+        return None, False
+
+    def _assess_additional_constraints_applicability(
+        self,
+        rule_name: Optional[str],
+        dimension: Optional[str],
+        peer_volumes: Dict[str, float],
+        stats: Optional[Dict[str, float]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]], bool]:
+        if not self.enforce_additional_constraints or not rule_name:
+            return False, 'disabled', None, False
+
+        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        if not rule_cfg or not rule_cfg.get('additional'):
+            return False, 'no_additional', None, False
+
+        if dimension:
+            if dimension == '_TIME_TOTAL':
+                return False, 'time_total', None, False
+            if self.time_column and dimension.startswith(f'_TIME_TOTAL_{self.time_column}'):
+                return False, 'time_total', None, False
+
+        min_entities = int(rule_cfg.get('min_entities', 0))
+        participants = self._participant_count(peer_volumes)
+        if min_entities and participants < min_entities:
+            return False, 'low_peers', None, False
+
+        if not self.dynamic_constraints_enabled or not stats:
+            return True, None, None, False
+
+        if participants < self.min_peer_count_for_constraints:
+            return False, 'low_peers', None, False
+        if float(stats.get('effective_peers', 0.0)) < self.min_effective_peer_count:
+            return False, 'low_effective_peers', None, False
+        if (
+            float(stats.get('volume_share', 0.0)) < self.min_category_volume_share
+            or float(stats.get('overall_share', 0.0)) < self.min_overall_volume_share
+        ):
+            return False, 'low_volume', None, False
+        if float(stats.get('representativeness', 0.0)) < self.min_representativeness:
+            return False, 'low_representativeness', None, False
+
+        thresholds, relaxed = self._get_dynamic_additional_thresholds(
+            rule_name,
+            participants,
+            float(stats.get('representativeness', 0.0))
+        )
+        return True, None, thresholds, relaxed
+
+    def _evaluate_additional_constraints(
+        self,
+        shares: List[float],
+        rule_name: str,
+        thresholds: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, List[str]]:
+        if thresholds is None:
+            return PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+
+        shares_sorted = sorted([float(s) for s in shares], reverse=True)
+        details: List[str] = []
+        passed = True
+
+        if rule_name == '6/30':
+            min_count, threshold = thresholds.get('min_count_above_threshold', (3, 7.0))
+            idx = int(min_count) - 1
+            observed = shares_sorted[idx] if idx < len(shares_sorted) else 0.0
+            if observed + PrivacyValidator.COMPARISON_EPSILON < threshold:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count} participants >= {threshold:.2f}%, found {PrivacyValidator._count_at_or_above(shares_sorted, threshold)}"
+                )
+        elif rule_name == '7/35':
+            min_count_15 = int(thresholds.get('min_count_15', 2))
+            min_count_8 = int(thresholds.get('min_count_8', 1))
+            threshold_15 = float(thresholds.get('threshold_15', 15.0))
+            threshold_8 = float(thresholds.get('threshold_8', 8.0))
+            idx_15 = min_count_15 - 1
+            idx_8 = min_count_15 + min_count_8 - 1
+            observed_15 = shares_sorted[idx_15] if idx_15 < len(shares_sorted) else 0.0
+            observed_8 = shares_sorted[idx_8] if idx_8 < len(shares_sorted) else 0.0
+            if observed_15 + PrivacyValidator.COMPARISON_EPSILON < threshold_15:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_15} participants >= {threshold_15:.2f}%, found {PrivacyValidator._count_at_or_above(shares_sorted, threshold_15)}"
+                )
+            if observed_8 + PrivacyValidator.COMPARISON_EPSILON < threshold_8:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_8} additional participants >= {threshold_8:.2f}%, found {max(PrivacyValidator._count_at_or_above(shares_sorted, threshold_8) - min_count_15, 0)}"
+                )
+        elif rule_name == '10/40':
+            min_count_20 = int(thresholds.get('min_count_20', 2))
+            min_count_10 = int(thresholds.get('min_count_10', 1))
+            threshold_20 = float(thresholds.get('threshold_20', 20.0))
+            threshold_10 = float(thresholds.get('threshold_10', 10.0))
+            idx_20 = min_count_20 - 1
+            idx_10 = min_count_20 + min_count_10 - 1
+            observed_20 = shares_sorted[idx_20] if idx_20 < len(shares_sorted) else 0.0
+            observed_10 = shares_sorted[idx_10] if idx_10 < len(shares_sorted) else 0.0
+            if observed_20 + PrivacyValidator.COMPARISON_EPSILON < threshold_20:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_20} participants >= {threshold_20:.2f}%, found {PrivacyValidator._count_at_or_above(shares_sorted, threshold_20)}"
+                )
+            if observed_10 + PrivacyValidator.COMPARISON_EPSILON < threshold_10:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_10} additional participants >= {threshold_10:.2f}%, found {max(PrivacyValidator._count_at_or_above(shares_sorted, threshold_10) - min_count_20, 0)}"
+                )
+
+        return passed, details
+
+    def _should_check_additional_constraints(
+        self,
+        rule_name: Optional[str],
+        dimension: Optional[str],
+        peer_volumes: Dict[str, float],
+    ) -> bool:
+        if not self.enforce_additional_constraints or not rule_name:
+            return False
+
+        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        if not rule_cfg or not rule_cfg.get('additional'):
+            return False
+
+        if dimension:
+            if dimension == '_TIME_TOTAL':
+                return False
+            if self.time_column and dimension.startswith(f'_TIME_TOTAL_{self.time_column}'):
+                return False
+
+        min_entities = int(rule_cfg.get('min_entities', 0))
+        if min_entities and self._participant_count(peer_volumes) < min_entities:
+            return False
+
+        return True
+
+    def _additional_constraints_penalty(
+        self,
+        shares: List[float],
+        rule_name: str,
+        thresholds: Optional[Dict[str, Any]] = None,
+    ) -> float:
         """Compute penalty for additional Control 3.2 constraints.
         
         Note: The min_entities check is static and should be performed before calling this
@@ -589,19 +1011,49 @@ class DimensionalAnalyzer:
         shares_sorted = sorted(shares, reverse=True)
         penalty = 0.0
 
+        if thresholds is None:
+            if rule_name == '6/30':
+                third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+                penalty += max(0.0, 7.0 - third) ** 2
+            elif rule_name == '7/35':
+                second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
+                third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+                penalty += max(0.0, 15.0 - second) ** 2
+                penalty += max(0.0, 8.0 - third) ** 2
+            elif rule_name == '10/40':
+                second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
+                third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
+                penalty += max(0.0, 20.0 - second) ** 2
+                penalty += max(0.0, 10.0 - third) ** 2
+            return penalty
+
         if rule_name == '6/30':
-            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
-            penalty += max(0.0, 7.0 - third) ** 2
+            min_count, threshold = thresholds.get('min_count_above_threshold', (3, 7.0))
+            idx = int(min_count) - 1
+            observed = shares_sorted[idx] if idx < len(shares_sorted) else 0.0
+            penalty += max(0.0, float(threshold) - observed) ** 2
         elif rule_name == '7/35':
-            second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
-            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
-            penalty += max(0.0, 15.0 - second) ** 2
-            penalty += max(0.0, 8.0 - third) ** 2
+            min_count_15 = int(thresholds.get('min_count_15', 2))
+            min_count_8 = int(thresholds.get('min_count_8', 1))
+            threshold_15 = float(thresholds.get('threshold_15', 15.0))
+            threshold_8 = float(thresholds.get('threshold_8', 8.0))
+            idx_15 = min_count_15 - 1
+            idx_8 = min_count_15 + min_count_8 - 1
+            observed_15 = shares_sorted[idx_15] if idx_15 < len(shares_sorted) else 0.0
+            observed_8 = shares_sorted[idx_8] if idx_8 < len(shares_sorted) else 0.0
+            penalty += max(0.0, threshold_15 - observed_15) ** 2
+            penalty += max(0.0, threshold_8 - observed_8) ** 2
         elif rule_name == '10/40':
-            second = shares_sorted[1] if len(shares_sorted) > 1 else 0.0
-            third = shares_sorted[2] if len(shares_sorted) > 2 else 0.0
-            penalty += max(0.0, 20.0 - second) ** 2
-            penalty += max(0.0, 10.0 - third) ** 2
+            min_count_20 = int(thresholds.get('min_count_20', 2))
+            min_count_10 = int(thresholds.get('min_count_10', 1))
+            threshold_20 = float(thresholds.get('threshold_20', 20.0))
+            threshold_10 = float(thresholds.get('threshold_10', 10.0))
+            idx_20 = min_count_20 - 1
+            idx_10 = min_count_20 + min_count_10 - 1
+            observed_20 = shares_sorted[idx_20] if idx_20 < len(shares_sorted) else 0.0
+            observed_10 = shares_sorted[idx_10] if idx_10 < len(shares_sorted) else 0.0
+            penalty += max(0.0, threshold_20 - observed_20) ** 2
+            penalty += max(0.0, threshold_10 - observed_10) ** 2
 
         return penalty
 
@@ -610,10 +1062,13 @@ class DimensionalAnalyzer:
         dim_categories: List[Dict[str, Any]],
         peers: List[str],
         weights: Dict[str, float],
-        rule_name: str
+        rule_name: str,
+        peer_volumes: Dict[str, float]
     ) -> List[Dict[str, Any]]:
         """Evaluate additional constraints per category and return violations."""
         violations: List[Dict[str, Any]] = []
+
+        constraint_stats = self._build_constraint_stats(dim_categories, peers, peer_volumes)
 
         # Build unique constraint keys (dimension, category, time_period)
         unique_keys = set()
@@ -633,6 +1088,24 @@ class DimensionalAnalyzer:
             for cat in matching_cats:
                 peer_volumes[cat['peer']] = float(cat.get('category_volume', 0.0))
 
+            stats = constraint_stats.get(key)
+            enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
+                rule_name, dim, peer_volumes, stats
+            )
+            if not enforce:
+                if reason == 'low_peers':
+                    self.dynamic_constraint_stats['skipped_low_peers'] += 1
+                elif reason == 'low_effective_peers':
+                    self.dynamic_constraint_stats['skipped_low_effective_peers'] += 1
+                elif reason == 'low_volume':
+                    self.dynamic_constraint_stats['skipped_low_volume'] += 1
+                elif reason == 'low_representativeness':
+                    self.dynamic_constraint_stats['skipped_low_representativeness'] += 1
+                continue
+            self.dynamic_constraint_stats['enforced'] += 1
+            if relaxed:
+                self.dynamic_constraint_stats['relaxed'] += 1
+
             total_weighted = sum(peer_volumes[p] * weights.get(p, 1.0) for p in peers)
             if total_weighted <= 0:
                 shares = [0.0 for _ in peers]
@@ -642,13 +1115,22 @@ class DimensionalAnalyzer:
                     for p in peers
                 ]
 
-            passed, details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+            passed, details = self._evaluate_additional_constraints(shares, rule_name, thresholds)
             if not passed:
+                participant_count = self._participant_count(peer_volumes)
+                top_shares = sorted(shares, reverse=True)[:3]
                 violations.append({
                     'Dimension': dim,
                     'Category': category,
                     'Time_Period': time_period,
+                    'Participants': participant_count,
+                    'Effective_Peers': round(float(stats.get('effective_peers', 0.0)) if stats else 0.0, 4),
+                    'Representativeness': round(float(stats.get('representativeness', 0.0)) if stats else 0.0, 6),
+                    'Volume_Share': round(float(stats.get('volume_share', 0.0)) if stats else 0.0, 6),
+                    'Overall_Share': round(float(stats.get('overall_share', 0.0)) if stats else 0.0, 6),
+                    'Top_Shares': ", ".join(f"{s:.2f}%" for s in top_shares),
                     'Details': "; ".join(details) if details else "Additional constraints not met",
+                    'Dynamic_Thresholds': thresholds or {},
                 })
 
         return violations
@@ -764,7 +1246,7 @@ class DimensionalAnalyzer:
                 method = stats.get('method')
                 success = sol is not None
                 note = ''
-                if success and self.trigger_subset_on_slack and sum_slack > float(self.max_cap_slack):
+                if success and self.trigger_subset_on_slack and self._is_slack_excess(sum_slack):
                     success = False
                     note = f"Rejected due to slack {sum_slack:.6f} > {self.max_cap_slack:.6f}"
                 self.subset_search_results.append({
@@ -783,9 +1265,9 @@ class DimensionalAnalyzer:
                         best_score = score
                         best_dims = list(trial_dims)
                         best_weights = sol
-                    if len(trial_dims) == len(dimensions) and sum_slack <= float(self.max_cap_slack):
+                    if len(trial_dims) == len(dimensions) and not self._is_slack_excess(sum_slack):
                         break
-                    if sum_slack <= float(self.max_cap_slack):
+                    if not self._is_slack_excess(sum_slack):
                         break
                 if len(trial_dims) <= 1:
                     break
@@ -841,7 +1323,7 @@ class DimensionalAnalyzer:
                     success = sol is not None
                     note = ''
                     
-                    if success and self.trigger_subset_on_slack and sum_slack > float(self.max_cap_slack):
+                    if success and self.trigger_subset_on_slack and self._is_slack_excess(sum_slack):
                         success = False
                         note = f"Rejected due to slack {sum_slack:.6f} > {self.max_cap_slack:.6f}"
                     
@@ -865,11 +1347,77 @@ class DimensionalAnalyzer:
                         
                         # If we found a feasible solution at this size, we're done
                         # (no need to test smaller subsets)
-                        if sum_slack <= float(self.max_cap_slack):
+                        if not self._is_slack_excess(sum_slack):
                             logger.info(f"Random search found feasible subset of size {subset_size} after {tested} attempts")
                             return best_dims, best_weights
         
         return best_dims, best_weights
+
+    def _solve_per_dimension_weights(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        dimensions: List[str],
+        peers: List[str],
+        max_concentration: float,
+        weights: Optional[Dict[str, float]],
+        rule_name: str
+    ) -> None:
+        for dimension in dimensions:
+            dim_cats, dim_peer_vols, _ = self._build_categories(df, metric_col, [dimension])
+            if not dim_cats:
+                continue
+
+            has_time = any('time_period' in cat for cat in dim_cats)
+            time_info = f" (time-aware: {len([c for c in dim_cats if c.get('time_period')])} constraints)" if has_time else ""
+            logger.info(f"Solving per-dimension weights for '{dimension}'{time_info}")
+
+            dim_sol = self._solve_global_weights_lp(peers, dim_cats, max_concentration, dim_peer_vols)
+            if dim_sol is not None:
+                self.per_dimension_weights[dimension] = dim_sol
+                self.weight_methods[dimension] = "Per-Dimension-LP"
+                logger.info(f"Per-dimension LP succeeded for '{dimension}'")
+                continue
+
+            target_multipliers = {p: weights[p] for p in peers} if weights else None
+            dim_h = self._solve_dimension_weights_heuristic(
+                peers,
+                dim_cats,
+                max_concentration,
+                dim_peer_vols,
+                target_multipliers,
+                rule_name=rule_name
+            )
+            if dim_h:
+                self.per_dimension_weights[dimension] = dim_h
+                self.weight_methods[dimension] = "Per-Dimension-Bayesian"
+                logger.info(f"Per-dimension Bayesian optimization applied for '{dimension}' (targeting global weights)")
+            else:
+                logger.warning(f"Per-dimension solving failed for '{dimension}'")
+
+    def _build_weight_map_for_dimension(self, dimension: str) -> Dict[str, float]:
+        weight_map: Dict[str, float] = {}
+        if self.global_weights:
+            for peer, info in self.global_weights.items():
+                weight_map[peer] = float(info.get('multiplier', 1.0))
+        if dimension in self.per_dimension_weights:
+            for peer, mult in self.per_dimension_weights[dimension].items():
+                weight_map[peer] = float(mult)
+        return weight_map
+
+    def _get_peer_multiplier(self, dimension_column: str, peer: str) -> float:
+        if dimension_column in self.per_dimension_weights and peer in self.per_dimension_weights[dimension_column]:
+            return float(self.per_dimension_weights[dimension_column][peer])
+        if peer in self.global_weights:
+            return float(self.global_weights[peer].get('multiplier', 1.0))
+        return 1.0
+
+    def _get_all_peers(self, entity_totals: pd.Series, time_period: Optional[Any]) -> List[str]:
+        if self.consistent_weights and self.global_weights:
+            return list(self.global_weights.keys())
+        if time_period and time_period != "General":
+            return list(set(k[0] if isinstance(k, tuple) else k for k in entity_totals.index))
+        return list(entity_totals.index)
 
     def _store_final_weights(self, peers: List[str], peer_volumes: Dict[str, float], weights: Dict[str, float]) -> None:
         """Persist final weights into self.global_weights as dict with volume, weight, multiplier.
@@ -977,6 +1525,8 @@ class DimensionalAnalyzer:
                 and c['category'] == category 
                 and c.get('time_period') == time_period
             ]
+
+        constraint_stats = self._build_constraint_stats(dim_categories, peers, peer_volumes)
         
         peer_index = {peer: i for i, peer in enumerate(peers)}
         if rule_name is None:
@@ -990,6 +1540,37 @@ class DimensionalAnalyzer:
                 min_entities = int(rule_cfg.get('min_entities', 0))
                 if len(peers) < min_entities:
                      min_entities_check = False
+
+        shortfall_penalty = 0.0
+        if self.enforce_additional_constraints and rule_name and not min_entities_check:
+            min_entities = int(PrivacyValidator.get_rule_config(rule_name).get('min_entities', 0))
+            shortfall = max(min_entities - len(peers), 0)
+            shortfall_penalty = float(shortfall * shortfall * 100.0)
+
+        constraint_data: Dict[Tuple[str, str, Optional[str]], Dict[str, Any]] = {}
+        for key, cat_indices in constraint_map.items():
+            dim, _, _ = key
+            matching_cats = [dim_categories[i] for i in cat_indices]
+            peer_cat_vols = {p: 0.0 for p in peers}
+            for cat in matching_cats:
+                peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
+
+            stats = constraint_stats.get(key)
+            rep_weight = self._representativeness_weight(stats)
+
+            enforce = False
+            thresholds = None
+            if self.enforce_additional_constraints and rule_name and min_entities_check:
+                enforce, _, thresholds, _ = self._assess_additional_constraints_applicability(
+                    rule_name, dim, peer_cat_vols, stats
+                )
+
+            constraint_data[key] = {
+                'peer_cat_vols': peer_cat_vols,
+                'rep_weight': rep_weight,
+                'enforce': enforce,
+                'thresholds': thresholds
+            }
         
         # Objective function: minimize violations + deviation from target
         def objective(weight_array):
@@ -998,11 +1579,11 @@ class DimensionalAnalyzer:
             additional_penalty = 0.0
             max_share = max_concentration + self.tolerance
             
-            for key, cat_indices in constraint_map.items():
-                matching_cats = [dim_categories[i] for i in cat_indices]
-                peer_cat_vols = {p: 0.0 for p in peers}
-                for cat in matching_cats:
-                    peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
+            for key in constraint_map.keys():
+                dim, _, _ = key
+                data = constraint_data[key]
+                peer_cat_vols = data['peer_cat_vols']
+                rep_weight = data['rep_weight']
 
                 total_weighted = sum(peer_cat_vols[p] * weight_array[peer_index[p]] for p in peers)
                 shares: List[float] = []
@@ -1012,19 +1593,19 @@ class DimensionalAnalyzer:
                         cat_vol_weighted = peer_cat_vols[p] * weight_array[peer_index[p]]
                         adjusted_share = (cat_vol_weighted / total_weighted * 100.0)
                         shares.append(adjusted_share)
-                        if adjusted_share > max_share:
+                        if self._is_share_violation(adjusted_share, max_concentration):
                             excess = adjusted_share - max_share
-                            violation_penalty += excess ** 2  # Quadratic penalty
+                            violation_penalty += rep_weight * (excess ** 2)  # Quadratic penalty
                 else:
                     shares = [0.0 for _ in peers]
 
                 if self.enforce_additional_constraints and rule_name:
                     if not min_entities_check:
-                         # Structural failure, add heavy penalty
-                         shortfall = max(int(PrivacyValidator.get_rule_config(rule_name).get('min_entities', 0)) - len(peers), 0)
-                         additional_penalty += float(shortfall * shortfall * 100.0)
-                    else:
-                         additional_penalty += self._additional_constraints_penalty(shares, rule_name)
+                        additional_penalty += shortfall_penalty
+                    elif data['enforce']:
+                        additional_penalty += rep_weight * self._additional_constraints_penalty(
+                            shares, rule_name, data['thresholds']
+                        )
             
             # Secondary: stay close to target_weights (if provided)
             deviation_penalty = 0.0
@@ -1076,6 +1657,7 @@ class DimensionalAnalyzer:
             for cat in matching_cats:
                 peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
             total_weighted = sum(peer_cat_vols[p] * weights[p] for p in peers)
+            stats = constraint_stats.get((dim, category, time_period))
 
             if total_weighted > 0:
                 shares = []
@@ -1083,7 +1665,7 @@ class DimensionalAnalyzer:
                     cat_vol_weighted = peer_cat_vols[p] * weights[p]
                     adjusted_share = (cat_vol_weighted / total_weighted * 100.0)
                     shares.append(adjusted_share)
-                    if adjusted_share > max_concentration + self.tolerance:
+                    if self._is_share_violation(adjusted_share, max_concentration):
                         final_violations.append({
                             'peer': p,
                             'dim': dim,
@@ -1094,14 +1676,26 @@ class DimensionalAnalyzer:
                         })
 
                 if self.enforce_additional_constraints and rule_name:
-                    passed, details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
-                    if not passed:
-                        additional_violations.append({
-                            'dim': dim,
-                            'cat': category,
-                            'time': time_period,
-                            'details': details,
-                        })
+                    enforce, _, thresholds, relaxed = self._assess_additional_constraints_applicability(
+                        rule_name, dim, peer_cat_vols, stats
+                    )
+                    if enforce:
+                        passed, details = self._evaluate_additional_constraints(shares, rule_name, thresholds)
+                        if not passed:
+                            participant_count = self._participant_count(peer_cat_vols)
+                            top_shares = sorted(shares, reverse=True)[:3]
+                            additional_violations.append({
+                                'dim': dim,
+                                'cat': category,
+                                'time': time_period,
+                                'participants': participant_count,
+                                'effective_peers': round(float(stats.get('effective_peers', 0.0)) if stats else 0.0, 4),
+                                'representativeness': round(float(stats.get('representativeness', 0.0)) if stats else 0.0, 6),
+                                'top_shares': ", ".join(f"{s:.2f}%" for s in top_shares),
+                                'details': details,
+                                'dynamic_thresholds': thresholds or {},
+                                'relaxed': relaxed,
+                            })
         
         if final_violations:
             logger.warning(f"Bayesian optimization completed with {len(final_violations)} violations still present "
@@ -1119,7 +1713,11 @@ class DimensionalAnalyzer:
             for v in additional_violations[:3]:
                 time_str = f" time={v['time']}" if v['time'] else ""
                 details = "; ".join(v.get('details', []))
-                logger.debug(f"  {v['dim']}={v['cat']}{time_str}: {details}")
+                top_shares = v.get('top_shares', '')
+                participants = v.get('participants', 0)
+                logger.debug(
+                    f"  {v['dim']}={v['cat']}{time_str}: participants={participants}, top_shares={top_shares}, {details}"
+                )
         
         return weights
 
@@ -1151,6 +1749,7 @@ class DimensionalAnalyzer:
         peer_count = len(peers)
         rule_name, max_concentration = self._get_privacy_rule(peer_count)
         self.privacy_rule_name = rule_name
+        self._reset_dynamic_constraint_stats()
 
         # Structural diagnostics upfront for reporting
         try:
@@ -1187,7 +1786,7 @@ class DimensionalAnalyzer:
         # If LP solved but used slack above threshold, trigger subset search even on success
         if lp_solution is not None and self.trigger_subset_on_slack:
             sum_slack = float(self.last_lp_stats.get('sum_slack', 0.0) or 0.0)
-            if sum_slack > float(self.max_cap_slack):
+            if self._is_slack_excess(sum_slack):
                 logger.info(
                     f"LP returned success but used cap slack sum={sum_slack:.6f} > threshold={self.max_cap_slack:.6f}; triggering subset search"
                 )
@@ -1201,39 +1800,18 @@ class DimensionalAnalyzer:
                     used_dimensions = best_dims
                     removed_dimensions = [d for d in dimensions if d not in best_dims]
                     logger.info(f"Slack-aware policy selected global dimensions: {used_dimensions}")
-                    
+
                     # Process removed dimensions with per-dimension solving
                     self.per_dimension_weights.clear()
-                    for rd in removed_dimensions:
-                        rd_cats, rd_peer_vols, _ = self._build_categories(df, metric_col, [rd])
-                        if rd_cats:
-                            # Check if time-aware
-                            has_time = any('time_period' in cat for cat in rd_cats)
-                            time_info = f" (time-aware: {len([c for c in rd_cats if c.get('time_period')])} constraints)" if has_time else ""
-                            logger.info(f"Solving per-dimension weights for removed dimension '{rd}'{time_info}")
-                            
-                            rd_sol = self._solve_global_weights_lp(peers, rd_cats, max_concentration, rd_peer_vols)
-                            if rd_sol is not None:
-                                self.per_dimension_weights[rd] = rd_sol
-                                self.weight_methods[rd] = "Per-Dimension-LP"
-                                logger.info(f"Per-dimension LP succeeded for removed dimension '{rd}'")
-                            else:
-                                # Heuristic per-dimension fallback - use global weights as target
-                                target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                rd_h = self._solve_dimension_weights_heuristic(
-                                    peers,
-                                    rd_cats,
-                                    max_concentration,
-                                    rd_peer_vols,
-                                    target_multipliers,
-                                    rule_name=rule_name
-                                )
-                                if rd_h:
-                                    self.per_dimension_weights[rd] = rd_h
-                                    self.weight_methods[rd] = "Per-Dimension-Bayesian"
-                                    logger.info(f"Per-dimension Bayesian optimization applied for removed dimension '{rd}' (targeting global weights)")
-                                else:
-                                    logger.warning(f"Per-dimension solving failed for removed dimension '{rd}'")
+                    self._solve_per_dimension_weights(
+                        df,
+                        metric_col,
+                        removed_dimensions,
+                        peers,
+                        max_concentration,
+                        weights,
+                        rule_name
+                    )
                 else:
                     logger.info("Subset search failed to improve; keeping full-set LP solution despite slack usage")
 
@@ -1248,39 +1826,18 @@ class DimensionalAnalyzer:
                     used_dimensions = best_dims
                     removed_dimensions = [d for d in dimensions if d not in best_dims]
                     logger.info(f"Auto search selected global dimensions: {used_dimensions}")
-                    
+
                     # Process removed dimensions with per-dimension solving
                     self.per_dimension_weights.clear()
-                    for rd in removed_dimensions:
-                        rd_cats, rd_peer_vols, _ = self._build_categories(df, metric_col, [rd])
-                        if rd_cats:
-                            # Check if time-aware
-                            has_time = any('time_period' in cat for cat in rd_cats)
-                            time_info = f" (time-aware: {len([c for c in rd_cats if c.get('time_period')])} constraints)" if has_time else ""
-                            logger.info(f"Solving per-dimension weights for removed dimension '{rd}'{time_info}")
-                            
-                            rd_sol = self._solve_global_weights_lp(peers, rd_cats, max_concentration, rd_peer_vols)
-                            if rd_sol is not None:
-                                self.per_dimension_weights[rd] = rd_sol
-                                self.weight_methods[rd] = "Per-Dimension-LP"
-                                logger.info(f"Per-dimension LP succeeded for removed dimension '{rd}'")
-                            else:
-                                # Heuristic per-dimension fallback - use global weights as target
-                                target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                rd_h = self._solve_dimension_weights_heuristic(
-                                    peers,
-                                    rd_cats,
-                                    max_concentration,
-                                    rd_peer_vols,
-                                    target_multipliers,
-                                    rule_name=rule_name
-                                )
-                                if rd_h:
-                                    self.per_dimension_weights[rd] = rd_h
-                                    self.weight_methods[rd] = "Per-Dimension-Bayesian"
-                                    logger.info(f"Per-dimension Bayesian optimization applied for removed dimension '{rd}' (targeting global weights)")
-                                else:
-                                    logger.warning(f"Per-dimension solving failed for removed dimension '{rd}'")
+                    self._solve_per_dimension_weights(
+                        df,
+                        metric_col,
+                        removed_dimensions,
+                        peers,
+                        max_concentration,
+                        weights,
+                        rule_name
+                    )
             else:
                 # Dimension-dropping fallback before heuristic
                 scores = self._dimension_unbalance_scores(all_categories)
@@ -1302,36 +1859,15 @@ class DimensionalAnalyzer:
                         logger.info(f"LP succeeded after dropping dimensions: {removed_dimensions}")
                         # Attempt per-removed-dimension individual balancing
                         self.per_dimension_weights.clear()
-                        for rd in removed_dimensions:
-                            rd_cats, rd_peer_vols, _ = self._build_categories(df, metric_col, [rd])
-                            if rd_cats:
-                                # Check if time-aware
-                                has_time = any('time_period' in cat for cat in rd_cats)
-                                time_info = f" (time-aware: {len([c for c in rd_cats if c.get('time_period')])} constraints)" if has_time else ""
-                                logger.info(f"Solving per-dimension weights for '{rd}'{time_info}")
-                                
-                                rd_sol = self._solve_global_weights_lp(peers, rd_cats, max_concentration, rd_peer_vols)
-                                if rd_sol is not None:
-                                    self.per_dimension_weights[rd] = rd_sol
-                                    self.weight_methods[rd] = "Per-Dimension-LP"
-                                    logger.info(f"Per-dimension LP succeeded for removed dimension '{rd}'")
-                                else:
-                                    # Heuristic per-dimension fallback - use global weights as target
-                                    target_multipliers = {p: weights[p] for p in peers} if weights else None
-                                    rd_h = self._solve_dimension_weights_heuristic(
-                                        peers,
-                                        rd_cats,
-                                        max_concentration,
-                                        rd_peer_vols,
-                                        target_multipliers,
-                                        rule_name=rule_name
-                                    )
-                                    if rd_h:
-                                        self.per_dimension_weights[rd] = rd_h
-                                        self.weight_methods[rd] = "Per-Dimension-Bayesian"
-                                        logger.info(f"Per-dimension Bayesian optimization applied for removed dimension '{rd}' (targeting global weights)")
-                                    else:
-                                        logger.warning(f"Per-dimension solving failed for removed dimension '{rd}'")
+                        self._solve_per_dimension_weights(
+                            df,
+                            metric_col,
+                            removed_dimensions,
+                            peers,
+                            max_concentration,
+                            weights,
+                            rule_name
+                        )
                         break
         else:
             # LP solved and either slack policy kept it or no slack trigger
@@ -1349,7 +1885,7 @@ class DimensionalAnalyzer:
             # Enforce additional constraints (if configured) via heuristic re-optimization
             self.additional_constraint_violations = []
             if self.enforce_additional_constraints and rule_name in ('6/30', '7/35', '10/40'):
-                violations = self._find_additional_constraint_violations(all_categories, peers, weights, rule_name)
+                violations = self._find_additional_constraint_violations(all_categories, peers, weights, rule_name, peer_volumes)
                 self.additional_constraint_violations = violations
                 if violations:
                     logger.warning(f"Additional constraints violated in {len(violations)} categories; running heuristic optimization to correct.")
@@ -1365,7 +1901,7 @@ class DimensionalAnalyzer:
                     if heuristic_weights:
                         weights = heuristic_weights
                         self.additional_constraint_violations = self._find_additional_constraint_violations(
-                            all_categories, peers, weights, rule_name
+                            all_categories, peers, weights, rule_name, peer_volumes
                         )
                         if self.additional_constraint_violations:
                             logger.warning(
@@ -1373,6 +1909,9 @@ class DimensionalAnalyzer:
                             )
                     else:
                         logger.warning("Heuristic optimization failed; keeping LP weights with additional-constraint violations.")
+
+            # Tiny post-optimization nudge for borderline cap excesses
+            weights = self._nudge_borderline_cap_excess(weights, all_categories, max_concentration, used_dimensions)
 
             # Store and validate
             self._store_final_weights(peers, peer_volumes, weights)
@@ -1461,13 +2000,15 @@ class DimensionalAnalyzer:
                     peer_max_share = max(peer_max_share, adjusted_share)
                     
                     # Track violations at the time-aware level
-                    if adjusted_share > max_concentration + self.tolerance:
+                    if self._is_share_violation(adjusted_share, max_concentration):
                         if original_dim not in peer_violation_dims:
                             peer_violation_dims.append(original_dim)
                 
                 # Status based on whether there are actual violations, not just high max_share
                 status = "OK" if len(peer_violation_dims) == 0 else "VIOLATION"
-                logger.info(f"  {peer}: multiplier={weights[peer]:.4f}, max_adjusted_share={peer_max_share:.2f}% [{status}]")
+                logger.info(
+                    f"  {peer}: multiplier={weights[peer]:.4f}, max_adjusted_share={peer_max_share:.4f}% [{status}]"
+                )
                 
                 # Collect unique violation dimensions
                 for vd in peer_violation_dims:
@@ -1514,7 +2055,7 @@ class DimensionalAnalyzer:
                                 total_weighted = sum(c['category_volume'] * vd_sol[c['peer']] for c in matching_cats)
                                 adjusted_share = (cat_vol_weighted / total_weighted * 100) if total_weighted > 0 else 0.0
                                 
-                                if adjusted_share > max_concentration + self.tolerance:
+                                if self._is_share_violation(adjusted_share, max_concentration):
                                     has_violations = True
                                     break
                             
@@ -1618,15 +2159,7 @@ class DimensionalAnalyzer:
         peer_category_volumes: Dict[str, float] = {}
         peer_totals_map: Dict[str, float] = {}
         
-        # Get all peers from global_weights if available, otherwise from entity_totals
-        if self.consistent_weights and self.global_weights:
-            all_peers = list(self.global_weights.keys())
-        else:
-            # Extract unique peers from entity_totals (which can be Series or dict)
-            if time_period and time_period != "General":
-                all_peers = list(set(k[0] if isinstance(k, tuple) else k for k in entity_totals.index))
-            else:
-                all_peers = list(entity_totals.index)
+        all_peers = self._get_all_peers(entity_totals, time_period)
         
         for peer_entity in all_peers:
             peer_category_vol = float(peer_df[peer_df[self.entity_column] == peer_entity][metric_col].sum())
@@ -1648,16 +2181,16 @@ class DimensionalAnalyzer:
         
         # Compute balanced average
         if self.consistent_weights:
-            def get_mult(p: str) -> float:
-                if dimension_column in self.per_dimension_weights and p in self.per_dimension_weights[dimension_column]:
-                    return float(self.per_dimension_weights[dimension_column][p])
-                if p in self.global_weights:
-                    return float(self.global_weights[p].get('multiplier', 1.0))
-                return 1.0
             # Calculate weighted average share: sum(category_vol * weight) / sum(total_vol * weight)
             # Use the SAME set of peers (from peer_totals_map) for both numerator and denominator
-            total_adjusted_category_volume = sum(peer_category_volumes.get(p, 0.0) * get_mult(p) for p in peer_totals_map.keys())
-            total_adjusted_overall_volume = sum(peer_totals_map[p] * get_mult(p) for p in peer_totals_map.keys())
+            total_adjusted_category_volume = sum(
+                peer_category_volumes.get(p, 0.0) * self._get_peer_multiplier(dimension_column, p)
+                for p in peer_totals_map.keys()
+            )
+            total_adjusted_overall_volume = sum(
+                peer_totals_map[p] * self._get_peer_multiplier(dimension_column, p)
+                for p in peer_totals_map.keys()
+            )
             peer_balanced_avg = (total_adjusted_category_volume / total_adjusted_overall_volume * 100.0) if total_adjusted_overall_volume > 0 else 0.0
         else:
             peer_category_total = sum(peer_category_volumes.values())
@@ -1736,15 +2269,7 @@ class DimensionalAnalyzer:
         peer_category_dens: Dict[str, float] = {}
         peer_totals_map: Dict[str, float] = {}
         
-        # Get all peers from global_weights if available, otherwise from entity_totals
-        if self.consistent_weights and self.global_weights:
-            all_peers = list(self.global_weights.keys())
-        else:
-            # Extract unique peers from entity_totals (which can be Series or dict)
-            if time_period and time_period != "General":
-                all_peers = list(set(k[0] if isinstance(k, tuple) else k for k in entity_totals.index))
-            else:
-                all_peers = list(entity_totals.index)
+        all_peers = self._get_all_peers(entity_totals, time_period)
         
         for peer_entity in all_peers:
             # Use peer_df filtered to this peer (will be 0 if peer not in category)
@@ -1769,21 +2294,21 @@ class DimensionalAnalyzer:
         
         # Balanced peer rate
         if self.consistent_weights:
-            def get_mult(p: str) -> float:
-                if dimension_column in self.per_dimension_weights and p in self.per_dimension_weights[dimension_column]:
-                    return float(self.per_dimension_weights[dimension_column][p])
-                if p in self.global_weights:
-                    return float(self.global_weights[p].get('multiplier', 1.0))
-                return 1.0
             # Calculate weighted average rate: sum(rate * weight * den) / sum(weight * den)
             # Use the SAME set of peers (from peer_totals_map) for consistency
-            total_adjusted_den = sum(peer_category_dens.get(p, 0.0) * get_mult(p) for p in peer_totals_map.keys())
+            total_adjusted_den = sum(
+                peer_category_dens.get(p, 0.0) * self._get_peer_multiplier(dimension_column, p)
+                for p in peer_totals_map.keys()
+            )
             peer_balanced_rate = 0.0
             for p in peer_totals_map.keys():
                 # Only include peers with denominator > 0 in the weighted average
                 if peer_category_dens.get(p, 0.0) > 0:
                     rate = (peer_category_nums.get(p, 0.0) / peer_category_dens[p] * 100.0)
-                    adjusted_weight = (peer_category_dens[p] * get_mult(p) / total_adjusted_den * 100.0) if total_adjusted_den > 0 else 0.0
+                    adjusted_weight = (
+                        peer_category_dens[p] * self._get_peer_multiplier(dimension_column, p)
+                        / total_adjusted_den * 100.0
+                    ) if total_adjusted_den > 0 else 0.0
                     peer_balanced_rate += (rate * adjusted_weight / 100.0)
         else:
             total_num = sum(peer_category_nums.values())
@@ -1997,10 +2522,17 @@ class DimensionalAnalyzer:
                             balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
                             balanced_shares.append(balanced_share)
 
-                        additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
-                            balanced_shares, rule_name
-                        )
-                        additional_detail = "; ".join(additional_details) if additional_details else ""
+                        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+                        min_entities = int(rule_cfg.get('min_entities', 0)) if rule_cfg else 0
+                        participant_count = sum(1 for p in peer_data if p['volume'] > 0)
+                        if min_entities and participant_count < min_entities:
+                            additional_passed = True
+                            additional_detail = "Skipped (insufficient participants)"
+                        else:
+                            additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
+                                balanced_shares, rule_name
+                            )
+                            additional_detail = "; ".join(additional_details) if additional_details else ""
 
                         for idx, peer_info in enumerate(peer_data):
                             peer, peer_vol = peer_info['peer'], peer_info['volume']
@@ -2008,8 +2540,9 @@ class DimensionalAnalyzer:
                             original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
                             balanced_vol = peer_vol * peer_weight
                             balanced_share = balanced_shares[idx]
-                            compliant = (balanced_share <= max_concentration + self.tolerance) and additional_passed
-                            violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
+                            is_violation = self._is_share_violation(balanced_share, max_concentration)
+                            compliant = (not is_violation) and additional_passed
+                            violation_margin = balanced_share - max_concentration if is_violation else 0.0
                             validation_rows.append({
                                 'Dimension': dimension,
                                 'Time_Period': time_period,
@@ -2047,10 +2580,17 @@ class DimensionalAnalyzer:
                         balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
                         balanced_shares.append(balanced_share)
 
-                    additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
-                        balanced_shares, rule_name
-                    )
-                    additional_detail = "; ".join(additional_details) if additional_details else ""
+                    rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+                    min_entities = int(rule_cfg.get('min_entities', 0)) if rule_cfg else 0
+                    participant_count = sum(1 for p in peer_data if p['volume'] > 0)
+                    if min_entities and participant_count < min_entities:
+                        additional_passed = True
+                        additional_detail = "Skipped (insufficient participants)"
+                    else:
+                        additional_passed, additional_details = PrivacyValidator.evaluate_additional_constraints(
+                            balanced_shares, rule_name
+                        )
+                        additional_detail = "; ".join(additional_details) if additional_details else ""
 
                     for idx, peer_info in enumerate(peer_data):
                         peer, peer_vol = peer_info['peer'], peer_info['volume']
@@ -2058,8 +2598,9 @@ class DimensionalAnalyzer:
                         original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
                         balanced_vol = peer_vol * peer_weight
                         balanced_share = balanced_shares[idx]
-                        compliant = (balanced_share <= max_concentration + self.tolerance) and additional_passed
-                        violation_margin = balanced_share - max_concentration if balanced_share > max_concentration else 0.0
+                        is_violation = self._is_share_violation(balanced_share, max_concentration)
+                        compliant = (not is_violation) and additional_passed
+                        violation_margin = balanced_share - max_concentration if is_violation else 0.0
                         validation_rows.append({
                             'Dimension': dimension,
                             'Time_Period': None,
@@ -2137,21 +2678,11 @@ class DimensionalAnalyzer:
             logger.warning("No valid data remaining after filtering NaN/negative values")
             return pd.DataFrame()
 
-        def build_weight_map(dimension: str) -> Dict[str, float]:
-            weight_map: Dict[str, float] = {}
-            if self.global_weights:
-                for peer, info in self.global_weights.items():
-                    weight_map[peer] = float(info.get('multiplier', 1.0))
-            if dimension in self.per_dimension_weights:
-                for peer, mult in self.per_dimension_weights[dimension].items():
-                    weight_map[peer] = float(mult)
-            return weight_map
-        
         impact_rows: List[Dict[str, Any]] = []
         
         for dimension in dimensions:
             # Get dimension-specific weights merged with global fallback
-            dim_weights = build_weight_map(dimension)
+            dim_weights = self._build_weight_map_for_dimension(dimension)
             
             if self.time_column and self.time_column in df.columns:
                 time_periods = sorted([t for t in df[self.time_column].unique() if t is not None])
@@ -2277,20 +2808,10 @@ class DimensionalAnalyzer:
         pd.DataFrame
             Impact details with columns per rate
         """
-        def build_weight_map(dimension: str) -> Dict[str, float]:
-            weight_map: Dict[str, float] = {}
-            if self.global_weights:
-                for peer, info in self.global_weights.items():
-                    weight_map[peer] = float(info.get('multiplier', 1.0))
-            if dimension in self.per_dimension_weights:
-                for peer, mult in self.per_dimension_weights[dimension].items():
-                    weight_map[peer] = float(mult)
-            return weight_map
-        
         impact_rows: List[Dict[str, Any]] = []
         
         for dimension in dimensions:
-            dim_weights = build_weight_map(dimension)
+            dim_weights = self._build_weight_map_for_dimension(dimension)
             
             if self.time_column and self.time_column in df.columns:
                 time_periods = sorted([t for t in df[self.time_column].unique() if t is not None])

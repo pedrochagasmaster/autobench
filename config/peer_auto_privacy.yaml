@@ -1,0 +1,6 @@
+version: "3.0"
+
+output:
+  include_privacy_validation: true
+  include_debug_sheets: true
+  output_format: "analysis"

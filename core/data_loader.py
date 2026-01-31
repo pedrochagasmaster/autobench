@@ -9,7 +9,7 @@ import numpy as np
 from typing import Optional, Dict, List, Any, Tuple
 from pathlib import Path
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
@@ -419,6 +419,69 @@ class DataLoader:
         logger.info(f"Preprocessed: {len(df_clean)} rows remaining")
         
         return df_clean
+
+    def _match_target_entity(
+        self,
+        df: pd.DataFrame,
+        entity_col: str,
+        target_entity: Optional[str]
+    ) -> Optional[str]:
+        if not target_entity:
+            return None
+        if target_entity in df[entity_col].values:
+            return target_entity
+        entity_upper = str(target_entity).upper()
+        for entity in df[entity_col].unique():
+            if entity is not None and str(entity).upper() == entity_upper:
+                return str(entity)
+        return None
+
+    def _collect_entity_validation_issues(
+        self,
+        df: pd.DataFrame,
+        entity_col: str,
+        target_entity: Optional[str],
+        thresholds: Dict[str, Any],
+        include_entity_samples: bool
+    ) -> List[ValidationIssue]:
+        issues: List[ValidationIssue] = []
+        unique_entities = df[entity_col].nunique()
+        target_match = self._match_target_entity(df, entity_col, target_entity)
+        peer_count = unique_entities - 1 if target_match else unique_entities
+
+        if peer_count < thresholds['min_peer_count']:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="insufficient_peers",
+                message=(
+                    f"Only {peer_count} peer entities found (excluding target). "
+                    f"Minimum {thresholds['min_peer_count']} required for privacy compliance."
+                )
+            ))
+
+        if target_entity:
+            if target_match is None:
+                if include_entity_samples:
+                    sample = df[entity_col].unique()[:10].tolist()
+                    message = (
+                        f"Target entity '{target_entity}' not found in data. "
+                        f"Available entities: {sample}"
+                    )
+                else:
+                    message = f"Target entity '{target_entity}' not found in data."
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.ERROR,
+                    category="missing_entity",
+                    message=message
+                ))
+            elif target_match != target_entity:
+                issues.append(ValidationIssue(
+                    severity=ValidationSeverity.INFO,
+                    category="entity_case",
+                    message=f"Target entity found with different case: '{target_match}'"
+                ))
+
+        return issues
     
     def validate_share_input(
         self,
@@ -514,41 +577,17 @@ class DataLoader:
                 message=f"Metric column '{metric_col}' has {negative_count} negative values",
                 row_indices=df[negative_mask].index.tolist()[:50]
             ))
-        
-        # 4. Check entity count (privacy compliance)
-        unique_entities = df[entity_col].nunique()
-        target_match = None
-        if target_entity:
-            if target_entity in df[entity_col].values:
-                target_match = target_entity
-            else:
-                entity_upper = str(target_entity).upper()
-                for e in df[entity_col].unique():
-                    if e is not None and str(e).upper() == entity_upper:
-                        target_match = str(e)
-                        break
-        peer_count = unique_entities - 1 if target_match else unique_entities
-        if peer_count < t['min_peer_count']:
-            issues.append(ValidationIssue(
-                severity=ValidationSeverity.ERROR,
-                category="insufficient_peers",
-                message=f"Only {peer_count} peer entities found (excluding target). Minimum {t['min_peer_count']} required for privacy compliance."
-            ))
-        
-        # 5. Check if target entity exists in data
-        if target_entity:
-            if target_match is None:
-                issues.append(ValidationIssue(
-                    severity=ValidationSeverity.ERROR,
-                    category="missing_entity",
-                    message=f"Target entity '{target_entity}' not found in data. Available entities: {df[entity_col].unique()[:10].tolist()}"
-                ))
-            elif target_match != target_entity:
-                issues.append(ValidationIssue(
-                    severity=ValidationSeverity.INFO,
-                    category="entity_case",
-                    message=f"Target entity found with different case: '{target_match}'"
-                ))
+
+        # 4-5. Check entity count and target entity existence
+        issues.extend(
+            self._collect_entity_validation_issues(
+                df,
+                entity_col,
+                target_entity,
+                t,
+                include_entity_samples=True
+            )
+        )
         
         # 6. Check minimum rows per category (for each dimension)
         for dim in dimensions:
@@ -697,41 +736,17 @@ class DataLoader:
                 message=f"{low_count} rows have denominator below {t['min_denominator']} - rates may be unstable",
                 row_indices=df[low_denom_mask].index.tolist()[:20]
             ))
-        
-        # 6. Check entity count (privacy compliance)
-        unique_entities = df[entity_col].nunique()
-        target_match = None
-        if target_entity:
-            if target_entity in df[entity_col].values:
-                target_match = target_entity
-            else:
-                entity_upper = str(target_entity).upper()
-                for e in df[entity_col].unique():
-                    if e is not None and str(e).upper() == entity_upper:
-                        target_match = str(e)
-                        break
-        peer_count = unique_entities - 1 if target_match else unique_entities
-        if peer_count < t['min_peer_count']:
-            issues.append(ValidationIssue(
-                severity=ValidationSeverity.ERROR,
-                category="insufficient_peers",
-                message=f"Only {peer_count} peer entities found (excluding target). Minimum {t['min_peer_count']} required for privacy compliance."
-            ))
-        
-        # 7. Check if target entity exists
-        if target_entity:
-            if target_match is None:
-                issues.append(ValidationIssue(
-                    severity=ValidationSeverity.ERROR,
-                    category="missing_entity",
-                    message=f"Target entity '{target_entity}' not found in data."
-                ))
-            elif target_match != target_entity:
-                issues.append(ValidationIssue(
-                    severity=ValidationSeverity.INFO,
-                    category="entity_case",
-                    message=f"Target entity found with different case: '{target_match}'"
-                ))
+
+        # 6-7. Check entity count and target entity existence
+        issues.extend(
+            self._collect_entity_validation_issues(
+                df,
+                entity_col,
+                target_entity,
+                t,
+                include_entity_samples=False
+            )
+        )
         
         # 8. Check for outlier rates
         for rate_name, num_col in numerator_cols.items():

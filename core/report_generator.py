@@ -5,7 +5,6 @@ Generates benchmark reports in multiple formats (Excel, CSV, JSON).
 """
 
 import pandas as pd
-import numpy as np
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from datetime import datetime
@@ -37,6 +36,56 @@ class ReportGenerator:
         """
         self.config = config
         logger.info("Initialized ReportGenerator")
+
+    @staticmethod
+    def _write_header_row(
+        worksheet: Any,
+        row_index: int,
+        headers: List[str],
+        font_cls: Any,
+        fill_cls: Any,
+        fill_color: Optional[str] = None
+    ) -> None:
+        for col_idx, header in enumerate(headers, 1):
+            cell = worksheet.cell(row=row_index, column=col_idx, value=header)
+            cell.font = font_cls(bold=True)
+            if fill_color:
+                cell.fill = fill_cls(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+    @staticmethod
+    def _set_column_widths(worksheet: Any, widths: Dict[str, int]) -> None:
+        for column, width in widths.items():
+            worksheet.column_dimensions[column].width = width
+
+    @staticmethod
+    def _resolve_convert_all_rates(metadata: Optional[Dict[str, Any]]) -> bool:
+        if not metadata:
+            return False
+        analysis_label = str(metadata.get('analysis_type', '')).lower()
+        rate_types = [str(rt).lower() for rt in metadata.get('rate_types', [])]
+        if rate_types and all(rt == 'fraud' for rt in rate_types):
+            return True
+        return 'fraud_rate' in analysis_label and not rate_types
+
+    @staticmethod
+    def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
+        col_lower = str(column_name).lower()
+        if 'weight_effect' in col_lower or 'effect' in col_lower:
+            return False
+        if 'total' in col_lower and not ('rate' in col_lower or '%' in col_lower):
+            return False
+        is_rate_like = (
+            '%' in col_lower
+            or 'rate' in col_lower
+            or 'average' in col_lower
+            or 'target' in col_lower
+            or 'peer' in col_lower
+        )
+        if not is_rate_like:
+            return False
+        if convert_all_rates:
+            return True
+        return 'fraud' in col_lower
     
     def generate_report(
         self,
@@ -243,10 +292,7 @@ class ReportGenerator:
         
         # Column headers
         headers = ['Preset', 'Mean Distortion (PP)', 'Max Distortion (PP)', 'Time (s)', 'Best']
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=3, column=col_idx, value=header)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid")
+        self._write_header_row(ws, 3, headers, Font, PatternFill, "CCE5FF")
         
         # Data rows
         for row_idx, row_data in enumerate(dataframe_to_rows(comparison_df, index=False, header=False), 4):
@@ -257,11 +303,7 @@ class ReportGenerator:
                     cell.fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
         
         # Adjust column widths
-        ws.column_dimensions['A'].width = 25
-        ws.column_dimensions['B'].width = 20
-        ws.column_dimensions['C'].width = 20
-        ws.column_dimensions['D'].width = 12
-        ws.column_dimensions['E'].width = 8
+        self._set_column_widths(ws, {'A': 25, 'B': 20, 'C': 20, 'D': 12, 'E': 8})
         
         logger.info("Added Preset Comparison sheet")
     
@@ -298,10 +340,7 @@ class ReportGenerator:
         
         # Column headers
         headers = ['Dimension', 'Mean (PP)', 'Min (PP)', 'Max (PP)', 'Std Dev']
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=4, column=col_idx, value=header)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        self._write_header_row(ws, 4, headers, Font, PatternFill, "FFF2CC")
         
         # Data rows
         for row_idx, row_data in enumerate(dataframe_to_rows(summary_df, index=False, header=False), 5):
@@ -309,9 +348,7 @@ class ReportGenerator:
                 ws.cell(row=row_idx, column=col_idx, value=value)
         
         # Adjust column widths
-        ws.column_dimensions['A'].width = 20
-        for col in ['B', 'C', 'D', 'E']:
-            ws.column_dimensions[col].width = 12
+        self._set_column_widths(ws, {'A': 20, 'B': 12, 'C': 12, 'D': 12, 'E': 12})
         
         logger.info("Added Distortion Summary sheet")
     
@@ -361,10 +398,7 @@ class ReportGenerator:
         
         # Column headers
         headers = ['Severity', 'Category', 'Message']
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=7, column=col_idx, value=header)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        self._write_header_row(ws, 7, headers, Font, PatternFill, "DDDDDD")
         
         # Issue rows
         for row_idx, issue in enumerate(validation_issues, 8):
@@ -390,9 +424,7 @@ class ReportGenerator:
                 )
         
         # Adjust column widths
-        ws.column_dimensions['A'].width = 12
-        ws.column_dimensions['B'].width = 20
-        ws.column_dimensions['C'].width = 60
+        self._set_column_widths(ws, {'A': 12, 'B': 20, 'C': 60})
         
         logger.info("Added Data Quality sheet")
     
@@ -576,30 +608,11 @@ class ReportGenerator:
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
             if analysis_type == 'rate' and fraud_in_bps:
-                convert_all_rates = False
-                if metadata:
-                    analysis_label = str(metadata.get('analysis_type', '')).lower()
-                    rate_types = [str(rt).lower() for rt in metadata.get('rate_types', [])]
-                    if rate_types and all(rt == 'fraud' for rt in rate_types):
-                        convert_all_rates = True
-                    elif 'fraud_rate' in analysis_label and not rate_types:
-                        convert_all_rates = True
+                convert_all_rates = self._resolve_convert_all_rates(metadata)
                 for col in df.columns:
-                    col_lower = str(col).lower()
-                    if 'weight_effect' in col_lower or 'effect' in col_lower:
-                        continue
-                    if 'total' in col_lower:
-                        continue
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    should_convert = False
-                    if convert_all_rates:
-                        if '%' in col_lower or 'rate' in col_lower or 'average' in col_lower or 'target' in col_lower or 'peer' in col_lower:
-                            should_convert = True
-                    else:
-                        if 'fraud' in col_lower and ('%' in col_lower or 'rate' in col_lower or 'average' in col_lower or 'target' in col_lower or 'peer' in col_lower):
-                            should_convert = True
-                    if should_convert:
+                    if self._should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
             
             # Write data with formatting
