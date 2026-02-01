@@ -95,6 +95,60 @@ class PrivacyValidator:
         epsilon = PrivacyValidator.COMPARISON_EPSILON
         return sum(1 for value in values if value + epsilon >= threshold)
 
+    @classmethod
+    def get_penalty_thresholds(cls, rule_name: str) -> Dict[str, Tuple[int, float]]:
+        """
+        Return thresholds for penalty calculation in optimization.
+        
+        This method exposes the "additional" constraints from RULES in a format
+        suitable for optimization penalty functions used by DimensionalAnalyzer.
+        Using this method instead of hardcoding values ensures consistency.
+        
+        Parameters:
+        -----------
+        rule_name : str
+            Name of the privacy rule (e.g., '6/30', '7/35', '10/40')
+            
+        Returns:
+        --------
+        Dict[str, Tuple[int, float]]
+            Dictionary mapping constraint names to (min_count, threshold_percentage).
+            For example: {'tier_1': (3, 7.0)} means at least 3 participants >= 7%.
+            
+        Examples:
+        ---------
+        >>> PrivacyValidator.get_penalty_thresholds('6/30')
+        {'tier_1': (3, 7.0)}
+        >>> PrivacyValidator.get_penalty_thresholds('7/35')
+        {'tier_1': (2, 15.0), 'tier_2': (1, 8.0)}
+        """
+        rule = cls.RULES.get(rule_name, {})
+        additional = rule.get('additional', {})
+        
+        if not additional:
+            return {}
+        
+        result: Dict[str, Tuple[int, float]] = {}
+        
+        # Handle 6/30 format: min_count_above_threshold: (3, 7.0)
+        if 'min_count_above_threshold' in additional:
+            count, threshold = additional['min_count_above_threshold']
+            result['tier_1'] = (count, threshold)
+        
+        # Handle 7/35 format: min_count_15: 2, min_count_8: 1
+        if 'min_count_15' in additional:
+            result['tier_1'] = (additional['min_count_15'], 15.0)
+        if 'min_count_8' in additional:
+            result['tier_2'] = (additional['min_count_8'], 8.0)
+        
+        # Handle 10/40 format: min_count_20: 2, min_count_10: 1
+        if 'min_count_20' in additional:
+            result['tier_1'] = (additional['min_count_20'], 20.0)
+        if 'min_count_10' in additional:
+            result['tier_2'] = (additional['min_count_10'], 10.0)
+        
+        return result
+
     def _check_min_participants(self, peer_group: pd.DataFrame) -> Tuple[bool, List[str]]:
         warnings: List[str] = []
         num_entities = len(peer_group)

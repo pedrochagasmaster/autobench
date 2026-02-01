@@ -221,7 +221,7 @@ class DataLoader:
     
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Normalize column names to standard format.
+        Normalize column names to standard format with collision detection.
         
         Parameters:
         -----------
@@ -232,12 +232,43 @@ class DataLoader:
         --------
         pd.DataFrame
             Dataframe with normalized columns
+            
+        Notes:
+        ------
+        If normalization causes column name collisions (e.g., "Rate (%)" and
+        "Rate (#)" both normalizing to "rate"), a warning is logged and 
+        numeric suffixes are appended to resolve the collision.
         """
-        # Convert to lowercase and replace spaces/special chars
-        df.columns = df.columns.str.lower().str.strip()
-        df.columns = df.columns.str.replace(' ', '_')
-        df.columns = df.columns.str.replace('-', '_')
-        df.columns = df.columns.str.replace('[^a-zA-Z0-9_]', '', regex=True)
+        original_columns = df.columns.tolist()
+        
+        # Step 1: Lowercase and strip whitespace
+        new_cols = df.columns.str.lower().str.strip()
+        # Step 2: Replace common separators with underscores
+        new_cols = new_cols.str.replace(r'[\s\-\.]+', '_', regex=True)
+        # Step 3: Remove remaining special characters
+        new_cols = new_cols.str.replace(r'[^a-z0-9_]', '', regex=True)
+        # Step 4: Clean up consecutive/trailing underscores
+        new_cols = new_cols.str.replace(r'_+', '_', regex=True)
+        new_cols = new_cols.str.strip('_')
+        
+        # Step 4: Detect and resolve collisions
+        seen: Dict[str, int] = {}
+        final_cols = []
+        for i, col in enumerate(new_cols):
+            if col in seen:
+                original_a = original_columns[seen[col]]
+                original_b = original_columns[i]
+                logger.warning(
+                    f"Column name collision after normalization: "
+                    f"'{original_a}' and '{original_b}' both normalize to '{col}'. "
+                    f"Appending suffix '_{i}' to resolve."
+                )
+                final_cols.append(f"{col}_{i}")
+            else:
+                seen[col] = i
+                final_cols.append(col)
+        
+        df.columns = final_cols
         
         # Note: Column mappings removed - use actual column names from dataset
         # Users specify column names via CLI flags (--entity-col, --metric, etc.)

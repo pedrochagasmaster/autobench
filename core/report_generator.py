@@ -113,7 +113,9 @@ class ReportGenerator:
         """
         logger.info(f"Generating {format} report: {output_file}")
         
+        # Early check for Excel dependencies - fail fast with clear message
         if format == 'excel':
+            self._ensure_excel_support()
             self._generate_excel_report(results, output_file, analysis_type, metadata)
         elif format == 'csv':
             self._generate_csv_report(results, output_file, analysis_type, metadata)
@@ -123,6 +125,24 @@ class ReportGenerator:
             raise ValueError(f"Unsupported format: {format}")
         
         logger.info(f"Report saved to: {output_file}")
+    
+    def _ensure_excel_support(self) -> None:
+        """
+        Check Excel dependencies before attempting to generate.
+        
+        Raises:
+        -------
+        ImportError
+            If openpyxl is not installed, with helpful message.
+        """
+        try:
+            import openpyxl  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "Generating Excel reports requires 'openpyxl'. "
+                "Install it with: pip install openpyxl\n"
+                "Or use --format csv or --format json instead."
+            )
     
     def _generate_excel_report(
         self,
