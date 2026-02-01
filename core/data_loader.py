@@ -11,6 +11,7 @@ from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,39 @@ class DataLoader:
             Configuration manager instance
         """
         self.config = config
+        self.schema_detection_mode = 'heuristic'
+        self.column_mapping: Dict[str, str] = {}
+        self.max_csv_size_mb: Optional[float] = None
+        self.max_csv_rows: Optional[int] = None
+        self.csv_chunk_size: Optional[int] = None
+        if config is not None:
+            if hasattr(config, 'get'):
+                try:
+                    self.schema_detection_mode = str(
+                        config.get('input', 'schema_detection_mode', default='heuristic')
+                    ).lower()
+                except Exception:
+                    self.schema_detection_mode = 'heuristic'
+                try:
+                    max_csv_size_mb = config.get('input', 'max_csv_size_mb', default=None)
+                    self.max_csv_size_mb = float(max_csv_size_mb) if max_csv_size_mb else None
+                except Exception:
+                    self.max_csv_size_mb = None
+                try:
+                    max_csv_rows = config.get('input', 'max_csv_rows', default=None)
+                    self.max_csv_rows = int(max_csv_rows) if max_csv_rows else None
+                except Exception:
+                    self.max_csv_rows = None
+                try:
+                    csv_chunk_size = config.get('input', 'csv_chunk_size', default=None)
+                    self.csv_chunk_size = int(csv_chunk_size) if csv_chunk_size else None
+                except Exception:
+                    self.csv_chunk_size = None
+            if hasattr(config, 'get_column_mapping'):
+                try:
+                    self.column_mapping = config.get_column_mapping() or {}
+                except Exception:
+                    self.column_mapping = {}
         logger.info("Initialized DataLoader")
     
     def load_data(self, args: Any) -> pd.DataFrame:
@@ -106,7 +140,7 @@ class DataLoader:
             Loaded and preprocessed data
         """
         if hasattr(args, 'csv') and args.csv:
-            return self.load_from_csv(args.csv)
+            return self.load_from_csv(args.csv, nrows=getattr(args, 'nrows', None))
         elif hasattr(args, 'sql_query') and args.sql_query:
             return self.load_from_sql_query(args.sql_query)
         elif hasattr(args, 'sql_table') and args.sql_table:
@@ -114,7 +148,7 @@ class DataLoader:
         else:
             raise ValueError("No valid data source specified")
     
-    def load_from_csv(self, file_path: str) -> pd.DataFrame:
+    def load_from_csv(self, file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
         """
         Load data from CSV file.
         
@@ -133,9 +167,18 @@ class DataLoader:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"CSV file not found: {file_path}")
-        
+
+        if self.max_csv_size_mb is not None:
+            file_size_mb = path.stat().st_size / (1024.0 * 1024.0)
+            if file_size_mb > self.max_csv_size_mb:
+                raise ValueError(
+                    f"CSV file is too large ({file_size_mb:.2f} MB). "
+                    f"Configured max_csv_size_mb={self.max_csv_size_mb}."
+                )
+
         try:
-            df = pd.read_csv(file_path)
+            effective_nrows = nrows if nrows is not None else self.max_csv_rows
+            df = self._read_csv_with_limits(file_path, effective_nrows)
             logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
             
             # Normalize column names
@@ -146,6 +189,32 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Failed to load CSV: {str(e)}")
             raise
+
+    def _read_csv_with_limits(self, file_path: str, nrows: Optional[int]) -> pd.DataFrame:
+        chunk_size = self.csv_chunk_size if self.csv_chunk_size and self.csv_chunk_size > 0 else None
+        if chunk_size is None:
+            return pd.read_csv(file_path, nrows=nrows)
+
+        chunks: List[pd.DataFrame] = []
+        rows_read = 0
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+            if nrows is None:
+                chunks.append(chunk)
+                continue
+
+            remaining = nrows - rows_read
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                chunk = chunk.iloc[:remaining]
+            chunks.append(chunk)
+            rows_read += len(chunk)
+            if rows_read >= nrows:
+                break
+
+        if not chunks:
+            return pd.DataFrame()
+        return pd.concat(chunks, ignore_index=True)
     
     def load_from_sql_query(self, query_file: str) -> pd.DataFrame:
         """
@@ -274,6 +343,52 @@ class DataLoader:
         # Users specify column names via CLI flags (--entity-col, --metric, etc.)
         
         return df
+
+    def _map_columns_to_canonical(self, columns: List[str]) -> Dict[str, List[str]]:
+        if not self.column_mapping:
+            return {}
+        mapped: Dict[str, List[str]] = {}
+        for col in columns:
+            canonical = self.column_mapping.get(col)
+            if canonical:
+                mapped.setdefault(canonical, []).append(col)
+        return mapped
+
+    @staticmethod
+    def _column_tokens(column_name: str) -> List[str]:
+        return [tok for tok in re.split(r'[_\W]+', str(column_name).lower()) if tok]
+
+    @classmethod
+    def _is_count_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'count', 'counts', 'cnt', 'txn_count', 'transaction_count'})) or (
+            ('txn' in tokens or 'transaction' in tokens or 'txns' in tokens) and bool(tokens.intersection({'count', 'cnt'}))
+        )
+
+    @classmethod
+    def _is_amount_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'amount', 'amt', 'tpv', 'volume', 'value'}))
+
+    @classmethod
+    def _is_entity_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'entity', 'issuer', 'merchant', 'bank', 'institution'}))
+
+    @classmethod
+    def _is_approved_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'approved', 'approval', 'appr'}))
+
+    @classmethod
+    def _is_total_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'total', 'overall'}))
+
+    @classmethod
+    def _is_declined_like_column(cls, column_name: str) -> bool:
+        tokens = set(cls._column_tokens(column_name))
+        return bool(tokens.intersection({'declined', 'decline', 'rejected'}))
     
     def validate_minimal_schema(self, df: pd.DataFrame) -> bool:
         """
@@ -289,27 +404,44 @@ class DataLoader:
         bool
             True if minimal schema is present
         """
+        mapped_roles = self._map_columns_to_canonical(df.columns.tolist())
+        if mapped_roles and self.schema_detection_mode in ('mapped', 'hybrid'):
+            count_cols = mapped_roles.get('transaction_count', [])
+            amount_cols = mapped_roles.get('transaction_amount', [])
+            entity_cols = mapped_roles.get('entity_identifier', [])
+            has_minimal = bool(count_cols and amount_cols and entity_cols)
+            if has_minimal:
+                logger.info(
+                    "Minimal schema detected via column mappings "
+                    "(count=%s, amount=%s, entity=%s)",
+                    count_cols,
+                    amount_cols,
+                    entity_cols
+                )
+                return True
+            if self.schema_detection_mode == 'mapped':
+                logger.warning("Minimal schema not found using column mappings.")
+                logger.warning(f"  Count columns: {count_cols}")
+                logger.warning(f"  Amount columns: {amount_cols}")
+                logger.warning(f"  Entity columns: {entity_cols}")
+                return False
+            logger.info("Minimal schema not found via column mappings; falling back to heuristic detection.")
+
         # Check for transaction count column
-        count_cols = [col for col in df.columns 
-                     if any(term in col.lower() for term in 
-                           ['transaction_count', 'txn_count', 'count', 'cnt'])]
+        count_cols = [col for col in df.columns if self._is_count_like_column(col)]
         
         # Check for transaction amount column
-        amount_cols = [col for col in df.columns 
-                      if any(term in col.lower() for term in 
-                            ['transaction_amount', 'txn_amt', 'amount', 'amt', 'tpv', 'volume'])]
+        amount_cols = [col for col in df.columns if self._is_amount_like_column(col)]
         
         # Check for entity identifier
-        entity_cols = [col for col in df.columns 
-                      if any(term in col.lower() for term in 
-                            ['entity', 'issuer', 'merchant', 'bank', 'institution'])]
+        entity_cols = [col for col in df.columns if self._is_entity_like_column(col)]
         
         has_minimal = len(count_cols) > 0 and len(amount_cols) > 0 and len(entity_cols) > 0
         
         if has_minimal:
-            logger.info("✓ Minimal schema detected (transaction count and amount)")
+            logger.info("Minimal schema detected (transaction count and amount)")
         else:
-            logger.warning("✗ Minimal schema not found")
+            logger.warning("Minimal schema not found")
             logger.warning(f"  Count columns: {count_cols}")
             logger.warning(f"  Amount columns: {amount_cols}")
             logger.warning(f"  Entity columns: {entity_cols}")
@@ -330,30 +462,51 @@ class DataLoader:
         bool
             True if full schema is present
         """
+        mapped_roles = self._map_columns_to_canonical(df.columns.tolist())
+        if mapped_roles and self.schema_detection_mode in ('mapped', 'hybrid'):
+            approved_cols = mapped_roles.get('approved_count', []) + mapped_roles.get('approved_amount', [])
+            total_cols = mapped_roles.get('total_count', []) + mapped_roles.get('total_amount', [])
+            declined_cols = mapped_roles.get('declined_count', []) + mapped_roles.get('declined_amount', [])
+            entity_cols = mapped_roles.get('entity_identifier', [])
+            has_full = bool(approved_cols and (total_cols or declined_cols) and entity_cols)
+            if has_full:
+                logger.info(
+                    "Full schema detected via column mappings "
+                    "(approved=%s, total=%s, declined=%s, entity=%s)",
+                    approved_cols,
+                    total_cols,
+                    declined_cols,
+                    entity_cols
+                )
+                return True
+            if self.schema_detection_mode == 'mapped':
+                logger.warning("Full schema not found using column mappings.")
+                logger.warning(f"  Approved columns: {approved_cols}")
+                logger.warning(f"  Total columns: {total_cols}")
+                logger.warning(f"  Declined columns: {declined_cols}")
+                logger.warning(f"  Entity columns: {entity_cols}")
+                return False
+            logger.info("Full schema not found via column mappings; falling back to heuristic detection.")
+
         # Check for approved columns
-        approved_cols = [col for col in df.columns 
-                        if 'approved' in col.lower() or 'auth_approved' in col.lower()]
+        approved_cols = [col for col in df.columns if self._is_approved_like_column(col)]
         
         # Check for total/declined columns
-        total_cols = [col for col in df.columns 
-                     if any(term in col.lower() for term in ['total', 'auth_total'])]
+        total_cols = [col for col in df.columns if self._is_total_like_column(col)]
         
-        declined_cols = [col for col in df.columns 
-                        if 'declined' in col.lower() or 'decline' in col.lower()]
+        declined_cols = [col for col in df.columns if self._is_declined_like_column(col)]
         
         # Check for entity identifier
-        entity_cols = [col for col in df.columns 
-                      if any(term in col.lower() for term in 
-                            ['entity', 'issuer', 'merchant', 'bank', 'institution'])]
+        entity_cols = [col for col in df.columns if self._is_entity_like_column(col)]
         
         has_full = (len(approved_cols) > 0 and 
                    (len(total_cols) > 0 or len(declined_cols) > 0) and 
                    len(entity_cols) > 0)
         
         if has_full:
-            logger.info("✓ Full schema detected (approved/declined breakdown)")
+            logger.info("Full schema detected (approved/declined breakdown)")
         else:
-            logger.warning("✗ Full schema not found")
+            logger.warning("Full schema not found")
             logger.warning(f"  Approved columns: {approved_cols}")
             logger.warning(f"  Total columns: {total_cols}")
             logger.warning(f"  Declined columns: {declined_cols}")
@@ -572,7 +725,10 @@ class DataLoader:
             issues.append(ValidationIssue(
                 severity=ValidationSeverity.ERROR,
                 category="missing_columns",
-                message=f"Required columns not found: {missing_cols}. Available: {list(df.columns)}"
+                message=(
+                    f"Required columns not found: {missing_cols}. "
+                    "Check column names after normalization (lowercase + underscores)."
+                )
             ))
             return issues  # Cannot continue validation without required columns
         
@@ -701,6 +857,13 @@ class DataLoader:
         
         # 1. Check required columns exist
         all_num_cols = list(numerator_cols.values())
+        if not all_num_cols:
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.ERROR,
+                category="missing_columns",
+                message="No numerator columns provided for rate analysis."
+            ))
+            return issues
         required_cols = [total_col, entity_col] + all_num_cols + dimensions
         if time_col:
             required_cols.append(time_col)
@@ -710,7 +873,10 @@ class DataLoader:
             issues.append(ValidationIssue(
                 severity=ValidationSeverity.ERROR,
                 category="missing_columns",
-                message=f"Required columns not found: {missing_cols}. Available: {list(df.columns)}"
+                message=(
+                    f"Required columns not found: {missing_cols}. "
+                    "Check column names after normalization (lowercase + underscores)."
+                )
             ))
             return issues
         

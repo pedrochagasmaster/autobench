@@ -106,6 +106,23 @@ class ConfigValidator:
             time_col = input_config['time_col']
             if time_col is not None and not isinstance(time_col, str):
                 errors.append("input.time_col must be a string or null")
+
+        if 'schema_detection_mode' in input_config:
+            mode = input_config['schema_detection_mode']
+            valid_modes = ['heuristic', 'mapped', 'hybrid']
+            if not isinstance(mode, str) or mode not in valid_modes:
+                errors.append(f"input.schema_detection_mode must be one of: {', '.join(valid_modes)}")
+
+        if 'max_csv_size_mb' in input_config:
+            value = input_config['max_csv_size_mb']
+            if value is not None and (not isinstance(value, (int, float)) or value <= 0):
+                errors.append("input.max_csv_size_mb must be a positive number or null")
+
+        for field in ['max_csv_rows', 'csv_chunk_size']:
+            if field in input_config:
+                value = input_config[field]
+                if value is not None and (not isinstance(value, int) or value <= 0):
+                    errors.append(f"input.{field} must be a positive integer or null")
         
         return errors
     
@@ -185,6 +202,18 @@ class ConfigValidator:
                 if 'rank_penalty_weight' in lp:
                     if not isinstance(lp['rank_penalty_weight'], (int, float)) or lp['rank_penalty_weight'] < 0:
                         errors.append("optimization.linear_programming.rank_penalty_weight must be >= 0")
+                
+                if 'rank_constraints' in lp:
+                    rc = lp['rank_constraints']
+                    if not isinstance(rc, dict):
+                        errors.append("optimization.linear_programming.rank_constraints must be a dictionary")
+                    else:
+                        mode = rc.get('mode')
+                        if mode is not None and mode not in ['all', 'neighbor']:
+                            errors.append("optimization.linear_programming.rank_constraints.mode must be 'all' or 'neighbor'")
+                        if 'neighbor_k' in rc:
+                            if not isinstance(rc['neighbor_k'], int) or rc['neighbor_k'] <= 0:
+                                errors.append("optimization.linear_programming.rank_constraints.neighbor_k must be a positive integer")
         
         # Validate bounds
         if 'bounds' in opt_config:
@@ -287,6 +316,11 @@ class ConfigValidator:
                 if 'learning_rate' in bayesian:
                     if not isinstance(bayesian['learning_rate'], (int, float)) or bayesian['learning_rate'] <= 0:
                         errors.append("optimization.bayesian.learning_rate must be > 0")
+
+                if 'violation_penalty_weight' in bayesian:
+                    val = bayesian['violation_penalty_weight']
+                    if not isinstance(val, (int, float)) or val <= 0:
+                        errors.append("optimization.bayesian.violation_penalty_weight must be > 0")
         
         return errors
     
@@ -308,6 +342,10 @@ class ConfigValidator:
         if 'auto_detect_dimensions' in analysis_config:
             if not isinstance(analysis_config['auto_detect_dimensions'], bool):
                 errors.append("analysis.auto_detect_dimensions must be a boolean")
+        
+        if 'merchant_mode' in analysis_config:
+            if not isinstance(analysis_config['merchant_mode'], bool):
+                errors.append("analysis.merchant_mode must be a boolean")
         
         return errors
     

@@ -9,23 +9,28 @@ Rule Specifications:
 - 5/25: Min 5 participants, max 25% per participant
   Example: [25, 25, 25, 24, 1]
 
-- 6/30: Min 6 participants, max 30% per participant, at least 3 participants ≥ 7%
+- 6/30: Min 6 participants, max 30% per participant, at least 3 participants >= 7%
   Example: [30, 24.5, 24.5, 7, 7, 7] or [30, 30, 30, 3.33, 3.33, 3.33]
 
-- 7/35: Min 7 participants, max 35% per participant, at least 2 ≥ 15%, 
-        and at least 1 additional participant ≥ 8%
+- 7/35: Min 7 participants, max 35% per participant, at least 2 >= 15%, 
+        and at least 1 additional participant >= 8%
   Example: [35, 15, 15, 8.75, 8.75, 8.75, 8.75]
 
-- 10/40: Min 10 participants, max 40% per participant, at least 2 ≥ 20%, 
-         and at least 1 additional participant ≥ 10%
+- 10/40: Min 10 participants, max 40% per participant, at least 2 >= 20%, 
+         and at least 1 additional participant >= 10%
   Example: [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6]
 
 - 4/35 (Merchant benchmarking only): Min 4 participants, max 35% per participant
 """
 
-import pandas as pd
-from typing import List, Tuple, Optional, Dict
 import logging
+import os
+from pathlib import Path
+from typing import List, Tuple, Optional, Dict, Any, cast
+
+import pandas as pd
+
+from .constants import COMPARISON_EPSILON as SHARED_COMPARISON_EPSILON
 
 logger = logging.getLogger(__name__)
 
@@ -41,41 +46,41 @@ class PrivacyValidator:
       Compliant example: [25, 25, 25, 24, 1]
       
     - 6/30: 6 minimum entities, 30% max concentration
-      + At least 3 participants must be ≥ 7%
+      + At least 3 participants must be >= 7%
       Compliant examples: [30, 24.5, 24.5, 7, 7, 7] or [30, 30, 30, 3.33, 3.33, 3.33]
       
     - 7/35: 7 minimum entities, 35% max concentration
-      + At least 2 participants must be ≥ 15%
-      + At least 1 additional participant must be ≥ 8%
+      + At least 2 participants must be >= 15%
+      + At least 1 additional participant must be >= 8%
       Compliant example: [35, 15, 15, 8.75, 8.75, 8.75, 8.75]
       
     - 10/40: 10 minimum entities, 40% max concentration
-      + At least 2 participants must be ≥ 20%
-      + At least 1 additional participant must be ≥ 10%
+      + At least 2 participants must be >= 20%
+      + At least 1 additional participant must be >= 10%
       Compliant example: [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6]
       
     - 4/35: 4 minimum entities, 35% max concentration (merchant benchmarking only)
     """
     
-    RULES = {
+    DEFAULT_RULES = {
         # 5/25: No participant may exceed 25%
         '5/25': {
             'min_entities': 5, 
             'max_concentration': 25.0
         },
-        # 6/30: No participant may exceed 30%, at least 3 participants must be ≥ 7%
+        # 6/30: No participant may exceed 30%, at least 3 participants must be >= 7%
         '6/30': {
             'min_entities': 6, 
             'max_concentration': 30.0,
             'additional': {'min_count_above_threshold': (3, 7.0)}
         },
-        # 7/35: No participant may exceed 35%, at least 2 ≥ 15%, at least 1 additional ≥ 8%
+        # 7/35: No participant may exceed 35%, at least 2 >= 15%, at least 1 additional >= 8%
         '7/35': {
             'min_entities': 7, 
             'max_concentration': 35.0,
             'additional': {'min_count_15': 2, 'min_count_8': 1}
         },
-        # 10/40: No participant may exceed 40%, at least 2 ≥ 20%, at least 1 additional ≥ 10%
+        # 10/40: No participant may exceed 40%, at least 2 >= 20%, at least 1 additional >= 10%
         '10/40': {
             'min_entities': 10, 
             'max_concentration': 40.0,
@@ -88,7 +93,68 @@ class PrivacyValidator:
         }
     }
 
-    COMPARISON_EPSILON = 1e-3
+    RULES_ENV_VAR = "PBT_PRIVACY_RULES_FILE"
+    DEFAULT_RULES_FILE = Path(__file__).resolve().parent.parent / "config" / "privacy_rules.yaml"
+    COMPARISON_EPSILON = SHARED_COMPARISON_EPSILON
+    _RULES_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
+    @classmethod
+    def _rules_file_path(cls) -> Path:
+        env_path = os.getenv(cls.RULES_ENV_VAR)
+        if env_path:
+            return Path(env_path)
+        return cls.DEFAULT_RULES_FILE
+
+    @classmethod
+    def _validate_rules_schema(cls, rules: Dict[str, Dict[str, Any]]) -> None:
+        for rule_name, rule_cfg in rules.items():
+            if not isinstance(rule_cfg, dict):
+                raise ValueError(f"Rule '{rule_name}' must map to a dictionary.")
+            min_entities = rule_cfg.get('min_entities')
+            max_concentration = rule_cfg.get('max_concentration')
+            if not isinstance(min_entities, int) or min_entities <= 0:
+                raise ValueError(f"Rule '{rule_name}' has invalid min_entities: {min_entities}")
+            if not isinstance(max_concentration, (int, float)) or max_concentration <= 0:
+                raise ValueError(f"Rule '{rule_name}' has invalid max_concentration: {max_concentration}")
+            additional = rule_cfg.get('additional')
+            if additional is not None and not isinstance(additional, dict):
+                raise ValueError(f"Rule '{rule_name}' additional constraints must be a dictionary.")
+
+    @classmethod
+    def _load_rules_from_file(cls) -> Optional[Dict[str, Dict[str, Any]]]:
+        path = cls._rules_file_path()
+        if not path.exists():
+            return None
+        try:
+            import yaml
+
+            with open(path, 'r', encoding='utf-8') as handle:
+                data = yaml.safe_load(handle) or {}
+            if not isinstance(data, dict):
+                raise ValueError("Privacy rules file must contain a dictionary at root.")
+            rules = cast(Optional[Dict[str, Dict[str, Any]]], data.get('rules'))
+            if not isinstance(rules, dict):
+                raise ValueError("Privacy rules file must contain a 'rules' dictionary.")
+            cls._validate_rules_schema(rules)
+            logger.info("Loaded privacy rules from %s", path)
+            return rules
+        except Exception as exc:
+            logger.warning("Failed to load privacy rules from %s: %s", path, exc)
+            return None
+
+    @classmethod
+    def reload_rules(cls) -> Dict[str, Dict[str, Any]]:
+        """Reload rules from disk or fall back to built-in defaults."""
+        loaded_rules = cls._load_rules_from_file()
+        cls._RULES_CACHE = loaded_rules or cls.DEFAULT_RULES.copy()
+        return cls._RULES_CACHE
+
+    @classmethod
+    def get_rules(cls) -> Dict[str, Dict[str, Any]]:
+        """Return active privacy rules, loading from file on first use."""
+        if cls._RULES_CACHE is None:
+            cls.reload_rules()
+        return cls._RULES_CACHE or cls.DEFAULT_RULES
 
     @staticmethod
     def _count_at_or_above(values: List[float], threshold: float) -> int:
@@ -122,7 +188,7 @@ class PrivacyValidator:
         >>> PrivacyValidator.get_penalty_thresholds('7/35')
         {'tier_1': (2, 15.0), 'tier_2': (1, 8.0)}
         """
-        rule = cls.RULES.get(rule_name, {})
+        rule = cls.get_rules().get(rule_name, {})
         additional = rule.get('additional', {})
         
         if not additional:
@@ -149,9 +215,16 @@ class PrivacyValidator:
         
         return result
 
-    def _check_min_participants(self, peer_group: pd.DataFrame) -> Tuple[bool, List[str]]:
+    def _check_min_participants(
+        self,
+        peer_group: pd.DataFrame,
+        entity_column: str
+    ) -> Tuple[bool, List[str]]:
         warnings: List[str] = []
-        num_entities = len(peer_group)
+        if entity_column in peer_group.columns:
+            num_entities = int(peer_group[entity_column].nunique())
+        else:
+            num_entities = len(peer_group)
         if num_entities < self.min_participants:
             warnings.append(
                 f"Insufficient entities: {num_entities} < {self.min_participants}"
@@ -170,14 +243,16 @@ class PrivacyValidator:
             warnings.append(f"Metric '{metric}' not found in data")
             return None, warnings
 
-        total = peer_group[metric].sum()
+        if entity_column in peer_group.columns:
+            agg = peer_group.groupby(entity_column, as_index=False)[metric].sum()
+        else:
+            agg = peer_group.copy()
+        total = agg[metric].sum()
         if total == 0:
             warnings.append(f"Total for metric '{metric}' is zero")
             return None, warnings
-
-        peer_group_copy = peer_group.copy()
-        peer_group_copy['concentration'] = (peer_group_copy[metric] / total) * 100
-        return peer_group_copy, warnings
+        agg['concentration'] = (agg[metric] / total) * 100
+        return agg, warnings
 
     def _check_entity_concentration(
         self,
@@ -212,26 +287,32 @@ class PrivacyValidator:
     def select_rule(cls, peer_count: int, merchant_mode: bool = False) -> str:
         """Select privacy rule name based on peer count.
 
-        Note: 4/35 is applied only for merchant benchmarking. Since merchant_mode
-        is not wired through most flows yet, we follow the existing behavior of
-        selecting 4/35 when peers are 4+ but <5.
+        Note: 4/35 is applied only when merchant_mode is True.
         """
-        if peer_count >= 10:
-            return '10/40'
-        if peer_count >= 7:
-            return '7/35'
-        if peer_count >= 6:
-            return '6/30'
-        if peer_count >= 5:
-            return '5/25'
-        if peer_count >= 4:
+        rules = cls.get_rules()
+
+        if merchant_mode and '4/35' in rules and peer_count >= int(rules['4/35'].get('min_entities', 4)):
             return '4/35'
+
+        ordered_rules = sorted(
+            (
+                (name, cfg)
+                for name, cfg in rules.items()
+                if name != '4/35'
+            ),
+            key=lambda item: int(item[1].get('min_entities', 0)),
+            reverse=True,
+        )
+        for rule_name, rule_cfg in ordered_rules:
+            if peer_count >= int(rule_cfg.get('min_entities', 0)):
+                return rule_name
+
         return 'insufficient'
 
     @classmethod
-    def get_rule_config(cls, rule_name: str) -> Dict[str, float]:
+    def get_rule_config(cls, rule_name: str) -> Dict[str, Any]:
         """Return rule configuration (min_entities, max_concentration, additional)."""
-        return cls.RULES.get(rule_name, {})
+        return cls.get_rules().get(rule_name, {})
 
     @classmethod
     def evaluate_additional_constraints(
@@ -253,7 +334,7 @@ class PrivacyValidator:
         Tuple[bool, List[str]]
             (passed, details). details contains human-readable failures.
         """
-        rule = cls.RULES.get(rule_name)
+        rule = cls.get_rules().get(rule_name)
         if not rule:
             # No additional constraints for unknown or insufficient rule
             return True, []
@@ -316,6 +397,93 @@ class PrivacyValidator:
                 )
 
         return passed, details
+
+    @classmethod
+    def evaluate_additional_constraints_with_thresholds(
+        cls,
+        shares: List[float],
+        rule_name: str,
+        thresholds: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, List[str]]:
+        """Evaluate additional constraints using custom thresholds (dynamic scaling).
+
+        thresholds can include:
+        - {'tier_1': (min_count, threshold), 'tier_2': (min_count, threshold)}
+        - or legacy keys used in RULES (min_count_above_threshold, min_count_15, min_count_8, ...)
+        """
+        if thresholds is None:
+            return cls.evaluate_additional_constraints(shares, rule_name)
+
+        shares_sorted = sorted([float(s) for s in shares], reverse=True)
+        details: List[str] = []
+        passed = True
+        use_tiers = any(key.startswith('tier_') for key in thresholds.keys())
+
+        if rule_name == '6/30':
+            if use_tiers:
+                min_count, threshold = thresholds.get('tier_1', (3, 7.0))
+            else:
+                min_count, threshold = thresholds.get('min_count_above_threshold', (3, 7.0))
+            idx = int(min_count) - 1
+            observed = shares_sorted[idx] if idx < len(shares_sorted) else 0.0
+            if observed + cls.COMPARISON_EPSILON < threshold:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count} participants >= {threshold:.2f}%, "
+                    f"found {cls._count_at_or_above(shares_sorted, threshold)}"
+                )
+        elif rule_name == '7/35':
+            if use_tiers:
+                min_count_15, threshold_15 = thresholds.get('tier_1', (2, 15.0))
+                min_count_8, threshold_8 = thresholds.get('tier_2', (1, 8.0))
+            else:
+                min_count_15 = int(thresholds.get('min_count_15', 2))
+                min_count_8 = int(thresholds.get('min_count_8', 1))
+                threshold_15 = float(thresholds.get('threshold_15', 15.0))
+                threshold_8 = float(thresholds.get('threshold_8', 8.0))
+            idx_15 = min_count_15 - 1
+            idx_8 = min_count_15 + min_count_8 - 1
+            observed_15 = shares_sorted[idx_15] if idx_15 < len(shares_sorted) else 0.0
+            observed_8 = shares_sorted[idx_8] if idx_8 < len(shares_sorted) else 0.0
+            if observed_15 + cls.COMPARISON_EPSILON < threshold_15:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_15} participants >= {threshold_15:.2f}%, "
+                    f"found {cls._count_at_or_above(shares_sorted, threshold_15)}"
+                )
+            if observed_8 + cls.COMPARISON_EPSILON < threshold_8:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_8} additional participants >= {threshold_8:.2f}%, "
+                    f"found {max(cls._count_at_or_above(shares_sorted, threshold_8) - min_count_15, 0)}"
+                )
+        elif rule_name == '10/40':
+            if use_tiers:
+                min_count_20, threshold_20 = thresholds.get('tier_1', (2, 20.0))
+                min_count_10, threshold_10 = thresholds.get('tier_2', (1, 10.0))
+            else:
+                min_count_20 = int(thresholds.get('min_count_20', 2))
+                min_count_10 = int(thresholds.get('min_count_10', 1))
+                threshold_20 = float(thresholds.get('threshold_20', 20.0))
+                threshold_10 = float(thresholds.get('threshold_10', 10.0))
+            idx_20 = min_count_20 - 1
+            idx_10 = min_count_20 + min_count_10 - 1
+            observed_20 = shares_sorted[idx_20] if idx_20 < len(shares_sorted) else 0.0
+            observed_10 = shares_sorted[idx_10] if idx_10 < len(shares_sorted) else 0.0
+            if observed_20 + cls.COMPARISON_EPSILON < threshold_20:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_20} participants >= {threshold_20:.2f}%, "
+                    f"found {cls._count_at_or_above(shares_sorted, threshold_20)}"
+                )
+            if observed_10 + cls.COMPARISON_EPSILON < threshold_10:
+                passed = False
+                details.append(
+                    f"Rule {rule_name}: Need {min_count_10} additional participants >= {threshold_10:.2f}%, "
+                    f"found {max(cls._count_at_or_above(shares_sorted, threshold_10) - min_count_20, 0)}"
+                )
+
+        return passed, details
     
     def __init__(
         self,
@@ -323,7 +491,7 @@ class PrivacyValidator:
         max_concentration: float = 25.0,
         rule_name: Optional[str] = None,
         protected_entities: Optional[List[str]] = None,
-        protected_max_concentration: float = 25.0
+        protected_max_concentration: Optional[float] = None
     ):
         """
         Initialize privacy validator.
@@ -338,11 +506,12 @@ class PrivacyValidator:
             Named rule to apply (e.g., '5/25', '6/30')
         protected_entities : List[str], optional
             List of entity names with special concentration limits
-        protected_max_concentration : float
-            Maximum concentration for protected entities
+        protected_max_concentration : float, optional
+            Maximum concentration for protected entities. Defaults to selected rule cap.
         """
-        if rule_name and rule_name in self.RULES:
-            rule = self.RULES[rule_name]
+        rules = self.get_rules()
+        if rule_name and rule_name in rules:
+            rule = rules[rule_name]
             self.min_participants = rule['min_entities']
             self.max_concentration = rule['max_concentration']
             self.rule_name = rule_name
@@ -354,7 +523,11 @@ class PrivacyValidator:
             self.additional_constraints = {}
         
         self.protected_entities = protected_entities or []
-        self.protected_max_concentration = protected_max_concentration
+        self.protected_max_concentration = (
+            float(protected_max_concentration)
+            if protected_max_concentration is not None
+            else float(self.max_concentration)
+        )
         
         logger.info(f"Initialized PrivacyValidator with rule: {self.rule_name}")
         logger.info(f"Min participants: {self.min_participants}, "
@@ -387,7 +560,7 @@ class PrivacyValidator:
         is_compliant = True
 
         # Check minimum participants
-        min_ok, min_warnings = self._check_min_participants(peer_group)
+        min_ok, min_warnings = self._check_min_participants(peer_group, entity_column)
         if not min_ok:
             warnings.extend(min_warnings)
             return False, warnings
@@ -447,18 +620,18 @@ class PrivacyValidator:
         warnings = []
         constraints_met = True
         
-        # Rule 6/30: At least 3 entities ≥ 7%
+        # Rule 6/30: At least 3 entities >= 7%
         if 'min_count_above_threshold' in self.additional_constraints:
             min_count, threshold = self.additional_constraints['min_count_above_threshold']
             count_above = self._count_at_or_above(peer_group['concentration'].tolist(), threshold)
             
             if count_above < min_count:
                 warnings.append(
-                    f"Rule 6/30: Need {min_count} entities ≥ {threshold}%, found {count_above}"
+                    f"Rule 6/30: Need {min_count} entities >= {threshold}%, found {count_above}"
                 )
                 constraints_met = False
         
-        # Rule 7/35: At least 2 entities ≥ 15% AND 1 entity ≥ 8%
+        # Rule 7/35: At least 2 entities >= 15% AND 1 entity >= 8%
         if 'min_count_15' in self.additional_constraints:
             count_15 = self._count_at_or_above(peer_group['concentration'].tolist(), 15.0)
             count_8 = self._count_at_or_above(peer_group['concentration'].tolist(), 8.0)
@@ -466,18 +639,18 @@ class PrivacyValidator:
             if count_15 < self.additional_constraints['min_count_15']:
                 warnings.append(
                     f"Rule 7/35: Need {self.additional_constraints['min_count_15']} "
-                    f"entities ≥ 15%, found {count_15}"
+                    f"entities >= 15%, found {count_15}"
                 )
                 constraints_met = False
             
             if count_8 < (self.additional_constraints['min_count_15'] + 
                          self.additional_constraints.get('min_count_8', 0)):
                 warnings.append(
-                    f"Rule 7/35: Additional entity ≥ 8% requirement not met"
+                    f"Rule 7/35: Additional entity >= 8% requirement not met"
                 )
                 constraints_met = False
         
-        # Rule 10/40: At least 2 entities ≥ 20% AND 1 entity ≥ 10%
+        # Rule 10/40: At least 2 entities >= 20% AND 1 entity >= 10%
         if 'min_count_20' in self.additional_constraints:
             count_20 = self._count_at_or_above(peer_group['concentration'].tolist(), 20.0)
             count_10 = self._count_at_or_above(peer_group['concentration'].tolist(), 10.0)
@@ -485,14 +658,14 @@ class PrivacyValidator:
             if count_20 < self.additional_constraints['min_count_20']:
                 warnings.append(
                     f"Rule 10/40: Need {self.additional_constraints['min_count_20']} "
-                    f"entities ≥ 20%, found {count_20}"
+                    f"entities >= 20%, found {count_20}"
                 )
                 constraints_met = False
             
             if count_10 < (self.additional_constraints['min_count_20'] + 
                           self.additional_constraints.get('min_count_10', 0)):
                 warnings.append(
-                    f"Rule 10/40: Additional entity ≥ 10% requirement not met"
+                    f"Rule 10/40: Additional entity >= 10% requirement not met"
                 )
                 constraints_met = False
         
@@ -604,8 +777,9 @@ class PrivacyValidator:
     
     def get_rule_description(self) -> str:
         """Get human-readable description of current rule."""
-        if self.rule_name in self.RULES:
-            rule = self.RULES[self.rule_name]
+        rules = self.get_rules()
+        if self.rule_name in rules:
+            rule = rules[self.rule_name]
             desc = f"Rule {self.rule_name}: "
             desc += f"Min {rule['min_entities']} entities, "
             desc += f"Max {rule['max_concentration']}% concentration"

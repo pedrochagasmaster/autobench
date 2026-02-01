@@ -3,8 +3,10 @@ Unit tests for DataLoader column normalization collision handling.
 """
 
 import unittest
+import os
 import pandas as pd
 from unittest.mock import MagicMock
+from tempfile import NamedTemporaryFile
 from core.data_loader import DataLoader
 
 
@@ -92,6 +94,36 @@ class TestColumnNormalizationCollisions(unittest.TestCase):
         
         # Special chars ($, %, [, ], #) should be removed 
         self.assertTrue(all(c.isalnum() or c == '_' for col in result.columns for c in col))
+
+    def test_minimal_schema_heuristic_avoids_account_false_positive(self):
+        """Ensure account_type is not treated as a count column."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B'],
+            'account_type': ['x', 'y'],
+            'txn_amt': [10, 20],
+        })
+        self.assertFalse(self.loader.validate_minimal_schema(df))
+
+    def test_load_from_csv_respects_row_limit(self):
+        mock_config = MagicMock()
+        mock_config.get.side_effect = lambda *args, **kwargs: {
+            ('input', 'schema_detection_mode'): 'heuristic',
+            ('input', 'max_csv_size_mb'): None,
+            ('input', 'max_csv_rows'): 2,
+            ('input', 'csv_chunk_size'): None,
+        }.get(tuple(args), kwargs.get('default'))
+        mock_config.get_column_mapping.return_value = {}
+
+        loader = DataLoader(mock_config)
+        with NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp:
+            temp.write("issuer_name,txn_cnt\nA,1\nB,2\nC,3\n")
+            temp_path = temp.name
+
+        try:
+            df = loader.load_from_csv(temp_path)
+            self.assertEqual(len(df), 2)
+        finally:
+            os.unlink(temp_path)
 
 
 if __name__ == '__main__':

@@ -1,8 +1,17 @@
 import logging
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple, Set
-from scipy.optimize import minimize
+from typing import Dict, Any, Optional, List, Tuple
+
+try:
+    from scipy.optimize import minimize  # type: ignore
+    _SCIPY_AVAILABLE = True
+except Exception:
+    minimize = None  # type: ignore
+    _SCIPY_AVAILABLE = False
 from core.privacy_validator import PrivacyValidator
+from core.diagnostics_engine import DiagnosticsEngine
+from core.constants import DEFAULT_HEURISTIC_VIOLATION_PENALTY_WEIGHT
+from core.category_builder import CategoryBuilder
 from .base_solver import PrivacySolver, SolverResult
 
 logger = logging.getLogger(__name__)
@@ -14,7 +23,7 @@ class HeuristicSolver(PrivacySolver):
     """
     
     # Defaults from DimensionalAnalyzer
-    VIOLATION_PENALTY_WEIGHT = 1000.0
+    VIOLATION_PENALTY_WEIGHT = DEFAULT_HEURISTIC_VIOLATION_PENALTY_WEIGHT
     
     def solve(
         self, 
@@ -32,6 +41,8 @@ class HeuristicSolver(PrivacySolver):
         - min_weight: float
         - max_weight: float
         - tolerance: float
+        - max_iterations: int
+        - learning_rate: float (finite-difference step size for optimizer)
         - enforce_additional_constraints: bool
         - dynamic_constraints_enabled: bool
         - time_column: str (optional)
@@ -46,15 +57,23 @@ class HeuristicSolver(PrivacySolver):
         - dynamic_threshold_scale_floor: float
         - dynamic_count_scale_floor: float
         """
+        if not _SCIPY_AVAILABLE:
+            logger.info("SciPy not available, skipping heuristic solver.")
+            return None
+
         # Config
         target_weights = kwargs.get('target_weights')
         min_weight = kwargs.get('min_weight', 0.5)
         max_weight = kwargs.get('max_weight', 3.0)
         tolerance = kwargs.get('tolerance', 0.1)
+        max_iterations = int(kwargs.get('max_iterations', 500))
+        learning_rate = kwargs.get('learning_rate', None)
+        penalty_weight = float(kwargs.get('violation_penalty_weight', self.VIOLATION_PENALTY_WEIGHT))
         enforce_additional = kwargs.get('enforce_additional_constraints', True)
         dynamic_enabled = kwargs.get('dynamic_constraints_enabled', True)
         time_column = kwargs.get('time_column')
         rule_name = kwargs.get('rule_name')
+        merchant_mode = bool(kwargs.get('merchant_mode', False))
 
         self.min_peer_count_for_constraints = kwargs.get('min_peer_count_for_constraints', 6)
         self.min_effective_peer_count = kwargs.get('min_effective_peer_count', 2.5)
@@ -70,7 +89,7 @@ class HeuristicSolver(PrivacySolver):
         peer_index = {peer: i for i, peer in enumerate(peers)}
         
         # Build constraint stats
-        constraint_stats = self._build_constraint_stats(categories, peers, peer_volumes)
+        constraint_stats = DiagnosticsEngine.build_constraint_stats(categories, peers, peer_volumes)
         
         # Identify unique constraints
         unique_keys = set()
@@ -91,7 +110,7 @@ class HeuristicSolver(PrivacySolver):
             ]
 
         if not rule_name:
-            rule_name = PrivacyValidator.select_rule(len(peers))
+            rule_name = PrivacyValidator.select_rule(len(peers), merchant_mode=merchant_mode)
 
         # Check structural feasibility
         min_entities_check = True
@@ -172,7 +191,7 @@ class HeuristicSolver(PrivacySolver):
                     target = target_weights.get(peer, 1.0)
                     deviation_penalty += (weight_array[i] - target) ** 2
             
-            return (violation_penalty + additional_penalty) * self.VIOLATION_PENALTY_WEIGHT + deviation_penalty
+            return (violation_penalty + additional_penalty) * penalty_weight + deviation_penalty
 
         if target_weights:
             x0 = np.array([target_weights.get(peer, 1.0) for peer in peers])
@@ -181,12 +200,22 @@ class HeuristicSolver(PrivacySolver):
         
         bounds = [(min_weight, max_weight) for _ in peers]
         
+        options = {'maxiter': max_iterations, 'ftol': 1e-6}
+        if learning_rate is not None:
+            try:
+                learning_rate_val = float(learning_rate)
+                if learning_rate_val > 0:
+                    # Use learning_rate as the finite-difference step size for gradients
+                    options['eps'] = learning_rate_val
+            except Exception:
+                pass
+
         result = minimize(
             objective,
             x0=x0,
             method='L-BFGS-B',
             bounds=bounds,
-            options={'maxiter': 500, 'ftol': 1e-6}
+            options=options
         )
         
         optimized_weights = {peer: result.x[i] for i, peer in enumerate(peers)}
@@ -239,60 +268,6 @@ class HeuristicSolver(PrivacySolver):
             success=result.success
         )
 
-    def _build_constraint_stats(
-        self,
-        categories: List[Dict[str, Any]],
-        peers: List[str],
-        peer_volumes: Dict[str, float]
-    ) -> Dict[Tuple[str, Any, Optional[Any]], Dict[str, float]]:
-        overall_total = float(sum(peer_volumes.values()))
-        dim_time_totals: Dict[Tuple[str, Optional[Any]], float] = {}
-        category_totals: Dict[Tuple[str, Any, Optional[Any]], float] = {}
-        peer_sets: Dict[Tuple[str, Any, Optional[Any]], set] = {}
-        volumes_by_key: Dict[Tuple[str, Any, Optional[Any]], List[float]] = {}
-
-        for cat in categories:
-            key = (cat['dimension'], cat['category'], cat.get('time_period'))
-            dim_time_key = (cat['dimension'], cat.get('time_period'))
-            vol = float(cat.get('category_volume', 0.0))
-            category_totals[key] = category_totals.get(key, 0.0) + vol
-            dim_time_totals[dim_time_key] = dim_time_totals.get(dim_time_key, 0.0) + vol
-            if key not in peer_sets:
-                peer_sets[key] = set()
-                volumes_by_key[key] = []
-            if vol > 0:
-                peer_sets[key].add(cat['peer'])
-            volumes_by_key[key].append(vol)
-
-        stats = {}
-        peer_total = max(len(peers), 1)
-        for key, total in category_totals.items():
-            dim_time_key = (key[0], key[2])
-            dim_total = float(dim_time_totals.get(dim_time_key, 0.0))
-            participants = float(len(peer_sets.get(key, set())))
-            eff_peers = 0.0
-            if total > 0:
-                shares_sq = 0.0
-                for v in volumes_by_key.get(key, []):
-                    share = v / total
-                    shares_sq += share * share
-                eff_peers = (1.0 / shares_sq) if shares_sq > 0 else 0.0
-            volume_share = (total / dim_total) if dim_total > 0 else 0.0
-            overall_share = (total / overall_total) if overall_total > 0 else 0.0
-            peer_fraction = participants / float(peer_total)
-            coverage = max(volume_share, overall_share)
-            representativeness = (peer_fraction * coverage) ** 0.5 if peer_fraction > 0 and coverage > 0 else 0.0
-            
-            stats[key] = {
-                'participants': participants,
-                'effective_peers': eff_peers,
-                'category_total': total,
-                'volume_share': volume_share,
-                'overall_share': overall_share,
-                'representativeness': max(0.0, min(1.0, representativeness)),
-            }
-        return stats
-
     def _representativeness_weight(self, stats: Optional[Dict[str, float]]) -> float:
         if not stats:
             return 1.0
@@ -323,7 +298,7 @@ class HeuristicSolver(PrivacySolver):
         if dimension:
             if dimension == '_TIME_TOTAL':
                 return False, 'time_total', None, False
-            if time_column and dimension.startswith(f'_TIME_TOTAL_{time_column}'):
+            if time_column and dimension.startswith(f"{CategoryBuilder.TIME_TOTAL_DIMENSION_PREFIX}{time_column}"):
                 return False, 'time_total', None, False
 
         min_entities = int(rule_cfg.get('min_entities', 0))

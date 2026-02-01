@@ -69,23 +69,49 @@ class ReportGenerator:
 
     @staticmethod
     def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
-        col_lower = str(column_name).lower()
-        if 'weight_effect' in col_lower or 'effect' in col_lower:
-            return False
-        if 'total' in col_lower and not ('rate' in col_lower or '%' in col_lower):
-            return False
-        is_rate_like = (
-            '%' in col_lower
-            or 'rate' in col_lower
-            or 'average' in col_lower
-            or 'target' in col_lower
-            or 'peer' in col_lower
+        col_lower = str(column_name).lower().strip()
+        non_rate_markers = (
+            'impact',
+            'effect',
+            'distortion',
+            'weight',
+            'multiplier',
+            'total',
+            'volume',
+            'count',
+            'numerator',
+            'denominator',
         )
-        if not is_rate_like:
+        if any(marker in col_lower for marker in non_rate_markers):
+            return False
+
+        rate_patterns = (
+            col_lower.endswith('_raw_%'),
+            col_lower.endswith('_balanced_%'),
+            col_lower in {'target rate (%)', 'balanced peer average (%)', 'bic (%)'},
+            'rate' in col_lower,
+        )
+        if not any(rate_patterns):
             return False
         if convert_all_rates:
             return True
         return 'fraud' in col_lower
+
+    @staticmethod
+    def _build_unique_sheet_name(raw_name: str, existing_names: List[str]) -> str:
+        base = str(raw_name).strip() or "Sheet"
+        candidate = base[:31]
+        if candidate not in existing_names:
+            return candidate
+
+        suffix = 1
+        while True:
+            suffix_text = f"_{suffix}"
+            trimmed = base[: 31 - len(suffix_text)]
+            candidate = f"{trimmed}{suffix_text}"
+            if candidate not in existing_names:
+                return candidate
+            suffix += 1
     
     def generate_report(
         self,
@@ -177,7 +203,8 @@ class ReportGenerator:
         
         # Create sheets for each result
         for i, (metric_name, result_data) in enumerate(results.items()):
-            sheet_name = f"Metric_{i+1}_{metric_name[:20]}"  # Limit sheet name length
+            base_name = f"Metric_{i+1}_{metric_name[:20]}"
+            sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
         
@@ -233,7 +260,7 @@ class ReportGenerator:
         row += 1
         
         for metric_name in results.keys():
-            worksheet[f'A{row}'] = f"  • {metric_name}"
+            worksheet[f'A{row}'] = f"  - {metric_name}"
             row += 1
     
     def _write_metric_sheet(
@@ -257,7 +284,12 @@ class ReportGenerator:
                 worksheet[f'B{row}'] = value
                 row += 1
         elif isinstance(result_data, pd.DataFrame):
-            # Write dataframe
+            # Write dataframe with headers
+            headers = list(result_data.columns)
+            for c_idx, header in enumerate(headers, start=1):
+                cell = worksheet.cell(row=row, column=c_idx, value=header)
+                cell.font = self._font_class(bold=True)
+            row += 1
             for r_idx, row_data in enumerate(result_data.itertuples(index=False), start=row):
                 for c_idx, value in enumerate(row_data, start=1):
                     worksheet.cell(row=r_idx, column=c_idx, value=value)
@@ -319,7 +351,7 @@ class ReportGenerator:
             for col_idx, value in enumerate(row_data, 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=value)
                 # Highlight best row
-                if len(row_data) > 4 and row_data[4] == '⭐':
+                if len(row_data) > 4 and row_data[4] == '*':
                     cell.fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
         
         # Adjust column widths
@@ -399,7 +431,7 @@ class ReportGenerator:
         ws['A1'].font = Font(bold=True, size=14)
         
         # Status
-        status_text = "✅ PASSED" if passed else "⚠️ ISSUES FOUND"
+        status_text = "PASSED" if passed else "ISSUES FOUND"
         status_color = "E6FFE6" if passed else "FFCCCC"
         ws['A3'] = f"Status: {status_text}"
         ws['A3'].font = Font(bold=True, size=12)
@@ -458,6 +490,7 @@ class ReportGenerator:
         """Generate CSV report."""
         # Flatten results to dataframe
         rows = []
+        dataframes = []
         
         for metric_name, result_data in results.items():
             if isinstance(result_data, dict):
@@ -465,13 +498,23 @@ class ReportGenerator:
                 row.update(result_data)
                 rows.append(row)
             elif isinstance(result_data, pd.DataFrame):
-                # Save each dataframe result as separate CSV
-                df_output = Path(output_file).stem + f"_{metric_name}.csv"
-                result_data.to_csv(df_output, index=False)
+                dataframes.append((metric_name, result_data))
         
         if rows:
             df_results = pd.DataFrame(rows)
             df_results.to_csv(output_file, index=False)
+        
+        if dataframes:
+            if not rows and len(dataframes) == 1:
+                # Write single dataframe to the requested output file
+                _, df = dataframes[0]
+                df.to_csv(output_file, index=False)
+            else:
+                # Save each dataframe result as separate CSV
+                output_path = Path(output_file)
+                for metric_name, df in dataframes:
+                    df_output = output_path.with_name(f"{output_path.stem}_{metric_name}.csv")
+                    df.to_csv(df_output, index=False)
     
     def _generate_json_report(
         self,
@@ -608,8 +651,7 @@ class ReportGenerator:
             if not isinstance(result_data, (dict, pd.DataFrame)):
                 continue
             
-            # Limit sheet name to 31 chars (Excel limit)
-            sheet_name = str(metric_name)[:31]
+            sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             
             # Sheet header

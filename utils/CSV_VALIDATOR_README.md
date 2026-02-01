@@ -113,20 +113,20 @@ Tolerance: 0.000100 (0.0100%)
 ================================================================================
 
 Loading CSV data...
-  ✓ Loaded 72 rows
+  [OK] Loaded 72 rows
 Loading Excel data...
-  ✓ Loaded 3 dimension sheets
+  [OK] Loaded 3 dimension sheets
 Rate Types: approval, fraud
 Time-Aware: Yes (year_month column detected)
 
 Validating dimension: fl_token
-  ✓ PASS - 48/48 checks passed
+  [OK] PASS - 48/48 checks passed
 
 Validating dimension: flag_recurring
-  ✓ PASS - 32/32 checks passed
+  [OK] PASS - 32/32 checks passed
 
 Validating dimension: poi
-  ✓ PASS - 48/48 checks passed
+  [OK] PASS - 48/48 checks passed
 
 ================================================================================
 VALIDATION SUMMARY
@@ -137,7 +137,7 @@ Passed: 128 (100.0%)
 Failed: 0 (0.0%)
 Skipped: 0 (0.0%)
 
-✓ ALL VALIDATIONS PASSED!
+[OK] ALL VALIDATIONS PASSED!
   CSV balanced totals correctly produce Excel rates within 0.0100% tolerance
 ================================================================================
 ```
@@ -146,10 +146,10 @@ Skipped: 0 (0.0%)
 
 ```
 Validating dimension: fl_token
-  ✗ FAIL - 46/48 checks passed
+  [FAIL] FAIL - 46/48 checks passed
     Failed: 2
-      • Non-tokenized (fraud): CSV=0.0950% vs Excel=0.0955% (Δ=0.0005%)
-      • Tokenized (approval): CSV=74.5012% vs Excel=74.5100% (Δ=0.0088%)
+      - Non-tokenized (fraud): CSV=0.0950% vs Excel=0.0955% (Delta=0.0005%)
+      - Tokenized (approval): CSV=74.5012% vs Excel=74.5100% (Delta=0.0088%)
 ```
 
 ## Exit Codes
@@ -243,7 +243,7 @@ py utils/csv_validator.py report.xlsx report_balanced.csv --tolerance 0.0005
 
 **Symptom:** 
 ```
-⚠ Skipping dimension_name: No matching Excel sheet found
+WARN Skipping dimension_name: No matching Excel sheet found
 ```
 
 **Cause:** Excel sheet name was truncated or sanitized (max 31 chars, no `/\` characters).

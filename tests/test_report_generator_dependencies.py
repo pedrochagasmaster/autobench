@@ -31,6 +31,16 @@ class TestReportGeneratorDependencies(unittest.TestCase):
 
         self.assertIn("openpyxl", str(ctx.exception))
 
+    def test_unique_sheet_name_avoids_collisions(self) -> None:
+        existing = ["Metric_1_abcdefghijklmnopqrstuvwxyz", "Metric_1_abcdefghijklmnopqrstuvwx_1"]
+        name = ReportGenerator._build_unique_sheet_name("Metric_1_abcdefghijklmnopqrstuvwxyz", existing)
+        self.assertNotIn(name, existing)
+        self.assertLessEqual(len(name), 31)
+
+    def test_rate_column_conversion_detection(self) -> None:
+        self.assertTrue(ReportGenerator._should_convert_rate_column("fraud_Raw_%", convert_all_rates=False))
+        self.assertFalse(ReportGenerator._should_convert_rate_column("approval_Impact_PP", convert_all_rates=True))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

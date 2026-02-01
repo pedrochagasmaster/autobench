@@ -3,11 +3,13 @@ Validation orchestration for both share and rate analysis.
 Extracted to eliminate code duplication between run_share_analysis() and run_rate_analysis().
 """
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 
 import pandas as pd
 
 from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
+if TYPE_CHECKING:
+    from utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def _log_validation_issue(issue: ValidationIssue) -> None:
 
 def run_input_validation(
     df: pd.DataFrame,
-    config: 'ConfigManager',
+    config: "ConfigManager",
     data_loader: DataLoader,
     analysis_type: str,
     metric_col: Optional[str] = None,
@@ -86,6 +88,10 @@ def run_input_validation(
 
     val_dimensions = dimensions or data_loader.get_available_dimensions(df)
     thresholds = config.get('input', 'validation_thresholds', default={})
+    merchant_mode = config.get('analysis', 'merchant_mode', default=False)
+    if merchant_mode:
+        thresholds = dict(thresholds)
+        thresholds['min_peer_count'] = min(int(thresholds.get('min_peer_count', 5)), 4)
 
     if analysis_type == 'share':
         issues = data_loader.validate_share_input(

@@ -379,7 +379,11 @@ class ConfigManager:
             'input': {
                 'entity_col': 'issuer_name',
                 'time_col': None,
+                'schema_detection_mode': 'heuristic',
                 'validate_input': True,
+                'max_csv_size_mb': None,
+                'max_csv_rows': None,
+                'csv_chunk_size': None,
                 'validation_thresholds': {
                     'min_denominator': 100,
                     'min_peer_count': 5,
@@ -412,10 +416,14 @@ class ConfigManager:
             'optimization': {
                 'algorithm': 'linear_programming',
                 'linear_programming': {
-                    'max_iterations': 1000,
-                    'tolerance': 1.0,
-                    'rank_penalty_weight': 1.0,
+                'max_iterations': 1000,
+                'tolerance': 1.0,
+                'rank_penalty_weight': 1.0,
+                'rank_constraints': {
+                    'mode': 'all',
+                    'neighbor_k': 1,
                 },
+            },
                 'bounds': {
                     'max_weight': 10.0,
                     'min_weight': 0.01,
@@ -448,12 +456,14 @@ class ConfigManager:
                 'bayesian': {
                     'max_iterations': 500,
                     'learning_rate': 0.01,
+                    'violation_penalty_weight': 1000.0,
                 },
             },
             'analysis': {
                 'best_in_class_percentile': 0.85,
                 'fraud_percentile': 0.15,
                 'auto_detect_dimensions': False,
+                'merchant_mode': False,
             },
         }
     
@@ -508,6 +518,14 @@ class ConfigManager:
         
         deep_merge(self.config, override_copy)
 
+        # Backward compatibility: subset_search.max_tests -> subset_search.max_attempts
+        opt_cfg = self.config.get('optimization', {})
+        if isinstance(opt_cfg, dict):
+            subset_cfg = opt_cfg.get('subset_search', {})
+            if isinstance(subset_cfg, dict):
+                if 'max_attempts' not in subset_cfg and 'max_tests' in subset_cfg:
+                    subset_cfg['max_attempts'] = subset_cfg.get('max_tests')
+
         # Backward compatibility: map legacy distortion keys to impact keys
         output_cfg = self.config.get('output', {})
         if isinstance(output_cfg, dict):
@@ -534,6 +552,7 @@ class ConfigManager:
             'time_col': ('input', 'time_col'),
             'debug': ('output', 'include_debug_sheets'),
             'log_level': ('output', 'log_level'),
+            'per_dimension_weights': ('optimization', 'constraints', 'consistency_mode'),
             'max_iterations': ('optimization', 'linear_programming', 'max_iterations'),
             'tolerance': ('optimization', 'linear_programming', 'tolerance'),
             'max_weight': ('optimization', 'bounds', 'max_weight'),
@@ -556,7 +575,11 @@ class ConfigManager:
         
         for cli_key, config_path in mapping.items():
             if cli_key in overrides and overrides[cli_key] is not None:
-                self._set_nested(self.config, config_path, overrides[cli_key])
+                if cli_key == 'per_dimension_weights':
+                    value = 'per_dimension' if overrides[cli_key] else 'global'
+                    self._set_nested(self.config, config_path, value)
+                else:
+                    self._set_nested(self.config, config_path, overrides[cli_key])
                 logger.debug(f"CLI override: {cli_key} = {overrides[cli_key]}")
     
     def _set_nested(self, d: dict, path: tuple, value: Any) -> None:

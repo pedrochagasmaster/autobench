@@ -26,6 +26,7 @@ import pandas as pd
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.data_loader import DataLoader, ValidationSeverity, ValidationIssue
 from core.report_generator import ReportGenerator
+from core.privacy_validator import PrivacyValidator
 from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
@@ -157,7 +158,7 @@ EXAMPLES:
     share_parser.add_argument('--log-level',
                              choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                              help='Logging level (default: INFO)')
-    share_parser.add_argument('--per-dimension-weights', action='store_true',
+    share_parser.add_argument('--per-dimension-weights', action='store_true', default=None,
                              help='Optimize each dimension independently (disables global weighting mode)')
     share_parser.add_argument('--export-balanced-csv', action='store_true',
                              help='Export balanced shares and volumes to CSV (without weights or original values)')
@@ -249,7 +250,7 @@ EXAMPLES:
     rate_parser.add_argument('--log-level',
                             choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                             help='Logging level (default: INFO)')
-    rate_parser.add_argument('--per-dimension-weights', action='store_true',
+    rate_parser.add_argument('--per-dimension-weights', action='store_true', default=None,
                             help='Optimize each dimension independently (disables global weighting mode)')
     rate_parser.add_argument('--export-balanced-csv', action='store_true',
                             help='Export balanced shares and volumes to CSV (without weights or original values)')
@@ -483,6 +484,13 @@ def run_preset_comparison(
             opt_config = config.config['optimization']
             analysis_config = config.config['analysis']
             dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+            rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
+            volume_preservation = opt_config['constraints']['volume_preservation']
+            rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
+            lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
+            bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
+            bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
+            violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
             
             # Create analyzer with preset parameters
             analyzer = DimensionalAnalyzer(
@@ -491,11 +499,14 @@ def run_preset_comparison(
                 bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
                 debug_mode=False,
                 consistent_weights=consistent_weights,
+                merchant_mode=analysis_config.get('merchant_mode', False),
+                rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
+                rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
                 max_iterations=opt_config['linear_programming']['max_iterations'],
                 tolerance=opt_config['linear_programming']['tolerance'],
                 max_weight=opt_config['bounds']['max_weight'],
                 min_weight=opt_config['bounds']['min_weight'],
-                volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+                volume_preservation_strength=rank_preservation_strength,
                 prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
                 auto_subset_search=opt_config['subset_search'].get('enabled', True),
                 subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
@@ -505,6 +516,7 @@ def run_preset_comparison(
                 time_column=time_col,
                 volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
                 volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+                lambda_penalty=lambda_penalty,
                 enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
                 dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
                 min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
@@ -516,6 +528,9 @@ def run_preset_comparison(
                 dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
                 representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
                 representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
+                bayesian_max_iterations=bayesian_max_iterations,
+                bayesian_learning_rate=bayesian_learning_rate,
+                violation_penalty_weight=violation_penalty_weight,
             )
             
             # Calculate global weights
@@ -635,6 +650,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'time_col': getattr(args, 'time_col', None),
             'debug': getattr(args, 'debug', None),
             'log_level': getattr(args, 'log_level', None),
+            'per_dimension_weights': getattr(args, 'per_dimension_weights', None),
             'auto': getattr(args, 'auto', None),
             'auto_subset_search': getattr(args, 'auto_subset_search', None),
             'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
@@ -743,7 +759,6 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
         dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
-        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
         
         # Log configuration source
         if getattr(args, 'preset', None):
@@ -758,19 +773,37 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Initialize analyzer with config values
         debug_mode = config.get('output', 'include_debug_sheets', default=False)
         # Consistent weights is now the default (global weighting mode)
-        # Use --per-dimension-weights flag to disable it
-        consistent_weights = not getattr(args, 'per_dimension_weights', False)
+        # Use optimization.constraints.consistency_mode (and CLI overrides) to control it
+        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+        mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
+        if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
+            consistent_weights = False
+        elif mode_normalized in ('global', 'consistent', 'global-weights'):
+            consistent_weights = True
+        else:
+            logger.warning(f"Unknown consistency_mode '{consistency_mode}', defaulting to global weights")
+            consistent_weights = True
+        rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
+        volume_preservation = opt_config['constraints']['volume_preservation']
+        rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
+        lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
+        bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
+        bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
+        violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
         analyzer = DimensionalAnalyzer(
             target_entity=resolved_entity,
             entity_column=entity_col,
             bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
+            merchant_mode=analysis_config.get('merchant_mode', False),
+            rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
+            rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
             max_iterations=opt_config['linear_programming']['max_iterations'],
             tolerance=opt_config['linear_programming']['tolerance'],
             max_weight=opt_config['bounds']['max_weight'],
             min_weight=opt_config['bounds']['min_weight'],
-            volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+            volume_preservation_strength=rank_preservation_strength,
             prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
             auto_subset_search=opt_config['subset_search'].get('enabled', True),
             subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
@@ -780,6 +813,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             time_column=time_col,
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+            lambda_penalty=lambda_penalty,
             enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
             dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
             min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
@@ -791,6 +825,9 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
             representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
             representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
+            bayesian_max_iterations=bayesian_max_iterations,
+            bayesian_learning_rate=bayesian_learning_rate,
+            violation_penalty_weight=violation_penalty_weight,
         )
         
         # Determine dimensions
@@ -863,6 +900,13 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'preset': getattr(args, 'preset', None),
             'debug_mode': debug_mode,
             'consistent_weights': consistent_weights,
+            'merchant_mode': config.get('analysis', 'merchant_mode', default=False),
+            'include_debug_sheets': debug_mode,
+            'include_privacy_validation': include_privacy_validation,
+            'include_impact_summary': include_impact_summary,
+            'include_preset_comparison': include_preset_comparison,
+            'include_calculated_metrics': include_calculated_metrics,
+            'output_format': output_format,
             'timestamp': datetime.now(),
             # New: capture all input parameters
             'input_csv': getattr(args, 'csv', None),
@@ -870,11 +914,13 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
+            'consistency_mode': consistency_mode,
             'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
             'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
             'max_weight': opt_config.get('bounds', {}).get('max_weight'),
             'min_weight': opt_config.get('bounds', {}).get('min_weight'),
             'volume_preservation_strength': opt_config.get('constraints', {}).get('volume_preservation'),
+            'rank_penalty_weight': opt_config.get('linear_programming', {}).get('rank_penalty_weight'),
             'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
             'prefer_slacks_first': opt_config.get('subset_search', {}).get('prefer_slacks_first'),
             'auto_subset_search': opt_config.get('subset_search', {}).get('enabled'),
@@ -895,6 +941,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
             'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
             'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
+            'violation_penalty_weight': opt_config.get('bayesian', {}).get('violation_penalty_weight'),
             'impact_thresholds': {
                 'high_pp': config.get(
                     'output',
@@ -1171,6 +1218,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'time_col': getattr(args, 'time_col', None),
             'debug': getattr(args, 'debug', None),
             'log_level': getattr(args, 'log_level', None),
+            'per_dimension_weights': getattr(args, 'per_dimension_weights', None),
             'auto': getattr(args, 'auto', None),
             'auto_subset_search': getattr(args, 'auto_subset_search', None),
             'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
@@ -1229,8 +1277,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         numerator_cols = {}
         bic_percentiles = {}
         
-        # Get BIC percentile from config
+        # Get BIC percentiles from config
         default_bic = config.get('analysis', 'best_in_class_percentile', default=0.85)
+        fraud_bic = config.get('analysis', 'fraud_percentile', default=0.15)
         
         if args.approved_col:
             if args.approved_col not in df.columns:
@@ -1249,7 +1298,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
                 return 1
             rate_types.append('fraud')
             numerator_cols['fraud'] = args.fraud_col
-            bic_percentiles['fraud'] = 0.15  # Lower is better for fraud
+            bic_percentiles['fraud'] = fraud_bic  # Lower is better for fraud
             logger.info(f"Fraud rate calculation: {args.fraud_col} / {total_col}")
         
         time_col = config.get('input', 'time_col')
@@ -1305,9 +1354,6 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Determine dimensions
         debug_mode = config.get('output', 'include_debug_sheets', default=False)
-        # Consistent weights is now the default (global weighting mode)
-        # Use --per-dimension-weights flag to disable it
-        consistent_weights = not getattr(args, 'per_dimension_weights', False)
         
         if args.dimensions:
             dimensions = args.dimensions
@@ -1327,21 +1373,43 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
         dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+
+        # Consistent weights is now the default (global weighting mode)
+        # Use optimization.constraints.consistency_mode (and CLI overrides) to control it
+        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+        mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
+        if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
+            consistent_weights = False
+        elif mode_normalized in ('global', 'consistent', 'global-weights'):
+            consistent_weights = True
+        else:
+            logger.warning(f"Unknown consistency_mode '{consistency_mode}', defaulting to global weights")
+            consistent_weights = True
         
         # Initialize analyzer ONCE with first rate type's BIC (we'll override per-dimension)
         # The key insight: weights are based on total_col, not the numerator
         first_rate_type = rate_types[0]
+        rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
+        volume_preservation = opt_config['constraints']['volume_preservation']
+        rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
+        lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
+        bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
+        bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
+        violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
         analyzer = DimensionalAnalyzer(
             target_entity=resolved_entity,
             entity_column=entity_col,
             bic_percentile=bic_percentiles[first_rate_type],  # Used for first rate type
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
+            merchant_mode=analysis_config.get('merchant_mode', False),
+            rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
+            rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
             max_iterations=opt_config['linear_programming']['max_iterations'],
             tolerance=opt_config['linear_programming']['tolerance'],
             max_weight=opt_config['bounds']['max_weight'],
             min_weight=opt_config['bounds']['min_weight'],
-            volume_preservation_strength=opt_config['constraints']['volume_preservation'],
+            volume_preservation_strength=rank_preservation_strength,
             prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
             auto_subset_search=opt_config['subset_search'].get('enabled', True),
             subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
@@ -1351,6 +1419,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             time_column=time_col,
             volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
             volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+            lambda_penalty=lambda_penalty,
             enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
             dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
             min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
@@ -1362,6 +1431,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
             representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
             representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
+            bayesian_max_iterations=bayesian_max_iterations,
+            bayesian_learning_rate=bayesian_learning_rate,
+            violation_penalty_weight=violation_penalty_weight,
         )
         
         # Calculate global weights ONCE based on total_col
@@ -1451,17 +1523,26 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'preset': getattr(args, 'preset', None),
             'debug_mode': debug_mode,
             'consistent_weights': consistent_weights,
+            'merchant_mode': config.get('analysis', 'merchant_mode', default=False),
+            'include_debug_sheets': debug_mode,
+            'include_privacy_validation': include_privacy_validation,
+            'include_impact_summary': include_impact_summary,
+            'include_preset_comparison': include_preset_comparison,
+            'include_calculated_metrics': include_calculated_metrics,
+            'output_format': output_format,
             'timestamp': datetime.now(),
             'input_csv': getattr(args, 'csv', None),
             'log_level': getattr(args, 'log_level', None),
             'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
+            'consistency_mode': consistency_mode,
             'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
             'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
             'max_weight': opt_config.get('bounds', {}).get('max_weight'),
             'min_weight': opt_config.get('bounds', {}).get('min_weight'),
             'volume_preservation_strength': opt_config.get('constraints', {}).get('volume_preservation'),
+            'rank_penalty_weight': opt_config.get('linear_programming', {}).get('rank_penalty_weight'),
             'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
             'prefer_slacks_first': opt_config.get('subset_search', {}).get('prefer_slacks_first'),
             'bic_percentiles': bic_percentiles,  # Store both BIC percentiles
@@ -1476,6 +1557,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
             'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
             'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
+            'violation_penalty_weight': opt_config.get('bayesian', {}).get('violation_penalty_weight'),
             'impact_thresholds': {
                 'high_pp': config.get(
                     'output',
@@ -1795,6 +1877,26 @@ def generate_excel_report(
     except ImportError:
         logger.error("openpyxl not installed. Install with: pip install openpyxl")
         raise
+
+    include_debug = True
+    include_privacy_validation = True
+    include_impact_summary = True
+    include_preset_comparison = True
+    if metadata:
+        include_debug = bool(metadata.get('include_debug_sheets', metadata.get('debug_mode', True)))
+        include_privacy_validation = bool(metadata.get('include_privacy_validation', True))
+        include_impact_summary = bool(metadata.get('include_impact_summary', True))
+        include_preset_comparison = bool(metadata.get('include_preset_comparison', True))
+
+    if not include_debug:
+        weights_df = None
+    if not include_privacy_validation:
+        privacy_validation_df = None
+    if not include_impact_summary:
+        impact_df = None
+        impact_summary_df = None
+    if not include_preset_comparison:
+        preset_comparison_df = None
     
     wb = Workbook()
     wb.remove(wb.active)
@@ -1879,6 +1981,7 @@ def generate_excel_report(
         write_input("Subset Search Max Slack Threshold:", metadata.get('subset_search_max_slack_threshold'))
         write_input("Bayesian Max Iterations:", metadata.get('bayesian_max_iterations'))
         write_input("Bayesian Learning Rate:", metadata.get('bayesian_learning_rate'))
+        write_input("Violation Penalty Weight:", metadata.get('violation_penalty_weight'))
         
         row += 1
     
@@ -1940,18 +2043,19 @@ def generate_excel_report(
         
         # Determine which privacy rule applies (based on PEER count, not including target)
         peer_count = metadata.get('peer_count', 0)
-        if peer_count >= 10:
-            privacy_rule = "10/40 Rule (10 peers min, 40% max concentration)"
-        elif peer_count >= 7:
-            privacy_rule = "7/35 Rule (7 peers min, 35% max concentration)"
-        elif peer_count >= 6:
-            privacy_rule = "6/30 Rule (6 peers min, 30% max concentration)"
-        elif peer_count >= 5:
-            privacy_rule = "5/25 Rule (5 peers min, 25% max concentration)"
-        elif peer_count >= 4:
-            privacy_rule = "4/35 Rule (4 peers min, 35% max concentration)"
+        merchant_mode = bool(metadata.get('merchant_mode', False)) if metadata else False
+        rule_name = PrivacyValidator.select_rule(peer_count, merchant_mode=merchant_mode)
+        if rule_name == 'insufficient':
+            min_required = 4 if merchant_mode else 5
+            privacy_rule = (
+                f"WARNING: Only {peer_count} peers - insufficient for privacy compliance "
+                f"(minimum {min_required} required)"
+            )
         else:
-            privacy_rule = f"WARNING: Only {peer_count} peers - insufficient for privacy compliance (minimum 4 required)"
+            rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+            min_entities = rule_cfg.get('min_entities', 'N/A') if rule_cfg else 'N/A'
+            max_conc = rule_cfg.get('max_concentration', 'N/A') if rule_cfg else 'N/A'
+            privacy_rule = f"{rule_name} Rule ({min_entities} peers min, {max_conc}% max concentration)"
         
         ws_summary[f'A{row}'] = "Applied Privacy Rule:"
         ws_summary[f'B{row}'] = privacy_rule
@@ -1994,7 +2098,7 @@ def generate_excel_report(
             top = top.sort_values(['Abs_Delta', 'Adjusted_Rank'], ascending=[False, True]).head(5)
             for _, r in top.iterrows():
                 ws_summary[f'A{row}'] = str(r['Peer'])
-                ws_summary[f'B{row}'] = f"Base→Adj: {int(r['Base_Rank'])}→{int(r['Adjusted_Rank'])} (Δ {int(r['Delta'])})"
+                ws_summary[f'B{row}'] = f"Base->Adj: {int(r['Base_Rank'])}->{int(r['Adjusted_Rank'])} (Delta {int(r['Delta'])})"
                 row += 1
             row += 1
     except Exception as e:
@@ -2092,9 +2196,9 @@ def generate_excel_report(
         ws_weights['A1'] = "Peer Weights"
         ws_weights['A1'].font = Font(bold=True, size=12)
 
-        ws_weights['A2'] = "Adjusted_Share = Adjusted_Volume ÷ Sum(All Adjusted_Volumes) [capped at Max_Concentration]"
+        ws_weights['A2'] = "Adjusted_Share = Adjusted_Volume / Sum(All Adjusted_Volumes) [capped at Max_Concentration]"
         ws_weights['A2'].font = Font(italic=True, size=9)
-        ws_weights['A3'] = "Peer_Balanced_Avg = Sum(Metric × Adjusted_Share) - ensures no peer > Max_Concentration"
+        ws_weights['A3'] = "Peer_Balanced_Avg = Sum(Metric * Adjusted_Share) - ensures no peer > Max_Concentration"
         ws_weights['A3'].font = Font(italic=True, size=9)
 
         # Write headers
@@ -2614,6 +2718,7 @@ def generate_multi_rate_excel_report(
     write_param("Subset Search Max Slack Threshold", 'subset_search_max_slack_threshold')
     write_param("Bayesian Max Iterations", 'bayesian_max_iterations')
     write_param("Bayesian Learning Rate", 'bayesian_learning_rate')
+    write_param("Violation Penalty Weight", 'violation_penalty_weight')
     
     row += 2
     

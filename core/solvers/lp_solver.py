@@ -36,6 +36,8 @@ class LPSolver(PrivacySolver):
         - volume_weighting_exponent: float (default 1.0)
         - min_weight: float (default 0.5)
         - max_weight: float (default 3.0)
+        - lambda_penalty: float (optional override for cap slack penalty)
+        - max_iterations: int (optional LP iteration cap)
         """
         if not _SCIPY_AVAILABLE:
             logger.info("SciPy not available, skipping LP solver.")
@@ -48,6 +50,17 @@ class LPSolver(PrivacySolver):
         volume_weighting_exponent = float(kwargs.get('volume_weighting_exponent', 1.0))
         min_weight = float(kwargs.get('min_weight', 0.5))
         max_weight = float(kwargs.get('max_weight', 3.0))
+        lambda_penalty = kwargs.get('lambda_penalty', None)
+        max_iterations = kwargs.get('max_iterations', None)
+        max_iterations_int = None
+        if max_iterations is not None:
+            try:
+                max_iterations_int = int(max_iterations)
+                if max_iterations_int <= 0:
+                    max_iterations_int = None
+            except Exception:
+                max_iterations_int = None
+        options = {'maxiter': max_iterations_int} if max_iterations_int else None
 
         P = len(peers)
         if P == 0:
@@ -83,14 +96,24 @@ class LPSolver(PrivacySolver):
         total_vol = float(peer_vol_arr.sum())
         base_shares = peer_vol_arr / total_vol if total_vol > 0 else np.ones(P, dtype=float) / max(P, 1)
         
-        # Create ordered pairs (i,j) where base_shares[i] >= base_shares[j] and i<j
+        # Create ordered pairs (i,j) where base_shares[i] >= base_shares[j]
         pair_indices: List[Tuple[int, int]] = []
         order = np.argsort(-base_shares)  # descending
-        for a in range(P):
-            i = int(order[a])
-            for b in range(a + 1, P):
-                j = int(order[b])
-                pair_indices.append((i, j))
+        rank_mode = str(kwargs.get('rank_constraint_mode', 'all')).lower()
+        rank_k = int(kwargs.get('rank_constraint_k', 1))
+        if rank_mode == 'neighbor':
+            k = max(rank_k, 1)
+            for a in range(P):
+                i = int(order[a])
+                for b in range(a + 1, min(P, a + 1 + k)):
+                    j = int(order[b])
+                    pair_indices.append((i, j))
+        else:
+            for a in range(P):
+                i = int(order[a])
+                for b in range(a + 1, P):
+                    j = int(order[b])
+                    pair_indices.append((i, j))
         K = len(pair_indices)
 
         # Number of share-cap constraints (one per category per peer)
@@ -100,13 +123,16 @@ class LPSolver(PrivacySolver):
         n_vars = 3 * P + num_cap_constraints + K
         
         # Penalty for cap slacks: higher tolerance allows more slack
-        base_lambda_cap = float(100.0 / max(tolerance, 1e-6))
+        if lambda_penalty is not None:
+            base_lambda_cap = float(max(lambda_penalty, 0.0))
+        else:
+            base_lambda_cap = float(100.0 / max(tolerance, 1e-6))
         
         # Calculate volume-weighted slack penalties if enabled
         if volume_weighted_penalties:
             category_volumes = []
             for v in cat_vectors:
-                cat_vol = float(np.dot(v, peer_vol_arr))
+                cat_vol = float(v.sum())
                 category_volumes.append(cat_vol)
             
             total_category_vol = sum(category_volumes)
@@ -180,7 +206,14 @@ class LPSolver(PrivacySolver):
         solved_method = None
         for method in ['highs', 'highs-ds', 'highs-ipm']:
             try:
-                res = linprog(c=c, A_ub=A_ub, b_ub=b_ub_arr, bounds=bounds, method=method) # type: ignore
+                res = linprog(
+                    c=c,
+                    A_ub=A_ub,
+                    b_ub=b_ub_arr,
+                    bounds=bounds,
+                    method=method,
+                    options=options
+                ) # type: ignore
                 if res is not None and res.success:
                     solved_method = method
                     break
@@ -195,10 +228,13 @@ class LPSolver(PrivacySolver):
         
         # Stats
         total_category_volume = sum(v.sum() for v in cat_vectors)
+        total_peer_volume = float(peer_vol_arr.sum())
         max_slack_abs = float(s_cap_used.max()) if s_cap_used.size > 0 else 0.0
         sum_slack_abs = float(s_cap_used.sum()) if s_cap_used.size > 0 else 0.0
         max_slack_pct = (max_slack_abs / total_category_volume * 100.0) if total_category_volume > 0 else 0.0
         sum_slack_pct = (sum_slack_abs / total_category_volume * 100.0) if total_category_volume > 0 else 0.0
+        max_slack_pct_peer = (max_slack_abs / total_peer_volume * 100.0) if total_peer_volume > 0 else 0.0
+        sum_slack_pct_peer = (sum_slack_abs / total_peer_volume * 100.0) if total_peer_volume > 0 else 0.0
 
         stats = {
             'method': solved_method or 'highs',
@@ -206,6 +242,10 @@ class LPSolver(PrivacySolver):
             'sum_slack': sum_slack_pct,
             'max_slack_abs': max_slack_abs,
             'sum_slack_abs': sum_slack_abs,
+            'max_slack_pct_peer_total': max_slack_pct_peer,
+            'sum_slack_pct_peer_total': sum_slack_pct_peer,
+            'total_category_volume': total_category_volume,
+            'total_peer_volume': total_peer_volume,
             'lambda_cap': base_lambda_cap,
             'volume_weighted': volume_weighted_penalties,
             'num_vars': n_vars,

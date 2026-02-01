@@ -603,3 +603,11 @@ For shared server deployment, see [SETUP.md](SETUP.md).
 **Built for Mastercard Privacy Compliance** · Version 3.0.0
 
 </div>
+
+## Core Technical Documentation
+
+A concise technical reference for the core engine is available here:
+
+- docs/CORE_TECHNICAL_DOC.md
+
+This document summarizes data loading, validation, privacy enforcement, optimization, diagnostics, and reporting, and lists potential improvement areas.
