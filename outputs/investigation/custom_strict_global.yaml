@@ -1,0 +1,46 @@
+version: "3.0"
+description: "investigation custom strict-global"
+
+input:
+  validate_input: true
+
+output:
+  include_debug_sheets: true
+  include_privacy_validation: true
+  include_impact_summary: true
+  output_format: both
+
+optimization:
+  linear_programming:
+    tolerance: 0.5
+    volume_weighted_penalties: true
+    volume_weighting_exponent: 1.2
+  constraints:
+    consistency_mode: global
+    volume_preservation: 0.9
+    enforce_additional_constraints: true
+    dynamic_constraints:
+      enabled: true
+      min_peer_count: 4
+      min_effective_peer_count: 3.0
+      min_category_volume_share: 0.001
+      min_overall_volume_share: 0.0005
+      min_representativeness: 0.2
+      threshold_scale_floor: 0.6
+      count_scale_floor: 0.5
+      penalty_floor: 0.3
+      penalty_power: 1.0
+  subset_search:
+    enabled: true
+    strategy: random
+    max_attempts: 80
+    trigger_on_slack: true
+    max_slack_threshold: 0.0
+    prefer_slacks_first: false
+  bayesian:
+    max_iterations: 700
+    learning_rate: 0.01
+    violation_penalty_weight: 2000.0
+
+analysis:
+  best_in_class_percentile: 0.9

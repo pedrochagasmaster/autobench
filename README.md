@@ -159,7 +159,7 @@ ATM         97.2%   96.8%  +0.4pp
 |--------|----------|--------------|
 | 🟢 **`balanced_default`** | Day-to-day analysis | Allows 2% tolerance; fastest |
 | 🔴 **`compliance_strict`** | Regulatory reports | Zero violations; may split dimensions |
-| 🟡 **`strategic_consistency`** | Executive dashboards | Keeps all dimensions together |
+| 🟡 **`strategic_consistency`** | Executive dashboards | Enforces one global weight set (no per-dimension fallback) |
 | 🟣 **`research_exploratory`** | Difficult datasets | Very relaxed; use for exploration |
 
 ### 🌳 Decision Tree
@@ -284,7 +284,7 @@ py benchmark.py share --csv data.csv --metric txn_cnt --compare-presets
 **Presets compared:**
 - `balanced_default`
 - `compliance_strict`
-- `low_distortion_optimized`
+- `low_distortion`
 - `minimal_distortion`
 - `research_exploratory`
 - `strategic_consistency`
@@ -322,11 +322,13 @@ py benchmark.py share --csv data.csv --metric txn_cnt --export-balanced-csv --in
 ```
 
 **CSV includes:**
-- `Balanced_Metric`: Privacy-weighted values
-- `Raw_Metric`: Original unweighted values
+- `Balanced_Metric`: Peer-only privacy-weighted totals
+- `Raw_Metric`: Peer-only unweighted totals
 - `Raw_Metric_Share_%`: Unweighted percentage
 - `Balanced_Metric_Share_%`: Privacy-weighted percentage
 - `Metric_Distortion_PP`: Impact of privacy weighting (percentage points)
+
+For share/rate outputs, target contributions are handled separately in the percentage/rate calculations.
 
 **Perfect for:**
 - Importing to Tableau/PowerBI/Excel pivots
@@ -397,6 +399,8 @@ py benchmark.py config generate OUTPUT.yaml    # Create custom config
 | **[Dimension]** | Per-category comparisons | ✅ |
 | **Weight Methods** | How weights were calculated | ✅ |
 | **Rank Changes** | Before/after peer rankings | ✅ |
+| **Structural Summary** | Count of structurally infeasible buckets | LP diagnostics |
+| **Structural Detail** | Exact structurally infeasible categories/peers | LP diagnostics |
 | **Peer Weights** | Actual multipliers | `--debug` |
 | **Privacy Validation** | Compliance verification | `--debug` |
 
@@ -529,10 +533,24 @@ When global weights can't satisfy privacy constraints for ALL dimensions, the to
 1. Finds the largest subset that works globally
 2. Solves remaining dimensions independently
 
+For `strategic_consistency`, single-weight-set mode is enforced, so per-dimension fallback is skipped.
+
 Check the **Weight Methods** sheet to see:
 - `Global-LP` — Solved with all dimensions
 - `Per-Dimension-LP` — Solved independently
 - `Per-Dimension-Bayesian` — LP failed, Bayesian fallback
+</details>
+
+<details>
+<summary><strong>What is structural infeasibility?</strong></summary>
+
+Some sparse buckets cannot satisfy cap constraints for any allowed weights (for example, one peer is 100% of a category/time bucket).
+
+Use:
+- **Structural Summary** for counts and worst margin.
+- **Structural Detail** for exact dimension/category/peer combinations.
+
+In these cases, residual violations can remain even with strict optimization.
 </details>
 
 ---

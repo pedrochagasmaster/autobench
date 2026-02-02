@@ -20,6 +20,7 @@ optimization:
   
   constraints:
     volume_preservation: 0.95  # Slight relaxation to help global solution
+    enforce_single_weight_set: true  # CRITICAL: keep one global weight set
   
   subset_search:
     enabled: false  # CRITICAL: Never drop dimensions

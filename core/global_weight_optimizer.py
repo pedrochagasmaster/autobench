@@ -25,6 +25,7 @@ class GlobalWeightOptimizer:
         analyzer = self.analyzer
         if not analyzer.consistent_weights:
             return
+        single_weight_mode = bool(getattr(analyzer, "enforce_single_weight_set", False))
 
         if analyzer.time_column and analyzer.time_column in df.columns:
             all_categories, peer_volumes, peers = analyzer._build_time_aware_categories(df, metric_col, dimensions)
@@ -53,6 +54,20 @@ class GlobalWeightOptimizer:
             det_df, sum_df = analyzer._compute_structural_caps_diagnostics(peers, all_categories, max_concentration)
             analyzer.structural_detail_df = det_df
             analyzer.structural_summary_df = sum_df
+            structural = analyzer.get_structural_infeasibility_summary()
+            if structural.get('has_structural_infeasibility'):
+                logger.warning(
+                    "Structural infeasibility detected: dimensions=%s categories=%s peers=%s worst_margin=%0.4fpp",
+                    structural.get('infeasible_dimensions'),
+                    structural.get('infeasible_categories'),
+                    structural.get('infeasible_peers'),
+                    structural.get('worst_margin_pp'),
+                )
+                logger.warning(
+                    "Top structural issue: dimension=%s category=%s",
+                    structural.get('top_infeasible_dimension'),
+                    structural.get('top_infeasible_category'),
+                )
         except Exception as exc:  # pragma: no cover
             logger.warning("Structural diagnostics failed: %s", exc)
 
@@ -98,7 +113,7 @@ class GlobalWeightOptimizer:
             lp_solution = run_lp(all_categories, peer_volumes)
             analyzer.rank_preservation_strength = orig_rank
 
-        if lp_solution is not None and analyzer.trigger_subset_on_slack:
+        if lp_solution is not None and analyzer.trigger_subset_on_slack and not single_weight_mode:
             sum_slack = float(analyzer.last_lp_stats.get('sum_slack', 0.0) or 0.0)
             if analyzer._is_slack_excess(sum_slack):
                 logger.info(
@@ -129,9 +144,13 @@ class GlobalWeightOptimizer:
                     )
                 else:
                     logger.info("Subset search failed to improve; keeping full-set LP solution despite slack usage")
+        elif lp_solution is not None and analyzer.trigger_subset_on_slack and single_weight_mode:
+            logger.info("Single weight-set mode active; skipping slack-triggered subset search")
 
         if lp_solution is None:
-            if analyzer.auto_subset_search:
+            if single_weight_mode:
+                logger.info("Single weight-set mode active; skipping subset-search and dimension-dropping fallbacks")
+            elif analyzer.auto_subset_search:
                 logger.info("Searching for largest feasible global dimension subset (auto_subset_search enabled)")
                 best_dims, best_weights = analyzer._search_largest_feasible_subset(
                     df, metric_col, dimensions, max_concentration, peer_volumes, peers, all_categories
@@ -400,14 +419,26 @@ class GlobalWeightOptimizer:
                         dimensions_with_violations.append(violation_dim)
 
             real_dimensions_with_violations = [
-                violation_dim for violation_dim in dimensions_with_violations
-                if not violation_dim.startswith(CategoryBuilder.TIME_TOTAL_DIMENSION_PREFIX)
+                violation_dim
+                for violation_dim in dimensions_with_violations
+                if not CategoryBuilder.is_internal_dimension_name(violation_dim)
             ]
 
-            if real_dimensions_with_violations:
+            if single_weight_mode and real_dimensions_with_violations:
+                logger.info(
+                    "Single weight-set mode active; keeping global weights despite violating dimensions: %s",
+                    real_dimensions_with_violations,
+                )
+            elif real_dimensions_with_violations:
                 logger.info("\nDimensions with violations detected: %s", real_dimensions_with_violations)
                 logger.info("Computing per-dimension weights for these dimensions...")
                 for violation_dim in real_dimensions_with_violations:
+                    if violation_dim not in dimensions:
+                        logger.info(
+                            "Skipping non-user dimension during per-dimension re-weighting: %s",
+                            violation_dim,
+                        )
+                        continue
                     violation_cats, violation_peer_vols, _ = analyzer._build_categories(df, metric_col, [violation_dim])
                     if not violation_cats:
                         continue

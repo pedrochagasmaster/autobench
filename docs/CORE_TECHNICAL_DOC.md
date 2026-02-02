@@ -90,11 +90,11 @@ Balanced values are calculated using weighted peer totals. The weights are
 privacy-constrained multipliers that ensure no peer dominates beyond the rule.
 
 For a category c:
-  Balanced total = sum(peer_volume[p,c] * weight[p])
+  Balanced total = sum(peer_volume[p,c] * weight[p])   # peers only
   Balanced share (target) = target_volume / (target_volume + Balanced total)
 
 For rate metrics:
-  Balanced rate = sum(weighted numerator) / sum(weighted denominator)
+  Balanced rate = sum(weighted peer numerators) / sum(weighted peer denominators)
 
 -------------------------------------------------------------------------------
 Level 2 - Detailed Technical Model (Algorithms & Constraints)
@@ -313,6 +313,10 @@ Below are the primary config paths (typically set via presets) and how they tran
 - optimization.constraints.consistency_mode
   - Mapped to DimensionalAnalyzer.consistent_weights to select global vs per-dimension weighting.
 
+- optimization.constraints.enforce_single_weight_set
+  - Mapped to DimensionalAnalyzer.enforce_single_weight_set.
+  - When true, disables subset search/dimension dropping/per-dimension re-weighting and keeps one global weight-set.
+
 - optimization.bayesian.max_iterations / optimization.bayesian.learning_rate
   - Mapped to HeuristicSolver max iterations and finite-difference step size.
 
@@ -365,10 +369,10 @@ These are the main branch points that change the core execution path:
 
 5) LP solver success?
 - If LP succeeds:
-  - If slack exceeds threshold and trigger_subset_on_slack is true, subset search may still be triggered.
+  - If slack exceeds threshold and trigger_subset_on_slack is true, subset search may still be triggered (unless enforce_single_weight_set is true).
 - If LP fails:
   - prefer_slacks_first may retry with relaxed rank penalty.
-  - subset search or dimension dropping is used to salvage a feasible set.
+  - subset search or dimension dropping is used to salvage a feasible set (unless enforce_single_weight_set is true).
 
 6) Additional constraints enforcement?
 - If rule is 6/30, 7/35, or 10/40 and enforce_additional_constraints is true:
@@ -377,8 +381,8 @@ These are the main branch points that change the core execution path:
 
 7) Per-dimension violations after global solve?
 - If violations remain in specific dimensions:
-  - Per-dimension LP is attempted (with zero tolerance).
-  - HeuristicSolver is used if per-dimension LP fails.
+  - Per-dimension LP is attempted (with zero tolerance), unless enforce_single_weight_set is true.
+  - HeuristicSolver is used if per-dimension LP fails (and enforce_single_weight_set is false).
 
 8) Output toggles and diagnostics
 - If include_privacy_validation is enabled, build_privacy_validation_dataframe is produced.
@@ -558,6 +562,7 @@ Key effects:
 Intent: single global weights for strategic dashboards.
 Key effects:
 - subset_search disabled: dimensions are never dropped.
+- constraints.enforce_single_weight_set: true (disables per-dimension re-weighting fallback).
 - tolerance 25.0: large slack tolerance to preserve global weights.
 - volume_weighted_penalties enabled: prioritize large categories.
 - Outcome: single global weights even if some violations remain.
@@ -739,6 +744,8 @@ Analysis workbook:
 - Per-dimension sheets: balanced averages, target metrics, BIC, deltas
 - Weight Methods: which solver was used per dimension
 - Rank Changes: baseline vs balanced rankings
+- Structural Summary: count of structurally infeasible buckets by dimension
+- Structural Detail: exact structurally infeasible categories/peers and margins
 - Peer Weights: multipliers and volumes (debug)
 - Privacy Validation: per-category compliance
 - Impact Summary: aggregated distortion/impact (if enabled)
@@ -747,7 +754,7 @@ Publication workbook:
 - Simplified sheets with clean formatting, optional fraud conversion to bps.
 
 CSV/JSON:
-- CSV: either a single DataFrame or per-metric outputs
+- CSV: either a single DataFrame or per-metric outputs; balanced totals are peer-weighted totals
 - JSON: metadata + results as structured records
 
 ## Preset and Config Improvement Opportunities (Core-Relevant)
@@ -783,6 +790,14 @@ CSV/JSON:
 7) optimization.bayesian.* is not used by HeuristicSolver
 - Presets set bayesian iterations/learning_rate, but HeuristicSolver uses fixed values.
 - Status: addressed. bayesian.max_iterations is wired to heuristic maxiter and learning_rate is used as the finite-difference step size for L-BFGS-B.
+
+8) Time-aware low_distortion could hit internal-dimension fallback errors
+- Internal dimensions such as _TIME_TOTAL could be routed into user-dimension fallback paths.
+- Status: addressed by filtering reserved/internal dimensions from per-dimension re-weighting paths.
+
+9) strategic_consistency could silently use per-dimension fallback
+- This weakened the intended single-global-weight behavior for dashboard consistency.
+- Status: addressed via optimization.constraints.enforce_single_weight_set and strict fallback gating.
 
 
 ## Shared Data Structures and Conventions

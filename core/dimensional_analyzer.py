@@ -83,6 +83,7 @@ class DimensionalAnalyzer:
         bayesian_max_iterations: int = 500,
         bayesian_learning_rate: float = 0.01,
         violation_penalty_weight: float = 1000.0,
+        enforce_single_weight_set: bool = False,
     ):
         """
         Initialize dimensional analyzer.
@@ -161,6 +162,8 @@ class DimensionalAnalyzer:
             Numerical step size used for heuristic optimization (L-BFGS-B) when configured
         violation_penalty_weight : float
             Penalty multiplier for privacy/additional-constraint violations in heuristic solver
+        enforce_single_weight_set : bool
+            If True, force a single global weight set and disable per-dimension fallback/re-weighting.
         """
         self.target_entity = target_entity
         self.entity_column = entity_column
@@ -214,6 +217,7 @@ class DimensionalAnalyzer:
         self.bayesian_max_iterations = int(bayesian_max_iterations)
         self.bayesian_learning_rate = float(bayesian_learning_rate)
         self.violation_penalty_weight = float(violation_penalty_weight)
+        self.enforce_single_weight_set: bool = bool(enforce_single_weight_set)
         self.category_builder = CategoryBuilder(
             entity_column=self.entity_column,
             target_entity=self.target_entity,
@@ -274,6 +278,47 @@ class DimensionalAnalyzer:
                 "max_weight=%sx, min_weight=%sx, rank_preservation=%s",
                 self.max_iterations, self.tolerance, self.max_weight, self.min_weight, self.rank_preservation_strength
             )
+            if self.enforce_single_weight_set:
+                logger.info("Single weight-set mode ENABLED - per-dimension fallback is disabled")
+
+    def get_structural_infeasibility_summary(self) -> Dict[str, Any]:
+        """Return a compact summary of structural infeasibility diagnostics."""
+        summary: Dict[str, Any] = {
+            'has_structural_infeasibility': False,
+            'infeasible_dimensions': 0,
+            'infeasible_categories': 0,
+            'infeasible_peers': 0,
+            'worst_margin_pp': 0.0,
+            'top_infeasible_dimension': None,
+            'top_infeasible_category': None,
+        }
+
+        if self.structural_summary_df is not None and not self.structural_summary_df.empty:
+            summary['has_structural_infeasibility'] = True
+            summary['infeasible_dimensions'] = int(len(self.structural_summary_df))
+            summary['infeasible_categories'] = int(
+                self.structural_summary_df.get('infeasible_categories', pd.Series(dtype=float)).sum()
+            )
+            summary['infeasible_peers'] = int(
+                self.structural_summary_df.get('infeasible_peers', pd.Series(dtype=float)).sum()
+            )
+            summary['worst_margin_pp'] = float(
+                self.structural_summary_df.get('worst_margin_pp', pd.Series([0.0])).max()
+            )
+            try:
+                top_row = self.structural_summary_df.sort_values('worst_margin_pp', ascending=False).iloc[0]
+                summary['top_infeasible_dimension'] = top_row.get('dimension')
+            except Exception:
+                pass
+
+        if self.structural_detail_df is not None and not self.structural_detail_df.empty:
+            try:
+                top_detail = self.structural_detail_df.sort_values('margin_over_cap_pp', ascending=False).iloc[0]
+                summary['top_infeasible_category'] = top_detail.get('category')
+            except Exception:
+                pass
+
+        return summary
 
     @classmethod
     def _warn_deprecated(cls, method_name: str, replacement: str) -> None:

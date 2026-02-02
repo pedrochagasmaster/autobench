@@ -118,6 +118,12 @@ optimization:
     # 0.0 = No rank preservation (weights can freely reorder peers)
     # 1.0 = Strong rank preservation (maintain original peer ordering)
     volume_preservation: 0.5
+
+    # Weight consistency mode: global (single weight-set) or per_dimension
+    consistency_mode: global
+
+    # If true, enforce a single global weight-set and disable per-dimension fallback
+    enforce_single_weight_set: false
     
     # Enforce additional Control 3.2 rule conditions (6/30, 7/35, 10/40)
     enforce_additional_constraints: true

@@ -254,6 +254,10 @@ class ConfigValidator:
                     if not isinstance(constraints['enforce_additional_constraints'], bool):
                         errors.append("optimization.constraints.enforce_additional_constraints must be a boolean")
 
+                if 'enforce_single_weight_set' in constraints:
+                    if not isinstance(constraints['enforce_single_weight_set'], bool):
+                        errors.append("optimization.constraints.enforce_single_weight_set must be a boolean")
+
                 if 'dynamic_constraints' in constraints:
                     dyn = constraints['dynamic_constraints']
                     if not isinstance(dyn, dict):

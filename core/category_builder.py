@@ -25,10 +25,15 @@ class CategoryBuilder:
         self.consistent_weights = consistent_weights
 
     @classmethod
+    def is_internal_dimension_name(cls, dimension: Any) -> bool:
+        """Return True when the dimension name is reserved for internal constraints."""
+        return str(dimension).startswith(cls.RESERVED_INTERNAL_PREFIX)
+
+    @classmethod
     def validate_dimension_names(cls, dimensions: List[str]) -> None:
         """Reject user dimensions that collide with reserved internal prefixes."""
         for dim in dimensions:
-            if str(dim).startswith(cls.RESERVED_INTERNAL_PREFIX):
+            if cls.is_internal_dimension_name(dim):
                 raise ValueError(
                     f"Dimension '{dim}' uses reserved prefix '{cls.RESERVED_INTERNAL_PREFIX}'. "
                     "Please rename the source column."

@@ -491,6 +491,9 @@ def run_preset_comparison(
             bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
             bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
             violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
+            enforce_single_weight_set = bool(
+                opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
+            )
             
             # Create analyzer with preset parameters
             analyzer = DimensionalAnalyzer(
@@ -531,6 +534,7 @@ def run_preset_comparison(
                 bayesian_max_iterations=bayesian_max_iterations,
                 bayesian_learning_rate=bayesian_learning_rate,
                 violation_penalty_weight=violation_penalty_weight,
+                enforce_single_weight_set=enforce_single_weight_set,
             )
             
             # Calculate global weights
@@ -790,6 +794,9 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
         bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
         violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
+        enforce_single_weight_set = bool(
+            opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
+        )
         analyzer = DimensionalAnalyzer(
             target_entity=resolved_entity,
             entity_column=entity_col,
@@ -828,6 +835,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             bayesian_max_iterations=bayesian_max_iterations,
             bayesian_learning_rate=bayesian_learning_rate,
             violation_penalty_weight=violation_penalty_weight,
+            enforce_single_weight_set=enforce_single_weight_set,
         )
         
         # Determine dimensions
@@ -848,6 +856,14 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Calculate global weights if consistent_weights mode is enabled (default)
         if consistent_weights:
             analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
+            structural_summary = analyzer.get_structural_infeasibility_summary()
+            if structural_summary.get('has_structural_infeasibility'):
+                logger.warning(
+                    "Structural infeasibility detected (dimensions=%s, categories=%s, worst_margin=%0.4fpp)",
+                    structural_summary.get('infeasible_dimensions'),
+                    structural_summary.get('infeasible_categories'),
+                    structural_summary.get('worst_margin_pp'),
+                )
 
         # Run analysis
         results = {}
@@ -915,6 +931,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
             'consistency_mode': consistency_mode,
+            'enforce_single_weight_set': enforce_single_weight_set,
             'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
             'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
             'max_weight': opt_config.get('bounds', {}).get('max_weight'),
@@ -930,6 +947,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'analyzer_ref': analyzer,
             'last_lp_stats': getattr(analyzer, 'last_lp_stats', {}),
             'slack_subset_triggered': getattr(analyzer, 'slack_subset_triggered', False),
+            'structural_infeasibility_summary': analyzer.get_structural_infeasibility_summary(),
             # Extended optimization parameters
             'lambda_penalty': opt_config.get('linear_programming', {}).get('lambda_penalty'),
             'volume_weighted_penalties': opt_config.get('linear_programming', {}).get('volume_weighted_penalties'),
@@ -1396,6 +1414,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
         bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
         violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
+        enforce_single_weight_set = bool(
+            opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
+        )
         analyzer = DimensionalAnalyzer(
             target_entity=resolved_entity,
             entity_column=entity_col,
@@ -1434,6 +1455,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             bayesian_max_iterations=bayesian_max_iterations,
             bayesian_learning_rate=bayesian_learning_rate,
             violation_penalty_weight=violation_penalty_weight,
+            enforce_single_weight_set=enforce_single_weight_set,
         )
         
         # Calculate global weights ONCE based on total_col
@@ -1441,6 +1463,14 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if consistent_weights:
             logger.info(f"\nCalculating global privacy-constrained weights based on {total_col}")
             analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
+            structural_summary = analyzer.get_structural_infeasibility_summary()
+            if structural_summary.get('has_structural_infeasibility'):
+                logger.warning(
+                    "Structural infeasibility detected (dimensions=%s, categories=%s, worst_margin=%0.4fpp)",
+                    structural_summary.get('infeasible_dimensions'),
+                    structural_summary.get('infeasible_categories'),
+                    structural_summary.get('worst_margin_pp'),
+                )
             logger.info("Global weights will be used for all rate types")
         
         # Store results for each rate type
@@ -1537,6 +1567,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'dimensions_requested': getattr(args, 'dimensions', None),
             'entity_col_arg': getattr(args, 'entity_col', None),
             'consistency_mode': consistency_mode,
+            'enforce_single_weight_set': enforce_single_weight_set,
             'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
             'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
             'max_weight': opt_config.get('bounds', {}).get('max_weight'),
@@ -1558,6 +1589,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
             'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
             'violation_penalty_weight': opt_config.get('bayesian', {}).get('violation_penalty_weight'),
+            'structural_infeasibility_summary': analyzer.get_structural_infeasibility_summary(),
             'impact_thresholds': {
                 'high_pp': config.get(
                     'output',
@@ -1962,6 +1994,7 @@ def generate_excel_report(
         write_input("Preset:", metadata.get('preset'))
         write_input("Debug Mode:", 'ENABLED' if metadata.get('debug_mode') else 'DISABLED')
         write_input("Consistent Weights:", 'ENABLED' if metadata.get('consistent_weights') else 'DISABLED')
+        write_input("Enforce Single Weight Set:", metadata.get('enforce_single_weight_set'))
         # Weight algorithm parameters
         write_input("Max Iterations:", metadata.get('max_iterations'))
         write_input("Tolerance (pp):", metadata.get('tolerance_pp'))
@@ -2078,6 +2111,30 @@ def generate_excel_report(
         if metadata.get('preset'):
             ws_summary[f'A{row}'] = "Preset Used:"
             ws_summary[f'B{row}'] = metadata.get('preset')
+            row += 1
+
+        structural_summary = metadata.get('structural_infeasibility_summary', {}) if metadata else {}
+        ws_summary[f'A{row}'] = "Structural Infeasibility:"
+        if structural_summary.get('has_structural_infeasibility'):
+            ws_summary[f'B{row}'] = "DETECTED"
+        else:
+            ws_summary[f'B{row}'] = "Not detected"
+        row += 1
+        if structural_summary.get('has_structural_infeasibility'):
+            ws_summary[f'A{row}'] = "Infeasible Dimensions/Categories:"
+            ws_summary[f'B{row}'] = (
+                f"{structural_summary.get('infeasible_dimensions', 0)} / "
+                f"{structural_summary.get('infeasible_categories', 0)}"
+            )
+            row += 1
+            ws_summary[f'A{row}'] = "Worst Structural Margin (pp):"
+            ws_summary[f'B{row}'] = structural_summary.get('worst_margin_pp')
+            row += 1
+            ws_summary[f'A{row}'] = "Top Structural Dimension:"
+            ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_dimension')
+            row += 1
+            ws_summary[f'A{row}'] = "Top Structural Category:"
+            ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_category')
             row += 1
         
         row += 1
@@ -2699,6 +2756,7 @@ def generate_multi_rate_excel_report(
         row += 1
 
     write_param("Preset", 'preset')
+    write_param("Enforce Single Weight Set", 'enforce_single_weight_set')
     write_param("Max Iterations", 'max_iterations')
     write_param("Tolerance (pp)", 'tolerance_pp')
     write_param("Max Weight", 'max_weight')
@@ -2721,6 +2779,32 @@ def generate_multi_rate_excel_report(
     write_param("Violation Penalty Weight", 'violation_penalty_weight')
     
     row += 2
+
+    structural_summary = metadata.get('structural_infeasibility_summary', {}) if metadata else {}
+    ws_summary[f'A{row}'] = "STRUCTURAL FEASIBILITY"
+    ws_summary[f'A{row}'].font = Font(bold=True)
+    row += 1
+    ws_summary[f'A{row}'] = "Structural Infeasibility"
+    ws_summary[f'B{row}'] = "DETECTED" if structural_summary.get('has_structural_infeasibility') else "Not detected"
+    row += 1
+    if structural_summary.get('has_structural_infeasibility'):
+        ws_summary[f'A{row}'] = "Infeasible Dimensions/Categories"
+        ws_summary[f'B{row}'] = (
+            f"{structural_summary.get('infeasible_dimensions', 0)} / "
+            f"{structural_summary.get('infeasible_categories', 0)}"
+        )
+        row += 1
+        ws_summary[f'A{row}'] = "Worst Structural Margin (pp)"
+        ws_summary[f'B{row}'] = structural_summary.get('worst_margin_pp')
+        row += 1
+        ws_summary[f'A{row}'] = "Top Structural Dimension"
+        ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_dimension')
+        row += 1
+        ws_summary[f'A{row}'] = "Top Structural Category"
+        ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_category')
+        row += 1
+
+    row += 1
     
     # Add note about shared weights for multi-rate
     if is_multi_rate:

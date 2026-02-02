@@ -1,0 +1,742 @@
+{
+  "dataset": "data\\e176097_fortbrasil_peer_group_v3.csv.gz",
+  "rows": 1691720,
+  "columns": [
+    "issuer_name",
+    "year_month",
+    "flag_domestic",
+    "poi",
+    "poi_3ds_category",
+    "poi_ticket_range",
+    "amt_local_currency",
+    "qtde_txns_app",
+    "qtde_txns_fraud",
+    "qtde_txns_ttl"
+  ],
+  "workbooks": [
+    {
+      "workbook": "outputs\\investigation\\share_balanced_default.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 2.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Weight Methods",
+        "Structural Summary",
+        "Structural Detail",
+        "Rank Changes",
+        "Privacy Validation",
+        "Preset Comparison",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 9e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 7
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation\\share_balanced_default_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 24,
+        "max_diff_balanced_total": 3.932251,
+        "max_diff_raw_total": 0.0,
+        "max_diff_balanced_share": 5.1e-05
+      },
+      "red_flags": [
+        "Preset Comparison error for 'low_distortion': Dimension '_TIME_TOTAL' uses reserved prefix '_TIME_'. Please rename the source column."
+      ]
+    },
+    {
+      "workbook": "outputs\\investigation\\share_custom_global.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 0.5,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "Peer Weights",
+        "Weight Methods",
+        "Subset Search",
+        "Structural Summary",
+        "Structural Detail",
+        "Rank Changes",
+        "Privacy Validation",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 2e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 588,
+        "group_count": 98,
+        "max_balanced_share_sum_gap": 0.0001,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 9
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation\\share_custom_global_balanced.csv",
+        "rows": 98,
+        "rows_outside_tolerance": 24,
+        "max_diff_balanced_total": 2579.473938,
+        "max_diff_raw_total": 4e-06,
+        "max_diff_balanced_share": 4.9e-05
+      },
+      "red_flags": []
+    },
+    {
+      "workbook": "outputs\\investigation_fortbrasil\\share_strategic_consistency.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 25.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Weight Methods",
+        "Structural Summary",
+        "Structural Detail",
+        "Rank Changes",
+        "Privacy Validation",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 1e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 1.1e-05,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 4e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 1
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation_fortbrasil\\share_strategic_consistency_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 225,
+        "max_diff_balanced_total": 24.388877,
+        "max_diff_raw_total": 0.0,
+        "max_diff_balanced_share": 0.000136
+      },
+      "red_flags": []
+    },
+    {
+      "workbook": "outputs\\investigation_fortbrasil\\share_minimal_distortion.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 100.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Weight Methods",
+        "Rank Changes",
+        "Privacy Validation",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 0.0,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 1e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 0.0
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 1e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "balanced_peer_avg": 1e-06,
+            "raw_peer_avg": 0.0,
+            "impact_identity": 1e-06,
+            "target_share": 0.0,
+            "distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 0
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation_fortbrasil\\share_minimal_distortion_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 238,
+        "max_diff_balanced_total": 19.453536,
+        "max_diff_raw_total": 0.0,
+        "max_diff_balanced_share": 5.7e-05
+      },
+      "red_flags": []
+    },
+    {
+      "workbook": "outputs\\investigation\\rate_compliance_strict.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 0.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Privacy Validation",
+        "Weight Methods",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 1.1e-05,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 14
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation\\rate_compliance_strict_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 24,
+        "max_diff_balanced_total": 3.935101,
+        "max_diff_balanced_approval_total": 3.371448,
+        "max_diff_balanced_fraud_total": 0.00929
+      },
+      "red_flags": []
+    },
+    {
+      "workbook": "outputs\\investigation_fortbrasil\\rate_balanced_default.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 2.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Privacy Validation",
+        "Weight Methods",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 1.1e-05,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 8
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation_fortbrasil\\rate_balanced_default_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 24,
+        "max_diff_balanced_total": 3.935101,
+        "max_diff_balanced_approval_total": 3.371448,
+        "max_diff_balanced_fraud_total": 0.00929
+      },
+      "red_flags": []
+    },
+    {
+      "workbook": "outputs\\investigation_fortbrasil\\rate_strategic_consistency.xlsx",
+      "dimensions": [
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range"
+      ],
+      "target": "BANCO BMG S-A",
+      "tolerance_pp": 25.0,
+      "weight_peers": 6,
+      "sheets": [
+        "Summary",
+        "flag_domestic",
+        "poi",
+        "poi_3ds_category",
+        "poi_ticket_range",
+        "Peer Weights",
+        "Privacy Validation",
+        "Weight Methods",
+        "Impact Analysis",
+        "Data Quality"
+      ],
+      "dimension_checks": {
+        "flag_domestic": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 3.5e-05,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 5e-06,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi": {
+          "rows": 26,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 1.7e-05,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 1e-06,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_3ds_category": {
+          "rows": 55,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 0.0,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 0.0,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        },
+        "poi_ticket_range": {
+          "rows": 234,
+          "rows_outside_tolerance": 0,
+          "range_issues": 0,
+          "weight_mode": "per-dimension",
+          "max_abs_diffs": {
+            "approval_balanced": 3.8e-05,
+            "approval_raw": 0.0,
+            "approval_impact_identity": 1e-06,
+            "approval_target": 0.0,
+            "approval_distance_identity": 1e-06,
+            "fraud_balanced": 2.8e-05,
+            "fraud_raw": 0.0,
+            "fraud_impact_identity": 1e-06,
+            "fraud_target": 0.0,
+            "fraud_distance_identity": 1e-06
+          }
+        }
+      },
+      "privacy_validation": {
+        "rows": 1884,
+        "group_count": 314,
+        "max_balanced_share_sum_gap": 0.0002,
+        "max_balanced_volume_minus_orig_x_multiplier": 0.0,
+        "cap_violations_over_cap_plus_tolerance": 1
+      },
+      "csv_checks": {
+        "csv": "outputs\\investigation_fortbrasil\\rate_strategic_consistency_balanced.csv",
+        "rows": 314,
+        "rows_outside_tolerance": 225,
+        "max_diff_balanced_total": 24.388803,
+        "max_diff_balanced_approval_total": 20.867078,
+        "max_diff_balanced_fraud_total": 0.03087
+      },
+      "red_flags": []
+    }
+  ],
+  "summary": {
+    "workbooks_checked": 7,
+    "total_dimension_rows": 2153,
+    "total_rows_outside_tolerance": 0,
+    "max_recompute_diff_any_metric": 3.8e-05,
+    "workbooks_with_red_flags": 1
+  }
+}

@@ -431,6 +431,7 @@ class ConfigManager:
                 'constraints': {
                     'volume_preservation': 0.5,
                     'consistency_mode': 'global',
+                    'enforce_single_weight_set': False,
                     'enforce_additional_constraints': True,
                     'dynamic_constraints': {
                         'enabled': True,

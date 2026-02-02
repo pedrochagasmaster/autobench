@@ -1,0 +1,10 @@
+version: "3.0"
+output:
+  include_debug_sheets: true
+  include_privacy_validation: true
+  include_impact_summary: true
+optimization:
+  constraints:
+    consistency_mode: per_dimension
+analysis:
+  best_in_class_percentile: 0.85
