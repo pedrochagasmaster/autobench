@@ -1,631 +1,299 @@
 # Privacy-Compliant Peer Benchmark Tool
 
-<div align="center">
+Privacy-safe benchmarking for issuers, banks, and merchants with automatic Mastercard Control 3.2 enforcement.
 
-**Compare financial entities against privacy-compliant peer benchmarks with one-click analysis**
+## TL;DR
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com)
-[![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://python.org)
-[![Status](https://img.shields.io/badge/status-production--ready-brightgreen.svg)](https://github.com)
+- Use `py tui_app.py` for a guided first run.
+- Use `py benchmark.py share|rate ...` for automation.
+- Privacy caps are always enforced automatically.
+- Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
 
-[Quick Start](#-quick-start) · [TUI Guide](#-using-the-tui) · [CLI Reference](#-cli-reference) · [Presets](#-choosing-the-right-preset) · [FAQ](#-frequently-asked-questions)
+## Table of Contents
 
-</div>
+- [What This Tool Solves](#what-this-tool-solves)
+- [Quick Start](#quick-start)
+- [First Successful Run (Copy/Paste)](#first-successful-run-copypaste)
+- [Input Data Requirements](#input-data-requirements)
+- [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
+- [TUI Workflow](#tui-workflow)
+- [CLI Cookbook](#cli-cookbook)
+- [Presets](#presets)
+- [Outputs](#outputs)
+- [Excel Sheet Guide](#excel-sheet-guide)
+- [Troubleshooting](#troubleshooting)
+- [Validation and Testing](#validation-and-testing)
+- [Additional Documentation](#additional-documentation)
 
----
+## What This Tool Solves
 
-## 🎯 What It Does
+This project benchmarks an entity against peers while preventing single-peer dominance in category-level comparisons.
 
-The Peer Benchmark Tool compares banks, issuers, and merchants against their peer groups while **automatically enforcing Mastercard Control 3.2 privacy rules**. It prevents any single competitor from dominating your benchmark—a regulatory requirement for financial reporting.
+You get:
 
-<table>
-<tr>
-<td width="50%">
+- Peer-weighted benchmarks with privacy constraints.
+- Share and rate analysis modes.
+- Excel outputs for analysis/audit/publication and optional balanced CSV export.
+- CLI and TUI entry points using the same core engine.
 
-### ✅ What You Get
-- Entity vs peer comparison across dimensions
-- Privacy-weighted averages (no single peer dominates)
-- Best-in-Class benchmarks (85th/15th percentile)
-- Full audit trail for compliance
+## Quick Start
 
-</td>
-<td width="50%">
+> In this repo, use `py` for Python commands.
 
-### 🔒 What's Protected
-- Individual peer performance is masked
-- Concentration limits enforced automatically
-- Regulatory compliance built-in
-- No manual privacy calculations needed
-
-</td>
-</tr>
-</table>
-
----
-
-## ⚡ Quick Start
-
-### Option A: Interactive TUI *(Recommended for new users)*
-
-```bash
-pip install -r requirements.txt
-python tui_app.py
-```
-
-> 💡 **Tip:** The TUI automatically discovers CSV files in your current directory and `data/` folder.
-
-### Option B: Command Line
+Install dependencies:
 
 ```powershell
-# Install once
-pip install -r requirements.txt
-
-# Run share analysis
-py benchmark.py share --csv data/sample.csv --entity "BANCO SANTANDER" --metric txn_cnt --auto
-
-# Run rate analysis  
-py benchmark.py rate --csv data/sample.csv --entity "BANCO SANTANDER" --total-col total --approved-col approved --auto
+py -m pip install -r requirements.txt
 ```
 
-> 📁 **Output:** Excel report saved to current directory with timestamp.
+Run the TUI:
 
----
-
-## 🖥️ Using the TUI
-
-The Terminal User Interface provides a guided experience:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  📂 SELECT CSV         data/monthly_transactions.csv       │
-│  🏢 ENTITY COLUMN      issuer_name                         │
-│  🎯 TARGET ENTITY      BANCO SANTANDER                     │
-│  ⚙️  PRESET            balanced_default                    │
-├─────────────────────────────────────────────────────────────┤
-│  [SHARE]  Primary Metric:  txn_cnt                          │
-│  [RATE]   Total: amt_total  Approved: amt_approved          │
-├─────────────────────────────────────────────────────────────┤
-│  [ 🚀 RUN ANALYSIS ]                                        │
-└─────────────────────────────────────────────────────────────┘
+```powershell
+py tui_app.py
 ```
 
-### Step-by-Step Workflow
+Or inspect CLI help:
 
-| Step | Action | Tips |
-|------|--------|------|
-| 1️⃣ | Select your CSV file | Files from `.` and `data/` shown automatically |
-| 2️⃣ | Choose entity column | Usually `issuer_name` or `bank_name` |
-| 3️⃣ | Select target entity | Dropdown populates from your data |
-| 4️⃣ | Pick a preset | Start with `balanced_default` |
-| 5️⃣ | Configure analysis tab | Share (volume) or Rate (approval/fraud) |
-| 6️⃣ | Click **Run Analysis** | Watch the log for progress |
-
-> ⌨️ **Keyboard Shortcuts:** `Ctrl+O` Open File · `Ctrl+R` Run · `F1` Help · `Esc` Cancel
-
----
-
-## 📊 Analysis Types
-
-<table>
-<tr>
-<th width="50%">📈 Share Analysis</th>
-<th width="50%">📉 Rate Analysis</th>
-</tr>
-<tr>
-<td>
-
-**Question:** *How is volume distributed?*
-
-```
-Category     You    Peers   Gap
-CREDIT      45.2%   38.5%  +6.7pp ✓
-DEBIT       42.3%   48.2%  -5.9pp
-PREPAID     12.5%   13.3%  -0.8pp
+```powershell
+py benchmark.py --help
+py benchmark.py share --help
+py benchmark.py rate --help
 ```
 
-**Use for:**
-- Market positioning
-- Product mix analysis
-- Strategic planning
+## First Successful Run (Copy/Paste)
 
-</td>
-<td>
+If you want a deterministic smoke test with your own tiny CSV, create one:
 
-**Question:** *How do rates compare?*
-
-```
-Category     You    Peers   Gap
-POS         92.1%   89.5%  +2.6pp ✓
-ECOMMERCE   85.3%   82.1%  +3.2pp ✓
-ATM         97.2%   96.8%  +0.4pp
-```
-
-**Use for:**
-- Authorization optimization
-- Fraud benchmarking
-- Risk assessment
-
-</td>
-</tr>
-</table>
-
----
-
-## 🎛️ Choosing the Right Preset
-
-> 🤔 **Not sure which to pick?** Start with `balanced_default` — it works for 90% of use cases.
-
-| Preset | Best For | What Happens |
-|--------|----------|--------------|
-| 🟢 **`balanced_default`** | Day-to-day analysis | Allows 2% tolerance; fastest |
-| 🔴 **`compliance_strict`** | Regulatory reports | Zero violations; may split dimensions |
-| 🟡 **`strategic_consistency`** | Executive dashboards | Enforces one global weight set (no per-dimension fallback) |
-| 🟣 **`research_exploratory`** | Difficult datasets | Very relaxed; use for exploration |
-
-### 🌳 Decision Tree
-
-```
-📋 Is this report for a regulator or auditor?
-│
-├─ YES ──────────────────────────────► 🔴 compliance_strict
-│
-└─ NO ── Do you need ONE consistent set of weights?
-         │
-         ├─ YES (executive dashboard) ► 🟡 strategic_consistency
-         │
-         └─ NO (standard analysis) ──► 🟢 balanced_default ⭐
+```powershell
+@'
+issuer_name,card_type,channel,txn_cnt,amt_total,amt_approved,amt_fraud
+BANCO SANTANDER,CREDIT,POS,125000,15000000,14100000,42000
+BANCO SANTANDER,DEBIT,POS,200000,8000000,7600000,16000
+ITAU UNIBANCO,CREDIT,POS,180000,22000000,20500000,51000
+ITAU UNIBANCO,DEBIT,POS,160000,9000000,8500000,18000
+BRADESCO,CREDIT,POS,140000,17000000,15900000,47000
+BRADESCO,DEBIT,POS,150000,8200000,7700000,17000
+CAIXA,CREDIT,POS,130000,14000000,13100000,39000
+CAIXA,DEBIT,POS,170000,7800000,7300000,15000
+NUBANK,CREDIT,POS,110000,13000000,12200000,36000
+NUBANK,DEBIT,POS,120000,7000000,6600000,14000
+'@ | Set-Content data\readme_demo.csv
 ```
 
----
+Run share analysis:
 
-## 🔐 Privacy Compliance (Automatic)
+```powershell
+py benchmark.py share --csv data\readme_demo.csv --entity "BANCO SANTANDER" --metric txn_cnt --dimensions card_type channel --preset balanced_default
+```
 
-The tool **auto-detects** your peer count and applies the correct privacy rule:
+Run rate analysis:
 
-| Rule | Min Peers | Max Share | Additional Requirements | Compliant Example |
-|------|-----------|-----------|------------------------|-------------------|
-| **5/25** | 5 | 25% | — | [25, 25, 25, 24, 1] |
-| **6/30** | 6 | 30% | ≥3 participants must be ≥7% | [30, 24.5, 24.5, 7, 7, 7] |
-| **7/35** | 7 | 35% | ≥2 participants ≥15%, ≥1 additional ≥8% | [35, 15, 15, 8.75, 8.75, 8.75, 8.75] |
-| **10/40** | 10 | 40% | ≥2 participants ≥20%, ≥1 additional ≥10% | [40, 20, 20, 10, 1.6, 1.6, 1.6, 1.6, 1.6, 1.6] |
-| **4/35** | 4 | 35% | Merchant benchmarking only | — |
+```powershell
+py benchmark.py rate --csv data\readme_demo.csv --entity "BANCO SANTANDER" --total-col amt_total --approved-col amt_approved --fraud-col amt_fraud --dimensions card_type channel --preset balanced_default
+```
 
-> ⚠️ **You never configure privacy caps manually.** The tool handles this automatically based on your data.
+## Input Data Requirements
 
----
+Expected format is pre-aggregated long format (one row per entity x dimension bucket).
 
-## 📁 Input Data Requirements
-
-### Data Format
-
-Your CSV must be **pre-aggregated** — one row per entity × dimension combination:
+Example:
 
 ```csv
-issuer_name,card_type,channel,txn_cnt,approved_cnt,fraud_cnt
-BANCO SANTANDER,CREDIT,POS,125000,108750,412
-BANCO SANTANDER,CREDIT,ECOM,80000,68000,340
-BANCO SANTANDER,DEBIT,POS,200000,186000,372
-ITAU UNIBANCO,CREDIT,POS,180000,162000,540
+issuer_name,flag_domestic,card_type,txn_cnt,tpv
+BANCO SANTANDER,Domestic,CREDIT,125000,15000000
+BANCO SANTANDER,Domestic,DEBIT,200000,8000000
+ITAU UNIBANCO,Domestic,CREDIT,180000,22000000
 ```
 
-### ✅ Data Checklist
+Important rules:
 
-Before running analysis, verify:
+- Entity names are case-sensitive.
+- Column names are normalized to lowercase with underscores.
+- Keep metric units consistent (currency, count definitions, etc.).
+- At least 4 participants are required for privacy-compliant analysis.
+- Nulls in key entity/metric fields will trigger validation issues.
 
-- [ ] **Entity names consistent** — `Santander` ≠ `SANTANDER` (case-sensitive!)
-- [ ] **At least 4 entities** — Required for privacy compliance
-- [ ] **No nulls** in entity or metric columns
-- [ ] **Same currency** for all amounts
-- [ ] **Pre-aggregated** — Tool doesn't sum raw transactions
+## Privacy Rules (Auto-Applied)
 
-> 💡 **Pro Tip:** Run `py benchmark.py config list` to see available presets before starting.
+The engine selects the rule based on peer count.
 
----
+| Rule | Min Peers | Max Concentration | Additional Condition |
+|---|---:|---:|---|
+| 5/25 | 5 | 25% | - |
+| 6/30 | 6 | 30% | >=3 participants at >=7% |
+| 7/35 | 7 | 35% | >=2 at >=15%, plus >=1 at >=8% |
+| 10/40 | 10 | 40% | >=2 at >=20%, plus >=1 at >=10% |
+| 4/35 | 4 | 35% | Merchant benchmarking only |
 
-## ✨ Enhanced Analysis Features
+You do not manually configure these caps during normal runs.
 
-### 🔍 Data Validation
+## TUI Workflow
 
-Built-in validation ensures data quality before analysis starts:
+The TUI (`tui_app.py`) is best for first-time users:
 
-```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --validate-input
-```
+1. Select CSV (searches current directory and `data/`).
+2. Choose entity column and target entity (or run peer-only).
+3. Pick a preset.
+4. Configure Share or Rate tab.
+5. Click Run Analysis and watch logs.
 
-**Checks performed:**
-- ✅ Required columns exist
-- ✅ No null values in critical fields
-- ✅ Sufficient peer count for privacy compliance
-- ✅ Metric values are numeric and non-negative
-- ⚠️ Warns on entity name inconsistencies
+Keyboard shortcuts:
 
-**Validation Results:**
-- 🔴 **ERROR**: Analysis aborts — must fix data
-- 🟡 **WARNING**: Analysis proceeds with logged warnings
-- 🟢 **INFO**: Quality notes, analysis continues
+- `Ctrl+O` open/select file
+- `Ctrl+R` run analysis
+- `F1` preset help
+- `Ctrl+A` toggle advanced panel
+- `Ctrl+E` export advanced overrides
 
-> **TUI Integration:** The TUI shows a validation modal with interactive issue review.
+## CLI Cookbook
 
----
-
-### 📊 Distortion Analysis
-
-Understand how privacy weights affect your results:
-
-```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --analyze-distortion
-```
-
-**Outputs:**
-- **Distortion Summary Sheet**: Mean/min/max/std distortion by dimension
-- **Enhanced CSV**: Includes `Raw_Metric`, `Balanced_Share_%`, `Distortion_PP` columns
-- Per-category distortion metrics for quality assessment
-
-**Use for:**
-- Assessing impact of privacy weighting
-- Identifying dimensions with high distortion
-- Quality control for stakeholder presentations
-
----
-
-### 🔄 Preset Comparison
-
-Test all optimization presets simultaneously to find the best fit:
+Share analysis:
 
 ```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --compare-presets
-```
-
-**Report includes:**
-- Comparison sheet showing distortion for each preset
-- ⭐ **Best preset** marked automatically (lowest mean distortion)
-- Execution time for each preset
-
-**Presets compared:**
-- `balanced_default`
-- `compliance_strict`
-- `low_distortion`
-- `minimal_distortion`
-- `research_exploratory`
-- `strategic_consistency`
-
----
-
-### 📋 Output Formats
-
-Generate analysis-ready or publication-ready reports:
-
-```powershell
-# Analysis format (default) — includes all diagnostic sheets
-py benchmark.py share --csv data.csv --metric txn_cnt --output-format analysis
-
-# Publication format — cleaned for external stakeholders
-py benchmark.py share --csv data.csv --metric txn_cnt --output-format publication
-
-# Both formats
-py benchmark.py share --csv data.csv --metric txn_cnt --output-format both
-```
-
-**Convenience alias:**
-```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --publication-format
-```
-
----
-
-### 💾 Enhanced CSV Export
-
-Export privacy-weighted data with calculated metrics:
-
-```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --export-balanced-csv --include-calculated
-```
-
-**CSV includes:**
-- `Balanced_Metric`: Peer-only privacy-weighted totals
-- `Raw_Metric`: Peer-only unweighted totals
-- `Raw_Metric_Share_%`: Unweighted percentage
-- `Balanced_Metric_Share_%`: Privacy-weighted percentage
-- `Metric_Distortion_PP`: Impact of privacy weighting (percentage points)
-
-For share/rate outputs, target contributions are handled separately in the percentage/rate calculations.
-
-**Perfect for:**
-- Importing to Tableau/PowerBI/Excel pivots
-- Comparing raw vs weighted metrics
-- Audit trails and data lineage
-
----
-
-## 📋 CLI Reference
-
-### Essential Commands
-
-```powershell
-# Share Analysis
 py benchmark.py share --csv FILE --entity NAME --metric COLUMN --dimensions DIM1 DIM2
-
-# Rate Analysis  
-py benchmark.py rate --csv FILE --entity NAME --total-col COLUMN --approved-col COLUMN
-
-# Configuration
-py benchmark.py config list                    # Show presets
-py benchmark.py config show PRESET             # View preset details
-py benchmark.py config generate OUTPUT.yaml    # Create custom config
 ```
 
-### All Flags
-
-<details>
-<summary><strong>📌 Click to expand full flag reference</strong></summary>
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `--csv` | Required | Input CSV file path |
-| `--entity` | Optional | Target entity name (omit for peer-only) |
-| `--entity-col` | Optional | Entity column name (default: `issuer_name`) |
-| `--metric` | Share | Metric column for share analysis |
-| `--total-col` | Rate | Denominator column |
-| `--approved-col` | Rate | Approval numerator |
-| `--fraud-col` | Rate | Fraud numerator |
-| `--dimensions` | Optional | Space-separated dimension columns |
-| `--auto` | Flag | Auto-detect dimensions |
-| `--time-col` | Optional | Time column for temporal consistency |
-| `--preset` | Optional | Use preset configuration |
-| `--config` | Optional | Use custom YAML config |
-| `--output` | Optional | Output file path |
-| `--debug` | Flag | Include debug sheets |
-| `--export-balanced-csv` | Flag | Export balanced CSV alongside Excel |
-| `--validate-input` | Flag | Enable data validation (default: enabled) |
-| `--no-validate-input` | Flag | Disable data validation |
-| `--compare-presets` | Flag | Compare all presets and identify best |
-| `--analyze-distortion` | Flag | Include distortion analysis sheets |
-| `--output-format` | Choice | `analysis`, `publication`, or `both` |
-| `--publication-format` | Flag | Alias for `--output-format=publication` |
-| `--include-calculated` | Flag | Add raw/distortion columns to CSV |
-| `--fraud-in-bps` | Rate | Report fraud in basis points (default: yes) |
-
-</details>
-
----
-
-## 📈 Understanding Your Output
-
-### Excel Report Structure
-
-| Sheet | What's Inside | Always? |
-|-------|---------------|---------|
-| **Summary** | Inputs, settings, key stats | ✅ |
-| **[Dimension]** | Per-category comparisons | ✅ |
-| **Weight Methods** | How weights were calculated | ✅ |
-| **Rank Changes** | Before/after peer rankings | ✅ |
-| **Structural Summary** | Count of structurally infeasible buckets | LP diagnostics |
-| **Structural Detail** | Exact structurally infeasible categories/peers | LP diagnostics |
-| **Peer Weights** | Actual multipliers | `--debug` |
-| **Privacy Validation** | Compliance verification | `--debug` |
-
-### Reading the Results
-
-```
-           Entity    Peer Avg    BIC       Gap
-CREDIT     45.2%     38.5%      48.1%    +6.7pp
-           ▲         ▲          ▲        ▲
-           Your      Weighted   Best in  You vs
-           value     peer avg   Class    Peers
-```
-
-| Gap | Meaning |
-|-----|---------|
-| `+6.7pp` | You're **outperforming** peers by 6.7 percentage points |
-| `-3.2pp` | You're **underperforming** peers |
-| `0.0pp` | Exactly at peer average |
-
----
-
-## 🚀 Common Workflows
-
-### Workflow 1: Monthly Performance Report
+Rate analysis:
 
 ```powershell
-py benchmark.py rate ^
-  --csv data/march_2024.csv ^
-  --entity "BANCO SANTANDER" ^
-  --total-col amt_total ^
-  --approved-col amt_approved ^
-  --dimensions card_type channel ^
-  --preset balanced_default ^
-  --output reports/march_2024_benchmark.xlsx
+py benchmark.py rate --csv FILE --entity NAME --total-col TOTAL --approved-col APPROVED --fraud-col FRAUD --dimensions DIM1 DIM2
 ```
 
-### Workflow 2: Regulatory Compliance Report
+Peer-only mode (omit `--entity`):
 
 ```powershell
-py benchmark.py share ^
-  --csv data/q1_aggregated.csv ^
-  --entity "ITAU UNIBANCO" ^
-  --metric transaction_count ^
-  --dimensions flag_domestic card_type ^
-  --preset compliance_strict ^
-  --debug ^
-  --output reports/q1_compliance.xlsx
+py benchmark.py share --csv FILE --metric COLUMN --auto
 ```
 
-### Workflow 3: Executive Dashboard Data
+Run with diagnostics and CSV export:
 
 ```powershell
-py benchmark.py rate ^
-  --csv data/ytd.csv ^
-  --entity "BRADESCO" ^
-  --total-col total ^
-  --approved-col approved ^
-  --fraud-col fraud ^
-  --dimensions card_type merchant_category region ^
-  --time-col year_month ^
-  --preset strategic_consistency ^
-  --export-balanced-csv ^
-  --output reports/dashboard_data.xlsx
+py benchmark.py share --csv FILE --entity NAME --metric COLUMN --auto --analyze-impact --export-balanced-csv --include-calculated --debug
 ```
 
-### Workflow 4: Market Landscape Analysis (No Target)
+Publication output format:
 
 ```powershell
-py benchmark.py share ^
-  --csv data/industry.csv ^
-  --metric tpv ^
-  --auto ^
-  --preset balanced_default
+py benchmark.py rate --csv FILE --total-col TOTAL --approved-col APPROVED --output-format publication
 ```
 
-> 💡 **Tip:** Omitting `--entity` runs peer-only analysis — great for understanding market structure.
-
----
-
-## ❓ Frequently Asked Questions
-
-<details>
-<summary><strong>Why does my entity name not match?</strong></summary>
-
-Entity names are **case-sensitive**. Check your CSV:
-- ✅ `"BANCO SANTANDER"` matches `"BANCO SANTANDER"`
-- ❌ `"Banco Santander"` does NOT match `"BANCO SANTANDER"`
-
-**Fix:** Copy the exact name from your CSV.
-</details>
-
-<details>
-<summary><strong>What does "LP Infeasible" mean?</strong></summary>
-
-This is **normal** for complex datasets. It means the Linear Programming solver couldn't find weights satisfying all privacy constraints simultaneously.
-
-**What happens:** The tool automatically falls back to per-dimension solving or Bayesian optimization.
-
-**Check:** The Weight Methods sheet shows which method was used for each dimension.
-</details>
-
-<details>
-<summary><strong>Can I analyze without a target entity?</strong></summary>
-
-Yes! Omit the `--entity` flag for **peer-only mode**:
+Config/preset management:
 
 ```powershell
-py benchmark.py share --csv data.csv --metric txn_cnt --auto
+py benchmark.py config list
+py benchmark.py config show balanced_default
+py benchmark.py config validate my_config.yaml
+py benchmark.py config generate my_config.yaml
 ```
 
-This analyzes peer distributions without comparing to a specific entity.
-</details>
+## Presets
 
-<details>
-<summary><strong>How do I export data for Tableau/PowerBI?</strong></summary>
-
-Use the `--export-balanced-csv` flag:
+List available presets:
 
 ```powershell
-py benchmark.py rate --csv data.csv --total-col total --approved-col approved --export-balanced-csv
+py benchmark.py config list
 ```
 
-This creates `report_balanced.csv` with privacy-weighted totals ready for import.
-</details>
+Recommended starting point:
 
-<details>
-<summary><strong>Why are some dimensions using different weight methods?</strong></summary>
+- `balanced_default`: day-to-day analysis.
 
-When global weights can't satisfy privacy constraints for ALL dimensions, the tool:
-1. Finds the largest subset that works globally
-2. Solves remaining dimensions independently
+Use when needed:
 
-For `strategic_consistency`, single-weight-set mode is enforced, so per-dimension fallback is skipped.
+- `compliance_strict`: regulatory/audit-first, zero tolerance.
+- `strategic_consistency`: emphasize one consistent global weighting behavior.
+- `research_exploratory`: harder datasets with more flexibility.
+- `low_distortion` / `minimal_distortion`: prioritize lower distortion patterns.
 
-Check the **Weight Methods** sheet to see:
-- `Global-LP` — Solved with all dimensions
-- `Per-Dimension-LP` — Solved independently
-- `Per-Dimension-Bayesian` — LP failed, Bayesian fallback
-</details>
+Quick selection guide:
 
-<details>
-<summary><strong>What is structural infeasibility?</strong></summary>
+- Regulatory submission -> `compliance_strict`
+- Executive/dashboard consistency -> `strategic_consistency`
+- General business analysis -> `balanced_default`
 
-Some sparse buckets cannot satisfy cap constraints for any allowed weights (for example, one peer is 100% of a category/time bucket).
+## Outputs
 
-Use:
-- **Structural Summary** for counts and worst margin.
-- **Structural Detail** for exact dimension/category/peer combinations.
+Main output is Excel (`.xlsx`), optionally with balanced CSV.
 
-In these cases, residual violations can remain even with strict optimization.
-</details>
+Common sheets:
 
----
+- `Summary`
+- One sheet per analyzed dimension
+- `Weight Methods`
+- `Rank Changes`
+- Additional diagnostics based on flags (`--debug`, `--analyze-impact`, subset search paths)
 
-## 🛠️ Troubleshooting
+Balanced CSV is useful for BI ingestion (Power BI, Tableau, pipelines).
 
-| Problem | Solution |
-|---------|----------|
-| 🔴 "Entity not found" | Names are **case-sensitive** — match exactly |
-| 🔴 "Column not found" | Check column names after loading (lowercase + underscores) |
-| 🟡 "No valid dimensions" | Use `--dimensions` explicitly instead of `--auto` |
-| 🟡 High slack in output | Try `strategic_consistency` preset |
-| 🟢 "LP Infeasible" | Normal! Tool uses fallback automatically |
+## Excel Sheet Guide
 
-### Debug Mode
+The report includes a consistent core set of sheets, plus optional diagnostics.
 
-Add `--debug` to any command for extra diagnostic sheets:
+Core sheets:
+
+- `Summary`
+  - Inputs, configuration, preset used, and high-level metadata.
+  - Primary place to confirm the run parameters and interpretation context.
+- `[Dimension]` sheets (one per dimension)
+  - Category-level comparisons for the target entity vs peer averages.
+  - Includes gaps (percentage point deltas) and best-in-class benchmarks.
+- `Weight Methods`
+  - Shows which weighting strategy was applied per dimension:
+    `Global-LP`, `Per-Dimension-LP`, or `Per-Dimension-Bayesian`.
+- `Rank Changes`
+  - Tracks rank shifts before/after weighting to show distortion impact.
+
+Optional diagnostic sheets (appear when enabled or triggered):
+
+- `Peer Weights` (debug)
+  - Raw peer volumes, multipliers, and final weights.
+  - Use for audit trails and deep validation.
+- `Privacy Validation` (debug)
+  - Per-category compliance checks and concentration caps.
+- `Structural Summary` / `Structural Detail`
+  - Buckets that are infeasible under strict caps.
+  - Useful for explaining unavoidable residual violations.
+- `Subset Search`
+  - Logs subset search attempts when global LP is infeasible.
+- `Impact Summary` / `Impact Detail` (analyze impact)
+  - Distortion metrics by dimension/category (aka “impact”).
+  - Triggered by `--analyze-impact` (alias: `--analyze-distortion`).
+
+## Troubleshooting
+
+- `Entity not found`
+  - Use exact case-sensitive entity values from the CSV.
+- `Column not found`
+  - Use normalized names (`lowercase_with_underscores`).
+- `No valid dimensions`
+  - Pass explicit `--dimensions` instead of relying on `--auto`.
+- LP infeasibility warnings
+  - Expected for some sparse/structural datasets; fallback methods are built in.
+- Unexpectedly high distortion
+  - Try `--compare-presets` and inspect impact sheets.
+
+## Validation and Testing
+
+For contributors, run both after changes:
 
 ```powershell
-py benchmark.py share --csv data.csv --entity "BANK" --metric txn_cnt --auto --debug
+py scripts/perform_gate_test.py
+py -m pytest
 ```
 
-### Validate CSV Output
+Optional CSV-vs-Excel cross-check:
 
 ```powershell
-py utils/csv_validator.py report.xlsx report_balanced.csv --verbose
+py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
 ```
 
----
+## Additional Documentation
 
-## 📦 Installation
+- `AGENTS.md` - full business rules and contributor constraints
+- `SETUP.md` - deployment/setup notes
+- `docs/CORE_TECHNICAL_DOC.md` - core engine technical reference
+- `utils/CSV_VALIDATOR_README.md` - CSV validator details
 
-### Quick Install
+## Version
 
-```bash
-pip install -r requirements.txt
-```
-
-### Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `pandas` | Data processing |
-| `numpy` | Numerical operations |
-| `openpyxl` | Excel output |
-| `PyYAML` | Configuration |
-| `scipy` | LP optimization |
-| `textual` | TUI framework |
-
-### Server Deployment
-
-For shared server deployment, see [SETUP.md](SETUP.md).
-
----
-
-## 📚 Additional Resources
-
-| Document | Purpose |
-|----------|---------|
-| [AGENTS.md](AGENTS.md) | AI agent development guide |
-| [SETUP.md](SETUP.md) | Server deployment instructions |
-| [utils/CSV_VALIDATOR_README.md](utils/CSV_VALIDATOR_README.md) | CSV validation documentation |
-
----
-
-<div align="center">
-
-**Built for Mastercard Privacy Compliance** · Version 3.0.0
-
-</div>
-
-## Core Technical Documentation
-
-A concise technical reference for the core engine is available here:
-
-- docs/CORE_TECHNICAL_DOC.md
-
-This document summarizes data loading, validation, privacy enforcement, optimization, diagnostics, and reporting, and lists potential improvement areas.
+Configuration model: v3.0.

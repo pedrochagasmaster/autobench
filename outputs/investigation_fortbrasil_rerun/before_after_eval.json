@@ -1,0 +1,206 @@
+{
+  "share_strategic": {
+    "old_methods": {
+      "Global-LP": 18,
+      "Per-Dimension-Bayesian": 6
+    },
+    "new_methods": {
+      "Global-LP": 24
+    },
+    "sheet_old": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Weight Methods",
+      "Structural Summary",
+      "Structural Detail",
+      "Rank Changes",
+      "Privacy Validation",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "sheet_new": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Weight Methods",
+      "Structural Summary",
+      "Structural Detail",
+      "Rank Changes",
+      "Privacy Validation",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "summary_old": {},
+    "summary_new": {
+      "Enforce Single Weight Set:": true,
+      "Structural Infeasibility:": "DETECTED",
+      "Infeasible Dimensions/Categories:": "1 / 1",
+      "Worst Structural Margin (pp):": 45
+    },
+    "csv_compare": {
+      "old_rows": 314,
+      "new_rows": 314,
+      "join_mismatch": 0,
+      "max_abs_diffs": {
+        "Balanced_qtde_txns_ttl": 778197.0899999999,
+        "Raw_qtde_txns_ttl": 0.0,
+        "Raw_qtde_txns_ttl_Share_%": 0.0,
+        "Balanced_qtde_txns_ttl_Share_%": 4.4709,
+        "qtde_txns_ttl_Impact_PP": 4.4709
+      }
+    }
+  },
+  "rate_strategic": {
+    "old_methods": {
+      "Global-LP": 18,
+      "Per-Dimension-Bayesian": 6
+    },
+    "new_methods": {
+      "Global-LP": 24
+    },
+    "sheet_old": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Privacy Validation",
+      "Weight Methods",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "sheet_new": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Privacy Validation",
+      "Weight Methods",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "summary_old": {},
+    "summary_new": {},
+    "csv_compare": {
+      "old_rows": 314,
+      "new_rows": 314,
+      "join_mismatch": 0,
+      "max_abs_diffs": {
+        "Raw_Total": 0.0,
+        "Balanced_Total": 778197.0931668533,
+        "Balanced_Approval_Total": 750155.4673903333,
+        "Raw_Approval_Rate_%": 0.0,
+        "Balanced_Approval_Rate_%": 5.1675972626368605,
+        "Approval_Impact_PP": 5.167597262636857,
+        "Balanced_Fraud_Total": 1174.0847503445348,
+        "Raw_Fraud_Rate_%": 0.0,
+        "Balanced_Fraud_Rate_%": 0.08167566181313701,
+        "Fraud_Impact_PP": 0.08167566181313712,
+        "qtde_txns_ttl": 778197.0899999999,
+        "qtde_txns_app": 750155.4699999997,
+        "qtde_txns_fraud": 1174.0900000000001
+      }
+    }
+  },
+  "share_balanced_default": {
+    "old_methods": {
+      "Per-Dimension-Bayesian": 12,
+      "Per-Dimension-LP": 6,
+      "Global-LP": 6
+    },
+    "new_methods": {
+      "Per-Dimension-Bayesian": 12,
+      "Per-Dimension-LP": 6,
+      "Global-LP": 6
+    },
+    "sheet_old": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Weight Methods",
+      "Structural Summary",
+      "Structural Detail",
+      "Rank Changes",
+      "Privacy Validation",
+      "Preset Comparison",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "sheet_new": [
+      "Summary",
+      "flag_domestic",
+      "poi",
+      "poi_3ds_category",
+      "poi_ticket_range",
+      "Peer Weights",
+      "Weight Methods",
+      "Structural Summary",
+      "Structural Detail",
+      "Rank Changes",
+      "Privacy Validation",
+      "Impact Analysis",
+      "Data Quality"
+    ],
+    "summary_old": {},
+    "summary_new": {
+      "Enforce Single Weight Set:": false,
+      "Structural Infeasibility:": "DETECTED",
+      "Infeasible Dimensions/Categories:": "1 / 1",
+      "Worst Structural Margin (pp):": 68
+    },
+    "csv_compare": {
+      "old_rows": 314,
+      "new_rows": 314,
+      "join_mismatch": 0,
+      "max_abs_diffs": {
+        "Balanced_qtde_txns_ttl": 142610.91999999993,
+        "Raw_qtde_txns_ttl": 0.0,
+        "Raw_qtde_txns_ttl_Share_%": 0.0,
+        "Balanced_qtde_txns_ttl_Share_%": 0.8033000000000001,
+        "qtde_txns_ttl_Impact_PP": 0.8033000000000001
+      }
+    }
+  },
+  "repro_checks": {
+    "share_strategic_rerun": {
+      "rows": 314,
+      "max_abs_diff": 24.388877000659704,
+      "p99_abs_diff": 23.152145379027353
+    },
+    "share_balanced_rerun": {
+      "rows": 314,
+      "max_abs_diff": 6.8408549996092916,
+      "p99_abs_diff": 6.201481389757246
+    },
+    "share_low_rerun": {
+      "rows": 314,
+      "max_abs_diff": 0.0,
+      "p99_abs_diff": 0.0
+    },
+    "rate_strategic_rerun": {
+      "rows": 314,
+      "max_abs_diff_total": 24.38880344480276,
+      "max_abs_diff_approval": 20.86707844492048,
+      "max_abs_diff_fraud": 0.030869707952660974
+    }
+  },
+  "low_distortion_before": {
+    "red_flags": [
+      "Preset Comparison error for 'low_distortion': Dimension '_TIME_TOTAL' uses reserved prefix '_TIME_'. Please rename the source column."
+    ],
+    "before_file_exists": false
+  }
+}
