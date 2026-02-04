@@ -1,103 +1,58 @@
-Yes, but because your server has **no internet access** (as confirmed by the failed ping), you cannot use a single script on the server to do everything.
+# Offline Environment Setup
 
-You need a **two-stage workflow**:
+Since the remote server (`/ads_storage/autobench`) has **no internet access**, you must follow this workflow to prepare dependencies on your local machine and deploy them to the server.
 
-1.  **Stage 1 (Local Machine):** A script to download all dependencies from the Artifactory.
-2.  **Stage 2 (Remote Server):** A script to install them into your virtual environment without using the internet.
+## Prerequisites
 
-Here is the full setup for both sides.
+1.  **Local Machine (Windows):** Internet access, PowerShell, and Python installed.
+2.  **Remote Server (Linux):** Python 3.10 installed at `/sys_apps_01/python/python310/bin/python3.10`.
+3.  **Repository:** Cloned on *both* your local machine and the remote server.
 
------
+## Automated Deployment
 
-### Stage 1: The Download Script (Run on your Laptop)
+We have consolidated the setup into a single PowerShell script that handles downloading dependencies, transferring them, and installing them on the remote server.
 
-Save this as `download_bundle.sh` (Mac/Linux) or `download_bundle.bat` (Windows) on your local machine where you have internet access and the `requirements.txt` file.
+1.  Open PowerShell in the project root.
+2.  Run:
+    ```powershell
+    .\deploy_and_install.ps1
+    ```
+3.  Follow the prompts:
+    *   **Remote User:** Defaults to `e176097` (press Enter to accept).
+    *   **Host Suffix:** Enter the numeric suffix of your server (e.g., `04` for `hde2stl020004.mastercard.int`).
 
-**Bash (Mac/Linux):**
+The script will automatically:
+*   Download Linux-compatible binaries (wheels) for Python 3.10.
+*   Download source packages for libraries without wheels (e.g., `pypyodbc`).
+*   Bundle everything into a zip file.
+*   Transfer the bundle to the server via SCP (Port 2222).
+*   Connect via SSH to unzip the files and run the installation script (`setup_remote_env.sh`).
+
+## Verification
+
+Once the script completes successfully, you can verify the tool works by logging into the server and running:
 
 ```bash
-#!/bin/bash
-
-# 1. Create a directory for the offline packages
-mkdir -p offline_packages
-
-# 2. Download packages specified in requirements.txt
-# We use the specific Artifactory URL found in your document
-echo "Downloading packages..."
-pip download \
-    -r requirements.txt \
-    --dest offline_packages \
-    --index-url https://artifactdv.us.platforms.dev/artifactory/api/pypi/pypi-all/simple
-
-echo "Download complete. Please transfer the 'offline_packages' folder and 'requirements.txt' to the server."
+cd /ads_storage/autobench
+./run_tool.sh share --help
 ```
 
-**CMD (Windows):**
+## Manual Alternative (If script fails)
 
-```cmd
-@echo off
-mkdir offline_packages
-echo Downloading packages...
-pip download -r requirements.txt --dest offline_packages --index-url https://artifactdv.us.platforms.dev/artifactory/api/pypi/pypi-all/simple
-echo Download complete.
-pause
-```
+If the automation fails, you can perform the steps manually:
 
------
-
-### Stage 2: Transfer Files
-
-You will now have a folder named `offline_packages` full of `.whl` and `.tar.gz` files.
-Use `scp` or WinSCP to copy both **requirements.txt** and the **offline\_packages** folder to your server path:
-`/ads_storage/Peer Benchmark Tool/`
-
------
-
-### Stage 3: The Install Script (Run on the Server)
-
-Save this as `setup_env.sh` on your server inside `/ads_storage/Peer Benchmark Tool/`.
-
-```bash
-#!/bin/bash
-
-# 1. Initialize/Create the Virtual Environment if it doesn't exist
-if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv .venv
-fi
-
-# 2. Activate the environment
-source .venv/bin/activate
-
-# 3. Upgrade pip (using the offline file if present in the folder, otherwise skips)
-# Note: This looks for pip inside the offline folder to update itself
-pip install --no-index --find-links=./offline_packages pip
-
-# 4. Install requirements from the offline folder
-echo "Installing packages from offline source..."
-pip install \
-    --no-index \
-    --find-links=./offline_packages \
-    -r requirements.txt
-
-echo "Setup complete! Environment is ready."
-```
-
-### How to run it on the server:
-
-1.  Navigate to your folder:
-    ```bash
-    cd "/ads_storage/Peer Benchmark Tool"
-    ```
-2.  Make the script executable:
-    ```bash
-    chmod +x setup_env.sh
-    ```
-3.  Run it:
-    ```bash
-    ./setup_env.sh
-    ```
-
-### Why this works 
-
-Your uploaded document ("Python Distribution Management") specifically highlights that direct installation on Edge Nodes has "pending issues". It recommends downloading and zipping libraries as a workaround. By using `--find-links=./offline_packages` and `--no-index`, you force `pip` to ignore the broken internet connection and look strictly at the files you uploaded.
+1.  **Download & Bundle (Local):**
+    *   Review `deploy_and_install.ps1` to see how dependencies are downloaded (some as binaries, some as source).
+    *   Zip the resulting `offline_packages/` folder and `requirements.txt`.
+2.  **Transfer:** Use `scp` (port 2222) to send the zip to `/ads_storage/autobench`.
+3.  **Install (Remote):**
+    *   SSH into the server.
+    *   Unzip: 
+        ```bash
+        /sys_apps_01/python/python310/bin/python3.10 -m zipfile -e autobench_deploy.zip .
+        ```
+    *   Run Setup: 
+        ```bash
+        chmod +x setup_remote_env.sh
+        ./setup_remote_env.sh
+        ```

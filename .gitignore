@@ -62,3 +62,4 @@ config.json
 *.csv
 *.csv.gz
 /offline_packages/*
+autobench_deploy.zip
