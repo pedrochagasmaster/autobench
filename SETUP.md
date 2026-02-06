@@ -8,9 +8,9 @@ Since the remote server (`/ads_storage/autobench`) has **no internet access**, y
 2.  **Remote Server (Linux):** Python 3.10 installed at `/sys_apps_01/python/python310/bin/python3.10`.
 3.  **Repository:** Cloned on *both* your local machine and the remote server.
 
-## Automated Deployment
+## Automated Deployment (Dependencies)
 
-We have consolidated the setup into a single PowerShell script that handles downloading dependencies, transferring them, and installing them on the remote server.
+This workflow is for **installing dependencies** (Python packages). You only need to run this when `requirements.txt` changes.
 
 1.  Open PowerShell in the project root.
 2.  Run:
@@ -21,25 +21,38 @@ We have consolidated the setup into a single PowerShell script that handles down
     *   **Remote User:** Defaults to `e176097` (press Enter to accept).
     *   **Host Suffix:** Enter the numeric suffix of your server (e.g., `04` for `hde2stl020004.mastercard.int`).
 
-The script will automatically:
-*   Download Linux-compatible binaries (wheels) for Python 3.10.
-*   Download source packages for libraries without wheels (e.g., `pypyodbc`).
-*   Bundle everything into a zip file.
-*   Transfer the bundle to the server via SCP (Port 2222).
-*   Connect via SSH to unzip the files and run the installation script (`setup_remote_env.sh`).
+## Keeping the Code Up-to-Date
+
+To update the **source code** (scripts, logic) on the server, use standard `git` commands.
+
+### Initial Git Setup (Run Once)
+If you see "not a git repository" or branch errors:
+
+```bash
+cd /ads_storage/autobench && git init && git remote add origin https://e176097@scm.mastercard.int/stash/scm/~e176097/autobench.git && git fetch origin && git checkout -f -b main origin/maingit checkout -f -b main origin/main
+```
+
+### Routine Updates
+To pull the latest changes from the repository:
+
+```bash
+cd /ads_storage/autobench
+git pull
+```
+*(You will be asked for your password).*
 
 ## Verification
 
-Once the script completes successfully, you can verify the tool works by logging into the server and running:
+Once installed, verify the tool works by running (on the server):
 
 ```bash
 cd /ads_storage/autobench
 ./run_tool.sh share --help
 ```
 
-## Manual Alternative (If script fails)
+## Manual Alternative (Dependencies)
 
-If the automation fails, you can perform the steps manually:
+If the automated `deploy_and_install.ps1` script fails, you can perform the steps manually:
 
 1.  **Download & Bundle (Local):**
     *   Review `deploy_and_install.ps1` to see how dependencies are downloaded (some as binaries, some as source).
