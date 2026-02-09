@@ -1116,6 +1116,45 @@ class DimensionalAnalyzer:
                 })
         return pd.DataFrame(rows)
 
+    def _weighted_percentile(self, data: List[float], weights: List[float], percentile: float) -> float:
+        """
+        Calculate weighted percentile.
+        
+        Args:
+            data: List of values
+            weights: List of weights corresponding to values
+            percentile: Target percentile (0.0 to 1.0)
+            
+        Returns:
+            Weighted percentile value
+        """
+        if not data:
+            return 0.0
+        
+        if len(data) != len(weights):
+            return float(np.percentile(data, percentile * 100.0))
+            
+        # Sort data and weights based on data
+        sorted_indices = np.argsort(data)
+        sorted_data = np.array(data)[sorted_indices]
+        sorted_weights = np.array(weights)[sorted_indices]
+        
+        # Compute cumulative weights
+        cum_weights = np.cumsum(sorted_weights)
+        total_weight = cum_weights[-1]
+        
+        if total_weight <= 0:
+             return float(np.percentile(data, percentile * 100.0))
+
+        # Find the value
+        target_weight = total_weight * percentile
+        idx = np.searchsorted(cum_weights, target_weight)
+        
+        if idx >= len(sorted_data):
+            return float(sorted_data[-1])
+            
+        return float(sorted_data[idx])
+
     def _calculate_share_metrics(
         self,
         category_df: pd.DataFrame,
@@ -1191,13 +1230,22 @@ class DimensionalAnalyzer:
         
         # BIC percentile from peers' category shares
         peer_shares = []
+        peer_weights = []
         for p, cat_vol in peer_category_volumes.items():
             total_vol = peer_totals_map[p]
             if total_vol <= 0:
                 continue
             share = (cat_vol / total_vol * 100.0)
             peer_shares.append(share)
-        bic_value = float(np.percentile(peer_shares, self.bic_percentile * 100.0)) if len(peer_shares) > 0 else 0.0
+            
+            # Weight is the peer's total volume adjusted by privacy multiplier
+            multiplier = self._get_peer_multiplier(dimension_column, p)
+            peer_weights.append(total_vol * multiplier)
+
+        if len(peer_shares) > 0:
+            bic_value = self._weighted_percentile(peer_shares, peer_weights, self.bic_percentile)
+        else:
+            bic_value = 0.0
         
         # Calculate original (unweighted) peer average for debug mode
         peer_category_total = sum(peer_category_volumes.values())
@@ -1311,12 +1359,21 @@ class DimensionalAnalyzer:
         
         # BIC percentile from peers' rates
         peer_rates = []
+        peer_weights = []
         for p in peer_totals_map.keys():
             # Only include peers with denominator > 0
             if peer_category_dens.get(p, 0.0) > 0:
                 rate = (peer_category_nums.get(p, 0.0) / peer_category_dens[p] * 100.0)
                 peer_rates.append(rate)
-        bic_value = float(np.percentile(peer_rates, self.bic_percentile * 100.0)) if len(peer_rates) > 0 else 0.0
+                
+                # Weight is the peer's denominator adjusted by privacy multiplier
+                multiplier = self._get_peer_multiplier(dimension_column, p)
+                peer_weights.append(peer_category_dens[p] * multiplier)
+        
+        if len(peer_rates) > 0:
+            bic_value = self._weighted_percentile(peer_rates, peer_weights, self.bic_percentile)
+        else:
+            bic_value = 0.0
         
         # Calculate original (unweighted) peer rate for debug mode
         total_num = sum(peer_category_nums.values())
@@ -1415,8 +1472,7 @@ class DimensionalAnalyzer:
                             balanced_shares.append(balanced_share)
 
                         peer_category_volumes = {p['peer']: p['volume'] for p in peer_data}
-                        stats_key = (f"{dimension}_{self.time_column}", f"{category}_{time_period}", time_period)
-                        stats = constraint_stats.get(stats_key)
+                        stats = constraint_stats.get((f"{dimension}_{self.time_column}", f"{category}_{time_period}", time_period))
                         enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
                             rule_name, dimension, peer_category_volumes, stats
                         )
@@ -1486,8 +1542,7 @@ class DimensionalAnalyzer:
                         balanced_shares.append(balanced_share)
 
                     peer_category_volumes = {p['peer']: p['volume'] for p in peer_data}
-                    stats_key = (dimension, category, None)
-                    stats = constraint_stats.get(stats_key)
+                    stats = constraint_stats.get((dimension, category, None))
                     enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
                         rule_name, dimension, peer_category_volumes, stats
                     )
@@ -1527,7 +1582,7 @@ class DimensionalAnalyzer:
                             'Weight_Method': weight_method,
                             'Multiplier': peer_weight,
                             'Original_Volume': peer_vol,
-                            'Original_Share_%': round(original_share, 4),
+                            'Original_Share_%': round(original_share,  4),
                             'Balanced_Volume': balanced_vol,
                             'Balanced_Share_%': round(balanced_share, 4),
                             'Privacy_Cap_%': max_concentration,
