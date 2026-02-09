@@ -10,6 +10,13 @@ from .category_builder import CategoryBuilder
 logger = logging.getLogger(__name__)
 
 
+def _weights_are_identity(weights: Dict[str, float], tol: float = 1e-9) -> bool:
+    """Return True when all multipliers are effectively 1.0 within tolerance."""
+    if not weights:
+        return False
+    return all(abs(float(multiplier) - 1.0) <= tol for multiplier in weights.values())
+
+
 class GlobalWeightOptimizer:
     """Executes the global LP/subset/heuristic optimization workflow."""
 
@@ -423,6 +430,17 @@ class GlobalWeightOptimizer:
                 for violation_dim in dimensions_with_violations
                 if not CategoryBuilder.is_internal_dimension_name(violation_dim)
             ]
+
+            has_additional_violations = bool(getattr(analyzer, 'additional_constraint_violations', []))
+            if (
+                _weights_are_identity(weights)
+                and not real_dimensions_with_violations
+                and not has_additional_violations
+            ):
+                logger.info(
+                    "Global optimization retained identity multipliers because all privacy constraints "
+                    "were already satisfied for the selected dimensions."
+                )
 
             if single_weight_mode and real_dimensions_with_violations:
                 logger.info(
