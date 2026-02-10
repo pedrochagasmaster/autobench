@@ -280,7 +280,13 @@ class GlobalWeightOptimizer:
                         "Additional constraints violated in %s categories; running heuristic optimization to correct.",
                         len(violations),
                     )
-                    target_multipliers = {peer: weights[peer] for peer in peers} if weights else None
+                    strict_feasibility_mode = float(analyzer.tolerance) <= float(analyzer.COMPARISON_EPSILON)
+                    target_multipliers = None if strict_feasibility_mode else ({peer: weights[peer] for peer in peers} if weights else None)
+                    if strict_feasibility_mode:
+                        logger.info(
+                            "Strict tolerance mode detected (tolerance=0). "
+                            "Running feasibility-first heuristic without global-weight anchoring."
+                        )
                     heuristic_result = analyzer.heuristic_solver.solve(
                         peers,
                         all_categories,
@@ -532,7 +538,14 @@ class GlobalWeightOptimizer:
                             violation_solution = None
 
                     if violation_solution is None:
-                        target_multipliers = {peer: weights[peer] for peer in peers}
+                        strict_feasibility_mode = float(analyzer.tolerance) <= float(analyzer.COMPARISON_EPSILON)
+                        target_multipliers = None if strict_feasibility_mode else {peer: weights[peer] for peer in peers}
+                        if strict_feasibility_mode:
+                            logger.info(
+                                "  Strict tolerance mode detected for '%s'; "
+                                "using feasibility-first per-dimension heuristic.",
+                                violation_dim,
+                            )
                         heuristic_result = analyzer.heuristic_solver.solve(
                             peers,
                             violation_cats,
@@ -565,9 +578,15 @@ class GlobalWeightOptimizer:
                                 logger.warning("Per-dimension heuristic solver did not converge; using best-effort weights.")
                             analyzer.per_dimension_weights[violation_dim] = heuristic_result.weights
                             analyzer.weight_methods[violation_dim] = "Per-Dimension-Bayesian"
-                            logger.info(
-                                "  Per-dimension Bayesian optimization applied for '%s' (targeting global weights)",
-                                violation_dim,
-                            )
+                            if target_multipliers is None:
+                                logger.info(
+                                    "  Per-dimension Bayesian optimization applied for '%s' (feasibility-first mode)",
+                                    violation_dim,
+                                )
+                            else:
+                                logger.info(
+                                    "  Per-dimension Bayesian optimization applied for '%s' (targeting global weights)",
+                                    violation_dim,
+                                )
                         else:
                             logger.warning("  Per-dimension solving failed for '%s'", violation_dim)

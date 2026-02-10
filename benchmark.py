@@ -16,6 +16,9 @@ import argparse
 import sys
 import json
 import logging
+import gc
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -1011,6 +1014,16 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, metric_col, dimensions)
             if not privacy_validation_df.empty:
                 logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+                if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
+                    structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
+                    structural_categories = int(
+                        privacy_validation_df.loc[
+                            privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
+                            ['Dimension', 'Category', 'Time_Period']
+                        ].drop_duplicates().shape[0]
+                    )
+                    metadata['structural_infeasible_validation_rows'] = structural_rows
+                    metadata['structural_infeasible_validation_categories'] = structural_categories
         
         # Build method breakdown tab (final tab)
         method_breakdown_df = None
@@ -1621,6 +1634,16 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, total_col, dimensions)
             if not privacy_validation_df.empty:
                 logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+                if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
+                    structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
+                    structural_categories = int(
+                        privacy_validation_df.loc[
+                            privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
+                            ['Dimension', 'Category', 'Time_Period']
+                        ].drop_duplicates().shape[0]
+                    )
+                    metadata['structural_infeasible_validation_rows'] = structural_rows
+                    metadata['structural_infeasible_validation_categories'] = structural_categories
         
         # Build method breakdown tab (same for all rate types since weights are shared)
         method_breakdown_df = None
@@ -1886,6 +1909,50 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         return 1
 
 
+def _save_workbook_with_retries(
+    wb: Any,
+    output_file: str,
+    logger: logging.Logger,
+    max_attempts: int = 3,
+) -> None:
+    """Save workbook with retries and dedicated temp dir to avoid transient IO_WRITE failures."""
+    output_path = Path(output_file)
+    if output_path.parent:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_dir = (Path.cwd() / ".openpyxl_tmp").resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    original_tempdir = tempfile.tempdir
+    last_error: Optional[Exception] = None
+    try:
+        tempfile.tempdir = str(tmp_dir)
+        backoff_sec = 0.5
+        for attempt in range(1, max_attempts + 1):
+            try:
+                wb.save(str(output_path))
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Workbook save attempt %s/%s failed for '%s': %s",
+                    attempt,
+                    max_attempts,
+                    output_file,
+                    exc,
+                )
+                gc.collect()
+                if attempt < max_attempts:
+                    time.sleep(backoff_sec)
+                    backoff_sec *= 2
+    finally:
+        tempfile.tempdir = original_tempdir
+
+    if last_error is not None:
+        raise RuntimeError(f"IO_WRITE: Failed to save workbook after {max_attempts} attempts ({last_error})")
+    raise RuntimeError(f"IO_WRITE: Failed to save workbook after {max_attempts} attempts")
+
+
 def generate_excel_report(
     results: Dict[str, Any],
     output_file: str,
@@ -2135,6 +2202,13 @@ def generate_excel_report(
             row += 1
             ws_summary[f'A{row}'] = "Top Structural Category:"
             ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_category')
+            row += 1
+        if metadata.get('structural_infeasible_validation_categories') is not None:
+            ws_summary[f'A{row}'] = "Validation Rows in Structurally Infeasible Categories:"
+            ws_summary[f'B{row}'] = metadata.get('structural_infeasible_validation_rows')
+            row += 1
+            ws_summary[f'A{row}'] = "Structurally Infeasible Categories in Validation:"
+            ws_summary[f'B{row}'] = metadata.get('structural_infeasible_validation_categories')
             row += 1
         
         row += 1
@@ -2604,7 +2678,7 @@ def generate_excel_report(
         except Exception as e:
             logger.warning(f"Could not add Data Quality sheet: {e}")
 
-    wb.save(output_file)
+    _save_workbook_with_retries(wb, output_file, logger)
     logger.info(f"Report saved to: {output_file}")
 
 
@@ -2802,6 +2876,13 @@ def generate_multi_rate_excel_report(
         row += 1
         ws_summary[f'A{row}'] = "Top Structural Category"
         ws_summary[f'B{row}'] = structural_summary.get('top_infeasible_category')
+        row += 1
+    if metadata.get('structural_infeasible_validation_categories') is not None:
+        ws_summary[f'A{row}'] = "Validation Rows in Structurally Infeasible Categories"
+        ws_summary[f'B{row}'] = metadata.get('structural_infeasible_validation_rows')
+        row += 1
+        ws_summary[f'A{row}'] = "Structurally Infeasible Categories in Validation"
+        ws_summary[f'B{row}'] = metadata.get('structural_infeasible_validation_categories')
         row += 1
 
     row += 1
@@ -3173,7 +3254,7 @@ def generate_multi_rate_excel_report(
             report_generator.add_data_quality_sheet(wb, validation_issues, passed=not has_errors)
         except Exception as e:
             logger.warning(f"Could not add Data Quality sheet: {e}")
-    wb.save(output_file)
+    _save_workbook_with_retries(wb, output_file, logger)
     logger.info(f"Report saved to: {output_file}")
 
 

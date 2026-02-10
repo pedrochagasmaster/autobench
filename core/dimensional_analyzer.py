@@ -939,7 +939,13 @@ class DimensionalAnalyzer:
                 logger.info(f"Per-dimension LP succeeded for '{dimension}'")
                 continue
 
-            target_multipliers = {p: weights[p] for p in peers} if weights else None
+            strict_feasibility_mode = float(self.tolerance) <= float(self.COMPARISON_EPSILON)
+            target_multipliers = None if strict_feasibility_mode else ({p: weights[p] for p in peers} if weights else None)
+            if strict_feasibility_mode:
+                logger.info(
+                    "Strict tolerance mode detected for '%s'; using feasibility-first per-dimension heuristic.",
+                    dimension,
+                )
             heuristic_result = self.heuristic_solver.solve(
                 peers,
                 dim_cats,
@@ -972,7 +978,16 @@ class DimensionalAnalyzer:
                     logger.warning("Per-dimension heuristic solver did not converge; using best-effort weights.")
                 self.per_dimension_weights[dimension] = heuristic_result.weights
                 self.weight_methods[dimension] = "Per-Dimension-Bayesian"
-                logger.info(f"Per-dimension Bayesian optimization applied for '{dimension}' (targeting global weights)")
+                if target_multipliers is None:
+                    logger.info(
+                        "Per-dimension Bayesian optimization applied for '%s' (feasibility-first mode)",
+                        dimension,
+                    )
+                else:
+                    logger.info(
+                        "Per-dimension Bayesian optimization applied for '%s' (targeting global weights)",
+                        dimension,
+                    )
             else:
                 logger.warning(f"Per-dimension solving failed for '{dimension}'")
 
@@ -1445,6 +1460,24 @@ class DimensionalAnalyzer:
         constraint_stats = self._build_constraint_stats(all_categories, peers, peer_volumes) if all_categories else {}
         rule_name, max_concentration = self._get_privacy_rule(peer_count)
         weights = {p: self.global_weights[p]['multiplier'] for p in peers}
+
+        # Structural diagnostics are peer-level, keyed by (dimension, category, peer).
+        # Expose both peer-level and category-level infeasibility markers in validation output.
+        structural_peer_margin: Dict[Tuple[str, str, str], float] = {}
+        structural_category_margin: Dict[Tuple[str, str], float] = {}
+        if self.structural_detail_df is not None and not self.structural_detail_df.empty:
+            for row in self.structural_detail_df.itertuples(index=False):
+                dimension_key = str(getattr(row, 'dimension', ''))
+                category_key = str(getattr(row, 'category', ''))
+                peer_key = str(getattr(row, 'peer', ''))
+                margin = float(getattr(row, 'margin_over_cap_pp', 0.0) or 0.0)
+                if margin <= 0:
+                    continue
+                peer_lookup = (dimension_key, category_key, peer_key)
+                cat_lookup = (dimension_key, category_key)
+                structural_peer_margin[peer_lookup] = max(structural_peer_margin.get(peer_lookup, 0.0), margin)
+                structural_category_margin[cat_lookup] = max(structural_category_margin.get(cat_lookup, 0.0), margin)
+
         for dimension in dimensions:
             dim_weights = dict(weights)
             if dimension in self.per_dimension_weights:
@@ -1458,6 +1491,8 @@ class DimensionalAnalyzer:
                     entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
                     for category in entity_dim_agg[dimension].unique():
                         cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                        structural_dim = f"{dimension}_{self.time_column}"
+                        structural_cat = f"{category}_{time_period}"
                         peer_data = []
                         for peer_entity in peers:
                             peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
@@ -1502,6 +1537,8 @@ class DimensionalAnalyzer:
                             is_violation = self._is_share_violation(balanced_share, max_concentration)
                             compliant = (not is_violation) and additional_passed
                             violation_margin = balanced_share - max_concentration if is_violation else 0.0
+                            structural_peer_pp = structural_peer_margin.get((structural_dim, structural_cat, str(peer)), 0.0)
+                            structural_category_pp = structural_category_margin.get((structural_dim, structural_cat), 0.0)
                             validation_rows.append({
                                 'Dimension': dimension,
                                 'Time_Period': time_period,
@@ -1521,6 +1558,10 @@ class DimensionalAnalyzer:
                                 'Additional_Constraints_Relaxed': additional_relaxed,
                                 'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
                                 'Additional_Constraint_Detail': additional_detail,
+                                'Structural_Infeasible_Peer': 'Yes' if structural_peer_pp > 0 else 'No',
+                                'Structural_Infeasible_Category': 'Yes' if structural_category_pp > 0 else 'No',
+                                'Structural_Margin_Peer_pp': round(structural_peer_pp, 4) if structural_peer_pp > 0 else 0.0,
+                                'Structural_Margin_Category_pp': round(structural_category_pp, 4) if structural_category_pp > 0 else 0.0,
                                 'Compliant': 'Yes' if compliant else 'No',
                                 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
                             })
@@ -1528,6 +1569,8 @@ class DimensionalAnalyzer:
                 entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
                 for category in entity_dim_agg[dimension].unique():
                     cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
+                    structural_dim = str(dimension)
+                    structural_cat = str(category)
                     peer_data = []
                     for peer_entity in peers:
                         peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
@@ -1572,6 +1615,8 @@ class DimensionalAnalyzer:
                         is_violation = self._is_share_violation(balanced_share, max_concentration)
                         compliant = (not is_violation) and additional_passed
                         violation_margin = balanced_share - max_concentration if is_violation else 0.0
+                        structural_peer_pp = structural_peer_margin.get((structural_dim, structural_cat, str(peer)), 0.0)
+                        structural_category_pp = structural_category_margin.get((structural_dim, structural_cat), 0.0)
                         validation_rows.append({
                             'Dimension': dimension,
                             'Time_Period': None,
@@ -1591,6 +1636,10 @@ class DimensionalAnalyzer:
                             'Additional_Constraints_Relaxed': additional_relaxed,
                             'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
                             'Additional_Constraint_Detail': additional_detail,
+                            'Structural_Infeasible_Peer': 'Yes' if structural_peer_pp > 0 else 'No',
+                            'Structural_Infeasible_Category': 'Yes' if structural_category_pp > 0 else 'No',
+                            'Structural_Margin_Peer_pp': round(structural_peer_pp, 4) if structural_peer_pp > 0 else 0.0,
+                            'Structural_Margin_Category_pp': round(structural_category_pp, 4) if structural_category_pp > 0 else 0.0,
                             'Compliant': 'Yes' if compliant else 'No',
                             'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
                         })
