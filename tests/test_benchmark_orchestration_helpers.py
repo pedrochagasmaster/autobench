@@ -4,11 +4,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from benchmark import (
-    _build_dimensional_analyzer,
-    _resolve_consistency_mode,
-    _resolve_dimensions,
-    _resolve_target_entity,
+from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
+from core.analysis_run import (
+    resolve_dimensions,
+    resolve_entity_column,
+    resolve_input_dataframe,
+    resolve_target_entity,
 )
 from utils.config_manager import ConfigManager
 
@@ -19,6 +20,9 @@ class _StubLoader:
 
     def get_available_dimensions(self, _df):
         return list(self._dimensions)
+
+    def load_data(self, _args):
+        raise AssertionError('load_data should not be called when args.df is already provided')
 
 
 class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
@@ -94,7 +98,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         df = pd.DataFrame({'issuer_name': ['Target', 'Peer1']})
 
         with self.assertLogs(level='WARNING') as captured:
-            resolved = _resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
+            resolved = resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
 
         self.assertEqual(resolved, 'Target')
         self.assertTrue(any('case mismatch' in msg for msg in captured.output))
@@ -103,7 +107,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         df = pd.DataFrame({'issuer_name': ['Target', 'TARGET', 'Peer1']})
 
         with self.assertLogs(level='ERROR') as captured:
-            resolved = _resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
+            resolved = resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
 
         self.assertIsNone(resolved)
         self.assertTrue(any('Ambiguous entity name' in msg for msg in captured.output))
@@ -114,7 +118,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         loader = _StubLoader(['channel'])
         df = pd.DataFrame({'card_type': ['A']})
 
-        dimensions = _resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
+        dimensions = resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
 
         self.assertEqual(dimensions, ['card_type'])
 
@@ -124,7 +128,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         loader = _StubLoader(['card_type', 'channel'])
         df = pd.DataFrame({'card_type': ['A'], 'channel': ['POS']})
 
-        dimensions = _resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
+        dimensions = resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
 
         self.assertEqual(dimensions, ['card_type', 'channel'])
 
@@ -135,10 +139,25 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         df = pd.DataFrame({'card_type': ['A']})
 
         with self.assertLogs(level='ERROR') as captured:
-            dimensions = _resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
+            dimensions = resolve_dimensions(args, config, loader, df, logging.getLogger(__name__))
 
         self.assertIsNone(dimensions)
         self.assertTrue(any('No dimensions provided' in msg for msg in captured.output))
+
+    def test_resolve_entity_column_uses_standard_fallbacks(self) -> None:
+        df = pd.DataFrame({'issuer_name': ['A'], 'metric': [1]})
+
+        entity_col = resolve_entity_column(df, 'missing_col')
+
+        self.assertEqual(entity_col, 'issuer_name')
+
+    def test_resolve_input_dataframe_prefers_preloaded_dataframe(self) -> None:
+        expected_df = pd.DataFrame({'metric': [1]})
+        args = SimpleNamespace(df=expected_df)
+
+        result_df = resolve_input_dataframe(args, _StubLoader(['ignored']))
+
+        self.assertIs(result_df, expected_df)
 
 
 if __name__ == '__main__':

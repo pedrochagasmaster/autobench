@@ -21,7 +21,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple
 
 import pandas as pd
 
@@ -31,6 +31,12 @@ from core.data_loader import DataLoader, ValidationSeverity, ValidationIssue
 from core.report_generator import ReportGenerator
 from core.privacy_validator import PrivacyValidator
 from core.validation_runner import run_input_validation
+from core.analysis_run import (
+    resolve_dimensions,
+    resolve_entity_column,
+    resolve_input_dataframe,
+    resolve_target_entity,
+)
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
 
@@ -136,57 +142,6 @@ def _build_dimensional_analyzer(
         'enforce_single_weight_set': enforce_single_weight_set,
         'dynamic_constraints_config': dyn_constraints,
     }
-
-
-def _resolve_target_entity(
-    df: pd.DataFrame,
-    entity_col: str,
-    target_entity: Optional[str],
-    logger: logging.Logger,
-) -> Optional[str]:
-    """Resolve the user-supplied target entity to the canonical dataset value."""
-    resolved_entity = target_entity
-    if target_entity:
-        entity_upper = str(target_entity).upper()
-        all_matches = [
-            entity for entity in df[entity_col].unique()
-            if entity is not None and str(entity).upper() == entity_upper
-        ]
-        if len(all_matches) > 1:
-            logger.error(f"Ambiguous entity name: '{target_entity}' matches multiple entities: {all_matches}")
-            logger.error("Please specify the exact entity name with correct casing.")
-            return None
-        if len(all_matches) == 1:
-            match = str(all_matches[0])
-            if match != target_entity:
-                logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{target_entity}'.")
-            resolved_entity = match
-    return resolved_entity
-
-
-def _resolve_dimensions(
-    args: argparse.Namespace,
-    config: ConfigManager,
-    data_loader: DataLoader,
-    df: pd.DataFrame,
-    logger: logging.Logger,
-) -> Optional[List[str]]:
-    """Resolve dimensions from explicit args or auto-detection settings."""
-    if args.dimensions:
-        dimensions = args.dimensions
-        logger.info(f"Using specified dimensions: {dimensions}")
-        return dimensions
-
-    auto_flag = getattr(args, 'auto', None)
-    auto_config = config.get('analysis', 'auto_detect_dimensions', default=False)
-    should_auto = bool(auto_flag) if auto_flag is not None else bool(auto_config)
-    if should_auto:
-        dimensions = data_loader.get_available_dimensions(df)
-        logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
-        return dimensions
-
-    logger.error("No dimensions provided. Use --dimensions or enable auto-detect (--auto or config.analysis.auto_detect_dimensions).")
-    return None
 
 
 def get_presets_help() -> str:
@@ -800,23 +755,15 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Load data
         data_loader = DataLoader(config)
-        df = getattr(args, 'df', None)
-        if df is None:
-            df = data_loader.load_data(args)
+        df = resolve_input_dataframe(args, data_loader)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
         
         # Get entity column from config
         entity_col = config.get('input', 'entity_col')
-        
-        # Determine entity column
-        if entity_col in df.columns:
-            pass  # Use config value
-        elif 'issuer_name' in df.columns:
-            entity_col = 'issuer_name'
-        elif 'entity_identifier' in df.columns:
-            entity_col = 'entity_identifier'
-        else:
-            logger.error(f"Entity column '{entity_col}' not found in data")
+        try:
+            entity_col = resolve_entity_column(df, entity_col)
+        except ValueError as exc:
+            logger.error(str(exc))
             return 1
         
         # Validate metric column exists (use exact name as specified by user)
@@ -846,7 +793,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if should_abort:
             return 1
         
-        resolved_entity = _resolve_target_entity(df, entity_col, args.entity, logger)
+        resolved_entity = resolve_target_entity(df, entity_col, args.entity, logger)
         if args.entity and resolved_entity is None:
             return 1
 
@@ -897,7 +844,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         dyn_constraints = analyzer_settings['dynamic_constraints_config']
         
         # Determine dimensions
-        dimensions = _resolve_dimensions(args, config, data_loader, df, logger)
+        dimensions = resolve_dimensions(args, config, data_loader, df, logger)
         if dimensions is None:
             return 1
 
@@ -1326,20 +1273,14 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         output_format = config.get('output', 'output_format', default='analysis')
         fraud_in_bps = config.get('output', 'fraud_in_bps', default=True)
         data_loader = DataLoader(config)
-        df = getattr(args, 'df', None)
-        if df is None:
-            df = data_loader.load_data(args)
+        df = resolve_input_dataframe(args, data_loader)
         logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
         
         # Determine entity column
-        if args.entity_col in df.columns:
-            entity_col = args.entity_col
-        elif 'issuer_name' in df.columns:
-            entity_col = 'issuer_name'
-        elif 'entity_identifier' in df.columns:
-            entity_col = 'entity_identifier'
-        else:
-            logger.error(f"Entity column '{args.entity_col}' not found in data")
+        try:
+            entity_col = resolve_entity_column(df, args.entity_col)
+        except ValueError as exc:
+            logger.error(str(exc))
             return 1
         
         # Validate columns exist (use exact names as specified by user)
@@ -1404,7 +1345,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if should_abort:
             return 1
         
-        resolved_entity = _resolve_target_entity(df, entity_col, args.entity, logger)
+        resolved_entity = resolve_target_entity(df, entity_col, args.entity, logger)
         if args.entity and resolved_entity is None:
             return 1
 
@@ -1417,7 +1358,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Determine dimensions
         debug_mode = config.get('output', 'include_debug_sheets', default=False)
-        dimensions = _resolve_dimensions(args, config, data_loader, df, logger)
+        dimensions = resolve_dimensions(args, config, data_loader, df, logger)
         if dimensions is None:
             return 1
         
