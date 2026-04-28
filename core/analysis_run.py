@@ -4,12 +4,72 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from core.data_loader import DataLoader
+from core.data_loader import DataLoader, ValidationIssue
+from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager
+
+COMMON_CLI_OVERRIDES = (
+    'entity_col',
+    'time_col',
+    'debug',
+    'log_level',
+    'per_dimension_weights',
+    'auto',
+    'auto_subset_search',
+    'subset_search_max_tests',
+    'trigger_subset_on_slack',
+    'max_cap_slack',
+    'validate_input',
+    'compare_presets',
+    'output_format',
+    'include_calculated',
+)
+
+
+def build_run_config(
+    args: argparse.Namespace,
+    *,
+    extra_overrides: Optional[Dict[str, Any]] = None,
+) -> ConfigManager:
+    """Create ConfigManager from common run-time CLI overrides."""
+    cli_overrides: Dict[str, Any] = {
+        key: getattr(args, key, None)
+        for key in COMMON_CLI_OVERRIDES
+    }
+    cli_overrides['analyze_distortion'] = (
+        getattr(args, 'analyze_impact', None)
+        or getattr(args, 'analyze_distortion', None)
+    )
+    if extra_overrides:
+        cli_overrides.update(extra_overrides)
+    cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
+
+    return ConfigManager(
+        config_file=getattr(args, 'config', None),
+        preset=getattr(args, 'preset', None),
+        cli_overrides=cli_overrides,
+    )
+
+
+def resolve_output_settings(config: ConfigManager) -> Dict[str, Any]:
+    """Resolve commonly-used output flags from merged config."""
+    include_impact_summary = config.get('output', 'include_impact_summary', default=None)
+    if include_impact_summary is None:
+        include_impact_summary = config.get('output', 'include_distortion_summary', default=False)
+
+    return {
+        'include_preset_comparison': config.get('output', 'include_preset_comparison', default=False),
+        'include_impact_summary': include_impact_summary,
+        'include_calculated_metrics': config.get('output', 'include_calculated_metrics', default=False),
+        'include_privacy_validation': config.get('output', 'include_privacy_validation', default=False),
+        'include_audit_log': config.get('output', 'include_audit_log', default=True),
+        'output_format': config.get('output', 'output_format', default='analysis'),
+        'fraud_in_bps': config.get('output', 'fraud_in_bps', default=True),
+    }
 
 
 def resolve_input_dataframe(args: argparse.Namespace, data_loader: DataLoader) -> pd.DataFrame:
@@ -32,6 +92,22 @@ def resolve_entity_column(
     if 'entity_identifier' in df.columns:
         return 'entity_identifier'
     raise ValueError(f"Entity column '{preferred_entity_col}' not found in data")
+
+
+def prepare_run_data(
+    args: argparse.Namespace,
+    config: ConfigManager,
+    logger: logging.Logger,
+    *,
+    preferred_entity_col: str,
+) -> Tuple[DataLoader, pd.DataFrame, str, Optional[str]]:
+    """Create the loader, resolve the input DataFrame, entity column, and time column."""
+    data_loader = DataLoader(config)
+    df = resolve_input_dataframe(args, data_loader)
+    logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
+    entity_col = resolve_entity_column(df, preferred_entity_col)
+    time_col = config.get('input', 'time_col')
+    return data_loader, df, entity_col, time_col
 
 
 def resolve_target_entity(
@@ -58,6 +134,37 @@ def resolve_target_entity(
                 logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{target_entity}'.")
             resolved_entity = match
     return resolved_entity
+
+
+def validate_analysis_input(
+    *,
+    df: pd.DataFrame,
+    config: ConfigManager,
+    data_loader: DataLoader,
+    analysis_type: str,
+    entity_col: str,
+    time_col: Optional[str],
+    target_entity: Optional[str],
+    dimensions: Optional[List[str]] = None,
+    metric_col: Optional[str] = None,
+    total_col: Optional[str] = None,
+    numerator_cols: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[List[ValidationIssue]], bool]:
+    """Run validation using shared dimension-defaulting behavior."""
+    validation_dimensions = dimensions if dimensions else data_loader.get_available_dimensions(df)
+    return run_input_validation(
+        df=df,
+        config=config,
+        data_loader=data_loader,
+        analysis_type=analysis_type,
+        metric_col=metric_col,
+        total_col=total_col,
+        numerator_cols=numerator_cols,
+        entity_col=entity_col,
+        dimensions=validation_dimensions,
+        time_col=time_col,
+        target_entity=target_entity,
+    )
 
 
 def resolve_dimensions(

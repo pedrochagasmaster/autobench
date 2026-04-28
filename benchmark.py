@@ -27,15 +27,16 @@ import pandas as pd
 
 # Import core modules
 from core.dimensional_analyzer import DimensionalAnalyzer
-from core.data_loader import DataLoader, ValidationSeverity, ValidationIssue
+from core.data_loader import ValidationSeverity
 from core.report_generator import ReportGenerator
 from core.privacy_validator import PrivacyValidator
-from core.validation_runner import run_input_validation
 from core.analysis_run import (
+    build_run_config,
+    prepare_run_data,
     resolve_dimensions,
-    resolve_entity_column,
-    resolve_input_dataframe,
+    resolve_output_settings,
     resolve_target_entity,
+    validate_analysis_input,
 )
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
@@ -717,51 +718,24 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     
     try:
         # Create CLI overrides dictionary
-        cli_overrides = {
-            'entity_col': args.entity_col,
-            'time_col': getattr(args, 'time_col', None),
-            'debug': getattr(args, 'debug', None),
-            'log_level': getattr(args, 'log_level', None),
-            'per_dimension_weights': getattr(args, 'per_dimension_weights', None),
-            'auto': getattr(args, 'auto', None),
-            'auto_subset_search': getattr(args, 'auto_subset_search', None),
-            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
-            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
-            'max_cap_slack': getattr(args, 'max_cap_slack', None),
-            # Enhanced analysis features
-            'validate_input': getattr(args, 'validate_input', None),
-            'compare_presets': getattr(args, 'compare_presets', None),
-            'analyze_distortion': getattr(args, 'analyze_impact', None) or getattr(args, 'analyze_distortion', None),
-            'output_format': getattr(args, 'output_format', None),
-            'include_calculated': getattr(args, 'include_calculated', None),
-        }
-        cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
-        
-        # Initialize ConfigManager with hierarchy
-        config = ConfigManager(
-            config_file=getattr(args, 'config', None),
-            preset=getattr(args, 'preset', None),
-            cli_overrides=cli_overrides
-        )
-        include_preset_comparison = config.get('output', 'include_preset_comparison', default=False)
-        include_impact_summary = config.get('output', 'include_impact_summary', default=None)
-        if include_impact_summary is None:
-            include_impact_summary = config.get('output', 'include_distortion_summary', default=False)
-        include_calculated_metrics = config.get('output', 'include_calculated_metrics', default=False)
-        include_privacy_validation = config.get('output', 'include_privacy_validation', default=False)
-        include_audit_log = config.get('output', 'include_audit_log', default=True)
-        output_format = config.get('output', 'output_format', default='analysis')
-        fraud_in_bps = config.get('output', 'fraud_in_bps', default=True)
+        config = build_run_config(args)
+        output_settings = resolve_output_settings(config)
+        include_preset_comparison = output_settings['include_preset_comparison']
+        include_impact_summary = output_settings['include_impact_summary']
+        include_calculated_metrics = output_settings['include_calculated_metrics']
+        include_privacy_validation = output_settings['include_privacy_validation']
+        include_audit_log = output_settings['include_audit_log']
+        output_format = output_settings['output_format']
+        fraud_in_bps = output_settings['fraud_in_bps']
         
         # Load data
-        data_loader = DataLoader(config)
-        df = resolve_input_dataframe(args, data_loader)
-        logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
-        
-        # Get entity column from config
-        entity_col = config.get('input', 'entity_col')
         try:
-            entity_col = resolve_entity_column(df, entity_col)
+            data_loader, df, entity_col, time_col = prepare_run_data(
+                args,
+                config,
+                logger,
+                preferred_entity_col=config.get('input', 'entity_col'),
+            )
         except ValueError as exc:
             logger.error(str(exc))
             return 1
@@ -773,22 +747,19 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error(f"Available columns: {', '.join(df.columns.tolist())}")
             return 1
         
-        time_col = config.get('input', 'time_col')
-        
         # ========================================
         # Input Data Validation
         # ========================================
-        val_dimensions = args.dimensions if args.dimensions else data_loader.get_available_dimensions(df)
-        validation_issues, should_abort = run_input_validation(
+        validation_issues, should_abort = validate_analysis_input(
             df=df,
             config=config,
             data_loader=data_loader,
             analysis_type='share',
             metric_col=metric_col,
             entity_col=entity_col,
-            dimensions=val_dimensions,
+            dimensions=args.dimensions,
             time_col=time_col,
-            target_entity=args.entity
+            target_entity=args.entity,
         )
         if should_abort:
             return 1
@@ -1235,50 +1206,25 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             logger.error("At least one of --approved-col or --fraud-col must be specified")
             return 1
         
-        # Create CLI overrides dictionary
-        cli_overrides = {
-            'entity_col': args.entity_col,
-            'time_col': getattr(args, 'time_col', None),
-            'debug': getattr(args, 'debug', None),
-            'log_level': getattr(args, 'log_level', None),
-            'per_dimension_weights': getattr(args, 'per_dimension_weights', None),
-            'auto': getattr(args, 'auto', None),
-            'auto_subset_search': getattr(args, 'auto_subset_search', None),
-            'subset_search_max_tests': getattr(args, 'subset_search_max_tests', None),
-            'trigger_subset_on_slack': getattr(args, 'trigger_subset_on_slack', None),
-            'max_cap_slack': getattr(args, 'max_cap_slack', None),
-            # Enhanced analysis features
-            'validate_input': getattr(args, 'validate_input', None),
-            'compare_presets': getattr(args, 'compare_presets', None),
-            'analyze_distortion': getattr(args, 'analyze_impact', None) or getattr(args, 'analyze_distortion', None),
-            'output_format': getattr(args, 'output_format', None),
-            'include_calculated': getattr(args, 'include_calculated', None),
-            'fraud_in_bps': getattr(args, 'fraud_in_bps', None),
-        }
-        cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
-        
-        # Initialize ConfigManager with hierarchy
-        config = ConfigManager(
-            config_file=getattr(args, 'config', None),
-            preset=getattr(args, 'preset', None),
-            cli_overrides=cli_overrides
+        config = build_run_config(
+            args,
+            extra_overrides={'fraud_in_bps': getattr(args, 'fraud_in_bps', None)},
         )
-        include_preset_comparison = config.get('output', 'include_preset_comparison', default=False)
-        include_impact_summary = config.get('output', 'include_impact_summary', default=None)
-        if include_impact_summary is None:
-            include_impact_summary = config.get('output', 'include_distortion_summary', default=False)
-        include_calculated_metrics = config.get('output', 'include_calculated_metrics', default=False)
-        include_privacy_validation = config.get('output', 'include_privacy_validation', default=False)
-        include_audit_log = config.get('output', 'include_audit_log', default=True)
-        output_format = config.get('output', 'output_format', default='analysis')
-        fraud_in_bps = config.get('output', 'fraud_in_bps', default=True)
-        data_loader = DataLoader(config)
-        df = resolve_input_dataframe(args, data_loader)
-        logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
-        
-        # Determine entity column
+        output_settings = resolve_output_settings(config)
+        include_preset_comparison = output_settings['include_preset_comparison']
+        include_impact_summary = output_settings['include_impact_summary']
+        include_calculated_metrics = output_settings['include_calculated_metrics']
+        include_privacy_validation = output_settings['include_privacy_validation']
+        include_audit_log = output_settings['include_audit_log']
+        output_format = output_settings['output_format']
+        fraud_in_bps = output_settings['fraud_in_bps']
         try:
-            entity_col = resolve_entity_column(df, args.entity_col)
+            data_loader, df, entity_col, time_col = prepare_run_data(
+                args,
+                config,
+                logger,
+                preferred_entity_col=args.entity_col,
+            )
         except ValueError as exc:
             logger.error(str(exc))
             return 1
@@ -1318,19 +1264,16 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             bic_percentiles['fraud'] = fraud_bic  # Lower is better for fraud
             logger.info(f"Fraud rate calculation: {args.fraud_col} / {total_col}")
         
-        time_col = config.get('input', 'time_col')
-        
         # ========================================
         # Input Data Validation
         # ========================================
-        val_dimensions = args.dimensions if args.dimensions else data_loader.get_available_dimensions(df)
         numerator_cols = {}
         if hasattr(args, 'approved_col') and args.approved_col:
             numerator_cols['approval'] = args.approved_col
         if hasattr(args, 'fraud_col') and args.fraud_col:
             numerator_cols['fraud'] = args.fraud_col
 
-        validation_issues, should_abort = run_input_validation(
+        validation_issues, should_abort = validate_analysis_input(
             df=df,
             config=config,
             data_loader=data_loader,
@@ -1338,9 +1281,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             total_col=total_col,
             numerator_cols=numerator_cols,
             entity_col=entity_col,
-            dimensions=val_dimensions,
+            dimensions=args.dimensions,
             time_col=time_col,
-            target_entity=args.entity
+            target_entity=args.entity,
         )
         if should_abort:
             return 1

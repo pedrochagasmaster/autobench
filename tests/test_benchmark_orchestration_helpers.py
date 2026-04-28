@@ -1,15 +1,20 @@
 import logging
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 
 from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
+    build_run_config,
+    prepare_run_data,
     resolve_dimensions,
     resolve_entity_column,
     resolve_input_dataframe,
+    resolve_output_settings,
     resolve_target_entity,
+    validate_analysis_input,
 )
 from utils.config_manager import ConfigManager
 
@@ -158,6 +163,94 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         result_df = resolve_input_dataframe(args, _StubLoader(['ignored']))
 
         self.assertIs(result_df, expected_df)
+
+    def test_build_run_config_applies_common_and_extra_overrides(self) -> None:
+        args = SimpleNamespace(
+            config=None,
+            preset=None,
+            entity_col='issuer_name',
+            time_col='year_month',
+            debug=True,
+            log_level='DEBUG',
+            per_dimension_weights=False,
+            auto=True,
+            auto_subset_search=True,
+            subset_search_max_tests=50,
+            trigger_subset_on_slack=True,
+            max_cap_slack=1.5,
+            validate_input=False,
+            compare_presets=True,
+            analyze_impact=None,
+            analyze_distortion=True,
+            output_format='publication',
+            include_calculated=True,
+        )
+
+        config = build_run_config(args, extra_overrides={'fraud_in_bps': False})
+
+        self.assertEqual(config.get('input', 'entity_col'), 'issuer_name')
+        self.assertEqual(config.get('input', 'time_col'), 'year_month')
+        self.assertEqual(config.get('output', 'log_level'), 'DEBUG')
+        self.assertTrue(config.get('analysis', 'auto_detect_dimensions'))
+        self.assertTrue(config.get('output', 'include_preset_comparison'))
+        self.assertFalse(config.get('output', 'fraud_in_bps'))
+
+    def test_resolve_output_settings_supports_legacy_distortion_flag(self) -> None:
+        config = ConfigManager()
+        config.config['output']['include_impact_summary'] = None
+        config.config['output']['include_distortion_summary'] = True
+
+        settings = resolve_output_settings(config)
+
+        self.assertTrue(settings['include_impact_summary'])
+        self.assertIn('output_format', settings)
+
+    def test_prepare_run_data_uses_loader_and_resolves_entity_column(self) -> None:
+        config = ConfigManager()
+        config.config['input']['time_col'] = 'year_month'
+        args = SimpleNamespace(df=None)
+        loaded_df = pd.DataFrame({'issuer_name': ['A'], 'year_month': ['2025-01'], 'metric': [1]})
+
+        class _FakeLoader:
+            def __init__(self, _config):
+                self.config = _config
+
+            def load_data(self, _args):
+                return loaded_df
+
+        with patch('core.analysis_run.DataLoader', _FakeLoader):
+            loader, df, entity_col, time_col = prepare_run_data(
+                args,
+                config,
+                logging.getLogger(__name__),
+                preferred_entity_col='missing_col',
+            )
+
+        self.assertEqual(entity_col, 'issuer_name')
+        self.assertEqual(time_col, 'year_month')
+        self.assertIs(df, loaded_df)
+        self.assertIsInstance(loader, _FakeLoader)
+
+    def test_validate_analysis_input_defaults_dimensions_from_loader(self) -> None:
+        config = ConfigManager()
+        df = pd.DataFrame({'issuer_name': ['A'], 'card_type': ['X'], 'metric': [1]})
+        loader = _StubLoader(['card_type'])
+
+        with patch('core.analysis_run.run_input_validation', return_value=(['ok'], False)) as mocked:
+            issues, should_abort = validate_analysis_input(
+                df=df,
+                config=config,
+                data_loader=loader,
+                analysis_type='share',
+                entity_col='issuer_name',
+                time_col=None,
+                target_entity='A',
+                metric_col='metric',
+            )
+
+        self.assertEqual(issues, ['ok'])
+        self.assertFalse(should_abort)
+        self.assertEqual(mocked.call_args.kwargs['dimensions'], ['card_type'])
 
 
 if __name__ == '__main__':
