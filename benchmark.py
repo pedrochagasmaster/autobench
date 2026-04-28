@@ -34,6 +34,7 @@ from core.analysis_run import (
     build_common_run_metadata,
     build_report_paths,
     build_run_config,
+    collect_run_diagnostics,
     prepare_run_data,
     resolve_dimensions,
     resolve_output_settings,
@@ -910,74 +911,22 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             # capture subset search attempts if any
             metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
 
-        # Get weights data if debug mode
-        weights_df = None
-        privacy_validation_df = None
         export_csv = getattr(args, 'export_balanced_csv', False)
-        
-        if debug_mode:
-            weights_df = analyzer.get_weights_dataframe()
-            if not weights_df.empty:
-                logger.info(f"Captured weights data: {len(weights_df)} weight entries")
-        
-        # Build privacy validation dataframe if debug mode OR CSV export is requested
-        if (include_privacy_validation or debug_mode or export_csv) and consistent_weights:
-            privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, metric_col, dimensions)
-            if not privacy_validation_df.empty:
-                logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
-                if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
-                    structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
-                    structural_categories = int(
-                        privacy_validation_df.loc[
-                            privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
-                            ['Dimension', 'Category', 'Time_Period']
-                        ].drop_duplicates().shape[0]
-                    )
-                    metadata['structural_infeasible_validation_rows'] = structural_rows
-                    metadata['structural_infeasible_validation_categories'] = structural_categories
-        
-        # Build method breakdown tab (final tab)
-        method_breakdown_df = None
-        if consistent_weights:
-            rows = []
-            dims_all = list(dimensions)
-            used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
-            removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
-            per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
-            weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
-            global_w = getattr(analyzer, 'global_weights', {})
-            peers = set(global_w.keys())
-            for d, wmap in per_dim_dict.items():
-                peers.update(wmap.keys())
-            for dim in dims_all:
-                # Use weight_methods if available, otherwise determine from context
-                if dim in weight_methods:
-                    method = weight_methods[dim]
-                elif dim in per_dim_dict:
-                    method = 'Per-Dimension-LP'
-                elif dim in used_dims:
-                    method = 'Global-LP'
-                elif dim in removed_dims:
-                    method = 'Global weights (dropped in LP)'
-                else:
-                    method = 'Global weights'
-                # rows per peer
-                peer_list = sorted(peers)
-                for p in peer_list:
-                    if dim in per_dim_dict and p in per_dim_dict[dim]:
-                        mult = float(per_dim_dict[dim][p])
-                    else:
-                        mult = float(global_w.get(p, {}).get('multiplier', 1.0))
-                    global_weight_pct = global_w.get(p, {}).get('weight', None)
-                    rows.append({
-                        'Dimension': dim,
-                        'Method': method,
-                        'Peer': p,
-                        'Multiplier': round(mult, 6),
-                        'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None
-                    })
-            if rows:
-                method_breakdown_df = pd.DataFrame(rows)
+        diagnostics = collect_run_diagnostics(
+            analyzer=analyzer,
+            df=df,
+            validation_metric_col=metric_col,
+            dimensions=dimensions,
+            debug_mode=debug_mode,
+            include_privacy_validation=include_privacy_validation,
+            export_csv=export_csv,
+            consistent_weights=consistent_weights,
+            logger=logger,
+        )
+        weights_df = diagnostics['weights_df']
+        privacy_validation_df = diagnostics['privacy_validation_df']
+        method_breakdown_df = diagnostics['method_breakdown_df']
+        metadata.update(diagnostics['metadata_updates'])
         
         # ===================================
         # Preset Comparison (Phase 2 feature)
@@ -1375,75 +1324,22 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             'bic_percentiles': bic_percentiles,
         }
         
-        # Get weights data if debug mode (same weights for all rate types)
-        weights_df = None
-        privacy_validation_df = None
         export_csv = getattr(args, 'export_balanced_csv', False)
-        
-        if debug_mode:
-            weights_df = analyzer.get_weights_dataframe()
-            if not weights_df.empty:
-                logger.info(f"Captured weights data: {len(weights_df)} weight entries")
-        
-        # Build privacy validation dataframe if debug mode OR CSV export is requested (based on total_col for rate analysis)
-        if (include_privacy_validation or debug_mode or export_csv) and consistent_weights:
-            privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, total_col, dimensions)
-            if not privacy_validation_df.empty:
-                logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
-                if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
-                    structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
-                    structural_categories = int(
-                        privacy_validation_df.loc[
-                            privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
-                            ['Dimension', 'Category', 'Time_Period']
-                        ].drop_duplicates().shape[0]
-                    )
-                    metadata['structural_infeasible_validation_rows'] = structural_rows
-                    metadata['structural_infeasible_validation_categories'] = structural_categories
-        
-        # Build method breakdown tab (same for all rate types since weights are shared)
-        method_breakdown_df = None
-        if consistent_weights:
-            rows = []
-            dims_all = list(dimensions)
-            used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
-            removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
-            per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
-            weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
-            global_w = getattr(analyzer, 'global_weights', {})
-            peers = set(global_w.keys())
-            for d, wmap in per_dim_dict.items():
-                peers.update(wmap.keys())
-            for dim in dims_all:
-                # Use weight_methods if available, otherwise determine from context
-                if dim in weight_methods:
-                    method = weight_methods[dim]
-                elif dim in per_dim_dict:
-                    method = 'Per-Dimension-LP'
-                elif dim in used_dims:
-                    method = 'Global-LP'
-                elif dim in removed_dims:
-                    method = 'Global weights (dropped in LP)'
-                else:
-                    method = 'Global weights'
-                # rows per peer
-                peer_list = sorted(peers)
-                for p in peer_list:
-                    if dim in per_dim_dict and p in per_dim_dict[dim]:
-                        mult = float(per_dim_dict[dim][p])
-                    else:
-                        mult = float(global_w.get(p, {}).get('multiplier', 1.0))
-                    global_weight_pct = global_w.get(p, {}).get('weight', None)
-                    rows.append({
-                        'Dimension': dim,
-                        'Method': method,
-                        'Peer': p,
-                        'Multiplier': round(mult, 6),
-                        'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None
-                    })
-            if rows:
-                method_breakdown_df = pd.DataFrame(rows)
-                logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
+        diagnostics = collect_run_diagnostics(
+            analyzer=analyzer,
+            df=df,
+            validation_metric_col=total_col,
+            dimensions=dimensions,
+            debug_mode=debug_mode,
+            include_privacy_validation=include_privacy_validation,
+            export_csv=export_csv,
+            consistent_weights=consistent_weights,
+            logger=logger,
+        )
+        weights_df = diagnostics['weights_df']
+        privacy_validation_df = diagnostics['privacy_validation_df']
+        method_breakdown_df = diagnostics['method_breakdown_df']
+        metadata.update(diagnostics['metadata_updates'])
         
         # ===================================
         # Preset Comparison (Phase 2 feature)

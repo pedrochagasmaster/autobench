@@ -10,6 +10,7 @@ from core.analysis_run import (
     build_common_run_metadata,
     build_report_paths,
     build_run_config,
+    collect_run_diagnostics,
     prepare_run_data,
     resolve_dimensions,
     resolve_entity_column,
@@ -308,6 +309,43 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(metadata['dynamic_constraints_stats'], {'applied': 4})
         self.assertEqual(metadata['structural_infeasibility_summary'], {'count': 1})
         self.assertEqual(metadata['dimension_names'], ['channel', 'product'])
+
+    def test_collect_run_diagnostics_builds_shared_artifacts(self) -> None:
+        weights_df = pd.DataFrame({'peer': ['A'], 'weight': [0.5]})
+        privacy_df = pd.DataFrame({
+            'Dimension': ['channel', 'channel'],
+            'Category': ['POS', 'POS'],
+            'Time_Period': ['2025-01', '2025-01'],
+            'Structural_Infeasible_Category': ['Yes', 'Yes'],
+        })
+        analyzer = SimpleNamespace(
+            get_weights_dataframe=lambda: weights_df,
+            build_privacy_validation_dataframe=lambda _df, _metric_col, _dimensions: privacy_df,
+            global_dimensions_used=['channel'],
+            removed_dimensions=['product'],
+            per_dimension_weights={'merchant': {'PeerA': 1.2}},
+            weight_methods={'channel': 'Global-LP'},
+            global_weights={'PeerA': {'multiplier': 1.1, 'weight': 50.0}},
+        )
+
+        diagnostics = collect_run_diagnostics(
+            analyzer=analyzer,
+            df=pd.DataFrame({'metric': [1]}),
+            validation_metric_col='metric',
+            dimensions=['channel', 'merchant', 'product'],
+            debug_mode=True,
+            include_privacy_validation=True,
+            export_csv=False,
+            consistent_weights=True,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertIs(diagnostics['weights_df'], weights_df)
+        self.assertIs(diagnostics['privacy_validation_df'], privacy_df)
+        self.assertEqual(diagnostics['metadata_updates']['structural_infeasible_validation_rows'], 2)
+        self.assertEqual(diagnostics['metadata_updates']['structural_infeasible_validation_categories'], 1)
+        self.assertFalse(diagnostics['method_breakdown_df'].empty)
+        self.assertIn('Method', diagnostics['method_breakdown_df'].columns)
 
     def test_build_report_paths_respects_output_mode(self) -> None:
         report_paths = build_report_paths('both', 'analysis.xlsx', 'publication.xlsx')

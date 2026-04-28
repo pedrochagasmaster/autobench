@@ -291,6 +291,92 @@ def resolve_dimensions(
     return None
 
 
+def collect_run_diagnostics(
+    *,
+    analyzer: Any,
+    df: pd.DataFrame,
+    validation_metric_col: str,
+    dimensions: List[str],
+    debug_mode: bool,
+    include_privacy_validation: bool,
+    export_csv: bool,
+    consistent_weights: bool,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """Collect debug-oriented run artifacts shared by share and rate flows."""
+    weights_df = None
+    privacy_validation_df = None
+    method_breakdown_df = None
+    metadata_updates: Dict[str, Any] = {}
+
+    if debug_mode:
+        weights_df = analyzer.get_weights_dataframe()
+        if not weights_df.empty:
+            logger.info(f"Captured weights data: {len(weights_df)} weight entries")
+
+    if (include_privacy_validation or debug_mode or export_csv) and consistent_weights:
+        privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, validation_metric_col, dimensions)
+        if not privacy_validation_df.empty:
+            logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+            if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
+                structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
+                structural_categories = int(
+                    privacy_validation_df.loc[
+                        privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
+                        ['Dimension', 'Category', 'Time_Period']
+                    ].drop_duplicates().shape[0]
+                )
+                metadata_updates['structural_infeasible_validation_rows'] = structural_rows
+                metadata_updates['structural_infeasible_validation_categories'] = structural_categories
+
+    if consistent_weights:
+        rows = []
+        dims_all = list(dimensions)
+        used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
+        removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
+        per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
+        weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
+        global_w = getattr(analyzer, 'global_weights', {})
+        peers = set(global_w.keys())
+        for dim_name, weight_map in per_dim_dict.items():
+            peers.update(weight_map.keys())
+        for dim_name in dims_all:
+            if dim_name in weight_methods:
+                method = weight_methods[dim_name]
+            elif dim_name in per_dim_dict:
+                method = 'Per-Dimension-LP'
+            elif dim_name in used_dims:
+                method = 'Global-LP'
+            elif dim_name in removed_dims:
+                method = 'Global weights (dropped in LP)'
+            else:
+                method = 'Global weights'
+
+            for peer in sorted(peers):
+                if dim_name in per_dim_dict and peer in per_dim_dict[dim_name]:
+                    multiplier = float(per_dim_dict[dim_name][peer])
+                else:
+                    multiplier = float(global_w.get(peer, {}).get('multiplier', 1.0))
+                global_weight_pct = global_w.get(peer, {}).get('weight', None)
+                rows.append({
+                    'Dimension': dim_name,
+                    'Method': method,
+                    'Peer': peer,
+                    'Multiplier': round(multiplier, 6),
+                    'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None,
+                })
+        if rows:
+            method_breakdown_df = pd.DataFrame(rows)
+            logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
+
+    return {
+        'weights_df': weights_df,
+        'privacy_validation_df': privacy_validation_df,
+        'method_breakdown_df': method_breakdown_df,
+        'metadata_updates': metadata_updates,
+    }
+
+
 def build_report_paths(
     output_format: str,
     analysis_output_file: str,
