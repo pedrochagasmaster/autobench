@@ -21,7 +21,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 import pandas as pd
 
@@ -136,6 +136,57 @@ def _build_dimensional_analyzer(
         'enforce_single_weight_set': enforce_single_weight_set,
         'dynamic_constraints_config': dyn_constraints,
     }
+
+
+def _resolve_target_entity(
+    df: pd.DataFrame,
+    entity_col: str,
+    target_entity: Optional[str],
+    logger: logging.Logger,
+) -> Optional[str]:
+    """Resolve the user-supplied target entity to the canonical dataset value."""
+    resolved_entity = target_entity
+    if target_entity:
+        entity_upper = str(target_entity).upper()
+        all_matches = [
+            entity for entity in df[entity_col].unique()
+            if entity is not None and str(entity).upper() == entity_upper
+        ]
+        if len(all_matches) > 1:
+            logger.error(f"Ambiguous entity name: '{target_entity}' matches multiple entities: {all_matches}")
+            logger.error("Please specify the exact entity name with correct casing.")
+            return None
+        if len(all_matches) == 1:
+            match = str(all_matches[0])
+            if match != target_entity:
+                logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{target_entity}'.")
+            resolved_entity = match
+    return resolved_entity
+
+
+def _resolve_dimensions(
+    args: argparse.Namespace,
+    config: ConfigManager,
+    data_loader: DataLoader,
+    df: pd.DataFrame,
+    logger: logging.Logger,
+) -> Optional[List[str]]:
+    """Resolve dimensions from explicit args or auto-detection settings."""
+    if args.dimensions:
+        dimensions = args.dimensions
+        logger.info(f"Using specified dimensions: {dimensions}")
+        return dimensions
+
+    auto_flag = getattr(args, 'auto', None)
+    auto_config = config.get('analysis', 'auto_detect_dimensions', default=False)
+    should_auto = bool(auto_flag) if auto_flag is not None else bool(auto_config)
+    if should_auto:
+        dimensions = data_loader.get_available_dimensions(df)
+        logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
+        return dimensions
+
+    logger.error("No dimensions provided. Use --dimensions or enable auto-detect (--auto or config.analysis.auto_detect_dimensions).")
+    return None
 
 
 def get_presets_help() -> str:
@@ -795,22 +846,9 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if should_abort:
             return 1
         
-        resolved_entity = args.entity
-        if args.entity:
-            entity_upper = str(args.entity).upper()
-            all_matches = [
-                e for e in df[entity_col].unique()
-                if e is not None and str(e).upper() == entity_upper
-            ]
-            if len(all_matches) > 1:
-                logger.error(f"Ambiguous entity name: '{args.entity}' matches multiple entities: {all_matches}")
-                logger.error("Please specify the exact entity name with correct casing.")
-                return 1
-            elif len(all_matches) == 1:
-                match = all_matches[0]
-                if match != args.entity:
-                    logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{args.entity}'.")
-                resolved_entity = str(match)
+        resolved_entity = _resolve_target_entity(df, entity_col, args.entity, logger)
+        if args.entity and resolved_entity is None:
+            return 1
 
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing metric: {metric_col}")
@@ -859,19 +897,9 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         dyn_constraints = analyzer_settings['dynamic_constraints_config']
         
         # Determine dimensions
-        if args.dimensions:
-            dimensions = args.dimensions
-            logger.info(f"Using specified dimensions: {dimensions}")
-        else:
-            auto_flag = getattr(args, 'auto', None)
-            auto_config = config.get('analysis', 'auto_detect_dimensions', default=False)
-            should_auto = bool(auto_flag) if auto_flag is not None else bool(auto_config)
-            if should_auto:
-                dimensions = data_loader.get_available_dimensions(df)
-                logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
-            else:
-                logger.error("No dimensions provided. Use --dimensions or enable auto-detect (--auto or config.analysis.auto_detect_dimensions).")
-                return 1
+        dimensions = _resolve_dimensions(args, config, data_loader, df, logger)
+        if dimensions is None:
+            return 1
 
         # Calculate global weights if consistent_weights mode is enabled (default)
         if consistent_weights:
@@ -1376,22 +1404,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if should_abort:
             return 1
         
-        resolved_entity = args.entity
-        if args.entity:
-            entity_upper = str(args.entity).upper()
-            all_matches = [
-                e for e in df[entity_col].unique()
-                if e is not None and str(e).upper() == entity_upper
-            ]
-            if len(all_matches) > 1:
-                logger.error(f"Ambiguous entity name: '{args.entity}' matches multiple entities: {all_matches}")
-                logger.error("Please specify the exact entity name with correct casing.")
-                return 1
-            elif len(all_matches) == 1:
-                match = all_matches[0]
-                if match != args.entity:
-                    logger.warning(f"Target entity case mismatch. Using '{match}' instead of '{args.entity}'.")
-                resolved_entity = str(match)
+        resolved_entity = _resolve_target_entity(df, entity_col, args.entity, logger)
+        if args.entity and resolved_entity is None:
+            return 1
 
         logger.info(f"Using entity column: {entity_col}")
         logger.info(f"Analyzing rate types: {', '.join(rate_types)}")
@@ -1402,20 +1417,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         
         # Determine dimensions
         debug_mode = config.get('output', 'include_debug_sheets', default=False)
-        
-        if args.dimensions:
-            dimensions = args.dimensions
-            logger.info(f"Using specified dimensions: {dimensions}")
-        else:
-            auto_flag = getattr(args, 'auto', None)
-            auto_config = config.get('analysis', 'auto_detect_dimensions', default=False)
-            should_auto = bool(auto_flag) if auto_flag is not None else bool(auto_config)
-            if should_auto:
-                dimensions = data_loader.get_available_dimensions(df)
-                logger.info(f"Auto-detected {len(dimensions)} dimensions: {dimensions}")
-            else:
-                logger.error("No dimensions provided. Use --dimensions or enable auto-detect (--auto or config.analysis.auto_detect_dimensions).")
-                return 1
+        dimensions = _resolve_dimensions(args, config, data_loader, df, logger)
+        if dimensions is None:
+            return 1
         
         # Get configuration values
         opt_config = config.config['optimization']
