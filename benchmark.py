@@ -21,7 +21,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 import pandas as pd
 
@@ -36,6 +36,106 @@ from utils.logger import setup_logging
 
 # Best preset marker for comparison tables
 BEST_PRESET_MARKER = '*'
+
+
+def _resolve_consistency_mode(
+    opt_config: Dict[str, Any],
+    logger: logging.Logger,
+) -> Tuple[bool, str]:
+    """Translate config consistency mode into a bool for the analyzer."""
+    consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+    mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
+    if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
+        return False, consistency_mode
+    if mode_normalized in ('global', 'consistent', 'global-weights'):
+        return True, consistency_mode
+
+    logger.warning(f"Unknown consistency_mode '{consistency_mode}', defaulting to global weights")
+    return True, consistency_mode
+
+
+def _build_dimensional_analyzer(
+    *,
+    target_entity: Optional[str],
+    entity_col: str,
+    analysis_config: Dict[str, Any],
+    opt_config: Dict[str, Any],
+    time_col: Optional[str],
+    debug_mode: bool,
+    bic_percentile: float,
+    logger: logging.Logger,
+    consistent_weights: Optional[bool] = None,
+) -> Tuple[DimensionalAnalyzer, Dict[str, Any]]:
+    """Build a DimensionalAnalyzer from merged config."""
+    dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+    if consistent_weights is None:
+        consistent_weights, consistency_mode = _resolve_consistency_mode(opt_config, logger)
+    else:
+        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+
+    rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
+    volume_preservation = opt_config['constraints']['volume_preservation']
+    rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
+    lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
+    bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
+    bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
+    violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
+    enforce_single_weight_set = bool(
+        opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
+    )
+
+    analyzer = DimensionalAnalyzer(
+        target_entity=target_entity,
+        entity_column=entity_col,
+        bic_percentile=bic_percentile,
+        debug_mode=debug_mode,
+        consistent_weights=consistent_weights,
+        merchant_mode=analysis_config.get('merchant_mode', False),
+        rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
+        rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
+        max_iterations=opt_config['linear_programming']['max_iterations'],
+        tolerance=opt_config['linear_programming']['tolerance'],
+        max_weight=opt_config['bounds']['max_weight'],
+        min_weight=opt_config['bounds']['min_weight'],
+        volume_preservation_strength=rank_preservation_strength,
+        prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
+        auto_subset_search=opt_config['subset_search'].get('enabled', True),
+        subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
+        greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
+        trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
+        max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
+        time_column=time_col,
+        volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
+        volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+        lambda_penalty=lambda_penalty,
+        enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
+        dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
+        min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
+        min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
+        min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
+        min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
+        min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
+        dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
+        dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
+        representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
+        representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
+        bayesian_max_iterations=bayesian_max_iterations,
+        bayesian_learning_rate=bayesian_learning_rate,
+        violation_penalty_weight=violation_penalty_weight,
+        enforce_single_weight_set=enforce_single_weight_set,
+    )
+    return analyzer, {
+        'consistent_weights': consistent_weights,
+        'consistency_mode': consistency_mode,
+        'rank_penalty_weight': rank_penalty_weight,
+        'rank_preservation_strength': rank_preservation_strength,
+        'lambda_penalty': lambda_penalty,
+        'bayesian_max_iterations': bayesian_max_iterations,
+        'bayesian_learning_rate': bayesian_learning_rate,
+        'violation_penalty_weight': violation_penalty_weight,
+        'enforce_single_weight_set': enforce_single_weight_set,
+        'dynamic_constraints_config': dyn_constraints,
+    }
 
 
 def get_presets_help() -> str:
@@ -486,58 +586,17 @@ def run_preset_comparison(
             config = ConfigManager(preset=preset_name)
             opt_config = config.config['optimization']
             analysis_config = config.config['analysis']
-            dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
-            rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
-            volume_preservation = opt_config['constraints']['volume_preservation']
-            rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
-            lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
-            bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
-            bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
-            violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
-            enforce_single_weight_set = bool(
-                opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
-            )
-            
-            # Create analyzer with preset parameters
-            analyzer = DimensionalAnalyzer(
+
+            analyzer, _ = _build_dimensional_analyzer(
                 target_entity=target_entity,
-                entity_column=entity_col,
-                bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+                entity_col=entity_col,
+                analysis_config=analysis_config,
+                opt_config=opt_config,
+                time_col=time_col,
                 debug_mode=False,
+                bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+                logger=logger,
                 consistent_weights=consistent_weights,
-                merchant_mode=analysis_config.get('merchant_mode', False),
-                rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
-                rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
-                max_iterations=opt_config['linear_programming']['max_iterations'],
-                tolerance=opt_config['linear_programming']['tolerance'],
-                max_weight=opt_config['bounds']['max_weight'],
-                min_weight=opt_config['bounds']['min_weight'],
-                volume_preservation_strength=rank_preservation_strength,
-                prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
-                auto_subset_search=opt_config['subset_search'].get('enabled', True),
-                subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
-                greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
-                trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
-                max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
-                time_column=time_col,
-                volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
-                volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
-                lambda_penalty=lambda_penalty,
-                enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
-                dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
-                min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
-                min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
-                min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
-                min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
-                min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
-                dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
-                dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
-                representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
-                representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
-                bayesian_max_iterations=bayesian_max_iterations,
-                bayesian_learning_rate=bayesian_learning_rate,
-                violation_penalty_weight=violation_penalty_weight,
-                enforce_single_weight_set=enforce_single_weight_set,
             )
             
             # Calculate global weights
@@ -765,81 +824,39 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get configuration values
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
-        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
-        
+
         # Log configuration source
         if getattr(args, 'preset', None):
             logger.info(f"Using preset: {args.preset}")
         if getattr(args, 'config', None):
             logger.info(f"Using config file: {args.config}")
-        
+
         # Get unique entities and counts for metadata
         unique_entities = df[entity_col].nunique()
         total_records = len(df)
-        
+
         # Initialize analyzer with config values
         debug_mode = config.get('output', 'include_debug_sheets', default=False)
-        # Consistent weights is now the default (global weighting mode)
-        # Use optimization.constraints.consistency_mode (and CLI overrides) to control it
-        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
-        mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
-        if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
-            consistent_weights = False
-        elif mode_normalized in ('global', 'consistent', 'global-weights'):
-            consistent_weights = True
-        else:
-            logger.warning(f"Unknown consistency_mode '{consistency_mode}', defaulting to global weights")
-            consistent_weights = True
-        rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
-        volume_preservation = opt_config['constraints']['volume_preservation']
-        rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
-        lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
-        bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
-        bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
-        violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
-        enforce_single_weight_set = bool(
-            opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
-        )
-        analyzer = DimensionalAnalyzer(
+        analyzer, analyzer_settings = _build_dimensional_analyzer(
             target_entity=resolved_entity,
-            entity_column=entity_col,
-            bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+            entity_col=entity_col,
+            analysis_config=analysis_config,
+            opt_config=opt_config,
+            time_col=time_col,
             debug_mode=debug_mode,
-            consistent_weights=consistent_weights,
-            merchant_mode=analysis_config.get('merchant_mode', False),
-            rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
-            rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
-            max_iterations=opt_config['linear_programming']['max_iterations'],
-            tolerance=opt_config['linear_programming']['tolerance'],
-            max_weight=opt_config['bounds']['max_weight'],
-            min_weight=opt_config['bounds']['min_weight'],
-            volume_preservation_strength=rank_preservation_strength,
-            prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
-            auto_subset_search=opt_config['subset_search'].get('enabled', True),
-            subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
-            greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
-            trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
-            max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
-            time_column=time_col,
-            volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
-            volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
-            lambda_penalty=lambda_penalty,
-            enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
-            dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
-            min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
-            min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
-            min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
-            min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
-            min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
-            dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
-            dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
-            representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
-            representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
-            bayesian_max_iterations=bayesian_max_iterations,
-            bayesian_learning_rate=bayesian_learning_rate,
-            violation_penalty_weight=violation_penalty_weight,
-            enforce_single_weight_set=enforce_single_weight_set,
+            bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+            logger=logger,
         )
+        consistent_weights = analyzer_settings['consistent_weights']
+        consistency_mode = analyzer_settings['consistency_mode']
+        rank_penalty_weight = analyzer_settings['rank_penalty_weight']
+        rank_preservation_strength = analyzer_settings['rank_preservation_strength']
+        lambda_penalty = analyzer_settings['lambda_penalty']
+        bayesian_max_iterations = analyzer_settings['bayesian_max_iterations']
+        bayesian_learning_rate = analyzer_settings['bayesian_learning_rate']
+        violation_penalty_weight = analyzer_settings['violation_penalty_weight']
+        enforce_single_weight_set = analyzer_settings['enforce_single_weight_set']
+        dyn_constraints = analyzer_settings['dynamic_constraints_config']
         
         # Determine dimensions
         if args.dimensions:
@@ -1403,73 +1420,30 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         # Get configuration values
         opt_config = config.config['optimization']
         analysis_config = config.config['analysis']
-        dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
 
-        # Consistent weights is now the default (global weighting mode)
-        # Use optimization.constraints.consistency_mode (and CLI overrides) to control it
-        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
-        mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
-        if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
-            consistent_weights = False
-        elif mode_normalized in ('global', 'consistent', 'global-weights'):
-            consistent_weights = True
-        else:
-            logger.warning(f"Unknown consistency_mode '{consistency_mode}', defaulting to global weights")
-            consistent_weights = True
-        
         # Initialize analyzer ONCE with first rate type's BIC (we'll override per-dimension)
         # The key insight: weights are based on total_col, not the numerator
         first_rate_type = rate_types[0]
-        rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
-        volume_preservation = opt_config['constraints']['volume_preservation']
-        rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
-        lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
-        bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
-        bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
-        violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
-        enforce_single_weight_set = bool(
-            opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
-        )
-        analyzer = DimensionalAnalyzer(
+        analyzer, analyzer_settings = _build_dimensional_analyzer(
             target_entity=resolved_entity,
-            entity_column=entity_col,
-            bic_percentile=bic_percentiles[first_rate_type],  # Used for first rate type
+            entity_col=entity_col,
+            analysis_config=analysis_config,
+            opt_config=opt_config,
+            time_col=time_col,
             debug_mode=debug_mode,
-            consistent_weights=consistent_weights,
-            merchant_mode=analysis_config.get('merchant_mode', False),
-            rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
-            rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
-            max_iterations=opt_config['linear_programming']['max_iterations'],
-            tolerance=opt_config['linear_programming']['tolerance'],
-            max_weight=opt_config['bounds']['max_weight'],
-            min_weight=opt_config['bounds']['min_weight'],
-            volume_preservation_strength=rank_preservation_strength,
-            prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
-            auto_subset_search=opt_config['subset_search'].get('enabled', True),
-            subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
-            greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
-            trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
-            max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
-            time_column=time_col,
-            volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
-            volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
-            lambda_penalty=lambda_penalty,
-            enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
-            dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
-            min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
-            min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
-            min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
-            min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
-            min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
-            dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
-            dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
-            representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
-            representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
-            bayesian_max_iterations=bayesian_max_iterations,
-            bayesian_learning_rate=bayesian_learning_rate,
-            violation_penalty_weight=violation_penalty_weight,
-            enforce_single_weight_set=enforce_single_weight_set,
+            bic_percentile=bic_percentiles[first_rate_type],
+            logger=logger,
         )
+        consistent_weights = analyzer_settings['consistent_weights']
+        consistency_mode = analyzer_settings['consistency_mode']
+        rank_penalty_weight = analyzer_settings['rank_penalty_weight']
+        rank_preservation_strength = analyzer_settings['rank_preservation_strength']
+        lambda_penalty = analyzer_settings['lambda_penalty']
+        bayesian_max_iterations = analyzer_settings['bayesian_max_iterations']
+        bayesian_learning_rate = analyzer_settings['bayesian_learning_rate']
+        violation_penalty_weight = analyzer_settings['violation_penalty_weight']
+        enforce_single_weight_set = analyzer_settings['enforce_single_weight_set']
+        dyn_constraints = analyzer_settings['dynamic_constraints_config']
         
         # Calculate global weights ONCE based on total_col
         # These weights apply to both rate types since they share the same denominator
