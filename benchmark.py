@@ -31,12 +31,14 @@ from core.data_loader import ValidationSeverity
 from core.report_generator import ReportGenerator
 from core.privacy_validator import PrivacyValidator
 from core.analysis_run import (
+    build_report_paths,
     build_run_config,
     prepare_run_data,
     resolve_dimensions,
     resolve_output_settings,
     resolve_target_entity,
     validate_analysis_input,
+    write_audit_log,
 )
 from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
@@ -1151,34 +1153,21 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
         # Build report paths list for audit/summary
-        report_paths = []
-        if output_format in ('analysis', 'both'):
-            report_paths.append(analysis_output_file)
-        if output_format in ('publication', 'both') and publication_output:
-            report_paths.append(publication_output)
+        report_paths = build_report_paths(output_format, analysis_output_file, publication_output)
 
         # Audit log (dedicated)
         if include_audit_log:
-            audit_log_file = str(Path(analysis_output_file).with_name(f"{Path(analysis_output_file).stem}_audit.log"))
-            impact_summary = metadata.get('impact_summary', {}) if isinstance(metadata, dict) else {}
-            results_summary = {
-                'dimensions_analyzed': len(results),
-                'categories_analyzed': len(impact_df) if impact_df is not None else None,
-                'impact_mean_abs_pp': impact_summary.get('mean_abs_impact_pp'),
-                'privacy_rule': metadata.get('privacy_rule'),
-                'additional_constraint_violations_count': metadata.get('additional_constraint_violations_count'),
-                'privacy_validation_rows': len(privacy_validation_df) if privacy_validation_df is not None else 0,
-                'outputs': report_paths,
-                'balanced_csv': csv_output,
-            }
-            if validation_issues is not None:
-                results_summary.update({
-                    'validation_errors': sum(1 for i in validation_issues if i.severity == ValidationSeverity.ERROR),
-                    'validation_warnings': sum(1 for i in validation_issues if i.severity == ValidationSeverity.WARNING),
-                    'validation_infos': sum(1 for i in validation_issues if i.severity == ValidationSeverity.INFO),
-                })
-            audit_metadata = {k: v for k, v in metadata.items() if k != 'analyzer_ref'}
-            ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
+            write_audit_log(
+                config,
+                analysis_output_file=analysis_output_file,
+                metadata=metadata,
+                report_paths=report_paths,
+                dimensions_analyzed=len(results),
+                csv_output=csv_output,
+                impact_df=impact_df,
+                privacy_validation_df=privacy_validation_df,
+                validation_issues=validation_issues,
+            )
         
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
@@ -1720,34 +1709,21 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
         # Build report paths list for audit/summary
-        report_paths = []
-        if output_format in ('analysis', 'both'):
-            report_paths.append(analysis_output_file)
-        if output_format in ('publication', 'both') and publication_output:
-            report_paths.append(publication_output)
+        report_paths = build_report_paths(output_format, analysis_output_file, publication_output)
 
         # Audit log (dedicated)
         if include_audit_log:
-            audit_log_file = str(Path(analysis_output_file).with_name(f"{Path(analysis_output_file).stem}_audit.log"))
-            impact_summary = metadata.get('impact_summary', {}) if isinstance(metadata, dict) else {}
-            results_summary = {
-                'dimensions_analyzed': len(dimensions),
-                'categories_analyzed': len(impact_df) if impact_df is not None else None,
-                'impact_mean_abs_pp': impact_summary.get('mean_abs_impact_pp'),
-                'privacy_rule': metadata.get('privacy_rule'),
-                'additional_constraint_violations_count': metadata.get('additional_constraint_violations_count'),
-                'privacy_validation_rows': len(privacy_validation_df) if privacy_validation_df is not None else 0,
-                'outputs': report_paths,
-                'balanced_csv': csv_output,
-            }
-            if validation_issues is not None:
-                results_summary.update({
-                    'validation_errors': sum(1 for i in validation_issues if i.severity == ValidationSeverity.ERROR),
-                    'validation_warnings': sum(1 for i in validation_issues if i.severity == ValidationSeverity.WARNING),
-                    'validation_infos': sum(1 for i in validation_issues if i.severity == ValidationSeverity.INFO),
-                })
-            audit_metadata = {k: v for k, v in metadata.items() if k != 'analyzer_ref'}
-            ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
+            write_audit_log(
+                config,
+                analysis_output_file=analysis_output_file,
+                metadata=metadata,
+                report_paths=report_paths,
+                dimensions_analyzed=len(dimensions),
+                csv_output=csv_output,
+                impact_df=impact_df,
+                privacy_validation_df=privacy_validation_df,
+                validation_issues=validation_issues,
+            )
         
         # Print summary
         print(f"\n{'='*80}")

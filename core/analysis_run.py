@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from core.data_loader import DataLoader, ValidationIssue
+from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
+from core.report_generator import ReportGenerator
 from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager
 
@@ -190,3 +192,62 @@ def resolve_dimensions(
 
     logger.error("No dimensions provided. Use --dimensions or enable auto-detect (--auto or config.analysis.auto_detect_dimensions).")
     return None
+
+
+def build_report_paths(
+    output_format: str,
+    analysis_output_file: str,
+    publication_output: Optional[str] = None,
+) -> List[str]:
+    """Build the ordered list of generated report outputs."""
+    report_paths: List[str] = []
+    if output_format in ('analysis', 'both'):
+        report_paths.append(analysis_output_file)
+    if output_format in ('publication', 'both') and publication_output:
+        report_paths.append(publication_output)
+    return report_paths
+
+
+def summarize_validation_issues(
+    validation_issues: Optional[List[ValidationIssue]],
+) -> Dict[str, int]:
+    """Count validation issues by severity for audit logging."""
+    if not validation_issues:
+        return {}
+
+    return {
+        'validation_errors': sum(1 for issue in validation_issues if issue.severity == ValidationSeverity.ERROR),
+        'validation_warnings': sum(1 for issue in validation_issues if issue.severity == ValidationSeverity.WARNING),
+        'validation_infos': sum(1 for issue in validation_issues if issue.severity == ValidationSeverity.INFO),
+    }
+
+
+def write_audit_log(
+    config: ConfigManager,
+    *,
+    analysis_output_file: str,
+    metadata: Dict[str, Any],
+    report_paths: List[str],
+    dimensions_analyzed: int,
+    csv_output: Optional[str] = None,
+    impact_df: Optional[pd.DataFrame] = None,
+    privacy_validation_df: Optional[pd.DataFrame] = None,
+    validation_issues: Optional[List[ValidationIssue]] = None,
+) -> str:
+    """Create the audit log for a completed analysis run."""
+    audit_log_file = str(Path(analysis_output_file).with_name(f"{Path(analysis_output_file).stem}_audit.log"))
+    impact_summary = metadata.get('impact_summary', {}) if isinstance(metadata, dict) else {}
+    results_summary = {
+        'dimensions_analyzed': dimensions_analyzed,
+        'categories_analyzed': len(impact_df) if impact_df is not None else None,
+        'impact_mean_abs_pp': impact_summary.get('mean_abs_impact_pp'),
+        'privacy_rule': metadata.get('privacy_rule'),
+        'additional_constraint_violations_count': metadata.get('additional_constraint_violations_count'),
+        'privacy_validation_rows': len(privacy_validation_df) if privacy_validation_df is not None else 0,
+        'outputs': report_paths,
+        'balanced_csv': csv_output,
+    }
+    results_summary.update(summarize_validation_issues(validation_issues))
+    audit_metadata = {key: value for key, value in metadata.items() if key != 'analyzer_ref'}
+    ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
+    return audit_log_file

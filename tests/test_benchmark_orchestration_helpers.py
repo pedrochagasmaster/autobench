@@ -7,6 +7,7 @@ import pandas as pd
 
 from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
+    build_report_paths,
     build_run_config,
     prepare_run_data,
     resolve_dimensions,
@@ -14,8 +15,11 @@ from core.analysis_run import (
     resolve_input_dataframe,
     resolve_output_settings,
     resolve_target_entity,
+    summarize_validation_issues,
     validate_analysis_input,
+    write_audit_log,
 )
+from core.data_loader import ValidationSeverity
 from utils.config_manager import ConfigManager
 
 
@@ -251,6 +255,62 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(issues, ['ok'])
         self.assertFalse(should_abort)
         self.assertEqual(mocked.call_args.kwargs['dimensions'], ['card_type'])
+
+    def test_build_report_paths_respects_output_mode(self) -> None:
+        report_paths = build_report_paths('both', 'analysis.xlsx', 'publication.xlsx')
+
+        self.assertEqual(report_paths, ['analysis.xlsx', 'publication.xlsx'])
+
+    def test_summarize_validation_issues_counts_each_severity(self) -> None:
+        validation_issues = [
+            SimpleNamespace(severity=ValidationSeverity.ERROR),
+            SimpleNamespace(severity=ValidationSeverity.WARNING),
+            SimpleNamespace(severity=ValidationSeverity.WARNING),
+            SimpleNamespace(severity=ValidationSeverity.INFO),
+        ]
+
+        summary = summarize_validation_issues(validation_issues)
+
+        self.assertEqual(summary['validation_errors'], 1)
+        self.assertEqual(summary['validation_warnings'], 2)
+        self.assertEqual(summary['validation_infos'], 1)
+
+    def test_write_audit_log_omits_analyzer_ref_and_uses_report_summary(self) -> None:
+        config = ConfigManager()
+        metadata = {
+            'privacy_rule': 'MC-3.2',
+            'impact_summary': {'mean_abs_impact_pp': 1.25},
+            'additional_constraint_violations_count': 3,
+            'analyzer_ref': object(),
+        }
+        impact_df = pd.DataFrame({'Dimension': ['channel']})
+        privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
+        validation_issues = [SimpleNamespace(severity=ValidationSeverity.ERROR)]
+
+        with patch('core.analysis_run.ReportGenerator') as report_generator_cls:
+            audit_log_file = write_audit_log(
+                config,
+                analysis_output_file='benchmark_share_target.xlsx',
+                metadata=metadata,
+                report_paths=['benchmark_share_target.xlsx', 'benchmark_share_target_publication.xlsx'],
+                dimensions_analyzed=4,
+                csv_output='benchmark_share_target_balanced.csv',
+                impact_df=impact_df,
+                privacy_validation_df=privacy_validation_df,
+                validation_issues=validation_issues,
+            )
+
+        report_generator_cls.assert_called_once_with(config)
+        create_log = report_generator_cls.return_value.create_audit_log
+        create_log.assert_called_once()
+        called_log_file, called_metadata, called_summary = create_log.call_args.args
+        self.assertEqual(audit_log_file, 'benchmark_share_target_audit.log')
+        self.assertEqual(called_log_file, 'benchmark_share_target_audit.log')
+        self.assertNotIn('analyzer_ref', called_metadata)
+        self.assertEqual(called_summary['dimensions_analyzed'], 4)
+        self.assertEqual(called_summary['privacy_validation_rows'], 1)
+        self.assertEqual(called_summary['validation_errors'], 1)
+        self.assertEqual(called_summary['outputs'], ['benchmark_share_target.xlsx', 'benchmark_share_target_publication.xlsx'])
 
 
 if __name__ == '__main__':
