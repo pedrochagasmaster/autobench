@@ -7,6 +7,7 @@ import pandas as pd
 
 from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
+    build_common_run_metadata,
     build_report_paths,
     build_run_config,
     prepare_run_data,
@@ -255,6 +256,58 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(issues, ['ok'])
         self.assertFalse(should_abort)
         self.assertEqual(mocked.call_args.kwargs['dimensions'], ['card_type'])
+
+    def test_build_common_run_metadata_includes_shared_analyzer_fields(self) -> None:
+        config = ConfigManager()
+        analyzer = SimpleNamespace(
+            rank_preservation_strength=0.75,
+            privacy_rule_name='MC-3.2',
+            enforce_additional_constraints=True,
+            additional_constraint_violations=['a', 'b'],
+            dynamic_constraints_enabled=True,
+            dynamic_constraint_stats={'applied': 4},
+            get_structural_infeasibility_summary=lambda: {'count': 1},
+        )
+        args = SimpleNamespace(
+            preset='balanced',
+            csv='input.csv',
+            log_level='INFO',
+            dimensions=['channel'],
+            auto=False,
+            entity_col='issuer_name',
+        )
+
+        metadata = build_common_run_metadata(
+            args,
+            config,
+            analyzer,
+            resolved_entity='Target',
+            entity_col='issuer_name',
+            total_records=100,
+            unique_entities=5,
+            dimensions_analyzed=2,
+            dimension_names=['channel', 'product'],
+            secondary_metrics=['amount'],
+            debug_mode=True,
+            consistent_weights=True,
+            include_privacy_validation=True,
+            include_impact_summary=False,
+            include_preset_comparison=True,
+            include_calculated_metrics=False,
+            output_format='analysis',
+            consistency_mode='global',
+            enforce_single_weight_set=True,
+        )
+
+        self.assertEqual(metadata['entity'], 'Target')
+        self.assertEqual(metadata['peer_count'], 4)
+        self.assertEqual(metadata['privacy_rule'], 'MC-3.2')
+        self.assertTrue(metadata['additional_constraints_enforced'])
+        self.assertEqual(metadata['additional_constraint_violations_count'], 2)
+        self.assertTrue(metadata['dynamic_constraints_enabled'])
+        self.assertEqual(metadata['dynamic_constraints_stats'], {'applied': 4})
+        self.assertEqual(metadata['structural_infeasibility_summary'], {'count': 1})
+        self.assertEqual(metadata['dimension_names'], ['channel', 'product'])
 
     def test_build_report_paths_respects_output_mode(self) -> None:
         report_paths = build_report_paths('both', 'analysis.xlsx', 'publication.xlsx')

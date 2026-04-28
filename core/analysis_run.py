@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -71,6 +72,102 @@ def resolve_output_settings(config: ConfigManager) -> Dict[str, Any]:
         'include_audit_log': config.get('output', 'include_audit_log', default=True),
         'output_format': config.get('output', 'output_format', default='analysis'),
         'fraud_in_bps': config.get('output', 'fraud_in_bps', default=True),
+    }
+
+
+def build_common_run_metadata(
+    args: argparse.Namespace,
+    config: ConfigManager,
+    analyzer: Any,
+    *,
+    resolved_entity: Optional[str],
+    entity_col: str,
+    total_records: int,
+    unique_entities: int,
+    dimensions_analyzed: int,
+    dimension_names: List[str],
+    secondary_metrics: Optional[List[str]],
+    debug_mode: bool,
+    consistent_weights: bool,
+    include_privacy_validation: bool,
+    include_impact_summary: bool,
+    include_preset_comparison: bool,
+    include_calculated_metrics: bool,
+    output_format: str,
+    consistency_mode: str,
+    enforce_single_weight_set: bool,
+) -> Dict[str, Any]:
+    """Build the shared metadata envelope for completed analysis runs."""
+    opt_config = config.config.get('optimization', {})
+    peer_count = unique_entities if resolved_entity is None else max(unique_entities - 1, 0)
+
+    return {
+        'entity': resolved_entity or 'PEER-ONLY',
+        'secondary_metrics': secondary_metrics,
+        'entity_column': entity_col,
+        'total_records': total_records,
+        'unique_entities': unique_entities,
+        'peer_count': peer_count,
+        'dimensions_analyzed': dimensions_analyzed,
+        'dimension_names': list(dimension_names),
+        'preset': getattr(args, 'preset', None),
+        'debug_mode': debug_mode,
+        'consistent_weights': consistent_weights,
+        'merchant_mode': config.get('analysis', 'merchant_mode', default=False),
+        'include_debug_sheets': debug_mode,
+        'include_privacy_validation': include_privacy_validation,
+        'include_impact_summary': include_impact_summary,
+        'include_preset_comparison': include_preset_comparison,
+        'include_calculated_metrics': include_calculated_metrics,
+        'output_format': output_format,
+        'timestamp': datetime.now(),
+        'input_csv': getattr(args, 'csv', None),
+        'log_level': getattr(args, 'log_level', None),
+        'dimensions_mode': 'manual' if bool(getattr(args, 'dimensions', None)) else ('auto' if getattr(args, 'auto', False) else 'manual'),
+        'dimensions_requested': getattr(args, 'dimensions', None),
+        'entity_col_arg': getattr(args, 'entity_col', None),
+        'consistency_mode': consistency_mode,
+        'enforce_single_weight_set': enforce_single_weight_set,
+        'max_iterations': opt_config.get('linear_programming', {}).get('max_iterations'),
+        'tolerance_pp': opt_config.get('linear_programming', {}).get('tolerance'),
+        'max_weight': opt_config.get('bounds', {}).get('max_weight'),
+        'min_weight': opt_config.get('bounds', {}).get('min_weight'),
+        'volume_preservation_strength': opt_config.get('constraints', {}).get('volume_preservation'),
+        'rank_penalty_weight': opt_config.get('linear_programming', {}).get('rank_penalty_weight'),
+        'rank_preservation_strength': getattr(analyzer, 'rank_preservation_strength', None),
+        'prefer_slacks_first': opt_config.get('subset_search', {}).get('prefer_slacks_first'),
+        'lambda_penalty': opt_config.get('linear_programming', {}).get('lambda_penalty'),
+        'volume_weighted_penalties': opt_config.get('linear_programming', {}).get('volume_weighted_penalties'),
+        'volume_weighting_exponent': opt_config.get('linear_programming', {}).get('volume_weighting_exponent'),
+        'subset_search_enabled': opt_config.get('subset_search', {}).get('enabled'),
+        'subset_search_strategy': opt_config.get('subset_search', {}).get('strategy'),
+        'subset_search_max_tests': opt_config.get('subset_search', {}).get('max_attempts'),
+        'subset_search_trigger_on_slack': opt_config.get('subset_search', {}).get('trigger_on_slack'),
+        'subset_search_max_slack_threshold': opt_config.get('subset_search', {}).get('max_slack_threshold'),
+        'bayesian_max_iterations': opt_config.get('bayesian', {}).get('max_iterations'),
+        'bayesian_learning_rate': opt_config.get('bayesian', {}).get('learning_rate'),
+        'violation_penalty_weight': opt_config.get('bayesian', {}).get('violation_penalty_weight'),
+        'structural_infeasibility_summary': analyzer.get_structural_infeasibility_summary(),
+        'privacy_rule': getattr(analyzer, 'privacy_rule_name', None),
+        'additional_constraints_enforced': getattr(analyzer, 'enforce_additional_constraints', False),
+        'additional_constraint_violations_count': len(getattr(analyzer, 'additional_constraint_violations', []) or []),
+        'dynamic_constraints_enabled': getattr(analyzer, 'dynamic_constraints_enabled', False),
+        'dynamic_constraints_stats': getattr(analyzer, 'dynamic_constraint_stats', {}),
+        'dynamic_constraints_config': opt_config.get('constraints', {}).get('dynamic_constraints', {}),
+        'impact_thresholds': {
+            'high_pp': config.get(
+                'output',
+                'impact_thresholds',
+                'high_pp',
+                default=config.get('output', 'distortion_thresholds', 'high_distortion_pp', default=1.0)
+            ),
+            'low_pp': config.get(
+                'output',
+                'impact_thresholds',
+                'low_pp',
+                default=config.get('output', 'distortion_thresholds', 'low_distortion_pp', default=0.25)
+            ),
+        },
     }
 
 
