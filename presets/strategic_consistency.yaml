@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "strategic_consistency"
+compliance_posture: "best_effort"
 description: "Strategic Analysis - Global weights with minimized violations (formerly global_with_violations)"
 
 # Intent: "I need a strategic overview and I want consistent numbers."

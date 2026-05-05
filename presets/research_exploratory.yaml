@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "research_exploratory"
+compliance_posture: "best_effort"
 description: "Research - Maximum flexibility for difficult datasets (formerly maximum_flexibility)"
 
 # Intent: "I have a really hard dataset and nothing works."

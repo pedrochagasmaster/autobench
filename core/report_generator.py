@@ -253,6 +253,17 @@ class ReportGenerator:
             worksheet[f'B{row}'] = f"{metadata.get('participants', 'N/A')} participants, " \
                                    f"{metadata.get('max_concentration', 'N/A')}% max"
             row += 2
+            compliance_summary = metadata.get('compliance_summary', {})
+            for label, key in [
+                ("Compliance Posture:", "compliance_posture"),
+                ("Compliance Verdict:", "compliance_verdict"),
+                ("Acknowledgement State:", "acknowledgement_state"),
+                ("Run Status:", "run_status"),
+            ]:
+                worksheet[f'A{row}'] = label
+                worksheet[f'B{row}'] = metadata.get(key, compliance_summary.get(key, 'N/A'))
+                row += 1
+            row += 1
         
         # Results summary
         worksheet[f'A{row}'] = "Metrics Analyzed:"
@@ -639,7 +650,7 @@ class ReportGenerator:
         
         if metadata:
             row = 3
-            for key in ['entity', 'date', 'analysis_type']:
+            for key in ['entity', 'date', 'analysis_type', 'compliance_posture', 'compliance_verdict', 'acknowledgement_state']:
                 if key in metadata:
                     ws_summary[f'A{row}'] = key.replace('_', ' ').title()
                     ws_summary[f'A{row}'].font = Font(bold=True)

@@ -1,6 +1,8 @@
 import logging
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from core.contracts import SolverRequest
 from .base_solver import PrivacySolver, SolverResult
 
 logger = logging.getLogger(__name__)
@@ -19,12 +21,14 @@ class LPSolver(PrivacySolver):
     """
     
     def solve(
-        self, 
-        peers: List[str], 
-        categories: List[Dict[str, Any]], 
-        max_concentration: float, 
-        peer_volumes: Dict[str, float],
-        **kwargs
+        self,
+        request: Optional[SolverRequest] = None,
+        *,
+        peers: Optional[List[str]] = None,
+        categories: Optional[List[Dict[str, Any]]] = None,
+        max_concentration: Optional[float] = None,
+        peer_volumes: Optional[Dict[str, float]] = None,
+        **kwargs: Any
     ) -> Optional[SolverResult]:
         """
         Solve global weights optimization problem.
@@ -43,15 +47,28 @@ class LPSolver(PrivacySolver):
             logger.info("SciPy not available, skipping LP solver.")
             return None
 
+        solver_request = self.coerce_request(
+            request,
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            **kwargs,
+        )
+        peers = solver_request.peers
+        categories = solver_request.categories
+        max_concentration = solver_request.max_concentration
+        peer_volumes = solver_request.peer_volumes
+
         # Extract config
-        rank_preservation_strength = float(kwargs.get('rank_preservation_strength', 0.1))
-        tolerance = float(kwargs.get('tolerance', 0.1))
-        volume_weighted_penalties = bool(kwargs.get('volume_weighted_penalties', False))
-        volume_weighting_exponent = float(kwargs.get('volume_weighting_exponent', 1.0))
-        min_weight = float(kwargs.get('min_weight', 0.5))
-        max_weight = float(kwargs.get('max_weight', 3.0))
-        lambda_penalty = kwargs.get('lambda_penalty', None)
-        max_iterations = kwargs.get('max_iterations', None)
+        rank_preservation_strength = float(solver_request.rank_preservation_strength)
+        tolerance = float(solver_request.tolerance)
+        volume_weighted_penalties = bool(solver_request.volume_weighted_penalties)
+        volume_weighting_exponent = float(solver_request.volume_weighting_exponent)
+        min_weight = float(solver_request.min_weight)
+        max_weight = float(solver_request.max_weight)
+        lambda_penalty = solver_request.lambda_penalty
+        max_iterations = solver_request.max_iterations
         max_iterations_int = None
         if max_iterations is not None:
             try:
@@ -99,8 +116,8 @@ class LPSolver(PrivacySolver):
         # Create ordered pairs (i,j) where base_shares[i] >= base_shares[j]
         pair_indices: List[Tuple[int, int]] = []
         order = np.argsort(-base_shares)  # descending
-        rank_mode = str(kwargs.get('rank_constraint_mode', 'all')).lower()
-        rank_k = int(kwargs.get('rank_constraint_k', 1))
+        rank_mode = str(solver_request.rank_constraint_mode).lower()
+        rank_k = int(solver_request.rank_constraint_k)
         if rank_mode == 'neighbor':
             k = max(rank_k, 1)
             for a in range(P):

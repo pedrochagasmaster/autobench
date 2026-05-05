@@ -6,6 +6,7 @@ This module provides configuration file validation against the v3.0 schema.
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from core.compliance import VALID_COMPLIANCE_POSTURES
 
 try:
     import yaml
@@ -28,6 +29,7 @@ class ConfigValidator:
     
     REQUIRED_FIELDS = {
         'version': str,
+        'compliance_posture': str,
     }
     
     OPTIONAL_FIELDS = {
@@ -65,6 +67,16 @@ class ConfigValidator:
             errors.append(f"Invalid type for version: expected str, got {type(config['version']).__name__}")
         elif config['version'] != CONFIG_SCHEMA_VERSION:
             errors.append(f"Unsupported config version: {config['version']} (expected {CONFIG_SCHEMA_VERSION})")
+
+        if 'compliance_posture' not in config:
+            errors.append("Missing required field: compliance_posture")
+        elif not isinstance(config['compliance_posture'], str):
+            errors.append("Invalid type for compliance_posture: expected str")
+        elif config['compliance_posture'] not in VALID_COMPLIANCE_POSTURES:
+            errors.append(
+                "compliance_posture must be one of: "
+                + ", ".join(VALID_COMPLIANCE_POSTURES)
+            )
         
         # Validate structure - check for unknown fields at root level
         known_fields = set(cls.REQUIRED_FIELDS.keys()) | set(cls.OPTIONAL_FIELDS.keys())

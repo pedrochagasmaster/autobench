@@ -1,6 +1,8 @@
 import logging
 import numpy as np
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from core.contracts import SolverRequest
 
 try:
     from scipy.optimize import minimize  # type: ignore
@@ -26,12 +28,14 @@ class HeuristicSolver(PrivacySolver):
     VIOLATION_PENALTY_WEIGHT = DEFAULT_HEURISTIC_VIOLATION_PENALTY_WEIGHT
     
     def solve(
-        self, 
-        peers: List[str], 
-        categories: List[Dict[str, Any]], 
-        max_concentration: float, 
-        peer_volumes: Dict[str, float],
-        **kwargs
+        self,
+        request: Optional[SolverRequest] = None,
+        *,
+        peers: Optional[List[str]] = None,
+        categories: Optional[List[Dict[str, Any]]] = None,
+        max_concentration: Optional[float] = None,
+        peer_volumes: Optional[Dict[str, float]] = None,
+        **kwargs: Any
     ) -> Optional[SolverResult]:
         """
         Solve optimization problem using heuristics.
@@ -61,29 +65,42 @@ class HeuristicSolver(PrivacySolver):
             logger.info("SciPy not available, skipping heuristic solver.")
             return None
 
-        # Config
-        target_weights = kwargs.get('target_weights')
-        min_weight = kwargs.get('min_weight', 0.5)
-        max_weight = kwargs.get('max_weight', 3.0)
-        tolerance = kwargs.get('tolerance', 0.1)
-        max_iterations = int(kwargs.get('max_iterations', 500))
-        learning_rate = kwargs.get('learning_rate', None)
-        penalty_weight = float(kwargs.get('violation_penalty_weight', self.VIOLATION_PENALTY_WEIGHT))
-        enforce_additional = kwargs.get('enforce_additional_constraints', True)
-        dynamic_enabled = kwargs.get('dynamic_constraints_enabled', True)
-        time_column = kwargs.get('time_column')
-        rule_name = kwargs.get('rule_name')
-        merchant_mode = bool(kwargs.get('merchant_mode', False))
+        solver_request = self.coerce_request(
+            request,
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            **kwargs,
+        )
+        peers = solver_request.peers
+        categories = solver_request.categories
+        max_concentration = solver_request.max_concentration
+        peer_volumes = solver_request.peer_volumes
 
-        self.min_peer_count_for_constraints = kwargs.get('min_peer_count_for_constraints', 6)
-        self.min_effective_peer_count = kwargs.get('min_effective_peer_count', 2.5)
-        self.min_category_volume_share = kwargs.get('min_category_volume_share', 0.0)
-        self.min_overall_volume_share = kwargs.get('min_overall_volume_share', 0.0)
-        self.min_representativeness = kwargs.get('min_representativeness', 0.7)
-        self.dynamic_threshold_scale_floor = kwargs.get('dynamic_threshold_scale_floor', 0.8)
-        self.dynamic_count_scale_floor = kwargs.get('dynamic_count_scale_floor', 0.6)
-        self.representativeness_penalty_floor = float(kwargs.get('representativeness_penalty_floor', 0.0))
-        self.representativeness_penalty_power = float(kwargs.get('representativeness_penalty_power', 1.0))
+        # Config
+        target_weights = solver_request.target_weights
+        min_weight = solver_request.min_weight
+        max_weight = solver_request.max_weight
+        tolerance = solver_request.tolerance
+        max_iterations = int(solver_request.max_iterations or 500)
+        learning_rate = solver_request.learning_rate
+        penalty_weight = float(solver_request.violation_penalty_weight)
+        enforce_additional = solver_request.enforce_additional_constraints
+        dynamic_enabled = solver_request.dynamic_constraints_enabled
+        time_column = solver_request.time_column
+        rule_name = solver_request.rule_name
+        merchant_mode = bool(solver_request.merchant_mode)
+
+        self.min_peer_count_for_constraints = solver_request.min_peer_count_for_constraints
+        self.min_effective_peer_count = solver_request.min_effective_peer_count
+        self.min_category_volume_share = solver_request.min_category_volume_share
+        self.min_overall_volume_share = solver_request.min_overall_volume_share
+        self.min_representativeness = solver_request.min_representativeness
+        self.dynamic_threshold_scale_floor = solver_request.dynamic_threshold_scale_floor
+        self.dynamic_count_scale_floor = solver_request.dynamic_count_scale_floor
+        self.representativeness_penalty_floor = float(solver_request.representativeness_penalty_floor)
+        self.representativeness_penalty_power = float(solver_request.representativeness_penalty_power)
         
         # Prepare
         peer_index = {peer: i for i, peer in enumerate(peers)}

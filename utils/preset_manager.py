@@ -137,10 +137,12 @@ class PresetManager:
         for name in self.list_presets():
             preset = self._presets[name]
             desc = preset.get('description', 'No description')
+            posture = preset.get('compliance_posture', 'MISSING')
             
             # Format preset info
             lines.append(f"  {name}")
             lines.append(f"    {desc}")
+            lines.append(f"    Compliance Posture: {posture}")
             
             # Show key optimization settings if available
             if 'optimization' in preset:
@@ -191,6 +193,8 @@ class PresetManager:
             lines.append(f"Version: {preset['version']}")
         if 'description' in preset:
             lines.append(f"Description: {preset['description']}")
+        if 'compliance_posture' in preset:
+            lines.append(f"Compliance Posture: {preset['compliance_posture']}")
         
         lines.extend(["", "Configuration:", "-" * 80])
         

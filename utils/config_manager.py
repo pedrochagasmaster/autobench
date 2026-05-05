@@ -9,6 +9,13 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - validators already handle this path
+    yaml = None
+
+from core.compliance import VALID_COMPLIANCE_POSTURES
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +125,11 @@ class ConfigManager:
         self.column_mapping = self.DEFAULT_COLUMN_MAPPING.copy()
         self.comparison_metrics = self.DEFAULT_COMPARISON_METRICS.copy()
         self.sql_config = {}
+        self._preset_name = preset
+        self._preset_declared_posture = None
+        self._config_declared_posture = False
+        self._cli_declared_posture = False
+        self._material_overrides: List[str] = []
         
         # Apply preset if specified
         if preset:
@@ -125,11 +137,15 @@ class ConfigManager:
         
         # Load custom config file if specified
         if config_file:
+            self._config_declared_posture = self._file_declares_posture(config_file)
             self.load_config(config_file)
         
         # Apply CLI overrides (highest priority)
         if cli_overrides:
+            self._cli_declared_posture = 'compliance_posture' in cli_overrides
             self._apply_cli_overrides(cli_overrides)
+
+        self._validate_compliance_posture()
         
         logger.info("Initialized ConfigManager")
         if preset:
@@ -376,6 +392,7 @@ class ConfigManager:
         """
         return {
             'version': '3.0',
+            'compliance_posture': 'strict',
             'input': {
                 'entity_col': 'issuer_name',
                 'time_col': None,
@@ -483,6 +500,7 @@ class ConfigManager:
             preset_config = preset_mgr.get_preset(preset_name)
             
             if preset_config:
+                self._preset_declared_posture = preset_config.get('compliance_posture')
                 self._merge_config(preset_config)
                 logger.info(f"Loaded preset: {preset_name}")
             else:
@@ -572,16 +590,63 @@ class ConfigManager:
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
+            'compliance_posture': ('compliance_posture',),
+        }
+        material_cli_keys = {
+            'per_dimension_weights',
+            'max_iterations',
+            'tolerance',
+            'max_weight',
+            'min_weight',
+            'volume_preservation',
+            'auto_subset_search',
+            'subset_search_max_tests',
+            'trigger_subset_on_slack',
+            'max_cap_slack',
         }
         
         for cli_key, config_path in mapping.items():
             if cli_key in overrides and overrides[cli_key] is not None:
+                if cli_key in material_cli_keys:
+                    self._material_overrides.append(cli_key)
                 if cli_key == 'per_dimension_weights':
                     value = 'per_dimension' if overrides[cli_key] else 'global'
                     self._set_nested(self.config, config_path, value)
                 else:
                     self._set_nested(self.config, config_path, overrides[cli_key])
                 logger.debug(f"CLI override: {cli_key} = {overrides[cli_key]}")
+
+    def _file_declares_posture(self, config_file: str) -> bool:
+        path = Path(config_file)
+        if not path.exists():
+            return False
+        try:
+            if path.suffix.lower() in ['.yaml', '.yml'] and yaml is not None:
+                with open(path, 'r') as f:
+                    loaded = yaml.safe_load(f) or {}
+            else:
+                with open(path, 'r') as f:
+                    loaded = json.load(f)
+        except Exception:
+            return False
+        return isinstance(loaded, dict) and 'compliance_posture' in loaded
+
+    def _validate_compliance_posture(self) -> None:
+        posture = self.config.get('compliance_posture')
+        if posture not in VALID_COMPLIANCE_POSTURES:
+            allowed = ', '.join(VALID_COMPLIANCE_POSTURES)
+            raise ValueError(f"Invalid or missing compliance_posture: {posture!r}. Expected one of: {allowed}")
+        if (
+            self._preset_name
+            and self._material_overrides
+            and not self._config_declared_posture
+            and not self._cli_declared_posture
+        ):
+            changed = ', '.join(sorted(set(self._material_overrides)))
+            raise ValueError(
+                "Material optimization overrides require an explicit final compliance_posture "
+                f"via config file or CLI override. Overrides: {changed}"
+            )
     
     def _set_nested(self, d: dict, path: tuple, value: Any) -> None:
         """Set nested dictionary value using path tuple.

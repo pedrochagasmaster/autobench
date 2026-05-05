@@ -6,6 +6,12 @@
 
 version: "3.0"
 
+# Compliance posture is mandatory and public:
+# - strict: final compliant verdict is required
+# - best_effort: attempts compliance, but labeled non-compliant/indeterminate outputs may complete
+# - accuracy_first: prioritizes fidelity and requires explicit runtime acknowledgement
+compliance_posture: "strict"
+
 # ============================================================================
 # NOTE: Column names are specified via CLI flags, not in config files
 # ============================================================================

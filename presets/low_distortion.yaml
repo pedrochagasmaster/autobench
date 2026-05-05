@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "low_distortion"
+compliance_posture: "accuracy_first"
 description: "Minimize distortion - Tight weight bounds to limit market share distortion"
 
 # Intent: "I need low distortion numbers even at the cost of some privacy violations."

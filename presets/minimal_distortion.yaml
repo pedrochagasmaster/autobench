@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "minimal_distortion"
+compliance_posture: "accuracy_first"
 description: "Minimize distortion - Very high tolerance, prioritizes accuracy over privacy"
 
 # Intent: "I need accurate market share numbers, privacy violations are acceptable."

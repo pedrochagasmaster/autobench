@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "compliance_strict"
+compliance_posture: "strict"
 description: "Regulatory Compliance - Zero tolerance for violations (formerly strict_privacy)"
 
 # Intent: "I need a report for the regulator/compliance."

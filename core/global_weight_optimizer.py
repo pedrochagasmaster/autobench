@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from .category_builder import CategoryBuilder
+from .contracts import SolverRequest
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,73 @@ class GlobalWeightOptimizer:
 
     def __init__(self, analyzer: Any) -> None:
         self.analyzer = analyzer
+
+    def _build_lp_request(
+        self,
+        *,
+        peers: List[str],
+        categories: List[Dict[str, Any]],
+        max_concentration: float,
+        peer_volumes: Dict[str, float],
+        tolerance: Optional[float] = None,
+    ) -> SolverRequest:
+        analyzer = self.analyzer
+        return SolverRequest(
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            rank_preservation_strength=analyzer.rank_preservation_strength,
+            rank_constraint_mode=analyzer.rank_constraint_mode,
+            rank_constraint_k=analyzer.rank_constraint_k,
+            tolerance=float(analyzer.tolerance if tolerance is None else tolerance),
+            volume_weighted_penalties=analyzer.volume_weighted_penalties,
+            volume_weighting_exponent=analyzer.volume_weighting_exponent,
+            lambda_penalty=analyzer.lambda_penalty,
+            max_iterations=analyzer.max_iterations,
+            min_weight=analyzer.min_weight,
+            max_weight=analyzer.max_weight,
+        )
+
+    def _build_heuristic_request(
+        self,
+        *,
+        peers: List[str],
+        categories: List[Dict[str, Any]],
+        max_concentration: float,
+        peer_volumes: Dict[str, float],
+        target_weights: Optional[Dict[str, float]],
+        rule_name: Optional[str],
+        tolerance: Optional[float] = None,
+    ) -> SolverRequest:
+        analyzer = self.analyzer
+        return SolverRequest(
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            target_weights=target_weights,
+            rule_name=rule_name,
+            min_weight=analyzer.min_weight,
+            max_weight=analyzer.max_weight,
+            tolerance=float(analyzer.tolerance if tolerance is None else tolerance),
+            max_iterations=analyzer.bayesian_max_iterations,
+            learning_rate=analyzer.bayesian_learning_rate,
+            violation_penalty_weight=analyzer.violation_penalty_weight,
+            merchant_mode=analyzer.merchant_mode,
+            enforce_additional_constraints=analyzer.enforce_additional_constraints,
+            dynamic_constraints_enabled=analyzer.dynamic_constraints_enabled,
+            time_column=analyzer.time_column,
+            min_peer_count_for_constraints=analyzer.min_peer_count_for_constraints,
+            min_effective_peer_count=analyzer.min_effective_peer_count,
+            min_category_volume_share=analyzer.min_category_volume_share,
+            min_overall_volume_share=analyzer.min_overall_volume_share,
+            min_representativeness=analyzer.min_representativeness,
+            dynamic_threshold_scale_floor=analyzer.dynamic_threshold_scale_floor,
+            dynamic_count_scale_floor=analyzer.dynamic_count_scale_floor,
+            representativeness_penalty_floor=analyzer.representativeness_penalty_floor,
+            representativeness_penalty_power=analyzer.representativeness_penalty_power,
+        )
 
     def calculate_global_privacy_weights(
         self,
@@ -88,20 +156,12 @@ class GlobalWeightOptimizer:
 
         def run_lp(categories: List[Dict[str, Any]], volumes: Dict[str, float]) -> Optional[Dict[str, float]]:
             lp_result = analyzer.lp_solver.solve(
-                peers,
-                categories,
-                max_concentration,
-                volumes,
-                rank_preservation_strength=analyzer.rank_preservation_strength,
-                rank_constraint_mode=analyzer.rank_constraint_mode,
-                rank_constraint_k=analyzer.rank_constraint_k,
-                tolerance=analyzer.tolerance,
-                volume_weighted_penalties=analyzer.volume_weighted_penalties,
-                volume_weighting_exponent=analyzer.volume_weighting_exponent,
-                lambda_penalty=analyzer.lambda_penalty,
-                max_iterations=analyzer.max_iterations,
-                min_weight=analyzer.min_weight,
-                max_weight=analyzer.max_weight,
+                self._build_lp_request(
+                    peers=peers,
+                    categories=categories,
+                    max_concentration=max_concentration,
+                    peer_volumes=volumes,
+                )
             )
             if lp_result and lp_result.success:
                 analyzer.last_lp_stats = lp_result.stats
@@ -224,31 +284,14 @@ class GlobalWeightOptimizer:
         if not converged:
             logger.warning("Global LP failed or no feasible subset found; attempting heuristic global optimization.")
             heuristic_result = analyzer.heuristic_solver.solve(
-                peers,
-                all_categories,
-                max_concentration,
-                peer_volumes,
-                target_weights=weights,
-                rule_name=rule_name,
-                min_weight=analyzer.min_weight,
-                max_weight=analyzer.max_weight,
-                tolerance=analyzer.tolerance,
-                max_iterations=analyzer.bayesian_max_iterations,
-                learning_rate=analyzer.bayesian_learning_rate,
-                violation_penalty_weight=analyzer.violation_penalty_weight,
-                merchant_mode=analyzer.merchant_mode,
-                enforce_additional_constraints=analyzer.enforce_additional_constraints,
-                dynamic_constraints_enabled=analyzer.dynamic_constraints_enabled,
-                time_column=analyzer.time_column,
-                min_peer_count_for_constraints=analyzer.min_peer_count_for_constraints,
-                min_effective_peer_count=analyzer.min_effective_peer_count,
-                min_category_volume_share=analyzer.min_category_volume_share,
-                min_overall_volume_share=analyzer.min_overall_volume_share,
-                min_representativeness=analyzer.min_representativeness,
-                dynamic_threshold_scale_floor=analyzer.dynamic_threshold_scale_floor,
-                dynamic_count_scale_floor=analyzer.dynamic_count_scale_floor,
-                representativeness_penalty_floor=analyzer.representativeness_penalty_floor,
-                representativeness_penalty_power=analyzer.representativeness_penalty_power,
+                self._build_heuristic_request(
+                    peers=peers,
+                    categories=all_categories,
+                    max_concentration=max_concentration,
+                    peer_volumes=peer_volumes,
+                    target_weights=weights,
+                    rule_name=rule_name,
+                )
             )
             if heuristic_result:
                 if not heuristic_result.success:
@@ -288,31 +331,14 @@ class GlobalWeightOptimizer:
                             "Running feasibility-first heuristic without global-weight anchoring."
                         )
                     heuristic_result = analyzer.heuristic_solver.solve(
-                        peers,
-                        all_categories,
-                        max_concentration,
-                        peer_volumes,
-                        target_weights=target_multipliers,
-                        rule_name=rule_name,
-                        min_weight=analyzer.min_weight,
-                        max_weight=analyzer.max_weight,
-                        tolerance=analyzer.tolerance,
-                        max_iterations=analyzer.bayesian_max_iterations,
-                        learning_rate=analyzer.bayesian_learning_rate,
-                        violation_penalty_weight=analyzer.violation_penalty_weight,
-                        merchant_mode=analyzer.merchant_mode,
-                        enforce_additional_constraints=analyzer.enforce_additional_constraints,
-                        dynamic_constraints_enabled=analyzer.dynamic_constraints_enabled,
-                        time_column=analyzer.time_column,
-                        min_peer_count_for_constraints=analyzer.min_peer_count_for_constraints,
-                        min_effective_peer_count=analyzer.min_effective_peer_count,
-                        min_category_volume_share=analyzer.min_category_volume_share,
-                        min_overall_volume_share=analyzer.min_overall_volume_share,
-                        min_representativeness=analyzer.min_representativeness,
-                        dynamic_threshold_scale_floor=analyzer.dynamic_threshold_scale_floor,
-                        dynamic_count_scale_floor=analyzer.dynamic_count_scale_floor,
-                        representativeness_penalty_floor=analyzer.representativeness_penalty_floor,
-                        representativeness_penalty_power=analyzer.representativeness_penalty_power,
+                        self._build_heuristic_request(
+                            peers=peers,
+                            categories=all_categories,
+                            max_concentration=max_concentration,
+                            peer_volumes=peer_volumes,
+                            target_weights=target_multipliers,
+                            rule_name=rule_name,
+                        )
                     )
                     if heuristic_result:
                         if not heuristic_result.success:
@@ -478,20 +504,13 @@ class GlobalWeightOptimizer:
                     orig_tolerance = analyzer.tolerance
                     analyzer.tolerance = 0.0
                     lp_result = analyzer.lp_solver.solve(
-                        peers,
-                        violation_cats,
-                        max_concentration,
-                        violation_peer_vols,
-                        rank_preservation_strength=analyzer.rank_preservation_strength,
-                        rank_constraint_mode=analyzer.rank_constraint_mode,
-                        rank_constraint_k=analyzer.rank_constraint_k,
-                        tolerance=analyzer.tolerance,
-                        volume_weighted_penalties=analyzer.volume_weighted_penalties,
-                        volume_weighting_exponent=analyzer.volume_weighting_exponent,
-                        lambda_penalty=analyzer.lambda_penalty,
-                        max_iterations=analyzer.max_iterations,
-                        min_weight=analyzer.min_weight,
-                        max_weight=analyzer.max_weight,
+                        self._build_lp_request(
+                            peers=peers,
+                            categories=violation_cats,
+                            max_concentration=max_concentration,
+                            peer_volumes=violation_peer_vols,
+                            tolerance=analyzer.tolerance,
+                        )
                     )
                     violation_solution = lp_result.weights if lp_result and lp_result.success else None
                     if lp_result and lp_result.success:
@@ -547,31 +566,15 @@ class GlobalWeightOptimizer:
                                 violation_dim,
                             )
                         heuristic_result = analyzer.heuristic_solver.solve(
-                            peers,
-                            violation_cats,
-                            max_concentration,
-                            violation_peer_vols,
-                            target_weights=target_multipliers,
-                            rule_name=rule_name,
-                            min_weight=analyzer.min_weight,
-                            max_weight=analyzer.max_weight,
-                            tolerance=analyzer.tolerance,
-                            max_iterations=analyzer.bayesian_max_iterations,
-                            learning_rate=analyzer.bayesian_learning_rate,
-                            violation_penalty_weight=analyzer.violation_penalty_weight,
-                            merchant_mode=analyzer.merchant_mode,
-                            enforce_additional_constraints=analyzer.enforce_additional_constraints,
-                            dynamic_constraints_enabled=analyzer.dynamic_constraints_enabled,
-                            time_column=analyzer.time_column,
-                            min_peer_count_for_constraints=analyzer.min_peer_count_for_constraints,
-                            min_effective_peer_count=analyzer.min_effective_peer_count,
-                            min_category_volume_share=analyzer.min_category_volume_share,
-                            min_overall_volume_share=analyzer.min_overall_volume_share,
-                            min_representativeness=analyzer.min_representativeness,
-                            dynamic_threshold_scale_floor=analyzer.dynamic_threshold_scale_floor,
-                            dynamic_count_scale_floor=analyzer.dynamic_count_scale_floor,
-                            representativeness_penalty_floor=analyzer.representativeness_penalty_floor,
-                            representativeness_penalty_power=analyzer.representativeness_penalty_power,
+                            self._build_heuristic_request(
+                                peers=peers,
+                                categories=violation_cats,
+                                max_concentration=max_concentration,
+                                peer_volumes=violation_peer_vols,
+                                target_weights=target_multipliers,
+                                rule_name=rule_name,
+                                tolerance=analyzer.tolerance,
+                            )
                         )
                         if heuristic_result:
                             if not heuristic_result.success:

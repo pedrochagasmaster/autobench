@@ -1,5 +1,6 @@
 version: "3.0"
 preset_name: "balanced_default"
+compliance_posture: "strict"
 description: "Standard Analysis - Balance of compliance and consistency (formerly standard)"
 
 # Intent: "I want the best of both worlds."

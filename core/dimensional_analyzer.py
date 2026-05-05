@@ -17,6 +17,8 @@ from .category_builder import CategoryBuilder
 from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
 from .global_weight_optimizer import GlobalWeightOptimizer
+from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
+from .contracts import SolverRequest
 from .constants import (
     COMPARISON_EPSILON as SHARED_COMPARISON_EPSILON,
     BORDERLINE_CAP_EXCESS_TOLERANCE_PP,
@@ -224,6 +226,10 @@ class DimensionalAnalyzer:
             time_column=self.time_column,
             consistent_weights=self.consistent_weights,
         )
+        self.privacy_policy = PrivacyPolicy(
+            merchant_mode=self.merchant_mode,
+            time_column=self.time_column,
+        )
         self.diagnostics_engine = DiagnosticsEngine(
             min_weight=self.min_weight,
             max_weight=self.max_weight,
@@ -368,8 +374,7 @@ class DimensionalAnalyzer:
 
     def _get_privacy_rule(self, peer_count: int) -> Tuple[str, float]:
         """Select privacy rule and max concentration for a given peer count."""
-        rule_name = PrivacyValidator.select_rule(peer_count, merchant_mode=self.merchant_mode)
-        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
+        rule_name, rule_cfg = self.privacy_policy.select_rule(peer_count)
         max_concentration = float(rule_cfg.get('max_concentration', 50.0))
         return rule_name, max_concentration
 
@@ -497,7 +502,70 @@ class DimensionalAnalyzer:
     ) -> Dict[Tuple[str, Any, Optional[Any]], Dict[str, float]]:
         return self.diagnostics_engine.build_constraint_stats(dim_categories, peers, peer_volumes)
 
+    def _build_lp_request(
+        self,
+        *,
+        peers: List[str],
+        categories: List[Dict[str, Any]],
+        max_concentration: float,
+        peer_volumes: Dict[str, float],
+        tolerance: Optional[float] = None,
+    ) -> SolverRequest:
+        return SolverRequest(
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            rank_preservation_strength=self.rank_preservation_strength,
+            rank_constraint_mode=self.rank_constraint_mode,
+            rank_constraint_k=self.rank_constraint_k,
+            tolerance=float(self.tolerance if tolerance is None else tolerance),
+            volume_weighted_penalties=self.volume_weighted_penalties,
+            volume_weighting_exponent=self.volume_weighting_exponent,
+            lambda_penalty=self.lambda_penalty,
+            max_iterations=self.max_iterations,
+            min_weight=self.min_weight,
+            max_weight=self.max_weight,
+        )
 
+    def _build_heuristic_request(
+        self,
+        *,
+        peers: List[str],
+        categories: List[Dict[str, Any]],
+        max_concentration: float,
+        peer_volumes: Dict[str, float],
+        target_weights: Optional[Dict[str, float]],
+        rule_name: Optional[str],
+        tolerance: Optional[float] = None,
+    ) -> SolverRequest:
+        return SolverRequest(
+            peers=peers,
+            categories=categories,
+            max_concentration=max_concentration,
+            peer_volumes=peer_volumes,
+            target_weights=target_weights,
+            rule_name=rule_name,
+            min_weight=self.min_weight,
+            max_weight=self.max_weight,
+            tolerance=float(self.tolerance if tolerance is None else tolerance),
+            max_iterations=self.bayesian_max_iterations,
+            learning_rate=self.bayesian_learning_rate,
+            violation_penalty_weight=self.violation_penalty_weight,
+            merchant_mode=self.merchant_mode,
+            enforce_additional_constraints=self.enforce_additional_constraints,
+            dynamic_constraints_enabled=self.dynamic_constraints_enabled,
+            time_column=self.time_column,
+            min_peer_count_for_constraints=self.min_peer_count_for_constraints,
+            min_effective_peer_count=self.min_effective_peer_count,
+            min_category_volume_share=self.min_category_volume_share,
+            min_overall_volume_share=self.min_overall_volume_share,
+            min_representativeness=self.min_representativeness,
+            dynamic_threshold_scale_floor=self.dynamic_threshold_scale_floor,
+            dynamic_count_scale_floor=self.dynamic_count_scale_floor,
+            representativeness_penalty_floor=self.representativeness_penalty_floor,
+            representativeness_penalty_power=self.representativeness_penalty_power,
+        )
 
     def _get_dynamic_additional_thresholds(
         self,
@@ -505,46 +573,23 @@ class DimensionalAnalyzer:
         participants: int,
         representativeness: float,
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
-        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
-        additional = rule_cfg.get('additional') if rule_cfg else None
-        if not additional:
-            return None, False
-
-        min_entities = int(rule_cfg.get('min_entities', 0))
-        if min_entities <= 0:
-            return None, False
-
-        peer_scale = min(1.0, participants / float(min_entities)) if min_entities > 0 else 1.0
-        rep_scale = max(self.dynamic_threshold_scale_floor, min(1.0, representativeness))
-        count_scale = max(self.dynamic_count_scale_floor, min(1.0, peer_scale, representativeness))
-
-        relaxed = rep_scale < 1.0 or count_scale < 1.0
-        if rule_name == '6/30':
-            min_count, threshold = additional.get('min_count_above_threshold', (3, 7.0))
-            dyn_count = max(1, int(round(min_count * count_scale)))
-            dyn_threshold = float(threshold) * rep_scale
-            return {
-                'tier_1': (dyn_count, dyn_threshold)
-            }, relaxed
-        if rule_name == '7/35':
-            min_count_15 = int(additional.get('min_count_15', 2))
-            min_count_8 = int(additional.get('min_count_8', 1))
-            dyn_count_15 = max(1, int(round(min_count_15 * count_scale)))
-            dyn_count_8 = max(0, int(round(min_count_8 * count_scale)))
-            return {
-                'tier_1': (dyn_count_15, 15.0 * rep_scale),
-                'tier_2': (dyn_count_8, 8.0 * rep_scale)
-            }, relaxed
-        if rule_name == '10/40':
-            min_count_20 = int(additional.get('min_count_20', 2))
-            min_count_10 = int(additional.get('min_count_10', 1))
-            dyn_count_20 = max(1, int(round(min_count_20 * count_scale)))
-            dyn_count_10 = max(0, int(round(min_count_10 * count_scale)))
-            return {
-                'tier_1': (dyn_count_20, 20.0 * rep_scale),
-                'tier_2': (dyn_count_10, 10.0 * rep_scale)
-            }, relaxed
-        return None, False
+        thresholds = self.privacy_policy._dynamic_thresholds(
+            rule_name=rule_name,
+            participants=participants,
+            representativeness=representativeness,
+            settings=PrivacyPolicySettings(
+                enforce_additional_constraints=self.enforce_additional_constraints,
+                dynamic_constraints_enabled=self.dynamic_constraints_enabled,
+                min_peer_count_for_constraints=self.min_peer_count_for_constraints,
+                min_effective_peer_count=self.min_effective_peer_count,
+                min_category_volume_share=self.min_category_volume_share,
+                min_overall_volume_share=self.min_overall_volume_share,
+                min_representativeness=self.min_representativeness,
+                dynamic_threshold_scale_floor=self.dynamic_threshold_scale_floor,
+                dynamic_count_scale_floor=self.dynamic_count_scale_floor,
+            ),
+        )
+        return thresholds, bool(thresholds)
 
     def _assess_additional_constraints_applicability(
         self,
@@ -553,45 +598,25 @@ class DimensionalAnalyzer:
         peer_volumes: Dict[str, float],
         stats: Optional[Dict[str, float]] = None,
     ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]], bool]:
-        if not self.enforce_additional_constraints or not rule_name:
-            return False, 'disabled', None, False
-
-        rule_cfg = PrivacyValidator.get_rule_config(rule_name)
-        if not rule_cfg or not rule_cfg.get('additional'):
-            return False, 'no_additional', None, False
-
-        if dimension:
-            if dimension == '_TIME_TOTAL':
-                return False, 'time_total', None, False
-            if self.time_column and dimension.startswith(f"{CategoryBuilder.TIME_TOTAL_DIMENSION_PREFIX}{self.time_column}"):
-                return False, 'time_total', None, False
-
-        min_entities = int(rule_cfg.get('min_entities', 0))
-        participants = self._participant_count(peer_volumes)
-        if min_entities and participants < min_entities:
-            return False, 'low_peers', None, False
-
-        if not self.dynamic_constraints_enabled or not stats:
-            return True, None, None, False
-
-        if participants < self.min_peer_count_for_constraints:
-            return False, 'low_peers', None, False
-        if float(stats.get('effective_peers', 0.0)) < self.min_effective_peer_count:
-            return False, 'low_effective_peers', None, False
-        if (
-            float(stats.get('volume_share', 0.0)) < self.min_category_volume_share
-            or float(stats.get('overall_share', 0.0)) < self.min_overall_volume_share
-        ):
-            return False, 'low_volume', None, False
-        if float(stats.get('representativeness', 0.0)) < self.min_representativeness:
-            return False, 'low_representativeness', None, False
-
-        thresholds, relaxed = self._get_dynamic_additional_thresholds(
-            rule_name,
-            participants,
-            float(stats.get('representativeness', 0.0))
+        decision = self.privacy_policy.assess_additional_constraints(
+            rule_name=rule_name,
+            dimension=dimension,
+            peers=list(peer_volumes.keys()),
+            peer_volumes=peer_volumes,
+            stats=stats,
+            settings=PrivacyPolicySettings(
+                enforce_additional_constraints=self.enforce_additional_constraints,
+                dynamic_constraints_enabled=self.dynamic_constraints_enabled,
+                min_peer_count_for_constraints=self.min_peer_count_for_constraints,
+                min_effective_peer_count=self.min_effective_peer_count,
+                min_category_volume_share=self.min_category_volume_share,
+                min_overall_volume_share=self.min_overall_volume_share,
+                min_representativeness=self.min_representativeness,
+                dynamic_threshold_scale_floor=self.dynamic_threshold_scale_floor,
+                dynamic_count_scale_floor=self.dynamic_count_scale_floor,
+            ),
         )
-        return True, None, thresholds, relaxed
+        return decision.enforce, decision.reason, decision.thresholds, decision.relaxed
 
     def _evaluate_additional_constraints(
         self,
@@ -738,21 +763,13 @@ class DimensionalAnalyzer:
                     else:
                         break
                 lp_result = self.lp_solver.solve(
-                    peers,
-                    trial_cats,
-                    max_concentration,
-                    trial_peer_vols,
-                    rank_preservation_strength=self.rank_preservation_strength,
-                    rank_constraint_mode=self.rank_constraint_mode,
-                    rank_constraint_k=self.rank_constraint_k,
-                    tolerance=self.tolerance,
-                    volume_weighted_penalties=self.volume_weighted_penalties,
-                  volume_weighting_exponent=self.volume_weighting_exponent,
-                  lambda_penalty=self.lambda_penalty,
-                  max_iterations=self.max_iterations,
-                  min_weight=self.min_weight,
-                  max_weight=self.max_weight
-              )
+                    self._build_lp_request(
+                        peers=peers,
+                        categories=trial_cats,
+                        max_concentration=max_concentration,
+                        peer_volumes=trial_peer_vols,
+                    )
+                )
                 if lp_result and lp_result.success:
                     self.last_lp_stats = lp_result.stats
                     sol = lp_result.weights
@@ -835,21 +852,13 @@ class DimensionalAnalyzer:
                         continue
                     
                     lp_result = self.lp_solver.solve(
-                        peers,
-                        trial_cats,
-                        max_concentration,
-                        trial_peer_vols,
-                        rank_preservation_strength=self.rank_preservation_strength,
-                        rank_constraint_mode=self.rank_constraint_mode,
-                        rank_constraint_k=self.rank_constraint_k,
-                    tolerance=self.tolerance,
-                    volume_weighted_penalties=self.volume_weighted_penalties,
-                      volume_weighting_exponent=self.volume_weighting_exponent,
-                      lambda_penalty=self.lambda_penalty,
-                      max_iterations=self.max_iterations,
-                      min_weight=self.min_weight,
-                      max_weight=self.max_weight
-                  )
+                        self._build_lp_request(
+                            peers=peers,
+                            categories=trial_cats,
+                            max_concentration=max_concentration,
+                            peer_volumes=trial_peer_vols,
+                        )
+                    )
                     if lp_result and lp_result.success:
                         self.last_lp_stats = lp_result.stats
                         sol = lp_result.weights
@@ -913,21 +922,13 @@ class DimensionalAnalyzer:
             logger.info(f"Solving per-dimension weights for '{dimension}'{time_info}")
 
             lp_result = self.lp_solver.solve(
-                peers,
-                dim_cats,
-                max_concentration,
-                dim_peer_vols,
-                rank_preservation_strength=self.rank_preservation_strength,
-                rank_constraint_mode=self.rank_constraint_mode,
-                rank_constraint_k=self.rank_constraint_k,
-                tolerance=self.tolerance,
-                volume_weighted_penalties=self.volume_weighted_penalties,
-                  volume_weighting_exponent=self.volume_weighting_exponent,
-                  lambda_penalty=self.lambda_penalty,
-                  max_iterations=self.max_iterations,
-                  min_weight=self.min_weight,
-                  max_weight=self.max_weight
-              )
+                self._build_lp_request(
+                    peers=peers,
+                    categories=dim_cats,
+                    max_concentration=max_concentration,
+                    peer_volumes=dim_peer_vols,
+                )
+            )
             if lp_result and lp_result.success:
                 self.last_lp_stats = lp_result.stats
                 dim_sol = lp_result.weights
@@ -947,31 +948,14 @@ class DimensionalAnalyzer:
                     dimension,
                 )
             heuristic_result = self.heuristic_solver.solve(
-                peers,
-                dim_cats,
-                max_concentration,
-                dim_peer_vols,
-                target_weights=target_multipliers,
-                rule_name=rule_name,
-                min_weight=self.min_weight,
-                          max_weight=self.max_weight,
-                          tolerance=self.tolerance,
-                          max_iterations=self.bayesian_max_iterations,
-                          learning_rate=self.bayesian_learning_rate,
-                          violation_penalty_weight=self.violation_penalty_weight,
-                          merchant_mode=self.merchant_mode,
-                          enforce_additional_constraints=self.enforce_additional_constraints,
-                dynamic_constraints_enabled=self.dynamic_constraints_enabled,
-                time_column=self.time_column,
-                min_peer_count_for_constraints=self.min_peer_count_for_constraints,
-                min_effective_peer_count=self.min_effective_peer_count,
-                min_category_volume_share=self.min_category_volume_share,
-                min_overall_volume_share=self.min_overall_volume_share,
-                min_representativeness=self.min_representativeness,
-                dynamic_threshold_scale_floor=self.dynamic_threshold_scale_floor,
-                dynamic_count_scale_floor=self.dynamic_count_scale_floor,
-                representativeness_penalty_floor=self.representativeness_penalty_floor,
-                representativeness_penalty_power=self.representativeness_penalty_power
+                self._build_heuristic_request(
+                    peers=peers,
+                    categories=dim_cats,
+                    max_concentration=max_concentration,
+                    peer_volumes=dim_peer_vols,
+                    target_weights=target_multipliers,
+                    rule_name=rule_name,
+                )
             )
             if heuristic_result:
                 if not heuristic_result.success:
@@ -1451,15 +1435,20 @@ class DimensionalAnalyzer:
 
     def build_privacy_validation_dataframe(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> pd.DataFrame:
         """Build detailed privacy validation dataframe showing original and balanced shares for each dimension-category-(time) combination."""
-        if not self.consistent_weights or not self.global_weights:
-            return pd.DataFrame()
         validation_rows: List[Dict[str, Any]] = []
-        peers = list(self.global_weights.keys())
-        peer_count = len(peers)
         all_categories, peer_volumes, _ = self._build_categories(df, metric_col, dimensions)
+        peers = list(self.global_weights.keys())
+        if not peers:
+            per_dim_peers = set()
+            for weights in self.per_dimension_weights.values():
+                per_dim_peers.update(weights.keys())
+            peers = sorted(per_dim_peers) if per_dim_peers else sorted(peer_volumes.keys())
+        peer_count = len(peers)
+        if peer_count == 0:
+            return pd.DataFrame()
         constraint_stats = self._build_constraint_stats(all_categories, peers, peer_volumes) if all_categories else {}
         rule_name, max_concentration = self._get_privacy_rule(peer_count)
-        weights = {p: self.global_weights[p]['multiplier'] for p in peers}
+        weights = {p: float(self.global_weights.get(p, {}).get('multiplier', 1.0)) for p in peers}
 
         # Structural diagnostics are peer-level, keyed by (dimension, category, peer).
         # Expose both peer-level and category-level infeasibility markers in validation output.

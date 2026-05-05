@@ -5,7 +5,6 @@ import threading
 import glob
 import pandas as pd
 from pathlib import Path
-from types import SimpleNamespace
 from typing import List
 import yaml
 
@@ -35,15 +34,22 @@ from textual.logging import TextualHandler
 from datetime import datetime
 from textual.screen import ModalScreen
 
-# Import core logic from benchmark.py
-# We need to add the script directory to sys.path to ensure imports work
+# Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
 try:
-    from benchmark import run_share_analysis, run_rate_analysis, run_preset_comparison
+    from core.analysis_run import (
+        RunAborted,
+        RunBlocked,
+        build_run_config,
+        execute_run,
+        prepare_run_data,
+        resolve_dimensions,
+        validate_analysis_input,
+    )
+    from core.contracts import AnalysisRunRequest
+    from core.preset_workflow import PresetWorkflow
     from utils.logger import setup_logging
-    from utils.config_manager import ConfigManager
-    # Import validation classes
-    from core.data_loader import ValidationIssue, ValidationSeverity, DataLoader
+    from core.data_loader import ValidationIssue, ValidationSeverity
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
@@ -448,6 +454,7 @@ class BenchmarkApp(App):
                 # yield Checkbox("Include calculated metrics in CSV", id="include_calculated") 
                 # ^ moved to per-tab or careful global? Let's use global for now.
                 yield Checkbox("Include calc. metrics (CSV)", id="include_calculated")
+                yield Checkbox("Acknowledge accuracy-first", id="acknowledge_accuracy_first")
 
             with Horizontal(classes="input-group"):
                 with Vertical(classes="field-pair"):
@@ -710,43 +717,30 @@ class BenchmarkApp(App):
             self.load_csv_headers(file_path)
 
     def load_presets(self):
-        """Load available presets from the presets directory."""
-        presets_dir = Path(__file__).parent / "presets"
-        options = []
-        if presets_dir.exists():
-            for f in presets_dir.glob("*.yaml"):
-                options.append((f.stem, f.stem))
-        
-        # Add 'standard' or 'default' if not present, or just rely on what's found
-        if not options:
-            options.append(("standard", "standard"))
-            
+        """Load available presets through the shared preset workflow."""
+        self.preset_workflow = PresetWorkflow()
+        presets = self.preset_workflow.list_presets()
+        options = [(preset, preset) for preset in presets] or [("standard", "standard")]
         self.query_one("#preset_select").set_options(options)
         self.query_one("#preset_select").value = options[0][0] if options else None
         if options:
             self.update_advanced_parameters(options[0][0])
-        # Track custom override file path
         self.advanced_config_path = None
 
     def update_advanced_parameters(self, preset_name: str) -> None:
         """Populate editable advanced optimization inputs from preset YAML."""
-        presets_dir = Path(__file__).parent / "presets"
-        preset_path = presets_dir / f"{preset_name}.yaml"
-        
-        # Clear all advanced inputs
+        if not hasattr(self, 'preset_workflow'):
+            self.preset_workflow = PresetWorkflow()
+
         for inp in self.query("Input"):
             if inp.id and inp.id.startswith("adv_"):
                 inp.value = ""
         for cb in self.query("Checkbox"):
             if cb.id and cb.id.startswith("adv_"):
                 cb.value = False
-                
-        if not preset_path.exists():
-            return
-        try:
-            with open(preset_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        except Exception:
+
+        data = self.preset_workflow.load_preset_data(preset_name)
+        if not data:
             return
 
         opt = data.get("optimization", {})
@@ -1073,10 +1067,10 @@ class BenchmarkApp(App):
             self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
             return
 
-        tmp_path = Path(".tui_advanced_overrides.yaml")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(yaml_data, f, sort_keys=False)
+            if not hasattr(self, 'preset_workflow'):
+                self.preset_workflow = PresetWorkflow()
+            tmp_path = self.preset_workflow.write_override_file(yaml_data)
             self.advanced_config_path = str(tmp_path)
             self.notify(f"Advanced overrides applied (file: {tmp_path.name})", title="Advanced Overrides", severity="information", timeout=6)
         except Exception as e:
@@ -1091,27 +1085,23 @@ class BenchmarkApp(App):
             if not getattr(self, 'advanced_config_path', None):
                 return
         preset_val = self.query_one("#preset_select").value or 'custom'
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        export_name = f"advanced_override_{preset_val}_{ts}.yaml"
         try:
-            # Read current temp file contents
             tmp_path = Path(self.advanced_config_path)
             with open(tmp_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            with open(export_name, 'w', encoding='utf-8') as out:
-                out.write(content)
-            self.notify(f"Exported advanced config: {export_name}", title="Advanced Export", severity="information", timeout=6)
+                content = yaml.safe_load(f) or {}
+            if not hasattr(self, 'preset_workflow'):
+                self.preset_workflow = PresetWorkflow()
+            export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
+            self.notify(f"Exported advanced config: {export_path.name}", title="Advanced Export", severity="information", timeout=6)
         except Exception as e:
             self.notify(f"Failed export: {e}", title="Advanced Export", severity="error", timeout=6)
 
     @work(thread=True)
-    def run_analysis(self, confirmed: bool = False, saved_args: SimpleNamespace = None, saved_df: pd.DataFrame = None) -> None:
-        """Execute the analysis in a background thread with validation."""
+    def run_analysis(self, confirmed: bool = False, saved_request: AnalysisRunRequest | None = None, saved_df: pd.DataFrame | None = None) -> None:
+        """Execute the analysis in a background thread via the shared run seam."""
         log_widget = self.query_one("#log_output")
-        
-        # Initial run (Gather & Validate)
-        if not confirmed and not saved_args:
-            # Prevent re-entry if already running (though logic below handles it via disabled button)
+
+        if not confirmed and not saved_request:
             if hasattr(self.query_one("#btn_run"), "disabled") and self.query_one("#btn_run").disabled:
                 return
 
@@ -1121,247 +1111,194 @@ class BenchmarkApp(App):
             self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", True))
 
             try:
-                # Setup file logging
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 log_file = f"benchmark_log_{timestamp}.txt"
                 setup_logging(log_level="INFO", log_file=log_file, console_output=False)
-                
-                # Clear specific loggers and attach TUI handler
+
                 logging.getLogger("benchmark").handlers.clear()
                 logging.getLogger("core").handlers.clear()
                 handler = LogHandler(log_widget)
                 handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
                 logging.getLogger().addHandler(handler)
-                
                 self.call_from_thread(log_widget.write, f"Log file created: {log_file}\n")
 
-                # Gather inputs
                 csv_path = self.query_one("#csv_path").value
-                entity_val = self.query_one("#entity_name").value
-                entity = entity_val if entity_val != Select.BLANK else None
-                entity_col_val = self.query_one("#entity_col").value
-                entity_col = entity_col_val if entity_col_val != Select.BLANK else None
-                preset_val = self.query_one("#preset_select").value
-                preset = preset_val if preset_val != Select.BLANK else None
-                output_file = self.query_one("#output_file").value
-                time_col_val = self.query_one("#time_col").value
-                
                 if not csv_path:
                     self.call_from_thread(log_widget.write, "ERROR: CSV path is required.\n")
                     self.call_from_thread(self.notify, "CSV path is required", severity="error")
                     self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                     return
 
-                # Build args
-                args = SimpleNamespace()
-                args.csv = csv_path
-                args.entity = entity
-                args.preset = preset
-                args.config = self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None
-                args.output = output_file if output_file else None
-                args.entity_col = entity_col if entity_col else "issuer_name"
-                args.time_col = time_col_val if time_col_val != Select.BLANK else None
-                args.log_level = "INFO"
-                
-                # New Checkboxes
-                try:
-                    args.validate_input = self.query_one("#validate_input").value
-                    args.analyze_distortion = self.query_one("#analyze_distortion").value
-                    args.compare_presets = self.query_one("#compare_presets").value
-                    args.include_calculated = self.query_one("#include_calculated").value
-                    args.output_format = self.query_one("#output_format").value
-                except (LookupError, AttributeError):
-                    # Fallback if widgets not found (backward compatibility)
-                    args.validate_input = True
-                    args.analyze_distortion = False
-                    args.compare_presets = False
-                    args.include_calculated = False
-                    args.output_format = 'analysis'
+                entity_val = self.query_one("#entity_name").value
+                entity = entity_val if entity_val != Select.BLANK else None
+                entity_col_val = self.query_one("#entity_col").value
+                entity_col = entity_col_val if entity_col_val != Select.BLANK else "issuer_name"
+                preset_val = self.query_one("#preset_select").value
+                preset = preset_val if preset_val != Select.BLANK else None
+                output_file = self.query_one("#output_file").value or None
+                time_col_val = self.query_one("#time_col").value
+                time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                # Determine Tab and Mode
                 tabbed_content = self.query_one(TabbedContent)
-                active_tab = tabbed_content.active
-                args.mode = 'share' if active_tab == 'share_tab' else 'rate'
+                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
 
-                # Gather Tab-Specific Args
-                if args.mode == 'share':
+                request = AnalysisRunRequest(
+                    mode=mode,
+                    csv=csv_path,
+                    entity=entity,
+                    entity_col=entity_col,
+                    preset=preset,
+                    config=self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None,
+                    output=output_file,
+                    time_col=time_col,
+                    log_level="INFO",
+                    validate_input=getattr(self.query_one("#validate_input"), 'value', True),
+                    analyze_distortion=getattr(self.query_one("#analyze_distortion"), 'value', False),
+                    compare_presets=getattr(self.query_one("#compare_presets"), 'value', False),
+                    include_calculated=getattr(self.query_one("#include_calculated"), 'value', False),
+                    output_format=getattr(self.query_one("#output_format"), 'value', 'analysis'),
+                )
+                if preset and not request.config:
+                    posture = None
+                    if not hasattr(self, 'preset_workflow'):
+                        self.preset_workflow = PresetWorkflow()
+                    preset_data = self.preset_workflow.load_preset_data(preset)
+                    posture = preset_data.get('compliance_posture') if isinstance(preset_data, dict) else None
+                    request.compliance_posture = posture
+                    if posture == 'best_effort':
+                        self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
+                    if posture == 'accuracy_first':
+                        request.acknowledge_accuracy_first = getattr(self.query_one("#acknowledge_accuracy_first"), 'value', False)
+                        if not request.acknowledge_accuracy_first:
+                            self.call_from_thread(log_widget.write, "ERROR: accuracy_first posture requires acknowledgement.\n")
+                            self.call_from_thread(self.notify, "Check acknowledgement before running accuracy_first.", severity="error")
+                            self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
+                            return
+
+                if request.is_share:
                     metric_val = self.query_one("#share_metric").value
-                    args.metric = metric_val if metric_val != Select.BLANK else None
-                    if not args.metric:
-                        self.call_from_thread(log_widget.write, "ERROR: Metric is required for Share Analysis.\n")
+                    request.metric = metric_val if metric_val != Select.BLANK else None
+                    if not request.metric:
                         self.call_from_thread(self.notify, "Metric is required", severity="error")
                         self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                         return
-                    
                     sec_metrics = self.query_one("#share_secondary", SelectionList).selected
-                    args.secondary_metrics = sec_metrics if sec_metrics else None
-                    args.auto = self.query_one("#share_auto_dim").value
+                    request.secondary_metrics = list(sec_metrics) if sec_metrics else None
+                    request.auto = self.query_one("#share_auto_dim").value
                     dims = self.query_one("#share_dims", SelectionList).selected
-                    args.dimensions = dims if dims and not args.auto else None
-                    args.debug = self.query_one("#share_debug").value
-                    args.export_balanced_csv = self.query_one("#share_export_csv").value
-                    args.per_dimension_weights = False
-
-                elif args.mode == 'rate':
+                    request.dimensions = list(dims) if dims and not request.auto else None
+                    request.debug = self.query_one("#share_debug").value
+                    request.export_balanced_csv = self.query_one("#share_export_csv").value
+                    request.per_dimension_weights = False
+                else:
                     total_val = self.query_one("#rate_total").value
-                    args.total_col = total_val if total_val != Select.BLANK else None
-                    if not args.total_col:
-                        self.call_from_thread(log_widget.write, "ERROR: Total Column is required.\n")
+                    request.total_col = total_val if total_val != Select.BLANK else None
+                    if not request.total_col:
+                        self.call_from_thread(self.notify, "Total Column is required", severity="error")
                         self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                         return
-                    
                     approved = self.query_one("#rate_approved").value
-                    args.approved_col = approved if approved != Select.BLANK else None
+                    request.approved_col = approved if approved != Select.BLANK else None
                     fraud = self.query_one("#rate_fraud").value
-                    args.fraud_col = fraud if fraud != Select.BLANK else None
-                    
-                    if not args.approved_col and not args.fraud_col:
-                        self.call_from_thread(log_widget.write, "ERROR: At least one rate column required.\n")
+                    request.fraud_col = fraud if fraud != Select.BLANK else None
+                    if not request.approved_col and not request.fraud_col:
+                        self.call_from_thread(self.notify, "At least one rate column is required", severity="error")
                         self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                         return
-                        
                     sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
-                    args.secondary_metrics = sec_metrics if sec_metrics else None
-                    args.auto = self.query_one("#rate_auto_dim").value
+                    request.secondary_metrics = list(sec_metrics) if sec_metrics else None
+                    request.auto = self.query_one("#rate_auto_dim").value
                     dims = self.query_one("#rate_dims", SelectionList).selected
-                    args.dimensions = dims if dims and not args.auto else None
-                    args.debug = self.query_one("#rate_debug").value
-                    args.export_balanced_csv = self.query_one("#rate_export_csv").value
-                    try:
-                        args.fraud_in_bps = self.query_one("#fraud_in_bps").value
-                    except (LookupError, AttributeError):
-                        args.fraud_in_bps = True  # Default ON per requirements
+                    request.dimensions = list(dims) if dims and not request.auto else None
+                    request.debug = self.query_one("#rate_debug").value
+                    request.export_balanced_csv = self.query_one("#rate_export_csv").value
+                    request.fraud_in_bps = getattr(self.query_one("#fraud_in_bps"), 'value', True)
 
-                # VALIDATION LOGIC
                 df = None
-                if args.validate_input and args.csv and os.path.exists(args.csv):
+                if request.validate_input and request.csv and os.path.exists(request.csv):
                     self.call_from_thread(log_widget.write, "Loading data for validation...\n")
                     try:
-                        # Load data via Loader
-                        cli_overrides = {
-                            'entity_col': args.entity_col,
-                            'time_col': args.time_col,
-                            'validate_input': args.validate_input,
-                            'compare_presets': args.compare_presets,
-                            'analyze_distortion': args.analyze_distortion,
-                            'include_calculated': args.include_calculated,
-                            'output_format': args.output_format,
-                        }
-                        config = ConfigManager(
-                            config_file=args.config,
-                            preset=args.preset,
-                            cli_overrides=cli_overrides
+                        ns = request.to_namespace()
+                        config = build_run_config(ns, extra_overrides={'fraud_in_bps': request.fraud_in_bps} if request.is_rate else None)
+                        loader, df, resolved_entity_col, resolved_time_col = prepare_run_data(
+                            ns,
+                            config,
+                            logging.getLogger("benchmark"),
+                            preferred_entity_col=request.entity_col,
                         )
-                        loader = DataLoader(config)
-                        df = loader.load_data(args)
-                        
-                        issues = []
-                        if args.mode == 'share':
-                            val_dimensions = args.dimensions if args.dimensions else loader.get_available_dimensions(df)
-                            thresholds = config.get('input', 'validation_thresholds', default={})
-                            issues = loader.validate_share_input(
-                                df=df,
-                                metric_col=args.metric,
-                                entity_col=args.entity_col,
-                                dimensions=val_dimensions,
-                                time_col=args.time_col,
-                                target_entity=args.entity,
-                                thresholds=thresholds
-                            )
-                        elif args.mode == 'rate':
-                            val_dimensions = args.dimensions if args.dimensions else loader.get_available_dimensions(df)
-                            thresholds = config.get('input', 'validation_thresholds', default={})
-                            numerator_cols = {}
-                            if args.approved_col:
-                                numerator_cols['approval'] = args.approved_col
-                            if args.fraud_col:
-                                numerator_cols['fraud'] = args.fraud_col
-                            issues = loader.validate_rate_input(
-                                df=df,
-                                total_col=args.total_col,
-                                numerator_cols=numerator_cols,
-                                entity_col=args.entity_col,
-                                dimensions=val_dimensions,
-                                time_col=args.time_col,
-                                target_entity=args.entity,
-                                thresholds=thresholds
-                            )
-                        
+                        dimensions = resolve_dimensions(ns, config, loader, df, logging.getLogger("benchmark"))
+                        issues, should_abort = validate_analysis_input(
+                            df=df,
+                            config=config,
+                            data_loader=loader,
+                            analysis_type=request.mode,
+                            entity_col=resolved_entity_col,
+                            time_col=resolved_time_col,
+                            target_entity=request.entity,
+                            dimensions=dimensions,
+                            metric_col=request.metric,
+                            total_col=request.total_col,
+                            numerator_cols=request.numerator_cols,
+                        )
                         if issues:
-                            has_errors = any(i.severity == ValidationSeverity.ERROR for i in issues)
-                            self.call_from_thread(log_widget.write, f"Found {len(issues)} validation issues.\n")
-                            
+                            has_errors = any(issue.severity == ValidationSeverity.ERROR for issue in issues)
+
                             def on_modal_closed(result: bool) -> None:
-                                if result and not has_errors:
-                                    self.run_analysis(confirmed=True, saved_args=args, saved_df=df)
+                                if result and not has_errors and not should_abort:
+                                    self.run_analysis(confirmed=True, saved_request=request, saved_df=df)
                                     return
                                 self.call_from_thread(log_widget.write, "Analysis cancelled by user.\n")
                                 self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
-                            
+
                             self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
                             return
-                            
-                    except Exception as ve:
-                        self.call_from_thread(log_widget.write, f"Validation error: {ve}\n")
+                    except Exception as exc:
+                        self.call_from_thread(log_widget.write, f"Validation error: {exc}\n")
                         self.call_from_thread(self.notify, "Validation failed. Fix the data and retry.", severity="error")
                         self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                         return
 
-                # Proceed directly if no validation issues or validation disabled
-                self.call_from_thread(self.run_analysis, True, args, df)
+                self.call_from_thread(self.run_analysis, True, request, df)
                 return
 
-            except Exception as e:
-                self.call_from_thread(log_widget.write, f"Initialization Error: {str(e)}\n")
+            except Exception as exc:
+                self.call_from_thread(log_widget.write, f"Initialization Error: {exc}\n")
                 self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
                 return
 
-        # EXECUTION PHASE (Confirmed)
-        if confirmed and saved_args:
-            args = saved_args
-            df = saved_df
+        if confirmed and saved_request:
+            request = saved_request
             logger = logging.getLogger("benchmark")
-            
             try:
-                # Inject DataFrame
-                if df is not None:
-                    args.df = df
-                
-                # Setup filename
-                entity_name = args.entity.replace(' ', '_') if args.entity else 'PEER_ONLY'
-                
-                result = 0
-                if args.mode == 'share':
-                    self.call_from_thread(log_widget.write, "Mode: Share Analysis\n")
-                    output_file = args.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                    args.output = output_file # Ensure args has it
-                    result = run_share_analysis(args, logger)
-                    
-                elif args.mode == 'rate':
-                    self.call_from_thread(log_widget.write, "Mode: Rate Analysis\n")
-                    # Filename logic mostly handled in benchmark, but we can set it
-                    if not args.output:
-                        rate_types = []
-                        if args.approved_col: rate_types.append('approval')
-                        if args.fraud_col: rate_types.append('fraud')
-                        prefix = "multi" if len(rate_types)>1 else (rate_types[0] if rate_types else "rate")
-                        output_file = f"benchmark_{prefix}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                        args.output = output_file
-                    
-                    result = run_rate_analysis(args, logger)
-                
-                if result == 0:
-                    self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
-                    self.call_from_thread(self.notify, f"Report saved: {args.output}", title="Analysis Complete", severity="information", timeout=10)
-                else:
-                    self.call_from_thread(self.notify, "Analysis failed", title="Failed", severity="error", timeout=10)
-
-            except Exception as e:
-                self.call_from_thread(log_widget.write, f"Execution Error: {str(e)}\n")
+                if saved_df is not None:
+                    request.df = saved_df
+                artifacts = execute_run(request, logger)
+                self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+                summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
+                self.call_from_thread(
+                    log_widget.write,
+                    f"Compliance: posture={summary.get('compliance_posture')} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
+                )
+                self.call_from_thread(
+                    self.notify,
+                    f"Report saved: {artifacts.analysis_output_file}",
+                    title="Analysis Complete",
+                    severity="information",
+                    timeout=10,
+                )
+            except RunBlocked as exc:
+                self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
+                self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
+            except RunAborted as exc:
+                self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
+                self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
+            except Exception as exc:
+                self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
                 import traceback
                 self.call_from_thread(log_widget.write, traceback.format_exc())
             finally:
                 self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
+
 
 if __name__ == "__main__":
     app = BenchmarkApp()
