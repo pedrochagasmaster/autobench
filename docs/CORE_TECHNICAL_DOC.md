@@ -162,8 +162,8 @@ Level 2 - Failure Modes and Recovery Paths
      to meet tier thresholds.
 
 4) Insufficient peers
-   - If privacy rule selection returns "insufficient", the engine logs and
-     uses identity weights (no reweighting).
+   - If privacy rule selection returns "insufficient", the run aborts rather
+     than silently emitting identity-weight output.
 
 -------------------------------------------------------------------------------
 Level 2 - Observability and Diagnostics
@@ -742,16 +742,17 @@ Level 2 - Output Semantics (What each sheet means)
 Analysis workbook:
 - Summary: input settings and run metadata
 - Per-dimension sheets: balanced averages, target metrics, BIC, deltas
+- Metadata: serialized run metadata and compact summaries for non-scalar objects
 - Weight Methods: which solver was used per dimension
-- Rank Changes: baseline vs balanced rankings
-- Structural Summary: count of structurally infeasible buckets by dimension
-- Structural Detail: exact structurally infeasible categories/peers and margins
 - Peer Weights: multipliers and volumes (debug)
 - Privacy Validation: per-category compliance
+- Preset Comparison: per-preset impact metrics and status (if enabled)
+- Impact Detail: category-level impact rows (if enabled)
 - Impact Summary: aggregated distortion/impact (if enabled)
 
 Publication workbook:
-- Simplified sheets with clean formatting, optional fraud conversion to bps.
+- Executive Summary plus simplified dimension sheets with clean formatting,
+  optional fraud conversion to bps, and no debug-only diagnostics.
 
 CSV/JSON:
 - CSV: either a single DataFrame or per-metric outputs; balanced totals are peer-weighted totals

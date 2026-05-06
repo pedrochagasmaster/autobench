@@ -3,6 +3,7 @@
 This module provides configuration file validation against the v3.0 schema.
 """
 
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -47,6 +48,45 @@ class ConfigValidator:
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
     VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    KNOWN_LINEAR_PROGRAMMING_KEYS = {
+        'max_iterations',
+        'tolerance',
+        'rank_penalty_weight',
+        'rank_constraints',
+        'lambda_penalty',
+        'volume_weighted_penalties',
+        'volume_weighting_exponent',
+    }
+    KNOWN_SUBSET_SEARCH_KEYS = {
+        'enabled',
+        'strategy',
+        'max_attempts',
+        'max_tests',
+        'trigger_on_slack',
+        'max_slack_threshold',
+        'prefer_slacks_first',
+    }
+    KNOWN_CONSTRAINT_KEYS = {
+        'volume_preservation',
+        'consistency_mode',
+        'enforce_additional_constraints',
+        'enforce_single_weight_set',
+        'dynamic_constraints',
+    }
+    KNOWN_DYNAMIC_CONSTRAINT_KEYS = {
+        'enabled',
+        'min_peer_count',
+        'min_effective_peer_count',
+        'min_category_volume_share',
+        'min_overall_volume_share',
+        'min_representativeness',
+        'threshold_scale_floor',
+        'count_scale_floor',
+        'penalty_floor',
+        'penalty_power',
+    }
+    KNOWN_BOUNDS_KEYS = {'max_weight', 'min_weight'}
+    KNOWN_BAYESIAN_KEYS = {'max_iterations', 'learning_rate', 'violation_penalty_weight'}
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -148,7 +188,7 @@ class ConfigValidator:
             return errors
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -203,6 +243,12 @@ class ConfigValidator:
             if not isinstance(lp, dict):
                 errors.append("optimization.linear_programming must be a dictionary")
             else:
+                unknown = set(lp.keys()) - cls.KNOWN_LINEAR_PROGRAMMING_KEYS
+                if unknown:
+                    errors.append(
+                        "Unknown optimization.linear_programming fields: "
+                        + ", ".join(sorted(unknown))
+                    )
                 if 'max_iterations' in lp:
                     if not isinstance(lp['max_iterations'], int) or lp['max_iterations'] <= 0:
                         errors.append("optimization.linear_programming.max_iterations must be a positive integer")
@@ -233,6 +279,12 @@ class ConfigValidator:
             if not isinstance(bounds, dict):
                 errors.append("optimization.bounds must be a dictionary")
             else:
+                unknown = set(bounds.keys()) - cls.KNOWN_BOUNDS_KEYS
+                if unknown:
+                    errors.append(
+                        "Unknown optimization.bounds fields: "
+                        + ", ".join(sorted(unknown))
+                    )
                 if 'max_weight' in bounds:
                     if not isinstance(bounds['max_weight'], (int, float)) or bounds['max_weight'] <= 0:
                         errors.append("optimization.bounds.max_weight must be > 0")
@@ -252,6 +304,12 @@ class ConfigValidator:
             if not isinstance(constraints, dict):
                 errors.append("optimization.constraints must be a dictionary")
             else:
+                unknown = set(constraints.keys()) - cls.KNOWN_CONSTRAINT_KEYS
+                if unknown:
+                    errors.append(
+                        "Unknown optimization.constraints fields: "
+                        + ", ".join(sorted(unknown))
+                    )
                 if 'volume_preservation' in constraints:
                     vp = constraints['volume_preservation']
                     if not isinstance(vp, (int, float)) or vp < 0 or vp > 1:
@@ -275,6 +333,12 @@ class ConfigValidator:
                     if not isinstance(dyn, dict):
                         errors.append("optimization.constraints.dynamic_constraints must be a dictionary")
                     else:
+                        unknown = set(dyn.keys()) - cls.KNOWN_DYNAMIC_CONSTRAINT_KEYS
+                        if unknown:
+                            errors.append(
+                                "Unknown optimization.constraints.dynamic_constraints fields: "
+                                + ", ".join(sorted(unknown))
+                            )
                         if 'enabled' in dyn and not isinstance(dyn['enabled'], bool):
                             errors.append("optimization.constraints.dynamic_constraints.enabled must be a boolean")
                         int_fields = ['min_peer_count']
@@ -301,14 +365,23 @@ class ConfigValidator:
             if not isinstance(ss, dict):
                 errors.append("optimization.subset_search must be a dictionary")
             else:
+                unknown = set(ss.keys()) - cls.KNOWN_SUBSET_SEARCH_KEYS
+                if unknown:
+                    errors.append(
+                        "Unknown optimization.subset_search fields: "
+                        + ", ".join(sorted(unknown))
+                    )
+                if 'max_tests' in ss and 'max_attempts' in ss:
+                    errors.append("optimization.subset_search cannot define both max_tests and max_attempts")
+                max_attempts = ss.get('max_attempts', ss.get('max_tests'))
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
                 
                 if 'strategy' in ss and ss['strategy'] not in cls.VALID_STRATEGIES:
                     errors.append(f"optimization.subset_search.strategy must be one of: {', '.join(cls.VALID_STRATEGIES)}")
                 
-                if 'max_attempts' in ss:
-                    if not isinstance(ss['max_attempts'], int) or ss['max_attempts'] <= 0:
+                if max_attempts is not None:
+                    if not isinstance(max_attempts, int) or max_attempts <= 0:
                         errors.append("optimization.subset_search.max_attempts must be a positive integer")
                 
                 if 'max_slack_threshold' in ss:
@@ -325,6 +398,12 @@ class ConfigValidator:
             if not isinstance(bayesian, dict):
                 errors.append("optimization.bayesian must be a dictionary")
             else:
+                unknown = set(bayesian.keys()) - cls.KNOWN_BAYESIAN_KEYS
+                if unknown:
+                    errors.append(
+                        "Unknown optimization.bayesian fields: "
+                        + ", ".join(sorted(unknown))
+                    )
                 if 'max_iterations' in bayesian:
                     if not isinstance(bayesian['max_iterations'], int) or bayesian['max_iterations'] <= 0:
                         errors.append("optimization.bayesian.max_iterations must be a positive integer")
@@ -383,6 +462,37 @@ class ConfigValidator:
         return errors
 
 
+def _load_raw_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix in {'.yaml', '.yml'}:
+        if not YAML_AVAILABLE:
+            raise ImportError("PyYAML is required to load configuration files. Install with: pip install pyyaml")
+        with open(path, 'r') as f:
+            try:
+                config = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                raise ConfigValidationError(f"Invalid YAML syntax: {e}")
+    elif suffix == '.json':
+        with open(path, 'r') as f:
+            try:
+                config = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ConfigValidationError(f"Invalid JSON syntax: {e}")
+    else:
+        raise ConfigValidationError(f"Unsupported config format: {path.suffix}")
+
+    if config is None:
+        raise ConfigValidationError("Configuration file is empty")
+
+    if not isinstance(config, dict):
+        raise ConfigValidationError("Configuration must be a dictionary at root level")
+
+    return config
+
+
 def load_config(path: Path) -> Dict[str, Any]:
     """Load and validate configuration file.
     
@@ -397,25 +507,8 @@ def load_config(path: Path) -> Dict[str, Any]:
         FileNotFoundError: If file doesn't exist
         ImportError: If YAML library not available
     """
-    if not YAML_AVAILABLE:
-        raise ImportError("PyYAML is required to load configuration files. Install with: pip install pyyaml")
-    
-    if not path.exists():
-        raise FileNotFoundError(f"Configuration file not found: {path}")
-    
-    # Load file
-    with open(path, 'r') as f:
-        try:
-            config = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            raise ConfigValidationError(f"Invalid YAML syntax: {e}")
-    
-    if config is None:
-        raise ConfigValidationError("Configuration file is empty")
-    
-    if not isinstance(config, dict):
-        raise ConfigValidationError("Configuration must be a dictionary at root level")
-    
+    config = _load_raw_config(path)
+
     # Validate
     errors = ConfigValidator.validate(config)
     if errors:

@@ -40,13 +40,11 @@ class ConfigManager:
         
         # Transaction counts
         'txn_count': 'transaction_count',
-        'total_txns': 'transaction_count',
         'count': 'transaction_count',
         'cnt': 'transaction_count',
         
         # Transaction amounts
         'txn_amt': 'transaction_amount',
-        'total_amount': 'transaction_amount',
         'tpv': 'transaction_amount',
         'amount': 'transaction_amount',
         'volume': 'transaction_amount',
@@ -183,6 +181,10 @@ class ConfigManager:
                 # Assume JSON
                 with open(path, 'r') as f:
                     loaded_config = json.load(f)
+                from .validators import ConfigValidationError, ConfigValidator
+                errors = ConfigValidator.validate(loaded_config)
+                if errors:
+                    raise ConfigValidationError("Configuration validation failed:\n  " + "\n  ".join(errors))
             
             # Merge loaded config into current config
             self._merge_config(loaded_config)

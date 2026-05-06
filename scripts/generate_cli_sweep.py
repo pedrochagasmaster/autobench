@@ -337,7 +337,7 @@ def generate_gate_cases(
             "dimensions": dimensions,
             "output_format": "analysis",
             "validate_input": True,
-            "output": str(output_path),
+            "output": output_path.as_posix(),
             **extra_params
         }
         
@@ -363,7 +363,7 @@ def generate_gate_cases(
         if time_col:
             flags.extend(["--time-col", time_col])
             
-        flags.extend(["--output", str(output_path)])
+        flags.extend(["--output", output_path.as_posix()])
         flags.extend(extra_flags)
         
         cmd = build_command(base_args, flags)
@@ -404,7 +404,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands

@@ -43,7 +43,11 @@ def write_outputs(
                 publication_metadata = dict(artifacts.metadata or {})
                 publication_metadata["entity_name"] = entity_name
                 ReportGenerator(config).generate_publication_workbook(
-                    artifacts.results,
+                    {
+                        f"{rate_type}_{dimension}": dataframe
+                        for rate_type, rate_results in artifacts.results.items()
+                        for dimension, dataframe in rate_results.items()
+                    },
                     path,
                     analysis_type="rate",
                     metadata=publication_metadata,
