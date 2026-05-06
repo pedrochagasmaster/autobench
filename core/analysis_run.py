@@ -547,7 +547,14 @@ def write_audit_log(
         'balanced_csv': csv_output,
     }
     results_summary.update(summarize_validation_issues(validation_issues))
-    audit_metadata = {key: value for key, value in metadata.items() if key != 'analyzer_ref'}
+    audit_metadata = {}
+    for key, value in metadata.items():
+        if key == 'analyzer_ref':
+            continue
+        if hasattr(value, 'shape'):
+            audit_metadata[key] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+        else:
+            audit_metadata[key] = value
     ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
     return audit_log_file
 
