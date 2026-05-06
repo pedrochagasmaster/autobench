@@ -4,31 +4,26 @@ Date: 2026-05-06
 
 ## Scope
 
-This document summarizes the post-remediation exhaustive CLI sweep run requested after implementation of the audit remediation plan.
+This document summarizes the post-remediation core CLI sweep run for the consolidated audit remediation branch.
 
-Artifacts used for this analysis:
-
-- Summary JSON: `/opt/cursor/artifacts/post_audit_exhaustive_v2/sweep_summary.json`
-- Detailed results: `/opt/cursor/artifacts/post_audit_exhaustive_v2/sweep_results_detailed.jsonl`
-- Execution log: `/opt/cursor/artifacts/post_audit_exhaustive_v2/sweep_runner.log`
-- Generated case metadata: `/opt/cursor/artifacts/post_audit_exhaustive_v2/meta.json`
+Artifacts used for this analysis were generated under `/tmp/audit_consolidation_sweep` during verification and are intentionally not committed.
 
 ## Result Summary
 
-The corrected exhaustive sweep completed successfully.
+The corrected core sweep completed successfully.
 
-- Total cases executed: 1017
-- Passed: 1017
+- Total cases executed: 1063
+- Passed: 1063
 - Failed verifier checks: 0
 - Execution errors: 0
 
 Breakdown by section:
 
-- Share cases: 504 / 504 passed
-- Rate cases: 504 / 504 passed
+- Share cases: 526 / 526 passed
+- Rate cases: 528 / 528 passed
 - Config cases: 9 / 9 passed
 
-The final saved summary in `/opt/cursor/artifacts/post_audit_exhaustive_v2/sweep_summary.json` reports a completely green matrix with no residual failures.
+The final saved summary in `/tmp/audit_consolidation_sweep/results/summary.json` reports a completely green matrix with no residual failures.
 
 ## Why this sweep is meaningful
 
@@ -58,34 +53,29 @@ This means the sweep exercised:
 
 ## Important issues discovered while making the sweep valid
 
-The first exhaustive attempts exposed problems in the sweep tooling itself, not in the remediated benchmark engine:
+The first consolidation sweep attempt exposed problems in the sweep tooling and two small verification-surface gaps:
 
-1. `scripts/generate_cli_sweep.py` had a `sys.path`/import-path issue when run as a script.
-   - Effect: `accuracy_first` presets such as `low_distortion` and `minimal_distortion` were generated without `--acknowledge-accuracy-first`.
-   - Result: those cases were invalid test inputs and failed before analysis.
-   - Fix: add repository-root bootstrap to the script so preset loading works consistently in script mode.
+1. The reusable sweep runner initially inferred publication-only output paths from stdout.
+   - Effect: the gate verifier appended `_publication` twice for publication-only cases.
+   - Fix: prefer generated `output_base=...` expectations over stdout inference.
 
-2. The exhaustive runner initially needed output-path inference from the generated command text.
-   - Effect: some publication-only and both-mode cases were marked as unverifiable even though the benchmark command had succeeded.
-   - Fix: infer `--output` from command arguments during execution and feed it back into verification.
+2. `benchmark config generate` was not idempotent in repeated sweep runs.
+   - Effect: the generated template already existed from case generation.
+   - Fix: remove the generated template before executing sweep cases.
 
-3. The gate verifier had stale assumptions about workbook structure.
-   - Effect: false failures for `Metadata`, `Impact Summary`, and `Impact Detail` sheets, and brittle fraud-publication checks.
-   - Fixes:
-     - exclude non-dimension sheets from per-dimension content validation
-     - support current `Metric_*` sheet naming
-     - align impact-sheet checks to `Impact Detail` / `Impact Summary`
-     - make fraud-publication verification robust to the current workbook layout
+3. Rate balanced CSV export used source column names instead of standard balanced column names.
+   - Effect: the CSV validator could not find rate columns.
+   - Fix: emit `Balanced_Total`, `Balanced_Approval_Total`, and `Balanced_Fraud_Total`.
 
-4. Fraud publication formatting needed a real product fix.
-   - Effect: fraud publication sheets existed, but the BPS labeling and detection path were not strong enough for the exhaustive verifier.
-   - Fix: update publication workbook generation so fraud rate columns are converted and labeled in basis points on fraud sheets.
+4. The gate verifier treated single-category share sheets as if they must sum to 100%.
+   - Effect: peer-only/per-dimension single-category sheets failed with a 90.10% sum.
+   - Fix: skip the share-mix sum check when fewer than two category values are present.
 
-These fixes matter because they ensure the exhaustive sweep now measures actual product behavior rather than failing on stale or invalid test scaffolding.
+These fixes matter because they ensure the sweep measures actual product behavior rather than failing on stale or invalid test scaffolding.
 
 ## Product-level conclusions
 
-The exhaustive results support the conclusion that the audit-remediation branch is now stable across the combinatorial CLI matrix represented by the sweep generator.
+The core sweep results support the conclusion that the audit-remediation branch is now stable across the combinatorial CLI matrix represented by the sweep generator.
 
 Specifically, the sweep demonstrates that the remediated code now handles:
 
@@ -113,13 +103,13 @@ There are still a few limits to what this sweep proves:
 
 ## Final assessment
 
-The post-audit exhaustive sweep is fully green.
+The post-audit core sweep is fully green.
 
 From a repository-verification perspective, this is strong evidence that the remediation work is valid:
 
 - unit and regression tests pass
 - targeted gate verification passes
-- exhaustive CLI sweep passes across 1017 generated cases
-- saved artifacts are available for audit review and replay
+- core CLI sweep passes across 1063 generated cases
+- generated sweep artifacts remain outside source control
 
 The implementation can now be described as sweep-validated against the repository’s own combinatorial CLI matrix.

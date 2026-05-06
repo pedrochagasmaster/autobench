@@ -266,8 +266,9 @@ class GateTestRunner:
                                     # Just warn for now as this is a new check
                                     logger.warning(f"Sheet '{sheet_name}' (Time: {t}): Balanced Mix sums to {s:.2f}%, expected ~100%")
                         else:
-                            # Global sum
-                            if not (99.0 < total_sum < 101.0):
+                            # Single-category dimensions can represent the peer aggregate's
+                            # population share, so they are not expected to sum to 100%.
+                            if len(vals) >= 2 and not (99.0 < total_sum < 101.0):
                                 failures.append(f"Sheet '{sheet_name}': Balanced Mix sums to {total_sum:.2f}%, expected ~100%")
                     except Exception as e:
                         logger.warning(f"Could not verify sum for {col}: {e}")

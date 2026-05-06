@@ -31,6 +31,13 @@ def detect_output_path(stdout_text: str) -> str | None:
     return None
 
 
+def resolve_verification_output_path(case: Dict[str, Any], stdout_text: str) -> str | None:
+    for expectation in case.get("expectations", []):
+        if isinstance(expectation, str) and expectation.startswith("output_base="):
+            return expectation.split("=", 1)[1]
+    return detect_output_path(stdout_text)
+
+
 def load_cases(case_dir: Path) -> List[Dict[str, Any]]:
     cases: List[Dict[str, Any]] = []
     for jsonl_path in sorted(case_dir.glob("*/cases.jsonl")):
@@ -87,7 +94,7 @@ def run_case(
                 "expectations": list(case.get("expectations", [])),
             }
             if "output" not in verify_case_payload["params"]:
-                detected_output = detect_output_path(proc.stdout)
+                detected_output = resolve_verification_output_path(case, proc.stdout)
                 if detected_output:
                     verify_case_payload["params"]["output"] = detected_output
             verification_failures = gate_runner.verify_case(verify_case_payload)
@@ -145,6 +152,10 @@ def main() -> int:
     logs_dir = results_dir / "case_logs"
     results_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
+
+    generated_template = case_dir / "config" / "generated_template.yaml"
+    if generated_template.exists():
+        generated_template.unlink()
 
     cases = load_cases(case_dir)
     gate_runner = GateTestRunner(output_dir=str(case_dir))
