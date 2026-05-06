@@ -86,6 +86,9 @@ class ReportGenerator:
             return False
 
         rate_patterns = (
+            'balanced peer average' in col_lower,
+            'target rate' in col_lower,
+            col_lower.endswith('bic (%)'),
             col_lower.endswith('_raw_%'),
             col_lower.endswith('_balanced_%'),
             col_lower in {'target rate (%)', 'balanced peer average (%)', 'bic (%)'},
@@ -96,6 +99,15 @@ class ReportGenerator:
         if convert_all_rates:
             return True
         return 'fraud' in col_lower
+
+    @staticmethod
+    def _rate_label_for_metric(metric_name: str) -> str:
+        metric_lower = str(metric_name).lower()
+        if "fraud" in metric_lower:
+            return "Fraud"
+        if "approval" in metric_lower:
+            return "Approval"
+        return str(metric_name).replace("_", " ").title()
 
     @staticmethod
     def _build_unique_sheet_name(raw_name: str, existing_names: List[str]) -> str:
@@ -207,8 +219,26 @@ class ReportGenerator:
             sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
-        
-        # Create Metadata sheet
+
+        self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
+        self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
+        self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
+        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Analysis", metadata, "impact_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Structural Summary", metadata, "structural_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Structural Detail", metadata, "structural_detail_df")
+        self._write_optional_dataframe_sheet(wb, "Rank Changes", metadata, "rank_changes_df")
+        self._write_optional_dataframe_sheet(wb, "Subset Search", metadata, "subset_search_df")
+        self._write_optional_dataframe_sheet(wb, "Secondary Metrics", metadata, "secondary_results_df")
+        if metadata and "validation_issues" in metadata:
+            validation_issues = metadata.get("validation_issues") or []
+            passed = not any(
+                getattr(issue, "severity", None) and "ERROR" in str(issue.severity)
+                for issue in validation_issues
+            )
+            self.add_data_quality_sheet(wb, validation_issues, passed=passed)
+
         if metadata:
             ws_meta = wb.create_sheet("Metadata")
             self._write_metadata_sheet(ws_meta, metadata)
@@ -317,13 +347,46 @@ class ReportGenerator:
         row = 3
         for key, value in metadata.items():
             worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
-            
-            if isinstance(value, (list, dict)):
-                worksheet[f'B{row}'] = json.dumps(value, indent=2)
+
+            display_value: Any
+            if hasattr(value, "shape"):
+                display_value = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+            elif isinstance(value, list):
+                if value and hasattr(value[0], "__dict__"):
+                    display_value = f"List[{type(value[0]).__name__}] len={len(value)}"
+                else:
+                    display_value = json.dumps(value, indent=2, default=str)
+            elif isinstance(value, dict):
+                display_value = json.dumps(value, indent=2, default=str)
             else:
-                worksheet[f'B{row}'] = str(value)
+                display_value = str(value)
+
+            worksheet[f'B{row}'] = display_value
             
             row += 1
+
+    def _write_optional_dataframe_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        metadata: Optional[Dict[str, Any]],
+        metadata_key: str,
+    ) -> None:
+        if not metadata:
+            return
+        df = metadata.get(metadata_key)
+        if df is None or not hasattr(df, "empty") or df.empty:
+            return
+        ws = workbook.create_sheet(self._build_unique_sheet_name(sheet_name, workbook.sheetnames))
+        for col_idx, column in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col_idx, value=str(column))
+        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+            for col_idx, value in enumerate(row, start=1):
+                if isinstance(value, (list, dict)):
+                    cell_value = json.dumps(value, default=str)
+                else:
+                    cell_value = value
+                ws.cell(row=row_idx, column=col_idx, value=cell_value)
     
     def add_preset_comparison_sheet(
         self,
@@ -657,49 +720,77 @@ class ReportGenerator:
                     ws_summary[f'B{row}'] = str(metadata[key])
                     row += 1
         
+        def _iter_publication_frames() -> List[tuple[str, pd.DataFrame]]:
+            frames: List[tuple[str, pd.DataFrame]] = []
+            for metric_name, result_data in results.items():
+                if isinstance(result_data, pd.DataFrame):
+                    frames.append((str(metric_name), result_data))
+                    continue
+                if isinstance(result_data, dict):
+                    if 'data' in result_data and isinstance(result_data['data'], pd.DataFrame):
+                        frames.append((str(metric_name), result_data['data']))
+                        continue
+                    nested_frames = [
+                        (f"{metric_name}_{nested_name}", nested_df)
+                        for nested_name, nested_df in result_data.items()
+                        if isinstance(nested_df, pd.DataFrame)
+                    ]
+                    frames.extend(nested_frames)
+            return frames
+
+        def _prepare_publication_frame(metric_name: str, df: pd.DataFrame) -> pd.DataFrame:
+            prepared = df.copy(deep=True)
+            if analysis_type != 'rate':
+                return prepared
+
+            rate_label = self._rate_label_for_metric(metric_name)
+            convert_all_rates = self._resolve_convert_all_rates(metadata)
+            use_bps = fraud_in_bps and rate_label == "Fraud"
+            unit = "bps" if use_bps else "%"
+
+            rename_map: Dict[str, str] = {}
+            for col in prepared.columns:
+                if col == "Balanced Peer Average (%)":
+                    rename_map[col] = f"{rate_label} Balanced Peer Average ({unit})"
+                elif col == "BIC (%)":
+                    rename_map[col] = f"{rate_label} BIC ({unit})"
+                elif col == "Target Rate (%)":
+                    rename_map[col] = f"{rate_label} Rate ({unit})"
+                elif col == "Distance to Peer (pp)":
+                    rename_map[col] = f"{rate_label} Distance to Peer (pp)"
+
+            if use_bps:
+                for col in prepared.columns:
+                    if not pd.api.types.is_numeric_dtype(prepared[col]):
+                        continue
+                    if self._should_convert_rate_column(col, convert_all_rates):
+                        prepared[col] = prepared[col] * 100
+
+            return prepared.rename(columns=rename_map)
+
         # Create dimension sheets (publication format)
-        for metric_name, result_data in results.items():
-            if not isinstance(result_data, (dict, pd.DataFrame)):
-                continue
-            
+        for metric_name, frame in _iter_publication_frames():
             sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
-            
+
             # Sheet header
             ws['A1'] = f"{metric_name} Analysis"
             ws['A1'].font = header_font
             ws.merge_cells('A1:F1')
-            
-            # Get DataFrame
-            if isinstance(result_data, dict) and 'data' in result_data:
-                df = result_data['data']
-            elif isinstance(result_data, pd.DataFrame):
-                df = result_data
-            else:
-                continue
-            
-            # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
-            df = df.copy(deep=True)
-            if analysis_type == 'rate' and fraud_in_bps:
-                convert_all_rates = self._resolve_convert_all_rates(metadata)
-                for col in df.columns:
-                    if not pd.api.types.is_numeric_dtype(df[col]):
-                        continue
-                    if self._should_convert_rate_column(col, convert_all_rates):
-                        df[col] = df[col] * 100
-            
+
+            df = _prepare_publication_frame(metric_name, frame)
+
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):
                 for col_idx, value in enumerate(row, 1):
                     cell = ws.cell(row=row_idx, column=col_idx, value=value)
                     cell.border = thin_border
-                    
+
                     if row_idx == 3:  # Header row
                         cell.font = header_font_white
                         cell.fill = header_fill
                         cell.alignment = Alignment(horizontal='center')
                     else:
-                        # Format numbers
                         if isinstance(value, float):
                             cell.number_format = '0.00'
         

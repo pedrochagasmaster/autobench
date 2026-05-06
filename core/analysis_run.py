@@ -316,6 +316,10 @@ def prepare_run_data(
     """Create the loader, resolve the input DataFrame, entity column, and time column."""
     data_loader = DataLoader(config)
     df = resolve_input_dataframe(args, data_loader)
+    if getattr(args, 'df', None) is not None:
+        # Preloaded DataFrames may already be normalized; a second pass is idempotent
+        # and keeps TUI-provided data consistent with CSV-loaded inputs.
+        df = data_loader._normalize_columns(df.copy())
     logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
     entity_col = resolve_entity_column(df, preferred_entity_col)
     time_col = config.get('input', 'time_col')
@@ -547,7 +551,14 @@ def write_audit_log(
         'balanced_csv': csv_output,
     }
     results_summary.update(summarize_validation_issues(validation_issues))
-    audit_metadata = {key: value for key, value in metadata.items() if key != 'analyzer_ref'}
+    audit_metadata = {}
+    for key, value in metadata.items():
+        if key == 'analyzer_ref':
+            continue
+        if hasattr(value, 'shape'):
+            audit_metadata[key] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+        else:
+            audit_metadata[key] = value
     ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
     return audit_log_file
 
@@ -735,6 +746,17 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         logger=logger,
     )
     metadata.update(diagnostics['metadata_updates'])
+    if getattr(analyzer, "structural_summary_df", None) is not None and not analyzer.structural_summary_df.empty:
+        metadata["structural_summary_df"] = analyzer.structural_summary_df
+    if getattr(analyzer, "structural_detail_df", None) is not None and not analyzer.structural_detail_df.empty:
+        metadata["structural_detail_df"] = analyzer.structural_detail_df
+    if getattr(analyzer, "rank_changes_df", None) is not None and not analyzer.rank_changes_df.empty:
+        metadata["rank_changes_df"] = analyzer.rank_changes_df
+    subset_results = getattr(analyzer, "subset_search_results", None) or []
+    if subset_results:
+        metadata["subset_search_df"] = pd.DataFrame(subset_results)
+    if secondary_results_df is not None and not secondary_results_df.empty:
+        metadata["secondary_metrics_df"] = secondary_results_df
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
@@ -792,6 +814,8 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
     analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
     artifacts = AnalysisArtifacts(
         results=results,
         metadata=metadata,
@@ -804,6 +828,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -1004,6 +1029,17 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         logger=logger,
     )
     metadata.update(diagnostics['metadata_updates'])
+    if getattr(analyzer, "structural_summary_df", None) is not None and not analyzer.structural_summary_df.empty:
+        metadata["structural_summary_df"] = analyzer.structural_summary_df
+    if getattr(analyzer, "structural_detail_df", None) is not None and not analyzer.structural_detail_df.empty:
+        metadata["structural_detail_df"] = analyzer.structural_detail_df
+    if getattr(analyzer, "rank_changes_df", None) is not None and not analyzer.rank_changes_df.empty:
+        metadata["rank_changes_df"] = analyzer.rank_changes_df
+    subset_results = getattr(analyzer, "subset_search_results", None) or []
+    if subset_results:
+        metadata["subset_search_df"] = pd.DataFrame(subset_results)
+    if secondary_results_df is not None and not secondary_results_df.empty:
+        metadata["secondary_metrics_df"] = secondary_results_df
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
@@ -1068,6 +1104,8 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     else:
         analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
 
     artifacts = AnalysisArtifacts(
         results=all_results,
@@ -1081,6 +1119,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )

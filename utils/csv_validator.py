@@ -14,10 +14,19 @@ Example:
 
 import sys
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from openpyxl import load_workbook
+
+
+@dataclass
+class ValidationResult:
+    success: bool
+    dimension: str
+    check: str
+    message: str
 
 
 def load_csv_data(csv_path: Path) -> pd.DataFrame:
@@ -46,8 +55,22 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     wb = load_workbook(excel_path, data_only=True)
     
     # Skip metadata sheets
-    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation', 
-                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes'}
+    skip_sheets = {
+        'Summary',
+        'Metadata',
+        'Peer Weights',
+        'Weight Methods',
+        'Privacy Validation',
+        'Subset Search',
+        'Structural Summary',
+        'Structural Detail',
+        'Rank Changes',
+        'Preset Comparison',
+        'Impact Detail',
+        'Impact Summary',
+        'Executive Summary',
+        'Data Quality',
+    }
     
     dimension_data = {}
     
@@ -80,6 +103,19 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
             dimension_data[sheet_name] = df
     
     return dimension_data
+
+
+def _sheet_matches_dimension(sheet_name: str, dimension: str) -> bool:
+    normalized_sheet = sheet_name.lower().replace("_", "").replace("/", "")
+    normalized_dim = dimension.lower().replace("_", "").replace("/", "")
+    if normalized_sheet == normalized_dim:
+        return True
+    metric_prefix = "metric"
+    if normalized_sheet.startswith(metric_prefix):
+        tail = normalized_sheet[len(metric_prefix):]
+        tail = tail.lstrip("0123456789")
+        return tail == normalized_dim or tail.endswith(normalized_dim[:20])
+    return normalized_sheet.endswith(normalized_dim[:20])
 
 
 def extract_summary_metadata(excel_path: Path) -> Dict[str, str]:
@@ -511,18 +547,20 @@ EXAMPLES:
     print()
     # Validate each dimension
     all_results = []
+    result_details: List[ValidationResult] = []
     
     for dimension in csv_df['Dimension'].unique():
         # Find matching Excel sheet
         excel_df = None
         for sheet_name, df in excel_data.items():
-            # Match by sheet name (exact or sanitized)
-            if sheet_name == dimension or sheet_name.replace('_', '/') == dimension:
+            if _sheet_matches_dimension(sheet_name, str(dimension)):
                 excel_df = df
                 break
         
         if excel_df is None:
-            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
+            message = "No matching Excel sheet found"
+            result_details.append(ValidationResult(False, str(dimension), "sheet_match", message))
+            print(f"WARNING {dimension}: {message}")
             continue
         
         print(f"Validating dimension: {dimension}")
@@ -555,6 +593,11 @@ EXAMPLES:
             print(f"    Skipped: {results['skipped']} (missing data)")
         
         print()
+
+        if results['failed'] == 0:
+            result_details.append(ValidationResult(True, str(dimension), "rate_match", "All matched rates within tolerance"))
+        else:
+            result_details.append(ValidationResult(False, str(dimension), "rate_match", f"{results['failed']} mismatched rates"))
     
     # Overall summary
     total_checks = sum(r['total_checks'] for r in all_results)
@@ -567,10 +610,20 @@ EXAMPLES:
     print(f"{'='*80}")
     print(f"Dimensions Validated: {len(all_results)}")
     print(f"Total Checks: {total_checks}")
-    print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
-    print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
-    print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    if total_checks > 0:
+        print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
+        print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
+        print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    else:
+        print("Passed: 0 (0.0%)")
+        print("Failed: 0 (0.0%)")
+        print("Skipped: 0 (0.0%)")
     
+    if total_checks == 0:
+        print("\nVALIDATION FAILED")
+        print("  No CSV dimensions matched workbook sheets")
+        print(f"{'='*80}\n")
+        return 1
     if total_failed == 0:
         print("\nALL VALIDATIONS PASSED")
         print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")

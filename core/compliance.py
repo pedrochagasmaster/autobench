@@ -21,8 +21,22 @@ class ComplianceSummary:
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        if self.details.get("blocked"):
+            return {
+                "posture": self.posture,
+                "acknowledgement_given": self.acknowledgement_given,
+                "violations": self.violations,
+                "structural_infeasibility": self.structural_infeasibility,
+                "run_status": "blocked",
+                "compliance_verdict": "blocked",
+                "acknowledgement_state": "required_missing" if not self.acknowledgement_given else "acknowledged",
+                "posture_consistent": False,
+                **self.details,
+            }
         has_violations = self.violations > 0
-        has_structural = bool(self.structural_infeasibility)
+        has_structural = bool(self.structural_infeasibility) and bool(
+            self.structural_infeasibility.get("has_structural_infeasibility")
+        )
 
         if self.posture == "strict":
             run_status = "non_compliant" if has_violations else "compliant"
@@ -66,7 +80,10 @@ def build_compliance_summary(
     violations = 0
     if privacy_validation_df is not None and not privacy_validation_df.empty:
         if "compliant" in privacy_validation_df.columns:
-            violations = int((~privacy_validation_df["compliant"]).sum())
+            violations = int((~privacy_validation_df["compliant"].astype(bool)).sum())
+        elif "Compliant" in privacy_validation_df.columns:
+            normalized = privacy_validation_df["Compliant"].astype(str).str.strip().str.lower()
+            violations = int((normalized != "yes").sum())
     return ComplianceSummary(
         posture=posture or "strict",
         acknowledgement_given=acknowledgement_given,

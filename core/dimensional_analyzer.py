@@ -1554,6 +1554,83 @@ class DimensionalAnalyzer:
                                 'Compliant': 'Yes' if compliant else 'No',
                                 'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
                             })
+                for time_period in time_periods:
+                    time_df = df[df[self.time_column] == time_period]
+                    entity_agg = time_df.groupby(self.entity_column).agg({metric_col: 'sum'}).reset_index()
+                    peer_data = []
+                    for peer_entity in peers:
+                        peer_vol = float(entity_agg[entity_agg[self.entity_column] == peer_entity][metric_col].sum())
+                        peer_data.append({'peer': peer_entity, 'volume': peer_vol})
+                    total_original_vol = sum(p['volume'] for p in peer_data)
+                    total_balanced_vol = sum(p['volume'] * weights.get(p['peer'], 1.0) for p in peer_data)
+                    balanced_shares: List[float] = []
+                    for peer_info in peer_data:
+                        peer_weight = weights.get(peer_info['peer'], 1.0)
+                        balanced_vol = peer_info['volume'] * peer_weight
+                        balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
+                        balanced_shares.append(balanced_share)
+
+                    peer_category_volumes = {p['peer']: p['volume'] for p in peer_data}
+                    stats = constraint_stats.get((f"_TIME_TOTAL_{self.time_column}", str(time_period), time_period))
+                    enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
+                        rule_name,
+                        "_TIME_TOTAL_",
+                        peer_category_volumes,
+                        stats,
+                    )
+                    if enforce:
+                        additional_passed, additional_details = self._evaluate_additional_constraints(
+                            balanced_shares,
+                            rule_name,
+                            thresholds,
+                        )
+                        threshold_detail = f" Thresholds={thresholds}" if thresholds else ""
+                        additional_detail = "; ".join(additional_details) if additional_details else ""
+                        additional_detail = f"{additional_detail}{threshold_detail}".strip()
+                        additional_enforced = "Yes"
+                    else:
+                        additional_passed = True
+                        additional_enforced = "No"
+                        if reason == 'no_additional':
+                            additional_detail = "Time total cap validation"
+                        else:
+                            additional_detail = f"Time total cap validation; skipped ({reason})"
+                    additional_relaxed = "Yes" if relaxed else "No"
+
+                    for idx, peer_info in enumerate(peer_data):
+                        peer = peer_info['peer']
+                        peer_weight = weights.get(peer, 1.0)
+                        original_share = (peer_info['volume'] / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
+                        balanced_vol = peer_info['volume'] * peer_weight
+                        balanced_share = balanced_shares[idx]
+                        is_violation = self._is_share_violation(balanced_share, max_concentration)
+                        compliant = (not is_violation) and additional_passed
+                        validation_rows.append({
+                            'Dimension': '_TIME_TOTAL_',
+                            'Time_Period': time_period,
+                            'Category': str(time_period),
+                            'Peer': peer,
+                            'Rule_Name': rule_name,
+                            'Weight_Source': 'Global',
+                            'Weight_Method': self.weight_methods.get('_TIME_TOTAL_', 'Global-LP'),
+                            'Multiplier': peer_weight,
+                            'Original_Volume': peer_info['volume'],
+                            'Original_Share_%': round(original_share, 4),
+                            'Balanced_Volume': balanced_vol,
+                            'Balanced_Share_%': round(balanced_share, 4),
+                            'Privacy_Cap_%': max_concentration,
+                            'Tolerance_%': self.tolerance,
+                            'Additional_Constraints_Enforced': additional_enforced,
+                            'Additional_Constraints_Relaxed': additional_relaxed,
+                            'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
+                            'Additional_Constraint_Detail': additional_detail,
+                            'Structural_Infeasible_Peer': 'No',
+                            'Structural_Infeasible_Category': 'No',
+                            'Structural_Margin_Peer_pp': 0.0,
+                            'Structural_Margin_Category_pp': 0.0,
+                            'Compliant': 'Yes' if compliant else 'No',
+                            'Violation_Margin_%': round(balanced_share - max_concentration, 4) if is_violation else 0.0,
+                        })
             else:
                 entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
                 for category in entity_dim_agg[dimension].unique():

@@ -766,11 +766,9 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests (49/54 pass on main)
-py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate cases fail
-                                # due to a pre-existing quoting bug in the gate runner
-                                # (it splits entity names with spaces incorrectly on Linux).
-ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
+py -m pytest tests/ -v
+py scripts/perform_gate_test.py
+ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py
 ```
 
 ### Missing modules (incomplete refactoring)
