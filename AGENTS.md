@@ -766,16 +766,15 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests (49/54 pass on main)
-py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate cases fail
-                                # due to a pre-existing quoting bug in the gate runner
-                                # (it splits entity names with spaces incorrectly on Linux).
-ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
+py -m pytest tests/ -v          # Unit tests (62 pass after audit remediation)
+py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate command
+                                # parsing fixed to use shlex.split for quoted entity names.
+ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint (all clean)
 ```
 
-### Missing modules (incomplete refactoring)
+### Core modules (post-refactoring)
 
-The `main` branch at HEAD references several `core.*` modules that were never committed during a recent refactoring (`contracts`, `compliance`, `observability`, `output_artifacts`, `preset_comparison`, `preset_workflow`, `excel_reports`, `privacy_policy`). Stub implementations were created in this setup branch to unblock imports and basic functionality. A few unit tests (5 of 54) fail because these stubs don't replicate the full intended behaviour. If the original author merges the real implementations, these stubs should be replaced.
+The `core.*` modules (`contracts`, `compliance`, `observability`, `output_artifacts`, `preset_comparison`, `preset_workflow`, `excel_reports`, `privacy_policy`) have been implemented with production behavior following the audit remediation. Key changes: `output_artifacts` now honors `output_format` (analysis/publication/both), `compliance` correctly handles structural infeasibility verdicts, and `preset_comparison` computes real impact metrics.
 
 ### Test data
 

@@ -148,7 +148,7 @@ class ConfigValidator:
             return errors
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
