@@ -272,6 +272,28 @@ class TestValidationAndOutputs(unittest.TestCase):
             expected.add(f"{preset}+perdim")
         self.assertTrue(expected.issubset(set(comparison_df['Preset'].tolist())))
 
+    def test_preset_comparison_includes_status_and_impact_columns(self) -> None:
+        df = pd.DataFrame({
+            'issuer_name': ['Target', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6'],
+            'card_type': ['A', 'A', 'A', 'A', 'A', 'A', 'A'],
+            'txn_cnt': [100, 200, 180, 160, 140, 120, 110],
+        })
+
+        comparison_df = run_preset_comparison(
+            df=df,
+            metric_col='txn_cnt',
+            entity_col='issuer_name',
+            dimensions=['card_type'],
+            target_entity='Target',
+            time_col=None,
+            analysis_type='share',
+            logger=__import__("logging").getLogger("test_presets_status")
+        )
+
+        self.assertIn('Status', comparison_df.columns)
+        self.assertIn('Mean_Impact_PP', comparison_df.columns)
+        self.assertIn('Max_Impact_PP', comparison_df.columns)
+
 
 class TestValidationEdgeCases:
     """Test edge cases in data validation."""
@@ -334,6 +356,26 @@ class TestValidationEdgeCases:
 
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
         assert any('null' in str(i.message).lower() for i in errors)
+
+    def test_rate_validation_treats_values_above_100_percent_as_error(self, data_loader):
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [100, 100, 100, 100, 100, 100],
+            'approved': [101, 80, 70, 60, 90, 95],
+            'dimension': ['X'] * 6,
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+            target_entity='A',
+        )
+
+        errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
+        assert any(i.category in {'invalid_rate', 'invalid_rates'} for i in errors)
 
 
 class TestPresetComparison:
