@@ -207,6 +207,13 @@ class ReportGenerator:
             sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
+
+        self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
+        self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
+        self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
+        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Detail", metadata, "impact_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
         
         # Create Metadata sheet
         if metadata:
@@ -318,12 +325,34 @@ class ReportGenerator:
         for key, value in metadata.items():
             worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
             
-            if isinstance(value, (list, dict)):
+            if hasattr(value, 'shape'):
+                worksheet[f'B{row}'] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+            elif isinstance(value, (list, dict)):
                 worksheet[f'B{row}'] = json.dumps(value, indent=2)
             else:
                 worksheet[f'B{row}'] = str(value)
             
             row += 1
+
+    def _write_optional_dataframe_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        metadata: Optional[Dict[str, Any]],
+        metadata_key: str,
+    ) -> None:
+        if not metadata:
+            return
+        df = metadata.get(metadata_key)
+        if df is None or not hasattr(df, "empty") or df.empty:
+            return
+        ws = workbook.create_sheet(self._build_unique_sheet_name(sheet_name, workbook.sheetnames))
+        for col_idx, column in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col_idx, value=str(column))
+            ws.cell(row=1, column=col_idx).font = self._font_class(bold=True)
+        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
     
     def add_preset_comparison_sheet(
         self,
