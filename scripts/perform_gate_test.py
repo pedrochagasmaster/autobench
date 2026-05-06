@@ -1,5 +1,6 @@
 import sys
 import json
+import shlex
 import subprocess
 import shutil
 import logging
@@ -115,12 +116,11 @@ class GateTestRunner:
                     failures.append(f"Sheet '{sheet_name}': Contains duplicate rows for keys {keys}. Sample:\n{dupes}")
 
             # 1. Excel Errors
+            error_patterns = ("#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?")
             for col in df.columns:
-                if df[col].astype(str).str.contains("#").any():
-                    # Check if it's really an error like #DIV/0! or #N/A
-                    error_patterns = ["#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?"]
-                    if any(df[col].isin(error_patterns).any() for pat in error_patterns):
-                         failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
+                values = df[col].astype(str)
+                if values.apply(lambda cell: any(pattern in cell for pattern in error_patterns)).any():
+                    failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
 
             # 2. Sensible Ranges
             # Rate/Share percentages: 0 to 100
@@ -484,23 +484,41 @@ class GateTestRunner:
                     # Check first data sheet for fraud values
                     found_fraud = False
                     for sheet in wb_pub.sheetnames:
-                        if sheet == "Summary": continue
+                        if sheet == "Summary":
+                            continue
                         ws = wb_pub[sheet]
                         # Find headers row
                         headers = [str(c.value) for c in ws[3] if c.value]
                         fraud_idx = -1
                         for i, h in enumerate(headers):
-                            if "Fraud" in h and "Rate" in h: # e.g. Fraud Rate
+                            if "Fraud" in h and "Rate" in h:  # e.g. Fraud Rate
                                 fraud_idx = i
                                 break
-                        
+
                         if fraud_idx != -1:
                             found_fraud = True
                             if not any("bps" in h.lower() for h in headers):
-                                pass
+                                failures.append(
+                                    "Fraud publication output is missing bps header"
+                                )
                             break
                     if not found_fraud:
-                        pass
+                        failures.append(
+                            "Fraud publication output is missing fraud rate column"
+                        )
+
+            elif exp == "fraud_in_percent_in_publication":
+                if wb_pub:
+                    headers: List[str] = []
+                    for sheet in wb_pub.sheetnames:
+                        if sheet == "Summary":
+                            continue
+                        ws = wb_pub[sheet]
+                        headers.extend(str(c.value) for c in ws[3] if c.value)
+                    if any("Fraud" in h and "bps" in h.lower() for h in headers):
+                        failures.append(
+                            "Fraud publication output used bps when percent was expected"
+                        )
 
             elif exp.startswith("audit_log="):
                  expected_log = exp.split("=")[1]
@@ -527,12 +545,14 @@ class GateTestRunner:
         return failures
 
     def run(self):
-        # 1. Clean previous run
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
-        
-        # 2. Generate
+        # 1. Generate cases first so a destructive cleanup never wipes
+        # checked-in artefacts before generation actually succeeds.
         self.generate_cases()
+
+        # 2. Clean any previously generated outputs only.
+        generated_outputs = self.output_dir / "outputs"
+        if generated_outputs.exists():
+            shutil.rmtree(generated_outputs)
         
         # 3. Load
         cases = self.load_cases()
@@ -551,11 +571,13 @@ class GateTestRunner:
             
             # Execute
             try:
-                # Use sys.executable instead of 'py' if possible
+                # Use sys.executable instead of 'py' if possible. ``shlex.split``
+                # preserves quoted multi-word arguments such as
+                # ``--entity "BANCO SANTANDER"``.
                 if command.startswith("py "):
-                    cmd_list = [sys.executable] + command[3:].split()
+                    cmd_list = [sys.executable] + shlex.split(command[3:])
                 else:
-                    cmd_list = command.split()
+                    cmd_list = shlex.split(command)
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
