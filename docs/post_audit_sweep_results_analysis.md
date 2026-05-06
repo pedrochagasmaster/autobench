@@ -57,6 +57,8 @@ The sweep outputs were saved under:
 - Case stdout / stderr logs: `test_sweeps/post_audit_full_sweep/results/case_logs/`
 - Raw runner summary: `test_sweeps/post_audit_full_sweep/results/summary.json`
 - Raw per-case results: `test_sweeps/post_audit_full_sweep/results/results.jsonl`
+- Final post-verification summary: `test_sweeps/post_audit_full_sweep/results/post_verification_summary.json`
+- Final post-verification failures: `test_sweeps/post_audit_full_sweep/results/post_verification_failures.json`
 
 ## Matrix Size
 
