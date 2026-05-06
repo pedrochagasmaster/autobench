@@ -25,31 +25,77 @@ def write_outputs(
 
     output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
     entity_name = request.entity or "PEER_ONLY"
+    output_format = (
+        config.get("output", "output_format", default=request.output_format)
+        if config is not None
+        else request.output_format
+    )
+    write_analysis = output_format in {"analysis", "both"}
+    write_publication = output_format in {"publication", "both"}
 
-    if request.is_rate and isinstance(artifacts.results, dict) and all(
-        isinstance(v, dict) for v in artifacts.results.values()
-    ):
-        generate_multi_rate_excel_report(
-            artifacts.results,
-            output_file,
-            entity_name,
-            logger,
-            artifacts.metadata or {},
-            weights_df=artifacts.weights_df,
-            numerator_cols=request.numerator_cols,
-            privacy_validation_df=artifacts.privacy_validation_df,
-            method_breakdown_df=artifacts.method_breakdown_df,
-            secondary_results=artifacts.secondary_results_df,
-            preset_comparison_df=artifacts.preset_comparison_df,
-            impact_df=artifacts.impact_df,
-            impact_summary_df=artifacts.impact_summary_df,
-            validation_issues=artifacts.validation_issues,
-        )
-    else:
+    def _write_report(path: str, *, publication: bool) -> None:
+        if request.is_rate and isinstance(artifacts.results, dict) and all(
+            isinstance(v, dict) for v in artifacts.results.values()
+        ):
+            if publication:
+                from core.report_generator import ReportGenerator
+
+                publication_metadata = dict(artifacts.metadata or {})
+                publication_metadata["entity_name"] = entity_name
+                ReportGenerator(config).generate_publication_workbook(
+                    artifacts.results,
+                    path,
+                    analysis_type="rate",
+                    metadata=publication_metadata,
+                    fraud_in_bps=bool(
+                        config.get("output", "fraud_in_bps", default=request.fraud_in_bps)
+                        if config is not None
+                        else request.fraud_in_bps
+                    ),
+                )
+                return
+
+            generate_multi_rate_excel_report(
+                artifacts.results,
+                path,
+                entity_name,
+                logger,
+                artifacts.metadata or {},
+                weights_df=artifacts.weights_df,
+                numerator_cols=request.numerator_cols,
+                privacy_validation_df=artifacts.privacy_validation_df,
+                method_breakdown_df=artifacts.method_breakdown_df,
+                secondary_results=artifacts.secondary_results_df,
+                preset_comparison_df=artifacts.preset_comparison_df,
+                impact_df=artifacts.impact_df,
+                impact_summary_df=artifacts.impact_summary_df,
+                validation_issues=artifacts.validation_issues,
+                config=config,
+            )
+            return
+
         analysis_type = "share" if request.is_share else "rate"
+        if publication:
+            from core.report_generator import ReportGenerator
+
+            publication_metadata = dict(artifacts.metadata or {})
+            publication_metadata["entity_name"] = entity_name
+            ReportGenerator(config).generate_publication_workbook(
+                artifacts.results,
+                path,
+                analysis_type=analysis_type,
+                metadata=publication_metadata,
+                fraud_in_bps=bool(
+                    config.get("output", "fraud_in_bps", default=request.fraud_in_bps)
+                    if config is not None
+                    else request.fraud_in_bps
+                ),
+            )
+            return
+
         generate_excel_report(
             artifacts.results,
-            output_file,
+            path,
             entity_name,
             analysis_type,
             logger,
@@ -62,7 +108,17 @@ def write_outputs(
             impact_df=artifacts.impact_df,
             impact_summary_df=artifacts.impact_summary_df,
             validation_issues=artifacts.validation_issues,
+            config=config,
         )
 
-    logger.info("Report written to %s", output_file)
+    if write_analysis:
+        _write_report(output_file, publication=False)
+        logger.info("Analysis report written to %s", output_file)
+
+    if write_publication:
+        publication_file = artifacts.publication_output or output_file
+        _write_report(publication_file, publication=True)
+        artifacts.publication_output = publication_file
+        logger.info("Publication report written to %s", publication_file)
+
     return artifacts

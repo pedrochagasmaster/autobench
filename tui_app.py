@@ -1270,8 +1270,7 @@ class BenchmarkApp(App):
             request = saved_request
             logger = logging.getLogger("benchmark")
             try:
-                if saved_df is not None:
-                    request.df = saved_df
+                request.df = saved_df
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
