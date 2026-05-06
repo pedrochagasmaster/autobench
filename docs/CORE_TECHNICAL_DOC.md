@@ -742,13 +742,13 @@ Level 2 - Output Semantics (What each sheet means)
 Analysis workbook:
 - Summary: input settings and run metadata
 - Per-dimension sheets: balanced averages, target metrics, BIC, deltas
-- Weight Methods: which solver was used per dimension
-- Rank Changes: baseline vs balanced rankings
-- Structural Summary: count of structurally infeasible buckets by dimension
-- Structural Detail: exact structurally infeasible categories/peers and margins
 - Peer Weights: multipliers and volumes (debug)
-- Privacy Validation: per-category compliance
-- Impact Summary: aggregated distortion/impact (if enabled)
+- Weight Methods: which solver was used per dimension
+- Privacy Validation: per-category compliance, including `_TIME_TOTAL_` rows for time-aware runs
+- Preset Comparison: preset and per-dimension comparison metrics (if enabled)
+- Impact Detail / Impact Summary: detailed and aggregated distortion or impact (if enabled)
+- Data Quality: validation issues when input validation runs
+- Metadata: serialized runtime metadata and compact diagnostics references
 
 Publication workbook:
 - Simplified sheets with clean formatting, optional fraud conversion to bps.
@@ -980,14 +980,14 @@ Purpose: Generate reports in Excel, CSV, and JSON, plus publication and audit ou
 
 Key methods:
 - generate_report(results, output_file, format, analysis_type, metadata): dispatches based on format.
-- _generate_excel_report: creates Summary, Metric sheets, and optional Metadata sheet.
+- _generate_excel_report: creates Summary, Metric sheets, debug/diagnostic sheets, and Metadata.
 - add_preset_comparison_sheet: adds preset comparison table to an existing workbook.
 - add_distortion_summary_sheet: adds distortion summary table.
 - add_data_quality_sheet: adds validation issues to a workbook.
 - _generate_csv_report: writes dict summary and separate CSVs for DataFrames.
 - _generate_json_report: writes JSON with metadata and results.
 - create_audit_log: writes a text audit file.
-- generate_publication_workbook: creates stakeholder-friendly Excel with simplified formatting.
+- generate_publication_workbook: creates stakeholder-friendly Excel with simplified formatting and separate publication-only output paths.
 
 ### core/dimensional_analyzer.py
 

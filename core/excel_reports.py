@@ -67,6 +67,7 @@ def generate_excel_report(
         full_metadata["privacy_validation_df"] = privacy_validation_df
     if secondary_results is not None:
         full_metadata["secondary_results"] = secondary_results
+        full_metadata["secondary_results_df"] = secondary_results
     if preset_comparison_df is not None:
         full_metadata["preset_comparison_df"] = preset_comparison_df
     if impact_df is not None:
@@ -118,6 +119,7 @@ def generate_multi_rate_excel_report(
         full_metadata["method_breakdown_df"] = method_breakdown_df
     if secondary_results is not None:
         full_metadata["secondary_results"] = secondary_results
+        full_metadata["secondary_results_df"] = secondary_results
     if preset_comparison_df is not None:
         full_metadata["preset_comparison_df"] = preset_comparison_df
     if impact_df is not None:

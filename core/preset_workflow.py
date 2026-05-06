@@ -21,7 +21,7 @@ class PresetWorkflow:
         return self._pm.list_presets()
 
     def load_preset_data(self, preset_name: str) -> Dict[str, Any]:
-        return self._pm.load_preset(preset_name)
+        return self._pm.get_preset(preset_name) or {}
 
     def write_override_file(self, data: Dict[str, Any]) -> Path:
         tmp = tempfile.NamedTemporaryFile(

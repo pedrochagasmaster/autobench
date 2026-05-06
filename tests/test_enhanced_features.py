@@ -335,6 +335,29 @@ class TestValidationEdgeCases:
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
         assert any('null' in str(i.message).lower() for i in errors)
 
+    def test_rate_validation_flags_values_above_100_percent_as_errors(self, data_loader):
+        """Custom rate definitions above 100% should be hard validation errors."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [100, 100, 100, 100, 100, 100],
+            'approved': [110, 95, 90, 80, 70, 60],
+            'fraud': [1, 2, 3, 4, 5, 6],
+            'dimension': ['X'] * 6,
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'custom_rate': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        assert any(
+            issue.severity == ValidationSeverity.ERROR and issue.category == 'invalid_rates'
+            for issue in issues
+        )
+
 
 class TestPresetComparison:
     """Test preset comparison edge cases."""

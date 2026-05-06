@@ -40,13 +40,11 @@ class ConfigManager:
         
         # Transaction counts
         'txn_count': 'transaction_count',
-        'total_txns': 'transaction_count',
         'count': 'transaction_count',
         'cnt': 'transaction_count',
         
         # Transaction amounts
         'txn_amt': 'transaction_amount',
-        'total_amount': 'transaction_amount',
         'tpv': 'transaction_amount',
         'amount': 'transaction_amount',
         'volume': 'transaction_amount',
@@ -170,19 +168,9 @@ class ConfigManager:
             return
         
         try:
-            # Determine file type and load accordingly
-            if path.suffix.lower() in ['.yaml', '.yml']:
-                try:
-                    from .validators import load_config
-                    loaded_config = load_config(path)
-                except ImportError:
-                    logger.warning("PyYAML not available, trying JSON format")
-                    with open(path, 'r') as f:
-                        loaded_config = json.load(f)
-            else:
-                # Assume JSON
-                with open(path, 'r') as f:
-                    loaded_config = json.load(f)
+            from .validators import load_config
+
+            loaded_config = load_config(path)
             
             # Merge loaded config into current config
             self._merge_config(loaded_config)

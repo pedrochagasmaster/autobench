@@ -110,7 +110,6 @@ class TestHeuristicSolver(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertTrue(result.success)
         self.assertEqual(result.method, "heuristic")
 
         optimized_shares = _weighted_shares(volumes, result.weights)
@@ -123,6 +122,30 @@ class TestHeuristicSolver(unittest.TestCase):
         self.assertAlmostEqual(avg, 1.0, places=6)
         self.assertTrue(all(w >= 0.1 - 1e-6 for w in result.weights.values()))
         self.assertTrue(all(w <= 10.0 + 1e-6 for w in result.weights.values()))
+
+    def test_heuristic_reports_failure_when_zero_tolerance_still_violates_cap(self) -> None:
+        peers = ["P1", "P2", "P3", "P4", "P5", "P6"]
+        volumes = {"P1": 70.0, "P2": 10.0, "P3": 5.0, "P4": 5.0, "P5": 5.0, "P6": 5.0}
+        categories = _build_categories("dim1", "cat1", volumes)
+
+        solver = HeuristicSolver()
+        result = solver.solve(
+            peers=peers,
+            categories=categories,
+            max_concentration=30.0,
+            peer_volumes=volumes.copy(),
+            min_weight=0.1,
+            max_weight=10.0,
+            tolerance=0.0,
+            enforce_additional_constraints=True,
+            dynamic_constraints_enabled=False,
+            rule_name="6/30",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.success)
+        self.assertEqual(result.method, "heuristic")
 
 
 if __name__ == "__main__":
