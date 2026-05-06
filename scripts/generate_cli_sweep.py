@@ -204,6 +204,23 @@ def list_presets() -> List[str]:
     return sorted([p.stem for p in Path("presets").glob("*.yaml")])
 
 
+def preset_requires_acknowledgement(preset_name: Optional[str]) -> bool:
+    if not preset_name:
+        return False
+    preset_path = Path("presets") / f"{preset_name}.yaml"
+    if not preset_path.exists():
+        return False
+    try:
+        import yaml
+    except Exception:
+        return False
+    try:
+        data = yaml.safe_load(preset_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    return data.get("compliance_posture") == "accuracy_first"
+
+
 def build_command(base: List[str], flags: List[str]) -> str:
     parts = base + flags
     return " ".join(quote_arg(p) for p in parts if p)
@@ -404,7 +421,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -468,6 +485,7 @@ def generate_core_cases(
             "csv": str(csv_path),
             "entity": entity_params.get("entity"),
             "entity_col": entity_col,
+            "output": str(output_path),
             **dim_params,
             **preset_params,
             **fmt_params,
@@ -487,6 +505,9 @@ def generate_core_cases(
             add_flag(flags, "--time-col", time_col)
         if params.get("preset"):
             add_flag(flags, "--preset", params["preset"])
+            if preset_requires_acknowledgement(params["preset"]):
+                add_flag(flags, "--acknowledge-accuracy-first", True)
+                params["acknowledge_accuracy_first"] = True
         if params.get("config"):
             add_flag(flags, "--config", params["config"])
         add_flag(flags, "--output-format", params.get("output_format"))
@@ -533,6 +554,7 @@ def generate_feature_cases(
         "auto": False,
         "output_format": "analysis",
         "validate_input": True,
+        "output": str(baseline_output),
     }
 
     def build_base_flags(output_path: Path) -> List[str]:
@@ -584,15 +606,25 @@ def generate_feature_cases(
     ]
 
     if presets:
-        feature_defs.append(("preset_only", {"preset": presets[0]}, ["--preset", presets[0]]))
+        preset_flags = ["--preset", presets[0]]
+        preset_params = {"preset": presets[0]}
+        if preset_requires_acknowledgement(presets[0]):
+            preset_flags.append("--acknowledge-accuracy-first")
+            preset_params["acknowledge_accuracy_first"] = True
+        feature_defs.append(("preset_only", preset_params, preset_flags))
     if config_path:
         feature_defs.append(("config_only", {"config": str(config_path)}, ["--config", str(config_path)]))
         if presets:
+            config_preset_flags = ["--config", str(config_path), "--preset", presets[0]]
+            config_preset_params = {"config": str(config_path), "preset": presets[0]}
+            if preset_requires_acknowledgement(presets[0]):
+                config_preset_flags.append("--acknowledge-accuracy-first")
+                config_preset_params["acknowledge_accuracy_first"] = True
             feature_defs.append(
                 (
                     "config_and_preset",
-                    {"config": str(config_path), "preset": presets[0]},
-                    ["--config", str(config_path), "--preset", presets[0]],
+                    config_preset_params,
+                    config_preset_flags,
                 )
             )
 
@@ -605,7 +637,7 @@ def generate_feature_cases(
         output_path = output_dir / f"{case_id}.xlsx"
         flags = build_base_flags(output_path)
         flags.extend(extra_flags)
-        params = {**baseline_params, **param_updates}
+        params = {**baseline_params, **param_updates, "output": str(output_path)}
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)

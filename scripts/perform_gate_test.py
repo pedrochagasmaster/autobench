@@ -1,6 +1,7 @@
 import sys
 import json
 import subprocess
+import shlex
 import shutil
 import logging
 import time
@@ -56,9 +57,10 @@ class GateTestRunner:
         """Deep verification of workbook content (sanity checks)."""
         failures = []
         reserved = {
-            "Summary", "Data Quality", "Preset Comparison", "Impact Analysis", 
-            "Peer Weights", "Weight Methods", "Privacy Validation", "Secondary Metrics",
-            "Subset Search", "Structural Summary", "Structural Detail", "Rank Changes"
+            "Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis",
+            "Impact Summary", "Impact Detail", "Peer Weights", "Weight Methods",
+            "Privacy Validation", "Secondary Metrics", "Subset Search",
+            "Structural Summary", "Structural Detail", "Rank Changes"
         }
         dim_sheets = [s for s in wb.sheetnames if s not in reserved]
         
@@ -237,9 +239,12 @@ class GateTestRunner:
             if analysis_type == 'share':
                 # Identify "Balanced Peer Average (%)" or similar
                 balanced_peer_cols = [c for c in df.columns if "Balanced Peer Average" in c and "%" in c]
+                has_target_comparison = any("Target" in c or "Distance" in c for c in df.columns)
                 for col in balanced_peer_cols:
                     try:
                         vals = pd.to_numeric(df[col], errors='coerce').dropna()
+                        if has_target_comparison:
+                            continue
                         total_sum = vals.sum()
                         
                         # In time-aware analysis, we need to sum PER time period
@@ -394,11 +399,11 @@ class GateTestRunner:
 
             elif exp == "impact_analysis_sheet":
                 if wb_analysis:
-                    if "Impact Analysis" not in wb_analysis.sheetnames:
+                    if not any(sheet in wb_analysis.sheetnames for sheet in {"Impact Analysis", "Impact Summary"}):
                          failures.append("Missing sheet: Impact Analysis")
             
             elif exp == "data_quality_sheet":
-                if wb_analysis and "Data Quality" not in wb_analysis.sheetnames:
+                    if wb_analysis and "Data Quality" not in wb_analysis.sheetnames:
                      failures.append("Missing sheet: Data Quality")
 
             elif exp == "no_data_quality_sheet":
@@ -410,17 +415,24 @@ class GateTestRunner:
                     # Check first dimension sheet
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
+                        reserved = {"Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis", "Impact Summary", "Impact Detail", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
                             if s not in reserved:
                                 dims = [s]
                                 break
                     
                     if dims:
-                        if dims[0] not in wb_analysis.sheetnames:
+                        target_sheet = next(
+                            (
+                                sheet for sheet in wb_analysis.sheetnames
+                                if sheet == dims[0] or sheet.endswith(f"_{dims[0]}")
+                            ),
+                            None,
+                        )
+                        if target_sheet is None:
                              failures.append(f"Dimension sheet {dims[0]} missing")
                         else:
-                            ws = wb_analysis[dims[0]]
+                            ws = wb_analysis[target_sheet]
                             # Headers can be on row 1 (Rate) or row 3 (Share)
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
@@ -434,15 +446,22 @@ class GateTestRunner:
                      # Check first dimension sheet
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
+                        reserved = {"Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis", "Impact Summary", "Impact Detail", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
                             if s not in reserved:
                                 dims = [s]
                                 break
                     
                     if dims:
-                        if dims[0] in wb_analysis.sheetnames:
-                            ws = wb_analysis[dims[0]]
+                        target_sheet = next(
+                            (
+                                sheet for sheet in wb_analysis.sheetnames
+                                if sheet == dims[0] or sheet.endswith(f"_{dims[0]}")
+                            ),
+                            None,
+                        )
+                        if target_sheet is not None:
+                            ws = wb_analysis[target_sheet]
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
@@ -484,10 +503,16 @@ class GateTestRunner:
                     # Check first data sheet for fraud values
                     found_fraud = False
                     for sheet in wb_pub.sheetnames:
-                        if sheet == "Summary": continue
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
                         ws = wb_pub[sheet]
-                        # Find headers row
-                        headers = [str(c.value) for c in ws[3] if c.value]
+                        header_rows = list(ws.iter_rows(min_row=1, max_row=5, values_only=True))
+                        headers = []
+                        for row in header_rows:
+                            row_values = [str(value) for value in row if value]
+                            if any("Fraud" in value and "Rate" in value for value in row_values):
+                                headers = row_values
+                                break
                         fraud_idx = -1
                         for i, h in enumerate(headers):
                             if "Fraud" in h and "Rate" in h: # e.g. Fraud Rate
@@ -497,10 +522,24 @@ class GateTestRunner:
                         if fraud_idx != -1:
                             found_fraud = True
                             if not any("bps" in h.lower() for h in headers):
-                                pass
+                                failures.append("Fraud publication output is missing bps header")
                             break
                     if not found_fraud:
-                        pass
+                        failures.append("Fraud publication output is missing fraud rate column")
+
+            elif exp == "fraud_in_percent_in_publication":
+                if wb_pub:
+                    headers = []
+                    for sheet in wb_pub.sheetnames:
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
+                        ws = wb_pub[sheet]
+                        for row in ws.iter_rows(min_row=1, max_row=5, values_only=True):
+                            row_values = [str(value) for value in row if value]
+                            if row_values:
+                                headers.extend(row_values)
+                    if any("Fraud" in h and "bps" in h.lower() for h in headers):
+                        failures.append("Fraud publication output used bps when percent was expected")
 
             elif exp.startswith("audit_log="):
                  expected_log = exp.split("=")[1]
@@ -527,12 +566,16 @@ class GateTestRunner:
         return failures
 
     def run(self):
-        # 1. Clean previous run
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
-        
-        # 2. Generate
+        # 1. Generate
         self.generate_cases()
+
+        # 2. Clean generated outputs without deleting case definitions
+        generated_outputs = self.output_dir / "outputs"
+        if generated_outputs.exists():
+            shutil.rmtree(generated_outputs)
+        generated_template = self.output_dir / "config" / "generated_template.yaml"
+        if generated_template.exists():
+            generated_template.unlink()
         
         # 3. Load
         cases = self.load_cases()
@@ -553,9 +596,9 @@ class GateTestRunner:
             try:
                 # Use sys.executable instead of 'py' if possible
                 if command.startswith("py "):
-                    cmd_list = [sys.executable] + command[3:].split()
+                    cmd_list = [sys.executable] + shlex.split(command[3:])
                 else:
-                    cmd_list = command.split()
+                    cmd_list = shlex.split(command)
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
