@@ -795,6 +795,8 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
     analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
     artifacts = AnalysisArtifacts(
         results=results,
         metadata=metadata,
@@ -807,6 +809,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -1071,6 +1074,8 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     else:
         analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
 
     artifacts = AnalysisArtifacts(
         results=all_results,
@@ -1084,6 +1089,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )

@@ -134,7 +134,7 @@ class AnalysisArtifacts:
     analysis_output_file: Optional[str] = None
     analyzer: Any = None
     compliance_summary: Optional[Dict[str, Any]] = None
-    report_paths: Optional[Dict[str, str]] = None
+    report_paths: Optional[List[str]] = None
     csv_output: Optional[str] = None
     publication_output: Optional[str] = None
 
