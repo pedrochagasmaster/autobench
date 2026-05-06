@@ -9,8 +9,8 @@ description: "Minimize distortion - Tight weight bounds to limit market share di
 
 optimization:
   bounds:
-    max_weight: 1.0 # Identity - no peer volume changes at all
-    min_weight: 1.0 # Identity - no peer volume changes at all
+    max_weight: 1.0001
+    min_weight: 1.0
 
   linear_programming:
     max_iterations: 1000

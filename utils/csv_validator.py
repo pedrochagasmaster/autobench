@@ -20,6 +20,21 @@ import pandas as pd
 from openpyxl import load_workbook
 
 
+def _sheet_matches_dimension(sheet_name: str, dimension: str) -> bool:
+    """Check if an Excel sheet name matches a CSV dimension name."""
+    if sheet_name == dimension:
+        return True
+    if sheet_name.replace('_', '/') == dimension:
+        return True
+    normalized_sheet = sheet_name.lower().replace("_", "")
+    normalized_dim = dimension.lower().replace("_", "").replace("/", "")
+    if normalized_sheet == normalized_dim:
+        return True
+    if normalized_sheet.endswith(normalized_dim[:20]):
+        return True
+    return False
+
+
 def load_csv_data(csv_path: Path) -> pd.DataFrame:
     """Load the balanced CSV export file."""
     if not csv_path.exists():
@@ -46,8 +61,10 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     wb = load_workbook(excel_path, data_only=True)
     
     # Skip metadata sheets
-    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation', 
-                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes'}
+    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation',
+                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes',
+                   'Metadata', 'Preset Comparison', 'Impact Detail', 'Impact Summary',
+                   'Data Quality', 'Executive Summary'}
     
     dimension_data = {}
     
@@ -513,16 +530,19 @@ EXAMPLES:
     all_results = []
     
     for dimension in csv_df['Dimension'].unique():
-        # Find matching Excel sheet
         excel_df = None
         for sheet_name, df in excel_data.items():
-            # Match by sheet name (exact or sanitized)
-            if sheet_name == dimension or sheet_name.replace('_', '/') == dimension:
+            if _sheet_matches_dimension(sheet_name, dimension):
                 excel_df = df
                 break
-        
+
         if excel_df is None:
-            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
+            print(f"WARNING No matching Excel sheet for {dimension}")
+            all_results.append({
+                'dimension': dimension, 'total_checks': 0, 'passed': 0,
+                'failed': 1, 'skipped': 0, 'failures': [{'category': 'sheet_match',
+                'rate_type': '-', 'csv_rate': 0, 'excel_rate': 0, 'difference_pct': 0}],
+            })
             continue
         
         print(f"Validating dimension: {dimension}")
@@ -567,9 +587,15 @@ EXAMPLES:
     print(f"{'='*80}")
     print(f"Dimensions Validated: {len(all_results)}")
     print(f"Total Checks: {total_checks}")
-    print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
-    print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
-    print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    if total_checks > 0:
+        print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
+        print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
+        print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    else:
+        print(f"Passed: {total_passed}")
+        print(f"Failed: {total_failed}")
+        print(f"Skipped: {total_skipped}")
+        print("\nNo dimensions matched between CSV and Excel. Check sheet naming.")
     
     if total_failed == 0:
         print("\nALL VALIDATIONS PASSED")

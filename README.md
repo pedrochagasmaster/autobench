@@ -110,7 +110,7 @@ Important rules:
 - Entity names are case-sensitive.
 - Column names are normalized to lowercase with underscores.
 - Keep metric units consistent (currency, count definitions, etc.).
-- At least 4 participants are required for privacy-compliant analysis.
+- Non-merchant benchmarking requires enough peers for the selected privacy rule, starting at 5 peers for 5/25; merchant 4/35 is only available when merchant mode is explicitly used.
 - Nulls in key entity/metric fields will trigger validation issues.
 
 ## Privacy Rules (Auto-Applied)

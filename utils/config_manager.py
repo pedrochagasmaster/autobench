@@ -62,13 +62,11 @@ class ConfigManager:
         'approved_amt': 'approved_amount',
         'auth_approved_amt': 'approved_amount',
         
-        # Total transactions
-        'total_txns': 'total_count',
+        # Total transactions (rate analysis denominator)
         'auth_total': 'total_count',
         'total_count': 'total_count',
-        
-        # Total amounts
-        'total_amount': 'total_amount',
+
+        # Total amounts (rate analysis denominator)
         'auth_total_amt': 'total_amount',
         'total_amt': 'total_amount',
         
