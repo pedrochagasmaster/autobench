@@ -256,6 +256,21 @@ class DataLoader:
             logger.error(f"Failed to execute SQL query: {str(e)}")
             raise
     
+    @staticmethod
+    def _validate_sql_identifier(identifier: str) -> str:
+        """Validate a SQL identifier (table or qualified table.schema name).
+
+        We accept ANSI-style identifiers consisting of ASCII letters, digits,
+        and underscores, optionally with one ``.`` separator for ``schema.table``.
+        Anything else is rejected to avoid SQL injection through interpolation.
+        """
+        if not isinstance(identifier, str) or not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?",
+            identifier,
+        ):
+            raise ValueError(f"Unsafe SQL table name: {identifier!r}")
+        return identifier
+
     def load_from_sql_table(self, table_name: str) -> pd.DataFrame:
         """
         Load data from SQL table.
@@ -271,10 +286,11 @@ class DataLoader:
             Table data
         """
         logger.info(f"Loading data from SQL table: {table_name}")
-        
+
         try:
+            safe_table_name = self._validate_sql_identifier(table_name)
             connection = self.config.get_sql_connection()
-            query = f"SELECT * FROM {table_name}"
+            query = f"SELECT * FROM {safe_table_name}"
             df = pd.read_sql(query, connection)
             
             logger.info(f"Loaded {len(df)} rows from table")
@@ -945,12 +961,24 @@ class DataLoader:
             )
         )
         
-        # 8. Check for outlier rates
+        # 8. Check for impossible/outlier rates
         for rate_name, num_col in numerator_cols.items():
             valid_rows = df[total_col] > 0
             if valid_rows.any():
                 rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
-                outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
+                impossible_mask = rates > 100.0
+                impossible_count = int(impossible_mask.sum())
+                if impossible_count > 0:
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        category="invalid_rates",
+                        message=(
+                            f"Rate '{rate_name}' has {impossible_count} values above 100%"
+                        ),
+                    ))
+                outlier_mask = (rates < 0) | (
+                    rates > 100 + t['max_rate_deviation']
+                ) & ~impossible_mask
                 outliers = rates[outlier_mask]
                 if len(outliers) > 0:
                     issues.append(ValidationIssue(

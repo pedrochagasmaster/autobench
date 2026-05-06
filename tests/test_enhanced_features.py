@@ -335,6 +335,36 @@ class TestValidationEdgeCases:
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
         assert any('null' in str(i.message).lower() for i in errors)
 
+    def test_sql_table_identifier_rejected_for_unsafe_input(self, data_loader):
+        """Unsafe SQL identifiers must raise ValueError before reaching the connection."""
+        with pytest.raises(ValueError):
+            data_loader.load_from_sql_table("users; DROP TABLE customers")
+
+    def test_rate_input_flags_values_above_100_percent_as_error(self, data_loader):
+        """Approval > total rows must surface as an ERROR, not just a warning."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [100, 100, 100, 100, 100, 100],
+            'approved': [120, 95, 90, 85, 80, 70],
+            'dimension': ['X'] * 6,
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
+        # The numerator > denominator path catches this first; ensure the user
+        # is loudly warned about impossible rates rather than receiving only a
+        # quiet rate-deviation warning.
+        assert any(
+            i.category in {"invalid_rate", "invalid_rates"} for i in errors
+        )
+
 
 class TestPresetComparison:
     """Test preset comparison edge cases."""
