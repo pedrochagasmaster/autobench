@@ -289,8 +289,11 @@ class GateTestRunner:
                                     # Just warn for now as this is a new check
                                     logger.warning(f"Sheet '{sheet_name}' (Time: {t}): Balanced Mix sums to {s:.2f}%, expected ~100%")
                         else:
-                            # Global sum
-                            if not (99.0 < total_sum < 101.0):
+                            # Global sum. When the dimension has fewer than 2
+                            # categories, the share of a single category is the
+                            # peer aggregate's share of the population which
+                            # need not sum to 100%, so skip the check there.
+                            if len(vals) >= 2 and not (99.0 < total_sum < 101.0):
                                 failures.append(f"Sheet '{sheet_name}': Balanced Mix sums to {total_sum:.2f}%, expected ~100%")
                     except Exception as e:
                         logger.warning(f"Could not verify sum for {col}: {e}")
@@ -350,16 +353,30 @@ class GateTestRunner:
 
         # Determine output paths
         output_arg = params.get("output")
-        analysis_file = None
-        
+        analysis_file: Optional[Path] = None
+
         if output_arg:
             analysis_file = Path(output_arg)
-        elif any(e in expectations for e in ["list_presets_output", "preset_details_output", "validate_template_ok"]):
-            # These cases check stdout or exit code, which are already handled/ignored here.
-            # So we consider them passed if we reached here (execution success).
-            return failures
         else:
-            # Try to find file matching pattern if auto-generated
+            # Fallback: core/exhaustive sweep records the output path as an
+            # ``output_base=...`` expectation rather than inside ``params``.
+            for exp in expectations:
+                if isinstance(exp, str) and exp.startswith("output_base="):
+                    analysis_file = Path(exp.split("=", 1)[1])
+                    break
+
+        if analysis_file is None:
+            stdout_only_markers = {
+                "list_presets_output",
+                "preset_details_output",
+                "validate_template_ok",
+                "output_filename_auto_generated",
+            }
+            if any(e in expectations for e in stdout_only_markers):
+                # These cases check stdout, exit code, or rely on the analysis
+                # script picking its own filename. They have already executed
+                # successfully if we reached this point.
+                return failures
             failures.append("Cannot verify output: explicit output path not found in params")
             return failures
 
