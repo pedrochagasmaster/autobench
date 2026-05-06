@@ -349,10 +349,12 @@ class HeuristicSolver(PrivacySolver):
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
         rule_cfg = PrivacyValidator.get_rule_config(rule_name)
         additional = rule_cfg.get('additional') if rule_cfg else None
-        if not additional: return None, False
+        if not additional:
+            return None, False
 
         min_entities = int(rule_cfg.get('min_entities', 0))
-        if min_entities <= 0: return None, False
+        if min_entities <= 0:
+            return None, False
 
         peer_scale = min(1.0, participants / float(min_entities)) if min_entities > 0 else 1.0
         rep_scale = max(self.dynamic_threshold_scale_floor, min(1.0, representativeness))
