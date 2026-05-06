@@ -6,6 +6,12 @@
 
 version: "3.0"
 
+# Compliance posture is mandatory and public:
+# - strict: final compliant verdict is required
+# - best_effort: attempts compliance, but labeled non-compliant/indeterminate outputs may complete
+# - accuracy_first: prioritizes fidelity and requires explicit runtime acknowledgement
+compliance_posture: "strict"
+
 # ============================================================================
 # NOTE: Column names are specified via CLI flags, not in config files
 # ============================================================================
@@ -16,6 +22,20 @@ version: "3.0"
 #   --dimensions: Dimension columns for analysis (e.g., "credit_debit_flag tipo_compra")
 #
 # Column names must match exactly as they appear in your dataset (after normalization)
+
+# ============================================================================
+# INPUT SETTINGS
+# ============================================================================
+input:
+  # Schema detection mode for DataLoader (controls minimal/full schema checks)
+  # - heuristic: infer by column name patterns
+  # - mapped: use column_mappings only (strict)
+  # - hybrid: try mappings first, then fall back to heuristics
+  schema_detection_mode: "heuristic"
+  # Optional CSV guardrails (null disables limit)
+  max_csv_size_mb: null
+  max_csv_rows: null
+  csv_chunk_size: null
 
 # ============================================================================
 # OUTPUT SETTINGS
@@ -49,7 +69,7 @@ output:
 # ============================================================================
 # Privacy rules are automatically determined based on the number of peers
 # in the dataset according to Mastercard Control 3.2:
-# - 4 peers: max 35% concentration
+# - 4 peers (merchant_mode only): max 35% concentration
 # - 5 peers: max 25% concentration  
 # - 6 peers: max 30% concentration
 # - 7 peers: max 35% concentration
@@ -81,6 +101,13 @@ optimization:
     # Exponent for volume weighting (only used if volume_weighted_penalties=true)
     # 1.0 = linear weighting, 2.0 = quadratic (stronger emphasis on large volumes)
     volume_weighting_exponent: 1.0
+
+    # Rank constraint strategy (reduces O(P^2) constraints for large peer sets)
+    # mode: all (default) or neighbor (only enforces order for nearest peers)
+    # neighbor_k: number of adjacent peers to constrain when mode=neighbor
+    rank_constraints:
+      mode: all
+      neighbor_k: 1
   
   # Weight bounds
   bounds:
@@ -97,9 +124,37 @@ optimization:
     # 0.0 = No rank preservation (weights can freely reorder peers)
     # 1.0 = Strong rank preservation (maintain original peer ordering)
     volume_preservation: 0.5
+
+    # Weight consistency mode: global (single weight-set) or per_dimension
+    consistency_mode: global
+
+    # If true, enforce a single global weight-set and disable per-dimension fallback
+    enforce_single_weight_set: false
     
     # Enforce additional Control 3.2 rule conditions (6/30, 7/35, 10/40)
     enforce_additional_constraints: true
+
+    # Dynamic constraints to handle sparse or unrepresentative buckets
+    dynamic_constraints:
+      enabled: true
+      # Minimum peer count in a category/time bucket to enforce additional constraints
+      min_peer_count: 4
+      # Minimum effective peer count (1/sum(share^2)) to enforce additional constraints
+      min_effective_peer_count: 3.0
+      # Minimum share of volume within the dimension/time slice
+      min_category_volume_share: 0.001
+      # Minimum share of overall volume
+      min_overall_volume_share: 0.0005
+      # Minimum representativeness score to enforce additional constraints
+      min_representativeness: 0.1
+      # Floor for scaling additional-constraint thresholds in sparse buckets
+      threshold_scale_floor: 0.6
+      # Floor for scaling required participant counts in sparse buckets
+      count_scale_floor: 0.5
+      # Minimum penalty weight for low-representativeness buckets
+      penalty_floor: 0.25
+      # Exponent for representativeness penalty weighting
+      penalty_power: 1.0
   
   # Subset search settings (only applies to default global weighting mode)
   # Subset search tries to find optimal dimension combinations when all dimensions together
@@ -151,6 +206,9 @@ optimization:
     # Learning rate
     learning_rate: 0.01
 
+    # Penalty multiplier for cap/additional-constraint violations
+    violation_penalty_weight: 1000.0
+
 # ============================================================================
 # ANALYSIS SETTINGS
 # ============================================================================
@@ -162,3 +220,6 @@ analysis:
   
   # Auto-detect dimensions from data (if --auto flag used)
   auto_detect_dimensions: false
+
+  # Merchant benchmarking mode (enables 4/35 rule for 4 peers)
+  merchant_mode: false

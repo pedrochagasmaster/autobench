@@ -5,5 +5,5 @@
 {"id": "config_show_minimal_distortion", "command": "py benchmark.py config show minimal_distortion", "params": {"preset": "minimal_distortion"}, "expectations": ["preset_details_output"]}
 {"id": "config_show_research_exploratory", "command": "py benchmark.py config show research_exploratory", "params": {"preset": "research_exploratory"}, "expectations": ["preset_details_output"]}
 {"id": "config_show_strategic_consistency", "command": "py benchmark.py config show strategic_consistency", "params": {"preset": "strategic_consistency"}, "expectations": ["preset_details_output"]}
-{"id": "config_validate_template", "command": "py benchmark.py config validate config\\template.yaml", "params": {"config": "config\\template.yaml"}, "expectations": ["validate_template_ok"]}
-{"id": "config_generate_template", "command": "py benchmark.py config generate test_sweeps\\config\\generated_template.yaml", "params": {"output": "test_sweeps\\config\\generated_template.yaml"}, "expectations": ["template_created"]}
+{"id": "config_validate_template", "command": "py benchmark.py config validate config/template.yaml", "params": {"config": "config/template.yaml"}, "expectations": ["validate_template_ok"]}
+{"id": "config_generate_template", "command": "py benchmark.py config generate test_sweeps/config/generated_template.yaml", "params": {"output": "test_sweeps/config/generated_template.yaml"}, "expectations": ["template_created"]}

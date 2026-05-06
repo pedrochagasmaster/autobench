@@ -1,0 +1,11 @@
+{
+  "sweep_dir": "/workspace/test_sweeps",
+  "case_count": 1063,
+  "duration_s": 255.7,
+  "counts": {
+    "pass": 1063,
+    "fail": 0,
+    "error": 0
+  },
+  "pass_rate_pct": 100.0
+}
