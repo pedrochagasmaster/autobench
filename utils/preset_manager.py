@@ -93,6 +93,10 @@ class PresetManager:
             Preset configuration dictionary, or None if not found
         """
         return self._presets.get(name)
+
+    def load_preset(self, name: str) -> Optional[Dict[str, Any]]:
+        """Backward-compatible alias for callers that use load terminology."""
+        return self.get_preset(name)
     
     def preset_exists(self, name: str) -> bool:
         """Check if preset exists.
@@ -155,7 +159,7 @@ class PresetManager:
             lines.append("")
         
         lines.append("=" * 80)
-        lines.append(f"Use: benchmark config show <preset> to see full details")
+        lines.append("Use: benchmark config show <preset> to see full details")
         
         return "\n".join(lines)
     

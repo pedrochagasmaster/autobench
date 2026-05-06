@@ -30,7 +30,6 @@ from textual.widgets import (
 )
 from textual.worker import Worker, WorkerState
 from textual import work
-from textual.logging import TextualHandler
 from datetime import datetime
 from textual.screen import ModalScreen
 
@@ -644,7 +643,9 @@ class BenchmarkApp(App):
         # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -828,12 +829,20 @@ class BenchmarkApp(App):
         
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
+        for existing in list(root_logger.handlers):
+            if isinstance(existing, LogHandler):
+                root_logger.removeHandler(existing)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
         
         # Clear specific loggers to prevent duplication if they have handlers
         logging.getLogger("benchmark").handlers.clear()
         logging.getLogger("core").handlers.clear()
+
+    def _current_mode(self) -> str:
+        """Return the active analysis mode from the tab widget."""
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
@@ -1133,14 +1142,20 @@ class BenchmarkApp(App):
                 entity = entity_val if entity_val != Select.BLANK else None
                 entity_col_val = self.query_one("#entity_col").value
                 entity_col = entity_col_val if entity_col_val != Select.BLANK else "issuer_name"
+                if entity_col == "issuer_name" and csv_path:
+                    headers = list(pd.read_csv(csv_path, nrows=0).columns)
+                    normalized_headers = [h.lower().replace(" ", "_") for h in headers]
+                    if "issuer_name" not in normalized_headers:
+                        self.call_from_thread(self.notify, "Select the entity column before running.", severity="error")
+                        self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
+                        return
                 preset_val = self.query_one("#preset_select").value
                 preset = preset_val if preset_val != Select.BLANK else None
                 output_file = self.query_one("#output_file").value or None
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                tabbed_content = self.query_one(TabbedContent)
-                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
+                mode = self._current_mode()
 
                 request = AnalysisRunRequest(
                     mode=mode,
@@ -1270,8 +1285,7 @@ class BenchmarkApp(App):
             request = saved_request
             logger = logging.getLogger("benchmark")
             try:
-                if saved_df is not None:
-                    request.df = saved_df
+                request.df = saved_df
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})

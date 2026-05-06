@@ -368,14 +368,15 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
     def test_write_audit_log_omits_analyzer_ref_and_uses_report_summary(self) -> None:
         config = ConfigManager()
+        privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
         metadata = {
             'privacy_rule': 'MC-3.2',
             'impact_summary': {'mean_abs_impact_pp': 1.25},
             'additional_constraint_violations_count': 3,
             'analyzer_ref': object(),
+            'privacy_validation_df': privacy_validation_df,
         }
         impact_df = pd.DataFrame({'Dimension': ['channel']})
-        privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
         validation_issues = [SimpleNamespace(severity=ValidationSeverity.ERROR)]
 
         with patch('core.analysis_run.ReportGenerator') as report_generator_cls:
@@ -398,6 +399,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(audit_log_file, 'benchmark_share_target_audit.log')
         self.assertEqual(called_log_file, 'benchmark_share_target_audit.log')
         self.assertNotIn('analyzer_ref', called_metadata)
+        self.assertEqual(called_metadata['privacy_validation_df'], 'DataFrame rows=1 cols=2')
         self.assertEqual(called_summary['dimensions_analyzed'], 4)
         self.assertEqual(called_summary['privacy_validation_rows'], 1)
         self.assertEqual(called_summary['validation_errors'], 1)

@@ -1,5 +1,6 @@
 import sys
 import json
+import shlex
 import subprocess
 import shutil
 import logging
@@ -10,9 +11,33 @@ import pandas as pd
 import numpy as np
 from openpyxl import load_workbook
 
+RESERVED_SHEETS = {
+    "Summary",
+    "Metadata",
+    "Data Quality",
+    "Preset Comparison",
+    "Impact Analysis",
+    "Impact Detail",
+    "Impact Summary",
+    "Peer Weights",
+    "Weight Methods",
+    "Privacy Validation",
+    "Secondary Metrics",
+    "Subset Search",
+    "Structural Summary",
+    "Structural Detail",
+    "Rank Changes",
+}
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _sheet_matches_dimension(sheet_name: str, dimension: str) -> bool:
+    normalized_sheet = sheet_name.lower().replace("_", "").replace("/", "")
+    normalized_dim = str(dimension).lower().replace("_", "").replace("/", "")
+    return normalized_sheet == normalized_dim or normalized_sheet.endswith(normalized_dim[:20])
 
 class GateTestRunner:
     def __init__(self, output_dir: str = "test_gate"):
@@ -55,12 +80,7 @@ class GateTestRunner:
     def verify_workbook_content(self, wb, case_id: str, analysis_type: str) -> List[str]:
         """Deep verification of workbook content (sanity checks)."""
         failures = []
-        reserved = {
-            "Summary", "Data Quality", "Preset Comparison", "Impact Analysis", 
-            "Peer Weights", "Weight Methods", "Privacy Validation", "Secondary Metrics",
-            "Subset Search", "Structural Summary", "Structural Detail", "Rank Changes"
-        }
-        dim_sheets = [s for s in wb.sheetnames if s not in reserved]
+        dim_sheets = [s for s in wb.sheetnames if s not in RESERVED_SHEETS]
         
         if not dim_sheets:
             # Not necessarily a failure if no dimensions requested? But unusual for gate test.
@@ -89,7 +109,8 @@ class GateTestRunner:
             data_rows = []
             for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
                 # Check if row is empty
-                if not any(row): continue
+                if not any(row):
+                    continue
                 # Map to headers (truncate row to len headers)
                 # Ensure we handle cases where row is shorter than headers or vice versa
                 row_vals = row[:len(headers)]
@@ -115,21 +136,21 @@ class GateTestRunner:
                     failures.append(f"Sheet '{sheet_name}': Contains duplicate rows for keys {keys}. Sample:\n{dupes}")
 
             # 1. Excel Errors
+            error_patterns = ("#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?")
             for col in df.columns:
-                if df[col].astype(str).str.contains("#").any():
-                    # Check if it's really an error like #DIV/0! or #N/A
-                    error_patterns = ["#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?"]
-                    if any(df[col].isin(error_patterns).any() for pat in error_patterns):
-                         failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
+                values = df[col].astype(str)
+                if values.apply(lambda cell: any(pattern in cell for pattern in error_patterns)).any():
+                    failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
 
             # 2. Sensible Ranges
             # Rate/Share percentages: 0 to 100
-            pct_cols = [c for c in df.columns if "%" in c or "Share" in c or "Rate" in c]
+            pct_cols = [c for c in df.columns if "%" in str(c) or "Share" in str(c) or "Rate" in str(c)]
             for col in pct_cols:
                 # Skip text columns (like Category if it happens to have %)
                 try:
                     vals = pd.to_numeric(df[col], errors='coerce').dropna()
-                    if vals.empty: continue
+                    if vals.empty:
+                        continue
                     
                     min_val, max_val = vals.min(), vals.max()
                     if min_val < -0.1 or max_val > 100.1: # Small epsilon
@@ -138,7 +159,7 @@ class GateTestRunner:
                     pass
             
             # 2b. Positive Values (Volume, Count)
-            pos_cols = [c for c in df.columns if any(x in c.lower() for x in ["volume", "count", "transactions", "clients"])]
+            pos_cols = [c for c in df.columns if any(x in str(c).lower() for x in ["volume", "count", "transactions", "clients"])]
             for col in pos_cols:
                 try:
                     vals = pd.to_numeric(df[col], errors='coerce').dropna()
@@ -283,7 +304,7 @@ class GateTestRunner:
                 else:
                     # Fallback or warn if not found, but only if sheet is not empty
                     if dq_ws.max_row > 1:
-                        logger.warning(f"Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
+                        logger.warning("Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
 
                 for item in dq_data:
                     # Assuming columns like "Severity", "Message"
@@ -339,10 +360,20 @@ class GateTestRunner:
             return failures
 
         pub_file = analysis_file.with_name(f"{analysis_file.stem}_publication{analysis_file.suffix}")
+        if "publication_workbook" in expectations and "analysis_workbook" not in expectations:
+            analysis_file = pub_file
         csv_file = analysis_file.with_suffix("").with_name(f"{analysis_file.stem}_balanced.csv")
         
         wb_analysis = None
         wb_pub = None
+
+        def resolve_sheet_name(workbook, dimension: str) -> Optional[str]:
+            if not workbook:
+                return None
+            for sheet_name in workbook.sheetnames:
+                if _sheet_matches_dimension(sheet_name, dimension):
+                    return sheet_name
+            return None
 
         for exp in expectations:
             if exp == "analysis_workbook":
@@ -410,17 +441,18 @@ class GateTestRunner:
                     # Check first dimension sheet
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
+                        reserved = {"Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis", "Impact Detail", "Impact Summary", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
                             if s not in reserved:
                                 dims = [s]
                                 break
                     
                     if dims:
-                        if dims[0] not in wb_analysis.sheetnames:
+                        sheet_name = resolve_sheet_name(wb_analysis, dims[0])
+                        if sheet_name is None:
                              failures.append(f"Dimension sheet {dims[0]} missing")
                         else:
-                            ws = wb_analysis[dims[0]]
+                            ws = wb_analysis[sheet_name]
                             # Headers can be on row 1 (Rate) or row 3 (Share)
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
@@ -434,15 +466,16 @@ class GateTestRunner:
                      # Check first dimension sheet
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
+                        reserved = {"Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis", "Impact Detail", "Impact Summary", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
                             if s not in reserved:
                                 dims = [s]
                                 break
                     
                     if dims:
-                        if dims[0] in wb_analysis.sheetnames:
-                            ws = wb_analysis[dims[0]]
+                        sheet_name = resolve_sheet_name(wb_analysis, dims[0])
+                        if sheet_name is not None:
+                            ws = wb_analysis[sheet_name]
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
@@ -484,23 +517,33 @@ class GateTestRunner:
                     # Check first data sheet for fraud values
                     found_fraud = False
                     for sheet in wb_pub.sheetnames:
-                        if sheet == "Summary": continue
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
                         ws = wb_pub[sheet]
                         # Find headers row
+                        if ws.max_row < 3:
+                            continue
                         headers = [str(c.value) for c in ws[3] if c.value]
-                        fraud_idx = -1
-                        for i, h in enumerate(headers):
-                            if "Fraud" in h and "Rate" in h: # e.g. Fraud Rate
-                                fraud_idx = i
-                                break
-                        
-                        if fraud_idx != -1:
+                        if "fraud" in sheet.lower():
                             found_fraud = True
                             if not any("bps" in h.lower() for h in headers):
-                                pass
+                                failures.append("Fraud publication output is missing bps header")
                             break
                     if not found_fraud:
-                        pass
+                        failures.append("Fraud publication output is missing fraud rate column")
+
+            elif exp == "fraud_in_percent_in_publication":
+                if wb_pub:
+                    headers = []
+                    for sheet in wb_pub.sheetnames:
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
+                        ws = wb_pub[sheet]
+                        if ws.max_row < 3:
+                            continue
+                        headers.extend(str(c.value) for c in ws[3] if c.value)
+                    if any("Fraud" in h and "bps" in h.lower() for h in headers):
+                        failures.append("Fraud publication output used bps when percent was expected")
 
             elif exp.startswith("audit_log="):
                  expected_log = exp.split("=")[1]
@@ -527,14 +570,17 @@ class GateTestRunner:
         return failures
 
     def run(self):
-        # 1. Clean previous run
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
-        
-        # 2. Generate
+        # 1. Generate case definitions before cleaning generated outputs.
         self.generate_cases()
+        generated_outputs = self.output_dir / "outputs"
+        if generated_outputs.exists():
+            shutil.rmtree(generated_outputs)
+        generated_template = self.output_dir / "config" / "generated_template.yaml"
+        if generated_template.exists():
+            generated_template.unlink()
+        generated_outputs.mkdir(parents=True, exist_ok=True)
         
-        # 3. Load
+        # 2. Load
         cases = self.load_cases()
         logger.info(f"Loaded {len(cases)} cases.")
         
@@ -553,9 +599,9 @@ class GateTestRunner:
             try:
                 # Use sys.executable instead of 'py' if possible
                 if command.startswith("py "):
-                    cmd_list = [sys.executable] + command[3:].split()
+                    cmd_list = [sys.executable] + shlex.split(command[3:])
                 else:
-                    cmd_list = command.split()
+                    cmd_list = shlex.split(command)
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root

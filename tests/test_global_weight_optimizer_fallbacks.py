@@ -151,6 +151,24 @@ class _FakeAnalyzer:
 
 
 class TestGlobalWeightOptimizerFallbacks(unittest.TestCase):
+    def test_global_optimizer_aborts_on_insufficient_peers(self) -> None:
+        analyzer = _FakeAnalyzer(
+            all_categories=[],
+            peer_volumes={'P1': 100.0, 'P2': 50.0, 'P3': 25.0},
+            peers=['P1', 'P2', 'P3'],
+            enforce_single_weight_set=False,
+        )
+        analyzer._get_privacy_rule = lambda _peer_count: ('insufficient', 0.0)
+
+        optimizer = GlobalWeightOptimizer(analyzer)
+
+        with self.assertRaisesRegex(ValueError, "Insufficient peers"):
+            optimizer.calculate_global_privacy_weights(
+                df=pd.DataFrame({'issuer_name': ['P1', 'P2', 'P3'], 'metric': [100.0, 50.0, 25.0]}),
+                metric_col='metric',
+                dimensions=['flag_domestic'],
+            )
+
     def test_internal_time_total_dimension_is_not_sent_to_per_dimension_solver(self) -> None:
         # Only internal TIME_TOTAL constraints violate; optimizer must not attempt per-dimension solve for them.
         all_categories = [

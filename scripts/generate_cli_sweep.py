@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+import yaml
 
 
 PREFERRED_ENTITY_COLS = [
@@ -204,6 +205,25 @@ def list_presets() -> List[str]:
     return sorted([p.stem for p in Path("presets").glob("*.yaml")])
 
 
+def preset_requires_accuracy_acknowledgement(preset_name: Optional[str]) -> bool:
+    if not preset_name:
+        return False
+    preset_path = Path("presets") / f"{preset_name}.yaml"
+    if not preset_path.exists():
+        return False
+    try:
+        data = yaml.safe_load(preset_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    return data.get("compliance_posture") == "accuracy_first"
+
+
+def add_accuracy_acknowledgement_if_needed(flags: List[str], params: Dict) -> None:
+    if preset_requires_accuracy_acknowledgement(params.get("preset")):
+        add_flag(flags, "--acknowledge-accuracy-first", True)
+        params["acknowledge_accuracy_first"] = True
+
+
 def build_command(base: List[str], flags: List[str]) -> str:
     parts = base + flags
     return " ".join(quote_arg(p) for p in parts if p)
@@ -270,9 +290,9 @@ def expectations_for_case(params: Dict, analysis_type: str, output_path: Optiona
         expectations.append("per_dimension_weight_methods")
 
     if analysis_type == "rate":
-        if params.get("fraud_col") and params.get("fraud_in_bps") is True:
+        if params.get("fraud_col") and params.get("fraud_in_bps") is True and output_format in ("publication", "both"):
             expectations.append("fraud_in_bps_in_publication")
-        if params.get("fraud_col") and params.get("fraud_in_bps") is False:
+        if params.get("fraud_col") and params.get("fraud_in_bps") is False and output_format in ("publication", "both"):
             expectations.append("fraud_in_percent_in_publication")
 
     if params.get("entity"):
@@ -404,7 +424,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -468,6 +488,7 @@ def generate_core_cases(
             "csv": str(csv_path),
             "entity": entity_params.get("entity"),
             "entity_col": entity_col,
+            "output": str(output_path),
             **dim_params,
             **preset_params,
             **fmt_params,
@@ -494,6 +515,7 @@ def generate_core_cases(
             add_flag(flags, "--validate-input", True)
         if params.get("validate_input") is False:
             add_flag(flags, "--no-validate-input", True)
+        add_accuracy_acknowledgement_if_needed(flags, params)
         add_flag(flags, "--output", str(output_path))
 
         command = build_command(base_args, flags)
@@ -531,6 +553,7 @@ def generate_feature_cases(
         "entity_col": entity_col,
         "dimensions": dimensions,
         "auto": False,
+        "output": str(baseline_output),
         "output_format": "analysis",
         "validate_input": True,
     }
@@ -605,7 +628,8 @@ def generate_feature_cases(
         output_path = output_dir / f"{case_id}.xlsx"
         flags = build_base_flags(output_path)
         flags.extend(extra_flags)
-        params = {**baseline_params, **param_updates}
+        params = {**baseline_params, "output": str(output_path), **param_updates}
+        add_accuracy_acknowledgement_if_needed(flags, params)
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)
@@ -619,6 +643,7 @@ def generate_feature_cases(
         idx = flags.index("--output")
         del flags[idx : idx + 2]
     params = dict(baseline_params)
+    params.pop("output", None)
     params["output_format"] = "analysis"
     command = build_command(base_args, flags)
     expectations = expectations_for_case(params, analysis_type, None)

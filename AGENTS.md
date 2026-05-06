@@ -766,16 +766,14 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests (49/54 pass on main)
-py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate cases fail
-                                # due to a pre-existing quoting bug in the gate runner
-                                # (it splits entity names with spaces incorrectly on Linux).
+py -m pytest tests/ -v          # Unit tests
+py scripts/perform_gate_test.py # Gate test
 ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
 ```
 
 ### Missing modules (incomplete refactoring)
 
-The `main` branch at HEAD references several `core.*` modules that were never committed during a recent refactoring (`contracts`, `compliance`, `observability`, `output_artifacts`, `preset_comparison`, `preset_workflow`, `excel_reports`, `privacy_policy`). Stub implementations were created in this setup branch to unblock imports and basic functionality. A few unit tests (5 of 54) fail because these stubs don't replicate the full intended behaviour. If the original author merges the real implementations, these stubs should be replaced.
+The orchestration modules under `core.*` are the active implementation boundaries for CLI/TUI execution, compliance summaries, output artifacts, preset comparison, Excel reports, and privacy policy. Keep behavior changes covered by tests in `tests/`.
 
 ### Test data
 

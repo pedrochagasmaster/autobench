@@ -107,10 +107,10 @@ ITAU UNIBANCO,Domestic,CREDIT,180000,22000000
 
 Important rules:
 
-- Entity names are case-sensitive.
+- Entity matching resolves case-insensitive single matches, but exact names avoid ambiguity.
 - Column names are normalized to lowercase with underscores.
 - Keep metric units consistent (currency, count definitions, etc.).
-- At least 4 participants are required for privacy-compliant analysis.
+- Non-merchant benchmarking requires enough peers for the selected privacy rule, starting at 5 peers for 5/25; merchant 4/35 is only available when merchant mode is explicitly used.
 - Nulls in key entity/metric fields will trigger validation issues.
 
 ## Privacy Rules (Auto-Applied)
@@ -276,15 +276,15 @@ Optional diagnostic sheets (appear when enabled or triggered):
 
 For contributors, run both after changes:
 
-```powershell
+```bash
 py scripts/perform_gate_test.py
 py -m pytest
 ```
 
 Optional CSV-vs-Excel cross-check:
 
-```powershell
-py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
+```bash
+py utils/csv_validator.py report.xlsx report_balanced.csv --verbose
 ```
 
 ## Additional Documentation

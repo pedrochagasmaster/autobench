@@ -291,7 +291,9 @@ class PrivacyValidator:
         """
         rules = cls.get_rules()
 
-        if merchant_mode and '4/35' in rules and peer_count >= int(rules['4/35'].get('min_entities', 4)):
+        # Merchant 4/35 is the explicit four-peer merchant exception. Larger
+        # merchant groups use the same tier selection as non-merchant groups.
+        if merchant_mode and '4/35' in rules and peer_count == int(rules['4/35'].get('min_entities', 4)):
             return '4/35'
 
         ordered_rules = sorted(
@@ -646,7 +648,7 @@ class PrivacyValidator:
             if count_8 < (self.additional_constraints['min_count_15'] + 
                          self.additional_constraints.get('min_count_8', 0)):
                 warnings.append(
-                    f"Rule 7/35: Additional entity >= 8% requirement not met"
+                    "Rule 7/35: Additional entity >= 8% requirement not met"
                 )
                 constraints_met = False
         
@@ -665,7 +667,7 @@ class PrivacyValidator:
             if count_10 < (self.additional_constraints['min_count_20'] + 
                           self.additional_constraints.get('min_count_10', 0)):
                 warnings.append(
-                    f"Rule 10/40: Additional entity >= 10% requirement not met"
+                    "Rule 10/40: Additional entity >= 10% requirement not met"
                 )
                 constraints_met = False
         
