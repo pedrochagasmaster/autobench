@@ -63,12 +63,10 @@ class ConfigManager:
         'auth_approved_amt': 'approved_amount',
         
         # Total transactions
-        'total_txns': 'total_count',
         'auth_total': 'total_count',
         'total_count': 'total_count',
         
         # Total amounts
-        'total_amount': 'total_amount',
         'auth_total_amt': 'total_amount',
         'total_amt': 'total_amount',
         

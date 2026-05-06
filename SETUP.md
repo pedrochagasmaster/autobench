@@ -29,7 +29,7 @@ To update the **source code** (scripts, logic) on the server, use standard `git`
 If you see "not a git repository" or branch errors:
 
 ```bash
-cd /ads_storage/autobench && git init && git remote add origin https://e176097@scm.mastercard.int/stash/scm/~e176097/autobench.git && git fetch origin && git checkout -f -b main origin/maingit checkout -f -b main origin/main
+cd /ads_storage/autobench && git init && git remote add origin https://e176097@scm.mastercard.int/stash/scm/~e176097/autobench.git && git fetch origin && git checkout -f -b main origin/main
 ```
 
 ### Routine Updates
