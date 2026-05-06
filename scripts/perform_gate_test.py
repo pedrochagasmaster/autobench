@@ -527,9 +527,10 @@ class GateTestRunner:
         return failures
 
     def run(self):
-        # 1. Clean previous run
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
+        # 1. Clean previous generated outputs only (preserve case definitions)
+        generated_outputs = self.output_dir / "outputs"
+        if generated_outputs.exists():
+            shutil.rmtree(generated_outputs)
         
         # 2. Generate
         self.generate_cases()
@@ -551,11 +552,11 @@ class GateTestRunner:
             
             # Execute
             try:
-                # Use sys.executable instead of 'py' if possible
+                import shlex
                 if command.startswith("py "):
-                    cmd_list = [sys.executable] + command[3:].split()
+                    cmd_list = [sys.executable] + shlex.split(command[3:])
                 else:
-                    cmd_list = command.split()
+                    cmd_list = shlex.split(command)
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
