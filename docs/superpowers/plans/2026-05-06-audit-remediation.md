@@ -24,6 +24,163 @@ Do not modify `presets/*.yaml` casually. Preset changes in this plan are explici
 
 ---
 
+## Runtime Investigation Evidence
+
+These checks were run on 2026-05-06 against branch `cursor/audit-remediation-plan-3937` before enriching this plan. They should become automated regression coverage during implementation.
+
+### Mock Data Generation
+
+There is no dedicated `mock_*` data module in the repository. The closest in-repo generation utility is `scripts/generate_cli_sweep.py`, which inspects an existing CSV and emits CLI cases. For this investigation, deterministic long-format mock data was generated at `/tmp/audit_cli_mock.csv` with:
+
+```python
+from pathlib import Path
+import pandas as pd
+
+entities = ["Target", "P1", "P2", "P3", "P4", "P5", "P6"]
+rows = []
+volumes = {
+    ("2024-01", "CREDIT", "Online"): [100, 420, 90, 80, 70, 60, 50],
+    ("2024-01", "CREDIT", "Store"): [120, 180, 160, 150, 140, 130, 120],
+    ("2024-01", "DEBIT", "Online"): [80, 90, 85, 80, 75, 70, 65],
+    ("2024-02", "CREDIT", "Online"): [95, 400, 95, 85, 75, 65, 55],
+    ("2024-02", "CREDIT", "Store"): [110, 175, 165, 155, 145, 135, 125],
+    ("2024-02", "DEBIT", "Online"): [85, 92, 88, 82, 78, 72, 68],
+}
+for (month, card_type, channel), values in volumes.items():
+    for entity, txn in zip(entities, values):
+        total = txn * 10
+        approved = int(total * (0.88 if entity == "P1" else 0.92))
+        fraud = max(1, int(total * (0.012 if entity == "P1" else 0.006)))
+        rows.append({
+            "issuer_name": entity,
+            "year_month": month,
+            "card_type": card_type,
+            "channel": channel,
+            "txn_cnt": txn,
+            "total": total,
+            "approved": approved,
+            "fraud": fraud,
+        })
+Path("/tmp/audit_cli_mock.csv").write_text(pd.DataFrame(rows).to_csv(index=False), encoding="utf-8")
+```
+
+### Sweep Generator Behavior
+
+Run:
+
+```bash
+py scripts/generate_cli_sweep.py --mode gate --csv /tmp/audit_cli_mock.csv --out-dir /tmp/audit_cli_sweep
+```
+
+Observed:
+
+- Generated share command uses `--metric txn_cnt --dimensions card_type channel --time-col year_month`.
+- Generated rate command uses `--total-col total --approved-col approved --dimensions card_type channel --time-col year_month`.
+- The sweep generator works when a CSV is supplied, but the gate runner still fails without local CSV input and still uses the command parsing bug described in Task 9.
+
+### CLI Share Behavior
+
+Run:
+
+```bash
+py benchmark.py share --metric txn_cnt --csv /tmp/audit_cli_mock.csv --entity-col issuer_name --entity Target --dimensions card_type channel --time-col year_month --output /tmp/audit_cli_outputs/share_both.xlsx --output-format both --debug --export-balanced-csv --include-calculated --validate-input
+```
+
+Observed:
+
+- Exit code: `0`.
+- Validation reported `0 errors, 0 warnings`.
+- Optimizer selected rule `6/30`, lowered `P1` to multiplier `0.6517`, and raised other peers to `1.0697`.
+- Logs reported `Built privacy validation data: 48 validation entries`.
+- Only `/tmp/audit_cli_outputs/share_both.xlsx`, `/tmp/audit_cli_outputs/share_both_balanced.csv`, and `/tmp/audit_cli_outputs/share_both_audit.log` were created.
+- `/tmp/audit_cli_outputs/share_both_publication.xlsx` was not created even though `--output-format both` was used.
+- Workbook sheets were `Summary`, `Metric_1_card_type`, `Metric_2_channel`, and `Metadata`; `Peer Weights`, `Weight Methods`, and `Privacy Validation` sheets were missing.
+
+### CLI Rate Behavior
+
+Run:
+
+```bash
+py benchmark.py rate --total-col total --approved-col approved --fraud-col fraud --csv /tmp/audit_cli_mock.csv --entity-col issuer_name --entity Target --dimensions card_type channel --time-col year_month --output /tmp/audit_cli_outputs/rate_both.xlsx --output-format both --debug --validate-input --fraud-in-bps
+```
+
+Observed:
+
+- Exit code: `0`.
+- Validation reported `0 errors, 0 warnings`.
+- Logs reported `Built privacy validation data: 48 validation entries`.
+- Only `/tmp/audit_cli_outputs/rate_both.xlsx` and `/tmp/audit_cli_outputs/rate_both_audit.log` were created.
+- `/tmp/audit_cli_outputs/rate_both_publication.xlsx` was not created.
+- Workbook sheets were `Summary`, four metric sheets, and `Metadata`; diagnostic/privacy sheets were missing.
+
+### Privacy Validation Module Behavior
+
+Raw peer group validation for `2024-01 / Online`:
+
+```python
+from core.privacy_validator import PrivacyValidator
+
+validator = PrivacyValidator(rule_name="6/30")
+raw_ok, raw_warnings = validator.validate_peer_group(raw_online, ["txn_cnt"], "issuer_name")
+```
+
+Observed: raw peers fail because `P1` has `41.30%` concentration.
+
+Weighted analyzer validation:
+
+```python
+from core.dimensional_analyzer import DimensionalAnalyzer
+
+analyzer = DimensionalAnalyzer(
+    target_entity="Target",
+    entity_column="issuer_name",
+    time_column="year_month",
+    debug_mode=True,
+    consistent_weights=True,
+)
+analyzer.calculate_global_privacy_weights(df, "txn_cnt", ["card_type", "channel"])
+validation_df = analyzer.build_privacy_validation_dataframe(df, "txn_cnt", ["card_type", "channel"])
+```
+
+Observed:
+
+- Weighted `2024-01 / Online` peers pass `PrivacyValidator.validate_peer_group()`.
+- `validation_df` has 48 rows and 0 non-compliant rows for the mock data.
+- `validation_df` has 0 rows where `Dimension == "_TIME_TOTAL_"`, confirming the time-total validation coverage gap.
+- Direct `DimensionalAnalyzer(...)` defaults `consistent_weights=False`; CLI construction overrides this to global mode from merged config. Tests should make this difference explicit.
+
+### Insufficient-Peer CLI Behavior
+
+With only three peers and `--no-validate-input`, share CLI completes after logging:
+
+```text
+Insufficient peers for privacy rule selection (peers=3). Skipping global optimization and using identity weights.
+```
+
+The command still exits successfully and writes a workbook. With `--validate-input`, the same data aborts before optimization with:
+
+```text
+VALIDATION ERROR [insufficient_peers]: Only 3 peer entities found (excluding target). Minimum 5 required for privacy compliance.
+```
+
+Implementation implication: core optimization must not rely on input validation as the only insufficient-peer guard.
+
+---
+
+## Git History Root Cause for Stub Modules
+
+Recent history explains why the branch contains stub-like modules:
+
+- `ae95269` (`extract shared run setup helpers into core analysis module`) created `core/analysis_run.py`.
+- `e9fd56f` (`extract shared analysis run diagnostics helpers`) continued moving orchestration out of `benchmark.py`.
+- `9b61a50` (`add data/ to .gitignore and include all pending changes`) was a very large refactor: `benchmark.py` shrank by roughly 2,485 lines while `core/analysis_run.py` gained most orchestration behavior. That commit introduced imports of modules that were not present in the tree: `core.contracts`, `core.compliance`, `core.observability`, `core.output_artifacts`, `core.preset_comparison`, `core.preset_workflow`, `core.excel_reports`, and `core.privacy_policy`.
+- `81cf493` (`Add missing core module stubs and update AGENTS.md for Cloud Agent setup`) explicitly states that the main branch had an incomplete refactoring where these modules were referenced but never committed. It added stub implementations to unblock imports and updated AGENTS.md with the known-failure notes.
+- `cfc267a` merged those stubs in PR #1.
+
+Implementation implication: the remediation should not treat these modules as accidental dead code. They are placeholders for extraction boundaries created by the refactor. Each stub should be either replaced by the intended production implementation or collapsed back into the owning module with tests proving behavior parity.
+
+---
+
 ## File Structure
 
 **Create**
@@ -32,6 +189,9 @@ Do not modify `presets/*.yaml` casually. Preset changes in this plan are explici
 - `tests/test_compliance_summary.py` - compliance summary casing and violation-count tests.
 - `tests/test_gate_runner.py` - tests command parsing and expectation enforcement in gate tooling.
 - `tests/test_tui_contracts.py` - non-GUI tests for TUI request/preloaded-DataFrame contract.
+- `tests/test_cli_mock_integration.py` - mock-data CLI integration checks for output artifacts, privacy validation, and insufficient-peer behavior.
+- `tests/fixtures/mock_benchmark_data.py` - deterministic mock data generator shared by CLI, gate, and privacy validation tests.
+- `tests/test_cli_runtime_behavior.py` - regression tests that generate mock data, run CLI commands, and inspect workbook/privacy behavior.
 
 **Modify**
 - `core/contracts.py` - add `df` to `AnalysisRunRequest` and preserve it through namespace conversion.
@@ -52,8 +212,6 @@ Do not modify `presets/*.yaml` casually. Preset changes in this plan are explici
 - `tui_app.py` - keep preloaded validation data in the confirmed run and harden mode/entity handling.
 - `README.md`, `SETUP.md`, `run_tool.sh`, `AGENTS.md` - correct user-facing drift found by the audit.
 
----
-
 ## Task 1: Lock the Current Failures as Regression Tests
 
 **Files:**
@@ -63,6 +221,8 @@ Do not modify `presets/*.yaml` casually. Preset changes in this plan are explici
 - Create: `tests/test_gate_runner.py`
 - Modify: `tests/test_enhanced_features.py`
 - Modify: `tests/test_solvers.py`
+- Create: `tests/fixtures/mock_benchmark_data.py`
+- Create: `tests/test_cli_runtime_behavior.py`
 
 - [ ] **Step 1: Add a failing request contract test for preloaded DataFrame preservation**
 
@@ -219,16 +379,221 @@ def test_gate_command_parser_preserves_quoted_entity_names() -> None:
 
 - [ ] **Step 7: Run the complete current failing bundle**
 
-Run: `py -m pytest tests/test_tui_contracts.py tests/test_output_artifacts.py tests/test_compliance_summary.py tests/test_gate_runner.py tests/test_enhanced_features.py tests/test_solvers.py -v`
+Run: `py -m pytest tests/test_tui_contracts.py tests/test_output_artifacts.py tests/test_compliance_summary.py tests/test_gate_runner.py tests/test_cli_runtime_behavior.py tests/test_enhanced_features.py tests/test_solvers.py -v`
 
 Expected before implementation: failures demonstrate every high-risk regression target.
 
-- [ ] **Step 8: Commit regression tests**
+- [ ] **Step 8: Add deterministic mock data fixture**
+
+Create `tests/fixtures/mock_benchmark_data.py`:
+
+```python
+from pathlib import Path
+
+import pandas as pd
+
+
+def build_mock_benchmark_df() -> pd.DataFrame:
+    entities = ["Target", "P1", "P2", "P3", "P4", "P5", "P6"]
+    rows = []
+    volumes = {
+        ("2024-01", "CREDIT", "Online"): [100, 420, 90, 80, 70, 60, 50],
+        ("2024-01", "CREDIT", "Store"): [120, 180, 160, 150, 140, 130, 120],
+        ("2024-01", "DEBIT", "Online"): [80, 90, 85, 80, 75, 70, 65],
+        ("2024-02", "CREDIT", "Online"): [95, 400, 95, 85, 75, 65, 55],
+        ("2024-02", "CREDIT", "Store"): [110, 175, 165, 155, 145, 135, 125],
+        ("2024-02", "DEBIT", "Online"): [85, 92, 88, 82, 78, 72, 68],
+    }
+    for (month, card_type, channel), values in volumes.items():
+        for entity, txn in zip(entities, values):
+            total = txn * 10
+            rows.append({
+                "issuer_name": entity,
+                "year_month": month,
+                "card_type": card_type,
+                "channel": channel,
+                "txn_cnt": txn,
+                "total": total,
+                "approved": int(total * (0.88 if entity == "P1" else 0.92)),
+                "fraud": max(1, int(total * (0.012 if entity == "P1" else 0.006))),
+            })
+    return pd.DataFrame(rows)
+
+
+def write_mock_benchmark_csv(path: Path) -> Path:
+    build_mock_benchmark_df().to_csv(path, index=False)
+    return path
+
+
+def write_insufficient_peer_csv(path: Path) -> Path:
+    rows = []
+    for entity, txn in [("Target", 100), ("P1", 900), ("P2", 50), ("P3", 50)]:
+        rows.append({
+            "issuer_name": entity,
+            "card_type": "A",
+            "channel": "Online",
+            "txn_cnt": txn,
+            "total": txn * 10,
+            "approved": txn * 9,
+            "fraud": max(1, txn // 100),
+        })
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return path
+```
+
+- [ ] **Step 9: Add CLI runtime behavior tests from the investigation**
+
+Create `tests/test_cli_runtime_behavior.py`:
+
+```python
+import subprocess
+import sys
+from pathlib import Path
+
+import pandas as pd
+from openpyxl import load_workbook
+
+from core.dimensional_analyzer import DimensionalAnalyzer
+from core.privacy_validator import PrivacyValidator
+from tests.fixtures.mock_benchmark_data import write_insufficient_peer_csv, write_mock_benchmark_csv
+
+
+def test_mock_share_cli_exposes_missing_publication_and_diagnostic_sheets(tmp_path: Path) -> None:
+    csv_path = write_mock_benchmark_csv(tmp_path / "mock.csv")
+    output = tmp_path / "share_both.xlsx"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmark.py",
+            "share",
+            "--metric",
+            "txn_cnt",
+            "--csv",
+            str(csv_path),
+            "--entity-col",
+            "issuer_name",
+            "--entity",
+            "Target",
+            "--dimensions",
+            "card_type",
+            "channel",
+            "--time-col",
+            "year_month",
+            "--output",
+            str(output),
+            "--output-format",
+            "both",
+            "--debug",
+            "--validate-input",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0
+    assert output.exists()
+    assert (tmp_path / "share_both_publication.xlsx").exists()
+    workbook = load_workbook(output, read_only=True)
+    try:
+        assert "Privacy Validation" in workbook.sheetnames
+        assert "Peer Weights" in workbook.sheetnames
+        assert "Weight Methods" in workbook.sheetnames
+    finally:
+        workbook.close()
+
+
+def test_privacy_validator_matches_weighted_mock_behavior(tmp_path: Path) -> None:
+    csv_path = write_mock_benchmark_csv(tmp_path / "mock.csv")
+    df = pd.read_csv(csv_path)
+    peers_df = df[df["issuer_name"] != "Target"]
+    raw_online = peers_df[
+        (peers_df["year_month"] == "2024-01") & (peers_df["channel"] == "Online")
+    ].groupby("issuer_name", as_index=False)["txn_cnt"].sum()
+    validator = PrivacyValidator(rule_name="6/30")
+
+    raw_ok, raw_warnings = validator.validate_peer_group(raw_online, ["txn_cnt"], "issuer_name")
+
+    assert raw_ok is False
+    assert any("P1" in warning and "41.30%" in warning for warning in raw_warnings)
+
+    analyzer = DimensionalAnalyzer(
+        target_entity="Target",
+        entity_column="issuer_name",
+        time_column="year_month",
+        debug_mode=True,
+        consistent_weights=True,
+    )
+    analyzer.calculate_global_privacy_weights(df, "txn_cnt", ["card_type", "channel"])
+    weights = {peer: data["multiplier"] for peer, data in analyzer.global_weights.items()}
+    weighted_online = raw_online.copy()
+    weighted_online["txn_cnt"] = weighted_online.apply(
+        lambda row: row["txn_cnt"] * weights.get(row["issuer_name"], 1.0),
+        axis=1,
+    )
+
+    weighted_ok, weighted_warnings = validator.validate_peer_group(weighted_online, ["txn_cnt"], "issuer_name")
+    validation_df = analyzer.build_privacy_validation_dataframe(df, "txn_cnt", ["card_type", "channel"])
+
+    assert weighted_ok is True
+    assert weighted_warnings == []
+    assert int((validation_df["Compliant"] == "No").sum()) == 0
+    assert int((validation_df["Dimension"] == "_TIME_TOTAL_").sum()) == 0
+```
+
+This test captures current behavior. Task 5 changes the expected `_TIME_TOTAL_` count to `> 0` after validation coverage is implemented.
+
+- [ ] **Step 10: Add insufficient-peer CLI test**
+
+Append to `tests/test_cli_runtime_behavior.py`:
+
+```python
+def test_insufficient_peer_cli_aborts_even_without_input_validation(tmp_path: Path) -> None:
+    csv_path = write_insufficient_peer_csv(tmp_path / "insufficient.csv")
+    output = tmp_path / "insufficient.xlsx"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmark.py",
+            "share",
+            "--metric",
+            "txn_cnt",
+            "--csv",
+            str(csv_path),
+            "--entity-col",
+            "issuer_name",
+            "--entity",
+            "Target",
+            "--dimensions",
+            "card_type",
+            "channel",
+            "--output",
+            str(output),
+            "--output-format",
+            "analysis",
+            "--debug",
+            "--no-validate-input",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 1
+    assert not output.exists()
+    assert "Insufficient peers" in result.stderr or "Insufficient peers" in result.stdout
+```
+
+- [ ] **Step 11: Commit regression tests**
 
 Run:
 
 ```bash
-git add tests/test_tui_contracts.py tests/test_output_artifacts.py tests/test_compliance_summary.py tests/test_gate_runner.py tests/test_enhanced_features.py tests/test_solvers.py
+git add tests/test_tui_contracts.py tests/test_output_artifacts.py tests/test_compliance_summary.py tests/test_gate_runner.py tests/test_cli_runtime_behavior.py tests/fixtures/mock_benchmark_data.py tests/test_enhanced_features.py tests/test_solvers.py
 git commit -m "test: capture audit remediation regressions"
 ```
 
