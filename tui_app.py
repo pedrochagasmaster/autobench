@@ -641,10 +641,11 @@ class BenchmarkApp(App):
 
     def populate_file_list(self):
         """Populate the file list with CSV files from current directory and data/."""
-        # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -825,13 +826,14 @@ class BenchmarkApp(App):
         log_widget = self.query_one("#log_output")
         handler = LogHandler(log_widget)
         handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        
-        # Attach to root logger only (propagation will handle the rest)
+
         root_logger = logging.getLogger()
+        for existing in list(root_logger.handlers):
+            if isinstance(existing, LogHandler):
+                root_logger.removeHandler(existing)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
-        
-        # Clear specific loggers to prevent duplication if they have handlers
+
         logging.getLogger("benchmark").handlers.clear()
         logging.getLogger("core").handlers.clear()
 
