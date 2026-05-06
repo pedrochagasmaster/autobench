@@ -288,7 +288,10 @@ def resolve_input_dataframe(args: argparse.Namespace, data_loader: DataLoader) -
     """Return a preloaded DataFrame when present, otherwise load from the configured source."""
     df = getattr(args, 'df', None)
     if df is not None:
-        return df
+        # Normalize preloaded data the same way as CSV-loaded data so downstream code
+        # can rely on canonical column names. _normalize_columns is idempotent so
+        # re-running it on already-normalised data is a safe no-op.
+        return data_loader._normalize_columns(df.copy())
     return data_loader.load_data(args)
 
 
