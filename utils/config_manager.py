@@ -40,13 +40,11 @@ class ConfigManager:
         
         # Transaction counts
         'txn_count': 'transaction_count',
-        'total_txns': 'transaction_count',
         'count': 'transaction_count',
         'cnt': 'transaction_count',
         
         # Transaction amounts
         'txn_amt': 'transaction_amount',
-        'total_amount': 'transaction_amount',
         'tpv': 'transaction_amount',
         'amount': 'transaction_amount',
         'volume': 'transaction_amount',

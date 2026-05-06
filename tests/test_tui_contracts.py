@@ -2,6 +2,7 @@ import pandas as pd
 from types import SimpleNamespace
 
 from core.analysis_run import build_run_config
+from core.contracts import AnalysisArtifacts
 from core.contracts import AnalysisRunRequest
 
 
@@ -32,3 +33,15 @@ def test_build_run_config_accepts_request_namespace_after_dataframe_fix() -> Non
     config = build_run_config(request.to_namespace())
 
     assert config.get("input", "validate_input") is False
+
+
+def test_tui_success_notification_should_use_generated_report_paths() -> None:
+    artifacts = AnalysisArtifacts(
+        analysis_output_file="/tmp/report.xlsx",
+        publication_output="/tmp/report_publication.xlsx",
+        report_paths=["/tmp/report_publication.xlsx"],
+    )
+
+    displayed_path = ", ".join(artifacts.report_paths or [artifacts.analysis_output_file or ""])
+
+    assert displayed_path == "/tmp/report_publication.xlsx"

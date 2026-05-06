@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ def write_outputs(
     write_publication = output_format in {"publication", "both"}
 
     def _write_report(path: str, publication: bool) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         analysis_type = "share" if request.is_share else "rate"
         if publication:
             from core.report_generator import ReportGenerator

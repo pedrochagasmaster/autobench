@@ -110,7 +110,7 @@ Important rules:
 - Entity names are case-sensitive.
 - Column names are normalized to lowercase with underscores.
 - Keep metric units consistent (currency, count definitions, etc.).
-- At least 4 participants are required for privacy-compliant analysis.
+ - Non-merchant benchmarking requires enough peers for the selected privacy rule, starting at 5 peers for 5/25; merchant 4/35 is only available when merchant mode is explicitly used.
 - Nulls in key entity/metric fields will trigger validation issues.
 
 ## Privacy Rules (Auto-Applied)
@@ -234,14 +234,12 @@ Core sheets:
 - `Summary`
   - Inputs, configuration, preset used, and high-level metadata.
   - Primary place to confirm the run parameters and interpretation context.
-- `[Dimension]` sheets (one per dimension)
+- `Metric_*` sheets (one per analyzed dimension or rate/dimension combination)
   - Category-level comparisons for the target entity vs peer averages.
   - Includes gaps (percentage point deltas) and best-in-class benchmarks.
 - `Weight Methods`
   - Shows which weighting strategy was applied per dimension:
     `Global-LP`, `Per-Dimension-LP`, or `Per-Dimension-Bayesian`.
-- `Rank Changes`
-  - Tracks rank shifts before/after weighting to show distortion impact.
 
 Optional diagnostic sheets (appear when enabled or triggered):
 
@@ -250,9 +248,10 @@ Optional diagnostic sheets (appear when enabled or triggered):
   - Use for audit trails and deep validation.
 - `Privacy Validation` (debug)
   - Per-category compliance checks and concentration caps.
-- `Structural Summary` / `Structural Detail`
-  - Buckets that are infeasible under strict caps.
-  - Useful for explaining unavoidable residual violations.
+- `Preset Comparison`
+  - Mean/max impact across shipped presets and per-dimension variants when comparison is enabled.
+- `Impact Detail` / `Impact Summary`
+  - Category-level and aggregated impact/distortion views when enabled.
 - `Subset Search`
   - Logs subset search attempts when global LP is infeasible.
 - `Impact Summary` / `Impact Detail` (analyze impact)

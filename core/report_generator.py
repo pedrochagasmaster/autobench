@@ -687,10 +687,28 @@ class ReportGenerator:
                     row += 1
         
         # Create dimension sheets (publication format)
+        flattened_results: List[tuple[str, pd.DataFrame]] = []
         for metric_name, result_data in results.items():
-            if not isinstance(result_data, (dict, pd.DataFrame)):
+            if isinstance(result_data, dict) and 'data' not in result_data:
+                for nested_name, nested_result in result_data.items():
+                    if isinstance(nested_result, dict) and 'data' in nested_result:
+                        df = nested_result['data']
+                    elif isinstance(nested_result, pd.DataFrame):
+                        df = nested_result
+                    else:
+                        continue
+                    flattened_results.append((f"{metric_name}_{nested_name}", df))
                 continue
-            
+
+            if isinstance(result_data, dict) and 'data' in result_data:
+                df = result_data['data']
+            elif isinstance(result_data, pd.DataFrame):
+                df = result_data
+            else:
+                continue
+            flattened_results.append((str(metric_name), df))
+
+        for metric_name, df in flattened_results:
             sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             
@@ -699,23 +717,33 @@ class ReportGenerator:
             ws['A1'].font = header_font
             ws.merge_cells('A1:F1')
             
-            # Get DataFrame
-            if isinstance(result_data, dict) and 'data' in result_data:
-                df = result_data['data']
-            elif isinstance(result_data, pd.DataFrame):
-                df = result_data
-            else:
-                continue
-            
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
             if analysis_type == 'rate' and fraud_in_bps:
                 convert_all_rates = self._resolve_convert_all_rates(metadata)
+                sheet_is_fraud = "fraud" in str(metric_name).lower()
+                renamed_columns = {}
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    if self._should_convert_rate_column(col, convert_all_rates):
+                    should_convert = self._should_convert_rate_column(col, convert_all_rates or sheet_is_fraud)
+                    if should_convert:
                         df[col] = df[col] * 100
+                        if sheet_is_fraud:
+                            if "target rate" in str(col).lower():
+                                renamed_columns[col] = "Target Fraud Rate (bps)"
+                            elif "bic" in str(col).lower():
+                                renamed_columns[col] = "Fraud BIC (bps)"
+                            elif "balanced peer average" in str(col).lower():
+                                renamed_columns[col] = "Fraud Rate (bps)"
+                            elif "original peer average" in str(col).lower():
+                                renamed_columns[col] = "Original Fraud Rate (bps)"
+                            elif "distance" in str(col).lower():
+                                renamed_columns[col] = "Fraud Distance to Peer (bps)"
+                            elif "impact" in str(col).lower():
+                                renamed_columns[col] = "Fraud Impact (bps)"
+                if renamed_columns:
+                    df = df.rename(columns=renamed_columns)
             
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):

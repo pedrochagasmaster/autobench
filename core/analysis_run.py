@@ -497,16 +497,31 @@ def collect_run_diagnostics(
 
 
 def build_report_paths(
-    artifacts: AnalysisArtifacts,
-    output_settings: Dict[str, Any],
+    artifacts_or_output_format: AnalysisArtifacts | str,
+    output_settings_or_analysis_output: Dict[str, Any] | str,
+    publication_output: Optional[str] = None,
 ) -> List[str]:
-    """Build the ordered list of generated report outputs."""
-    output_format = output_settings['output_format']
+    """Build the ordered list of generated report outputs.
+
+    Supports both the current artifacts-based calling convention and the legacy
+    positional form used by older tests/helpers.
+    """
+    if isinstance(artifacts_or_output_format, AnalysisArtifacts):
+        artifacts = artifacts_or_output_format
+        output_settings = output_settings_or_analysis_output
+        assert isinstance(output_settings, dict)
+        output_format = output_settings['output_format']
+        analysis_output_file = artifacts.analysis_output_file
+        publication_output = artifacts.publication_output
+    else:
+        output_format = artifacts_or_output_format
+        analysis_output_file = str(output_settings_or_analysis_output)
+
     report_paths: List[str] = []
-    if output_format in ('analysis', 'both') and artifacts.analysis_output_file:
-        report_paths.append(str(artifacts.analysis_output_file))
-    if output_format in ('publication', 'both') and artifacts.publication_output:
-        report_paths.append(str(artifacts.publication_output))
+    if output_format in ('analysis', 'both') and analysis_output_file:
+        report_paths.append(str(analysis_output_file))
+    if output_format in ('publication', 'both') and publication_output:
+        report_paths.append(str(publication_output))
     return report_paths
 
 

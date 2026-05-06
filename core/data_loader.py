@@ -744,7 +744,7 @@ class DataLoader:
                     message=f"Column '{col}' has {null_pct:.1f}% null values (threshold: {t['max_null_percentage']}%)",
                     row_indices=df[df[col].isnull()].index.tolist()[:100],
                     auto_fix_available=True,
-                    fix_description=f"Fill nulls with 0 or mode for categorical columns"
+                    fix_description="Fill nulls with 0 or mode for categorical columns"
                 ))
             elif null_count > 0:
                 issues.append(ValidationIssue(
