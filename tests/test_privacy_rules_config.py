@@ -15,6 +15,7 @@ class TestPrivacyRulesConfig(unittest.TestCase):
         self.assertEqual(PrivacyValidator.select_rule(10), "10/40")
         self.assertEqual(PrivacyValidator.select_rule(7), "7/35")
         self.assertEqual(PrivacyValidator.select_rule(4, merchant_mode=True), "4/35")
+        self.assertEqual(PrivacyValidator.select_rule(10, merchant_mode=True), "10/40")
 
     def test_protected_default_uses_rule_cap(self) -> None:
         validator = PrivacyValidator(rule_name="10/40", protected_entities=["A"])
