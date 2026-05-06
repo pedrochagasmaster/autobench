@@ -207,14 +207,51 @@ class ReportGenerator:
             sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
-        
+
+        # Diagnostic sheets (always emitted when data is available)
+        self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
+        self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
+        self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
+        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Analysis", metadata, "impact_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
+
+        # Data Quality sheet emitted whenever the run validated input data,
+        # even if validation passed clean (passed=True surfaces a green Status
+        # banner so downstream tooling can rely on the sheet existing).
+        if metadata is not None and "validation_issues" in metadata:
+            validation_issues = metadata.get("validation_issues") or []
+            self.add_data_quality_sheet(wb, validation_issues, passed=not validation_issues)
+
         # Create Metadata sheet
         if metadata:
             ws_meta = wb.create_sheet("Metadata")
             self._write_metadata_sheet(ws_meta, metadata)
-        
+
         # Save workbook
         wb.save(output_file)
+
+    def _write_optional_dataframe_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        metadata: Optional[Dict[str, Any]],
+        metadata_key: str,
+    ) -> None:
+        """Write a DataFrame from metadata to a new sheet if it exists and is non-empty."""
+        if not metadata:
+            return
+        df = metadata.get(metadata_key)
+        if df is None or not hasattr(df, "empty") or df.empty:
+            return
+        unique_name = self._build_unique_sheet_name(sheet_name, workbook.sheetnames)
+        ws = workbook.create_sheet(unique_name)
+        for col_idx, column in enumerate(df.columns, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=str(column))
+            cell.font = self._font_class(bold=True)
+        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
     
     def _write_summary_sheet(
         self,
@@ -317,12 +354,18 @@ class ReportGenerator:
         row = 3
         for key, value in metadata.items():
             worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
-            
-            if isinstance(value, (list, dict)):
-                worksheet[f'B{row}'] = json.dumps(value, indent=2)
+
+            if hasattr(value, "shape") and hasattr(value, "columns"):
+                # Compact representation for DataFrames; the full content is exported on its own sheet.
+                worksheet[f'B{row}'] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+            elif isinstance(value, (list, dict)):
+                try:
+                    worksheet[f'B{row}'] = json.dumps(value, indent=2, default=str)
+                except (TypeError, ValueError):
+                    worksheet[f'B{row}'] = str(value)
             else:
                 worksheet[f'B{row}'] = str(value)
-            
+
             row += 1
     
     def add_preset_comparison_sheet(

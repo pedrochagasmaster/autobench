@@ -204,6 +204,34 @@ def list_presets() -> List[str]:
     return sorted([p.stem for p in Path("presets").glob("*.yaml")])
 
 
+def _preset_compliance_postures() -> Dict[str, str]:
+    """Return ``{preset_name: compliance_posture}`` for every shipped preset."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return {}
+    postures: Dict[str, str] = {}
+    for preset_path in Path("presets").glob("*.yaml"):
+        try:
+            with open(preset_path, "r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+            posture = str(data.get("compliance_posture", "strict"))
+            postures[preset_path.stem] = posture
+        except Exception:
+            postures[preset_path.stem] = "strict"
+    return postures
+
+
+PRESET_POSTURES: Dict[str, str] = _preset_compliance_postures()
+
+
+def preset_requires_acknowledgement(preset_name: Optional[str]) -> bool:
+    """Return True when the preset's posture needs ``--acknowledge-accuracy-first``."""
+    if not preset_name:
+        return False
+    return PRESET_POSTURES.get(preset_name) == "accuracy_first"
+
+
 def build_command(base: List[str], flags: List[str]) -> str:
     parts = base + flags
     return " ".join(quote_arg(p) for p in parts if p)
@@ -365,7 +393,15 @@ def generate_gate_cases(
             
         flags.extend(["--output", str(output_path)])
         flags.extend(extra_flags)
-        
+
+        # Auto-add the acknowledgement flag for accuracy_first presets so the
+        # generated commands actually run instead of being blocked by the
+        # compliance precondition.
+        preset_for_case = params.get("preset")
+        if preset_requires_acknowledgement(preset_for_case) and "--acknowledge-accuracy-first" not in flags:
+            flags.append("--acknowledge-accuracy-first")
+            params["acknowledge_accuracy_first"] = True
+
         cmd = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)
         cases.append(make_case(case_id, cmd, params, expectations))
@@ -404,7 +440,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -487,6 +523,9 @@ def generate_core_cases(
             add_flag(flags, "--time-col", time_col)
         if params.get("preset"):
             add_flag(flags, "--preset", params["preset"])
+            if preset_requires_acknowledgement(params["preset"]):
+                add_flag(flags, "--acknowledge-accuracy-first", True)
+                params["acknowledge_accuracy_first"] = True
         if params.get("config"):
             add_flag(flags, "--config", params["config"])
         add_flag(flags, "--output-format", params.get("output_format"))
@@ -606,6 +645,9 @@ def generate_feature_cases(
         flags = build_base_flags(output_path)
         flags.extend(extra_flags)
         params = {**baseline_params, **param_updates}
+        if preset_requires_acknowledgement(params.get("preset")) and "--acknowledge-accuracy-first" not in flags:
+            flags.append("--acknowledge-accuracy-first")
+            params["acknowledge_accuracy_first"] = True
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)

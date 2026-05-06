@@ -93,6 +93,19 @@ class PresetManager:
             Preset configuration dictionary, or None if not found
         """
         return self._presets.get(name)
+
+    def load_preset(self, name: str) -> Dict[str, Any]:
+        """Load a preset configuration by name.
+
+        This is an alias for ``get_preset`` that raises ``KeyError`` when the
+        preset is missing instead of returning ``None``. It exists primarily to
+        match the calling convention used by ``core.preset_workflow`` and
+        ``core.preset_comparison``.
+        """
+        preset = self._presets.get(name)
+        if preset is None:
+            raise KeyError(f"Preset not found: {name}")
+        return preset
     
     def preset_exists(self, name: str) -> bool:
         """Check if preset exists.
@@ -155,7 +168,7 @@ class PresetManager:
             lines.append("")
         
         lines.append("=" * 80)
-        lines.append(f"Use: benchmark config show <preset> to see full details")
+        lines.append("Use: benchmark config show <preset> to see full details")
         
         return "\n".join(lines)
     

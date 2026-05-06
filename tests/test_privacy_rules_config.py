@@ -16,6 +16,19 @@ class TestPrivacyRulesConfig(unittest.TestCase):
         self.assertEqual(PrivacyValidator.select_rule(7), "7/35")
         self.assertEqual(PrivacyValidator.select_rule(4, merchant_mode=True), "4/35")
 
+    def test_merchant_rule_selection_is_explicit_for_large_peer_groups(self) -> None:
+        """Merchant benchmarking intentionally uses 4/35 when at least 4 peers exist.
+
+        Documented intent: merchants have looser privacy constraints than issuers,
+        so the merchant 4/35 rule applies for any peer count >= 4. Non-merchant
+        runs continue to use the highest applicable rule.
+        """
+        self.assertEqual(PrivacyValidator.select_rule(4, merchant_mode=True), "4/35")
+        self.assertEqual(PrivacyValidator.select_rule(10, merchant_mode=True), "4/35")
+        self.assertEqual(PrivacyValidator.select_rule(10, merchant_mode=False), "10/40")
+        self.assertEqual(PrivacyValidator.select_rule(3, merchant_mode=True), "insufficient")
+        self.assertEqual(PrivacyValidator.select_rule(3, merchant_mode=False), "insufficient")
+
     def test_protected_default_uses_rule_cap(self) -> None:
         validator = PrivacyValidator(rule_name="10/40", protected_entities=["A"])
         self.assertEqual(float(validator.max_concentration), 40.0)

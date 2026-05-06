@@ -271,18 +271,45 @@ class HeuristicSolver(PrivacySolver):
             return {p: float(w[i]) for i, p in enumerate(peers_list)}
 
         optimized_weights = _normalize_mean(optimized_weights, 1.0, min_weight, max_weight)
-        
-        # Stats are minimal for heuristic
+
+        # Post-validate residual cap violations. With strict tolerance (0.0) we treat
+        # any residual concentration above the cap as a failure so callers can
+        # distinguish "L-BFGS-B converged" from "all caps satisfied". Otherwise we
+        # preserve SciPy's convergence flag so non-strict solves remain compatible.
+        residual_violation = False
+        for key in constraint_map.keys():
+            data = constraint_data[key]
+            peer_cat_vols = data['peer_cat_vols']
+            total_weighted = sum(
+                peer_cat_vols[p] * optimized_weights[p] for p in peers
+            )
+            if total_weighted <= 0:
+                continue
+            for p in peers:
+                share = (peer_cat_vols[p] * optimized_weights[p]) / total_weighted * 100.0
+                if share > max_concentration + max(tolerance, 1e-9):
+                    residual_violation = True
+                    break
+            if residual_violation:
+                break
+
+        if tolerance <= 1e-9 and residual_violation:
+            converged = False
+        else:
+            converged = bool(result.success)
+
         stats = {
-            'success': result.success,
-            'message': result.message
+            'success': converged,
+            'scipy_success': bool(result.success),
+            'residual_violation': residual_violation,
+            'message': result.message,
         }
-        
+
         return SolverResult(
             weights=optimized_weights,
             method='heuristic',
             stats=stats,
-            success=result.success
+            success=converged,
         )
 
     def _representativeness_weight(self, stats: Optional[Dict[str, float]]) -> float:
@@ -349,10 +376,12 @@ class HeuristicSolver(PrivacySolver):
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
         rule_cfg = PrivacyValidator.get_rule_config(rule_name)
         additional = rule_cfg.get('additional') if rule_cfg else None
-        if not additional: return None, False
+        if not additional:
+            return None, False
 
         min_entities = int(rule_cfg.get('min_entities', 0))
-        if min_entities <= 0: return None, False
+        if min_entities <= 0:
+            return None, False
 
         peer_scale = min(1.0, participants / float(min_entities)) if min_entities > 0 else 1.0
         rep_scale = max(self.dynamic_threshold_scale_floor, min(1.0, representativeness))

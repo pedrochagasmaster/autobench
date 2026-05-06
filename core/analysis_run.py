@@ -288,7 +288,10 @@ def resolve_input_dataframe(args: argparse.Namespace, data_loader: DataLoader) -
     """Return a preloaded DataFrame when present, otherwise load from the configured source."""
     df = getattr(args, 'df', None)
     if df is not None:
-        return df
+        # Normalize preloaded data the same way as CSV-loaded data so downstream code
+        # can rely on canonical column names. _normalize_columns is idempotent so
+        # re-running it on already-normalised data is a safe no-op.
+        return data_loader._normalize_columns(df.copy())
     return data_loader.load_data(args)
 
 
@@ -650,20 +653,27 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
     )
     consistent_weights = analyzer_settings['consistent_weights']
 
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            metric_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            if rule_name == 'insufficient':
+                raise ValueError(
+                    f"Insufficient peers for privacy rule selection: peers={len(peers)}"
+                )
+            analyzer._solve_per_dimension_weights(
+                df,
+                metric_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        raise RunAborted(str(exc)) from exc
 
     results: Dict[str, Any] = {}
     for dim in dimensions:
@@ -792,6 +802,8 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
     analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
     artifacts = AnalysisArtifacts(
         results=results,
         metadata=metadata,
@@ -804,6 +816,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -916,20 +929,27 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         logger=logger,
     )
     consistent_weights = analyzer_settings['consistent_weights']
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, total_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            total_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, total_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            if rule_name == 'insufficient':
+                raise ValueError(
+                    f"Insufficient peers for privacy rule selection: peers={len(peers)}"
+                )
+            analyzer._solve_per_dimension_weights(
+                df,
+                total_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        raise RunAborted(str(exc)) from exc
 
     all_results: Dict[str, Any] = {}
     for rate_type in request.rate_types:
@@ -1068,6 +1088,8 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     else:
         analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
 
     artifacts = AnalysisArtifacts(
         results=all_results,
@@ -1081,6 +1103,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )

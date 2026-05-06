@@ -646,7 +646,7 @@ class PrivacyValidator:
             if count_8 < (self.additional_constraints['min_count_15'] + 
                          self.additional_constraints.get('min_count_8', 0)):
                 warnings.append(
-                    f"Rule 7/35: Additional entity >= 8% requirement not met"
+                    "Rule 7/35: Additional entity >= 8% requirement not met"
                 )
                 constraints_met = False
         
@@ -665,7 +665,7 @@ class PrivacyValidator:
             if count_10 < (self.additional_constraints['min_count_20'] + 
                           self.additional_constraints.get('min_count_10', 0)):
                 warnings.append(
-                    f"Rule 10/40: Additional entity >= 10% requirement not met"
+                    "Rule 10/40: Additional entity >= 10% requirement not met"
                 )
                 constraints_met = False
         

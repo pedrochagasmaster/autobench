@@ -21,7 +21,7 @@ from core.analysis_run import (
     validate_analysis_input,
     write_audit_log,
 )
-from core.data_loader import ValidationSeverity
+from core.data_loader import DataLoader, ValidationSeverity
 from utils.config_manager import ConfigManager
 
 
@@ -165,10 +165,16 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
     def test_resolve_input_dataframe_prefers_preloaded_dataframe(self) -> None:
         expected_df = pd.DataFrame({'metric': [1]})
         args = SimpleNamespace(df=expected_df)
+        config = ConfigManager()
+        loader = DataLoader(config)
 
-        result_df = resolve_input_dataframe(args, _StubLoader(['ignored']))
+        result_df = resolve_input_dataframe(args, loader)
 
-        self.assertIs(result_df, expected_df)
+        # We normalise preloaded DataFrames the same way as CSV-loaded data, so
+        # the result is a copy with canonicalised column names rather than the
+        # original object. Verify equality by content/columns instead.
+        self.assertIsNot(result_df, expected_df)
+        pd.testing.assert_frame_equal(result_df.reset_index(drop=True), expected_df.reset_index(drop=True))
 
     def test_build_run_config_applies_common_and_extra_overrides(self) -> None:
         args = SimpleNamespace(

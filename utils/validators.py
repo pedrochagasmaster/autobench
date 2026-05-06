@@ -148,7 +148,7 @@ class ConfigValidator:
             return errors
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -214,7 +214,36 @@ class ConfigValidator:
                 if 'rank_penalty_weight' in lp:
                     if not isinstance(lp['rank_penalty_weight'], (int, float)) or lp['rank_penalty_weight'] < 0:
                         errors.append("optimization.linear_programming.rank_penalty_weight must be >= 0")
-                
+
+                if 'lambda_penalty' in lp:
+                    val = lp['lambda_penalty']
+                    if val is not None and (not isinstance(val, (int, float)) or val < 0):
+                        errors.append("optimization.linear_programming.lambda_penalty must be a non-negative number or null")
+
+                if 'volume_weighted_penalties' in lp and not isinstance(lp['volume_weighted_penalties'], bool):
+                    errors.append("optimization.linear_programming.volume_weighted_penalties must be a boolean")
+
+                if 'volume_weighting_exponent' in lp:
+                    val = lp['volume_weighting_exponent']
+                    if not isinstance(val, (int, float)) or val < 0:
+                        errors.append("optimization.linear_programming.volume_weighting_exponent must be >= 0")
+
+                known_lp_keys = {
+                    'max_iterations',
+                    'tolerance',
+                    'rank_penalty_weight',
+                    'rank_constraints',
+                    'lambda_penalty',
+                    'volume_weighted_penalties',
+                    'volume_weighting_exponent',
+                }
+                unknown_lp = set(lp.keys()) - known_lp_keys
+                if unknown_lp:
+                    errors.append(
+                        "optimization.linear_programming has unknown fields: "
+                        + ", ".join(sorted(unknown_lp))
+                    )
+
                 if 'rank_constraints' in lp:
                     rc = lp['rank_constraints']
                     if not isinstance(rc, dict):
@@ -303,21 +332,43 @@ class ConfigValidator:
             else:
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
-                
+
                 if 'strategy' in ss and ss['strategy'] not in cls.VALID_STRATEGIES:
                     errors.append(f"optimization.subset_search.strategy must be one of: {', '.join(cls.VALID_STRATEGIES)}")
-                
-                if 'max_attempts' in ss:
-                    if not isinstance(ss['max_attempts'], int) or ss['max_attempts'] <= 0:
-                        errors.append("optimization.subset_search.max_attempts must be a positive integer")
-                
+
+                # ``max_tests`` is a documented legacy alias for ``max_attempts``.
+                # It is normalised in ConfigManager._merge_config but accepted here so
+                # that loading shipped presets via ``--config`` does not fail.
+                attempts_value = ss.get('max_attempts', ss.get('max_tests'))
+                if attempts_value is not None:
+                    if not isinstance(attempts_value, int) or attempts_value <= 0:
+                        errors.append(
+                            "optimization.subset_search.max_attempts must be a positive integer"
+                        )
+
                 if 'max_slack_threshold' in ss:
                     if not isinstance(ss['max_slack_threshold'], (int, float)) or ss['max_slack_threshold'] < 0:
                         errors.append("optimization.subset_search.max_slack_threshold must be >= 0")
-                
+
                 for bool_field in ['trigger_on_slack', 'prefer_slacks_first']:
                     if bool_field in ss and not isinstance(ss[bool_field], bool):
                         errors.append(f"optimization.subset_search.{bool_field} must be a boolean")
+
+                known_ss_keys = {
+                    'enabled',
+                    'strategy',
+                    'max_attempts',
+                    'max_tests',
+                    'max_slack_threshold',
+                    'trigger_on_slack',
+                    'prefer_slacks_first',
+                }
+                unknown_ss = set(ss.keys()) - known_ss_keys
+                if unknown_ss:
+                    errors.append(
+                        "optimization.subset_search has unknown fields: "
+                        + ", ".join(sorted(unknown_ss))
+                    )
         
         # Validate Bayesian settings
         if 'bayesian' in opt_config:

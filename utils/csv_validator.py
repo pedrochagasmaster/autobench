@@ -20,6 +20,32 @@ import pandas as pd
 from openpyxl import load_workbook
 
 
+def _sheet_matches_dimension(sheet_name: str, dimension: str) -> bool:
+    """Return True when ``sheet_name`` likely corresponds to ``dimension``.
+
+    Excel report sheet names follow the ``Metric_{i}_{dimension[:20]}`` template
+    so we strip the ``Metric_<n>_`` prefix and compare normalised tokens.
+    """
+    normalised_sheet = sheet_name.lower().replace(' ', '_')
+    normalised_dim = dimension.lower().replace(' ', '_').replace('/', '_')
+    if normalised_sheet == normalised_dim:
+        return True
+    if sheet_name.replace('_', '/') == dimension:
+        return True
+    if normalised_sheet.startswith('metric_'):
+        # Strip "metric_<digits>_" prefix produced by ReportGenerator
+        parts = normalised_sheet.split('_', 2)
+        if len(parts) == 3:
+            stripped = parts[2]
+            if stripped == normalised_dim or normalised_dim.startswith(stripped):
+                return True
+            if stripped.startswith(normalised_dim[:20]):
+                return True
+    if normalised_sheet.endswith(normalised_dim[:20]):
+        return True
+    return False
+
+
 def load_csv_data(csv_path: Path) -> pd.DataFrame:
     """Load the balanced CSV export file."""
     if not csv_path.exists():
@@ -46,8 +72,10 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     wb = load_workbook(excel_path, data_only=True)
     
     # Skip metadata sheets
-    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation', 
-                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes'}
+    skip_sheets = {'Summary', 'Metadata', 'Peer Weights', 'Weight Methods', 'Privacy Validation',
+                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes',
+                   'Preset Comparison', 'Impact Analysis', 'Impact Summary', 'Data Quality',
+                   'Secondary Metrics'}
     
     dimension_data = {}
     
@@ -511,18 +539,19 @@ EXAMPLES:
     print()
     # Validate each dimension
     all_results = []
-    
+    unmatched_dimensions: List[str] = []
+
     for dimension in csv_df['Dimension'].unique():
         # Find matching Excel sheet
         excel_df = None
         for sheet_name, df in excel_data.items():
-            # Match by sheet name (exact or sanitized)
-            if sheet_name == dimension or sheet_name.replace('_', '/') == dimension:
+            if _sheet_matches_dimension(sheet_name, dimension):
                 excel_df = df
                 break
-        
+
         if excel_df is None:
-            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
+            print(f"FAIL Skipping {dimension}: No matching Excel sheet found")
+            unmatched_dimensions.append(dimension)
             continue
         
         print(f"Validating dimension: {dimension}")
@@ -561,27 +590,41 @@ EXAMPLES:
     total_passed = sum(r['passed'] for r in all_results)
     total_failed = sum(r['failed'] for r in all_results)
     total_skipped = sum(r['skipped'] for r in all_results)
-    
+
+    def _pct(value: int) -> str:
+        if total_checks <= 0:
+            return "n/a"
+        return f"{value / total_checks * 100:.1f}%"
+
     print(f"{'='*80}")
     print("VALIDATION SUMMARY")
     print(f"{'='*80}")
     print(f"Dimensions Validated: {len(all_results)}")
+    print(f"Unmatched Dimensions: {len(unmatched_dimensions)}")
     print(f"Total Checks: {total_checks}")
-    print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
-    print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
-    print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
-    
-    if total_failed == 0:
+    print(f"Passed: {total_passed} ({_pct(total_passed)})")
+    print(f"Failed: {total_failed} ({_pct(total_failed)})")
+    print(f"Skipped: {total_skipped} ({_pct(total_skipped)})")
+
+    has_unmatched = bool(unmatched_dimensions)
+
+    if total_failed == 0 and total_checks > 0 and not has_unmatched:
         print("\nALL VALIDATIONS PASSED")
         print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")
         print(f"{'='*80}\n")
         return 0
-    else:
-        print("\nVALIDATION FAILED")
+
+    print("\nVALIDATION FAILED")
+    if has_unmatched:
+        print(f"  {len(unmatched_dimensions)} dimension(s) had no matching Excel sheet: "
+              + ", ".join(unmatched_dimensions))
+    if total_checks == 0 and not has_unmatched:
+        print("  No matching dimensions were found between CSV and workbook")
+    if total_failed > 0:
         print(f"  {total_failed} rate calculations do not match within tolerance")
-        print("  Review failures above or run with --verbose for details")
-        print(f"{'='*80}\n")
-        return 1
+    print("  Review failures above or run with --verbose for details")
+    print(f"{'='*80}\n")
+    return 1
 
 
 if __name__ == '__main__':

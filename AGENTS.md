@@ -766,16 +766,30 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests (49/54 pass on main)
-py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate cases fail
-                                # due to a pre-existing quoting bug in the gate runner
-                                # (it splits entity names with spaces incorrectly on Linux).
+py -m pytest tests/ -v          # Unit tests (all 83 pass after audit remediation)
+py scripts/perform_gate_test.py # Gate test — uses shlex parsing so quoted entity names
+                                # are handled correctly. Business cases require a CSV
+                                # in `data/`; see "Test data" below.
 ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
 ```
 
-### Missing modules (incomplete refactoring)
+### Module status
 
-The `main` branch at HEAD references several `core.*` modules that were never committed during a recent refactoring (`contracts`, `compliance`, `observability`, `output_artifacts`, `preset_comparison`, `preset_workflow`, `excel_reports`, `privacy_policy`). Stub implementations were created in this setup branch to unblock imports and basic functionality. A few unit tests (5 of 54) fail because these stubs don't replicate the full intended behaviour. If the original author merges the real implementations, these stubs should be replaced.
+The audit-remediation branch replaced the placeholder stubs introduced during the
+February refactor with concrete implementations:
+
+- `core/output_artifacts.py` writes both analysis and publication workbooks based
+  on `output.output_format`.
+- `core/preset_comparison.py` runs each preset (global + per-dimension variants)
+  and reports real `Mean_Impact_PP` / `Max_Impact_PP` metrics. `Mean_Distortion_PP`
+  remains as a legacy alias column.
+- `core/compliance.py` reports compliance verdicts based on the
+  `has_structural_infeasibility` marker rather than truthiness of the diagnostic
+  dict, and short-circuits to `blocked` for blocked runs.
+
+`utils/preset_manager.PresetManager.load_preset` is now exposed as a
+strict alias of `get_preset` so `core/preset_workflow` and
+`core/preset_comparison` can use a consistent loading API.
 
 ### Test data
 

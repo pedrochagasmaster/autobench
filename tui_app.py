@@ -641,10 +641,16 @@ class BenchmarkApp(App):
 
     def populate_file_list(self):
         """Populate the file list with CSV files from current directory and data/."""
-        # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
+
+    def _current_mode(self) -> str:
+        """Return the active analysis mode based on the focused tab."""
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -1117,9 +1123,15 @@ class BenchmarkApp(App):
 
                 logging.getLogger("benchmark").handlers.clear()
                 logging.getLogger("core").handlers.clear()
+                root_logger = logging.getLogger()
+                # Drop any LogHandler instances added by previous runs to keep the
+                # log widget from receiving duplicate records.
+                for existing in list(root_logger.handlers):
+                    if isinstance(existing, LogHandler):
+                        root_logger.removeHandler(existing)
                 handler = LogHandler(log_widget)
                 handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-                logging.getLogger().addHandler(handler)
+                root_logger.addHandler(handler)
                 self.call_from_thread(log_widget.write, f"Log file created: {log_file}\n")
 
                 csv_path = self.query_one("#csv_path").value
@@ -1139,8 +1151,7 @@ class BenchmarkApp(App):
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                tabbed_content = self.query_one(TabbedContent)
-                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
+                mode = self._current_mode()
 
                 request = AnalysisRunRequest(
                     mode=mode,
@@ -1270,8 +1281,7 @@ class BenchmarkApp(App):
             request = saved_request
             logger = logging.getLogger("benchmark")
             try:
-                if saved_df is not None:
-                    request.df = saved_df
+                request.df = saved_df
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})

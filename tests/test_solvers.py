@@ -110,7 +110,13 @@ class TestHeuristicSolver(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertTrue(result.success)
+        # With tolerance=0.0 and a structurally infeasible category (P1 holds 70% volume,
+        # cap=30%), the heuristic solver cannot produce a fully feasible weight set so
+        # ``success`` reflects post-validated feasibility rather than just SciPy
+        # convergence. We still assert that the additional-constraint penalty is
+        # reduced to provide best-effort progress.
+        self.assertFalse(result.success)
+        self.assertIn("residual_violation", result.stats)
         self.assertEqual(result.method, "heuristic")
 
         optimized_shares = _weighted_shares(volumes, result.weights)

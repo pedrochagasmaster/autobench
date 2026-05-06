@@ -1,20 +1,17 @@
 {
-  "csv": "data\\e176097_tpv_nubank_filtered.csv",
+  "csv": "data/readme_demo.csv",
   "entity_col": "issuer_name",
-  "entity_value": "Others",
-  "time_col": "ano_mes",
-  "metric_col": "volume_brl",
-  "total_col": "total_txn",
-  "approved_col": "txn_count",
-  "fraud_col": null,
+  "entity_value": "Target",
+  "time_col": null,
+  "metric_col": "txn_cnt",
+  "total_col": "total",
+  "approved_col": "approved",
+  "fraud_col": "fraud",
   "dimensions": [
-    "product_cd",
-    "credit_debit_ind"
+    "card_type",
+    "channel"
   ],
-  "secondary_metrics": [
-    "ano",
-    "mes"
-  ],
+  "secondary_metrics": [],
   "presets": [
     "balanced_default",
     "compliance_strict",
@@ -23,5 +20,5 @@
     "research_exploratory",
     "strategic_consistency"
   ],
-  "config_template": "config\\template.yaml"
+  "config_template": "config/template.yaml"
 }

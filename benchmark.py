@@ -422,7 +422,7 @@ def handle_config_command(args: argparse.Namespace) -> int:
             print(f"[OK] Configuration file is valid: {args.config_file}")
             return 0
         else:
-            print(f"[FAIL] Configuration validation failed:")
+            print("[FAIL] Configuration validation failed:")
             for error in errors:
                 print(f"  {error}")
             return 1
@@ -433,18 +433,18 @@ def handle_config_command(args: argparse.Namespace) -> int:
         
         if not template_path.exists():
             print(f"[FAIL] Template file not found: {template_path}")
-            print(f"  Please ensure the config/template.yaml file exists.")
+            print("  Please ensure the config/template.yaml file exists.")
             return 1
         
         if output_path.exists():
             print(f"[FAIL] File already exists: {output_path}")
-            print(f"  Please choose a different filename or delete the existing file.")
+            print("  Please choose a different filename or delete the existing file.")
             return 1
         
         try:
             shutil.copy(template_path, output_path)
             print(f"[OK] Configuration template created: {output_path}")
-            print(f"  Edit this file to customize your analysis settings.")
+            print("  Edit this file to customize your analysis settings.")
             print(f"  Validate with: benchmark config validate {output_path}")
             return 0
         except Exception as e:
@@ -466,7 +466,7 @@ def print_version() -> None:
     import platform
     
     print("Privacy-Compliant Peer Benchmark Tool")
-    print(f"Version: 3.0.0")
+    print("Version: 3.0.0")
     print(f"Python: {sys.version.split()[0]}")
     print(f"Platform: {platform.system()} {platform.release()}")
 
@@ -1025,14 +1025,20 @@ def export_balanced_csv(
                     if has_time:
                         row_data[time_col] = time_period
                     
-                    # Use dynamic column names based on input columns
-                    row_data[total_col] = round(balanced_total, 2)
-                    
+                    # Always emit standardised ``Balanced_*`` column names so the
+                    # CSV validator (and downstream tooling) can read the file
+                    # without first looking up the original CLI arguments.
+                    row_data['Balanced_Total'] = round(balanced_total, 2)
+
                     if numerator_cols:
                         if approval_col := numerator_cols.get('approval'):
-                            row_data[approval_col] = round(balanced_approval, 2) if balanced_approval > 0 else None
+                            row_data['Balanced_Approval_Total'] = (
+                                round(balanced_approval, 2) if balanced_approval > 0 else None
+                            )
                         if fraud_col := numerator_cols.get('fraud'):
-                            row_data[fraud_col] = round(balanced_fraud, 2) if balanced_fraud > 0 else None
+                            row_data['Balanced_Fraud_Total'] = (
+                                round(balanced_fraud, 2) if balanced_fraud > 0 else None
+                            )
                     
                     # Add secondary metrics to row
                     for sec_metric, sec_value in secondary_balanced.items():
