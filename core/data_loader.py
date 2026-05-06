@@ -48,6 +48,13 @@ VALIDATION_THRESHOLDS = {
     'max_entity_concentration': 50.0, # Max single entity concentration (warning threshold)
 }
 
+def _validate_sql_identifier(identifier: str) -> str:
+    """Validate and return a safe SQL table name to prevent injection."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", identifier):
+        raise ValueError(f"Unsafe SQL table name: {identifier!r}")
+    return identifier
+
+
 class DataLoader:
     """
     Handles data loading from multiple sources and schema validation.
@@ -274,7 +281,8 @@ class DataLoader:
         
         try:
             connection = self.config.get_sql_connection()
-            query = f"SELECT * FROM {table_name}"
+            safe_table_name = _validate_sql_identifier(table_name)
+            query = f"SELECT * FROM {safe_table_name}"
             df = pd.read_sql(query, connection)
             
             logger.info(f"Loaded {len(df)} rows from table")
@@ -945,18 +953,25 @@ class DataLoader:
             )
         )
         
-        # 8. Check for outlier rates
+        # 8. Check for impossible and outlier rates
         for rate_name, num_col in numerator_cols.items():
             valid_rows = df[total_col] > 0
             if valid_rows.any():
                 rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
+                impossible_mask = rates > 100.0
+                if impossible_mask.any():
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        category="invalid_rates",
+                        message=f"Rate '{rate_name}' has {int(impossible_mask.sum())} values above 100%",
+                    ))
                 outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
-                outliers = rates[outlier_mask]
+                outliers = rates[outlier_mask & ~impossible_mask]
                 if len(outliers) > 0:
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.WARNING,
                         category="outlier_rates",
-                        message=f"Rate '{rate_name}' has {len(outliers)} outlier values outside 0-100% range"
+                        message=f"Rate '{rate_name}' has {len(outliers)} outlier values outside expected range"
                     ))
         
         logger.info(f"Rate validation complete: {len([i for i in issues if i.severity == ValidationSeverity.ERROR])} errors, "
