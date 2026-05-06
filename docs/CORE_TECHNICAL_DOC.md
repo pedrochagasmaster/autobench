@@ -739,16 +739,15 @@ Dynamic threshold scaling:
 -------------------------------------------------------------------------------
 Level 2 - Output Semantics (What each sheet means)
 -------------------------------------------------------------------------------
-Analysis workbook:
+Analysis workbook (sheet names match what `core/report_generator.py` emits):
 - Summary: input settings and run metadata
-- Per-dimension sheets: balanced averages, target metrics, BIC, deltas
+- Metric_<i>_<dimension>: per-dimension data sheets (balanced averages, target metrics, BIC, deltas)
+- Peer Weights: multipliers and volumes (always emitted when weights are computed)
 - Weight Methods: which solver was used per dimension
-- Rank Changes: baseline vs balanced rankings
-- Structural Summary: count of structurally infeasible buckets by dimension
-- Structural Detail: exact structurally infeasible categories/peers and margins
-- Peer Weights: multipliers and volumes (debug)
-- Privacy Validation: per-category compliance
-- Impact Summary: aggregated distortion/impact (if enabled)
+- Privacy Validation: per-category compliance, including `_TIME_TOTAL_` rows for time-aware runs
+- Preset Comparison: mean/max impact per preset (only when `--compare-presets`)
+- Impact Analysis / Impact Summary: aggregated impact tables (only when impact analysis is enabled)
+- Metadata: serialised run metadata; DataFrames are summarised by shape so the sheet stays human-readable
 
 Publication workbook:
 - Simplified sheets with clean formatting, optional fraud conversion to bps.
