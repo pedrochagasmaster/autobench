@@ -597,6 +597,7 @@ def generate_excel_report(
     impact_df: Optional[pd.DataFrame] = None,
     impact_summary_df: Optional[pd.DataFrame] = None,
     validation_issues: Optional[Any] = None,
+    config: Any = None,
 ) -> None:
     from core.excel_reports import generate_excel_report as _shared_generate_excel_report
 
@@ -615,6 +616,7 @@ def generate_excel_report(
         impact_df,
         impact_summary_df,
         validation_issues,
+        config,
     )
 
 
@@ -634,6 +636,7 @@ def generate_multi_rate_excel_report(
     impact_df: Optional[pd.DataFrame] = None,
     impact_summary_df: Optional[pd.DataFrame] = None,
     validation_issues: Optional[Any] = None,
+    config: Any = None,
 ) -> None:
     from core.excel_reports import generate_multi_rate_excel_report as _shared_generate_multi_rate_excel_report
 
@@ -653,6 +656,7 @@ def generate_multi_rate_excel_report(
         impact_df,
         impact_summary_df,
         validation_issues,
+        config,
     )
 
 

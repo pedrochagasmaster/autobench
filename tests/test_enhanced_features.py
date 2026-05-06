@@ -335,6 +335,27 @@ class TestValidationEdgeCases:
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
         assert any('null' in str(i.message).lower() for i in errors)
 
+    def test_rate_validation_flags_values_above_100_percent_as_error(self, data_loader):
+        """Test rate validation treats impossible percentages as errors."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [100, 100, 100, 100, 100, 100],
+            'approved': [101, 90, 80, 70, 60, 50],
+            'dimension': ['X'] * 6,
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+            target_entity='A',
+        )
+
+        errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
+        assert any(i.category in {'invalid_rates', 'invalid_rate'} for i in errors)
+
 
 class TestPresetComparison:
     """Test preset comparison edge cases."""
@@ -360,6 +381,18 @@ class TestPresetComparison:
         )
 
         assert result.empty, "Empty dimensions should return empty DataFrame"
+
+
+class TestPresetWorkflow(unittest.TestCase):
+    def test_load_preset_data_returns_dict(self) -> None:
+        from core.preset_workflow import PresetWorkflow
+
+        workflow = PresetWorkflow()
+
+        preset_data = workflow.load_preset_data('balanced_default')
+
+        self.assertIsInstance(preset_data, dict)
+        self.assertEqual(preset_data.get('preset_name'), 'balanced_default')
 
 
 class TestTimeColumnHandling:
