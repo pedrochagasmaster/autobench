@@ -766,10 +766,8 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests (49/54 pass on main)
-py scripts/perform_gate_test.py # Gate test — config cases pass; share/rate cases fail
-                                # due to a pre-existing quoting bug in the gate runner
-                                # (it splits entity names with spaces incorrectly on Linux).
+py -m pytest tests/ -v          # Unit tests: 72 passed, 2 warnings on the remediation branch
+py scripts/perform_gate_test.py # Gate test: 18/18 cases pass on the remediation branch
 ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
 ```
 
@@ -784,17 +782,3 @@ Input CSVs are gitignored (`data/*.csv`). For a quick smoke test, create `data/r
 ### No external services
 
 This is a pure Python CLI/TUI tool. No databases, Docker, or network services are required. All computation is local via scipy/pandas/openpyxl.
-
-### Project skills (`.cursor/skills/`)
-
-This repo vendors a set of [`mattpocock/skills`](https://github.com/mattpocock/skills) under `.cursor/skills/` so they are available to both the Cursor IDE and to Cursor Cloud Agents (the cloud VM clones the repo, so anything committed under `.cursor/skills/` is auto-discovered).
-
-Useful entrypoints:
-
-- `/grill-me`, `/grill-with-docs` — align on a plan before coding.
-- `/tdd` — red-green-refactor loop.
-- `/diagnose` — disciplined bug-diagnosis loop.
-- `/to-prd`, `/to-issues`, `/triage` — turn discussion into PRDs / issues.
-- `/zoom-out`, `/improve-codebase-architecture` — keep the codebase healthy.
-
-Run `/setup-matt-pocock-skills` once per fresh checkout to scaffold the per-repo config (issue tracker, triage labels, docs location) that the engineering skills consume, and commit the resulting files so cloud agents inherit the configured state. See `.cursor/skills/README.md` for layout, license, and update instructions.
