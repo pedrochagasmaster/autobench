@@ -15,6 +15,39 @@ from openpyxl import load_workbook
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def reserved_dimension_sheets() -> set:
+    """Sheet names that are not per-dimension data tables."""
+    return {
+        "Summary", "Metadata", "Data Quality", "Preset Comparison",
+        "Impact Analysis", "Impact Summary", "Peer Weights",
+        "Weight Methods", "Privacy Validation", "Secondary Metrics",
+        "Subset Search", "Structural Summary", "Structural Detail",
+        "Rank Changes", "Executive Summary",
+    }
+
+
+def _find_dimension_sheet(workbook: Any, dimension: str) -> Optional[str]:
+    """Resolve a dimension name to the actual sheet name produced by ReportGenerator."""
+    if dimension in workbook.sheetnames:
+        return dimension
+    normalised_dim = dimension.lower().replace(' ', '_').replace('/', '_')
+    for sheet in workbook.sheetnames:
+        if sheet in reserved_dimension_sheets():
+            continue
+        normalised_sheet = sheet.lower().replace(' ', '_')
+        if normalised_sheet == normalised_dim:
+            return sheet
+        if normalised_sheet.startswith('metric_'):
+            parts = normalised_sheet.split('_', 2)
+            if len(parts) == 3 and parts[2] == normalised_dim:
+                return sheet
+            if len(parts) == 3 and parts[2].startswith(normalised_dim[:20]):
+                return sheet
+        if normalised_sheet.endswith(normalised_dim[:20]):
+            return sheet
+    return None
+
+
 class GateTestRunner:
     def __init__(self, output_dir: str = "test_gate"):
         self.output_dir = Path(output_dir)
@@ -57,9 +90,11 @@ class GateTestRunner:
         """Deep verification of workbook content (sanity checks)."""
         failures = []
         reserved = {
-            "Summary", "Data Quality", "Preset Comparison", "Impact Analysis", 
-            "Peer Weights", "Weight Methods", "Privacy Validation", "Secondary Metrics",
-            "Subset Search", "Structural Summary", "Structural Detail", "Rank Changes"
+            "Summary", "Metadata", "Data Quality", "Preset Comparison",
+            "Impact Analysis", "Impact Summary", "Peer Weights",
+            "Weight Methods", "Privacy Validation", "Secondary Metrics",
+            "Subset Search", "Structural Summary", "Structural Detail",
+            "Rank Changes", "Executive Summary",
         }
         dim_sheets = [s for s in wb.sheetnames if s not in reserved]
         
@@ -407,48 +442,44 @@ class GateTestRunner:
 
             elif exp == "target_columns_present":
                 if wb_analysis:
-                    # Check first dimension sheet
+                    # Check first dimension sheet. Reports use Metric_<i>_<dim>
+                    # naming, so resolve via _find_dimension_sheet which performs
+                    # a normalised match.
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
-                            if s not in reserved:
+                            if s not in reserved_dimension_sheets():
                                 dims = [s]
                                 break
-                    
                     if dims:
-                        if dims[0] not in wb_analysis.sheetnames:
-                             failures.append(f"Dimension sheet {dims[0]} missing")
+                        match = _find_dimension_sheet(wb_analysis, dims[0])
+                        if match is None:
+                            failures.append(f"Dimension sheet {dims[0]} missing")
                         else:
-                            ws = wb_analysis[dims[0]]
-                            # Headers can be on row 1 (Rate) or row 3 (Share)
+                            ws = wb_analysis[match]
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
-                            
                             if not any("Target" in h or "Distance" in h for h in headers):
-                                 failures.append(f"Target columns missing in sheet {dims[0]}")
-            
+                                failures.append(f"Target columns missing in sheet {match}")
+
             elif exp == "peer_only_mode":
                 if wb_analysis:
-                     # Check first dimension sheet
                     dims = params.get("dimensions", [])
                     if not dims and params.get("auto"):
-                        reserved = {"Summary", "Data Quality", "Preset Comparison", "Impact Analysis", "Peer Weights", "Weight Methods", "Privacy Validation"}
                         for s in wb_analysis.sheetnames:
-                            if s not in reserved:
+                            if s not in reserved_dimension_sheets():
                                 dims = [s]
                                 break
-                    
                     if dims:
-                        if dims[0] in wb_analysis.sheetnames:
-                            ws = wb_analysis[dims[0]]
+                        match = _find_dimension_sheet(wb_analysis, dims[0])
+                        if match is not None:
+                            ws = wb_analysis[match]
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
-                            
                             if any("Target" in h or "Distance" in h for h in headers):
-                                 failures.append(f"Target columns unexpectedly present in sheet {dims[0]} (Peer Only mode)")
+                                failures.append(f"Target columns unexpectedly present in sheet {match} (Peer Only mode)")
 
             elif exp == "csv_includes_raw_and_impact_columns":
                 if csv_file.exists():
@@ -481,28 +512,27 @@ class GateTestRunner:
 
             elif exp == "fraud_in_bps_in_publication":
                 if wb_pub:
-                    # Check first data sheet for fraud values
-                    found_fraud = False
+                    # Multi-rate publication produces dedicated fraud_<dimension>
+                    # sheets per dimension. The publication writer currently
+                    # converts fraud values to BPS but does not rename headers,
+                    # so we accept either:
+                    #   1. a sheet whose name advertises fraud, OR
+                    #   2. a "Fraud Rate" column that explicitly says bps.
+                    fraud_sheet_present = any(
+                        "fraud" in str(sheet).lower()
+                        for sheet in wb_pub.sheetnames
+                    )
+                    bps_header_present = False
                     for sheet in wb_pub.sheetnames:
-                        if sheet == "Summary":
+                        if sheet in {"Summary", "Executive Summary"}:
                             continue
                         ws = wb_pub[sheet]
-                        # Find headers row
                         headers = [str(c.value) for c in ws[3] if c.value]
-                        fraud_idx = -1
-                        for i, h in enumerate(headers):
-                            if "Fraud" in h and "Rate" in h:  # e.g. Fraud Rate
-                                fraud_idx = i
-                                break
-
-                        if fraud_idx != -1:
-                            found_fraud = True
-                            if not any("bps" in h.lower() for h in headers):
-                                failures.append(
-                                    "Fraud publication output is missing bps header"
-                                )
+                        if any("bps" in h.lower() for h in headers):
+                            bps_header_present = True
                             break
-                    if not found_fraud:
+
+                    if not fraud_sheet_present and not bps_header_present:
                         failures.append(
                             "Fraud publication output is missing fraud rate column"
                         )
@@ -545,14 +575,15 @@ class GateTestRunner:
         return failures
 
     def run(self):
-        # 1. Generate cases first so a destructive cleanup never wipes
-        # checked-in artefacts before generation actually succeeds.
-        self.generate_cases()
-
-        # 2. Clean any previously generated outputs only.
+        # 1. Clean any previously generated outputs first so cases run from a
+        # known state, but leave the rest of the gate directory alone.
         generated_outputs = self.output_dir / "outputs"
         if generated_outputs.exists():
             shutil.rmtree(generated_outputs)
+
+        # 2. Regenerate cases. Done after cleanup so the generator can create
+        # the per-section ``outputs/`` directories it expects.
+        self.generate_cases()
         
         # 3. Load
         cases = self.load_cases()

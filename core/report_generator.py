@@ -216,6 +216,13 @@ class ReportGenerator:
         self._write_optional_dataframe_sheet(wb, "Impact Analysis", metadata, "impact_df")
         self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
 
+        # Data Quality sheet emitted whenever the run validated input data,
+        # even if validation passed clean (passed=True surfaces a green Status
+        # banner so downstream tooling can rely on the sheet existing).
+        if metadata is not None and "validation_issues" in metadata:
+            validation_issues = metadata.get("validation_issues") or []
+            self.add_data_quality_sheet(wb, validation_issues, passed=not validation_issues)
+
         # Create Metadata sheet
         if metadata:
             ws_meta = wb.create_sheet("Metadata")

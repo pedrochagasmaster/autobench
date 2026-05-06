@@ -404,7 +404,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
