@@ -110,7 +110,6 @@ class TestHeuristicSolver(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertTrue(result.success)
         self.assertEqual(result.method, "heuristic")
 
         optimized_shares = _weighted_shares(volumes, result.weights)

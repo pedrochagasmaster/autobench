@@ -114,16 +114,16 @@ class GlobalWeightOptimizer:
         if rule_name == 'insufficient':
             logger.error(
                 "Insufficient peers for privacy rule selection (peers=%s). "
-                "Skipping global optimization and using identity weights.",
+                "Cannot perform privacy-compliant analysis.",
                 peer_count,
             )
-            weights = {peer: 1.0 for peer in peers}
-            analyzer.global_dimensions_used = list(dimensions)
-            analyzer.removed_dimensions = []
-            for dim in analyzer.global_dimensions_used:
-                analyzer.weight_methods[dim] = "Global-Identity"
-            analyzer._store_final_weights(peers, peer_volumes, weights)
-            return
+            analyzer.compliance_blocked_reason = "insufficient_peers"
+            analyzer.global_dimensions_used = []
+            analyzer.removed_dimensions = list(dimensions)
+            raise ValueError(
+                f"Insufficient peers for privacy rule selection: peers={peer_count}. "
+                f"Minimum 4 peers required for merchant mode, 5 for standard mode."
+            )
 
         try:
             det_df, sum_df = analyzer._compute_structural_caps_diagnostics(peers, all_categories, max_concentration)
