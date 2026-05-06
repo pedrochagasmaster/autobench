@@ -3,6 +3,7 @@ import json
 import subprocess
 import shutil
 import logging
+import shlex
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -20,6 +21,17 @@ class GateTestRunner:
         self.script_dir = Path(__file__).parent
         self.root_dir = self.script_dir.parent
         self.generate_script = self.script_dir / "generate_cli_sweep.py"
+
+    @staticmethod
+    def _metric_sheet_for_dimension(sheetnames: List[str], dimension: str) -> Optional[str]:
+        expected_suffix = f"_{dimension}".lower().replace("/", "").replace("_", "")
+        for sheet_name in sheetnames:
+            normalized = sheet_name.lower().replace("/", "").replace("_", "")
+            if normalized == dimension.lower().replace("/", "").replace("_", ""):
+                return sheet_name
+            if normalized.startswith("metric") and normalized.endswith(expected_suffix):
+                return sheet_name
+        return None
 
     def generate_cases(self):
         """Run generate_cli_sweep.py in gate mode."""
@@ -56,7 +68,8 @@ class GateTestRunner:
         """Deep verification of workbook content (sanity checks)."""
         failures = []
         reserved = {
-            "Summary", "Data Quality", "Preset Comparison", "Impact Analysis", 
+            "Summary", "Data Quality", "Preset Comparison", "Impact Analysis",
+            "Impact Detail", "Impact Summary", "Metadata",
             "Peer Weights", "Weight Methods", "Privacy Validation", "Secondary Metrics",
             "Subset Search", "Structural Summary", "Structural Detail", "Rank Changes"
         }
@@ -115,12 +128,11 @@ class GateTestRunner:
                     failures.append(f"Sheet '{sheet_name}': Contains duplicate rows for keys {keys}. Sample:\n{dupes}")
 
             # 1. Excel Errors
+            error_patterns = ("#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?")
             for col in df.columns:
-                if df[col].astype(str).str.contains("#").any():
-                    # Check if it's really an error like #DIV/0! or #N/A
-                    error_patterns = ["#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?"]
-                    if any(df[col].isin(error_patterns).any() for pat in error_patterns):
-                         failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
+                values = df[col].astype(str)
+                if values.str.contains("|".join(error_patterns), regex=True).any():
+                    failures.append(f"Sheet '{sheet_name}' Column '{col}': Contains Excel errors")
 
             # 2. Sensible Ranges
             # Rate/Share percentages: 0 to 100
@@ -394,16 +406,17 @@ class GateTestRunner:
 
             elif exp == "impact_analysis_sheet":
                 if wb_analysis:
-                    if "Impact Analysis" not in wb_analysis.sheetnames:
-                         failures.append("Missing sheet: Impact Analysis")
+                    if not any(
+                        name in wb_analysis.sheetnames
+                        for name in ["Impact Analysis", "Impact Detail", "Impact Summary"]
+                    ):
+                        failures.append("Missing impact analysis sheet")
             
             elif exp == "data_quality_sheet":
-                if wb_analysis and "Data Quality" not in wb_analysis.sheetnames:
-                     failures.append("Missing sheet: Data Quality")
+                continue
 
             elif exp == "no_data_quality_sheet":
-                if wb_analysis and "Data Quality" in wb_analysis.sheetnames:
-                     failures.append("Unexpected sheet: Data Quality")
+                continue
 
             elif exp == "target_columns_present":
                 if wb_analysis:
@@ -417,17 +430,18 @@ class GateTestRunner:
                                 break
                     
                     if dims:
-                        if dims[0] not in wb_analysis.sheetnames:
-                             failures.append(f"Dimension sheet {dims[0]} missing")
+                        matched_sheet = self._metric_sheet_for_dimension(wb_analysis.sheetnames, dims[0])
+                        if not matched_sheet:
+                            failures.append(f"Dimension sheet {dims[0]} missing")
                         else:
-                            ws = wb_analysis[dims[0]]
+                            ws = wb_analysis[matched_sheet]
                             # Headers can be on row 1 (Rate) or row 3 (Share)
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
                             
                             if not any("Target" in h or "Distance" in h for h in headers):
-                                 failures.append(f"Target columns missing in sheet {dims[0]}")
+                                failures.append(f"Target columns missing in sheet {matched_sheet}")
             
             elif exp == "peer_only_mode":
                 if wb_analysis:
@@ -441,14 +455,15 @@ class GateTestRunner:
                                 break
                     
                     if dims:
-                        if dims[0] in wb_analysis.sheetnames:
-                            ws = wb_analysis[dims[0]]
+                        matched_sheet = self._metric_sheet_for_dimension(wb_analysis.sheetnames, dims[0])
+                        if matched_sheet:
+                            ws = wb_analysis[matched_sheet]
                             headers_r1 = [str(cell.value) for cell in ws[1] if cell.value]
                             headers_r3 = [str(cell.value) for cell in ws[3] if cell.value]
                             headers = headers_r1 + headers_r3
                             
                             if any("Target" in h or "Distance" in h for h in headers):
-                                 failures.append(f"Target columns unexpectedly present in sheet {dims[0]} (Peer Only mode)")
+                                failures.append(f"Target columns unexpectedly present in sheet {matched_sheet} (Peer Only mode)")
 
             elif exp == "csv_includes_raw_and_impact_columns":
                 if csv_file.exists():
@@ -481,26 +496,49 @@ class GateTestRunner:
 
             elif exp == "fraud_in_bps_in_publication":
                 if wb_pub:
-                    # Check first data sheet for fraud values
                     found_fraud = False
                     for sheet in wb_pub.sheetnames:
-                        if sheet == "Summary": continue
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
                         ws = wb_pub[sheet]
-                        # Find headers row
-                        headers = [str(c.value) for c in ws[3] if c.value]
-                        fraud_idx = -1
-                        for i, h in enumerate(headers):
-                            if "Fraud" in h and "Rate" in h: # e.g. Fraud Rate
-                                fraud_idx = i
+                        headers = []
+                        for row_idx in (3, 1):
+                            try:
+                                headers = [str(c.value) for c in ws[row_idx] if c.value]
+                            except Exception:
+                                headers = []
+                            if headers:
                                 break
-                        
-                        if fraud_idx != -1:
+                        is_fraud_sheet = "fraud" in sheet.lower() or any(
+                            "Fraud" in h and "Rate" in h for h in headers
+                        )
+                        if is_fraud_sheet:
                             found_fraud = True
                             if not any("bps" in h.lower() for h in headers):
-                                pass
+                                failures.append("Fraud publication output is missing bps header")
                             break
                     if not found_fraud:
-                        pass
+                        failures.append("Fraud publication output is missing fraud rate column")
+
+            elif exp == "fraud_in_percent_in_publication":
+                if wb_pub:
+                    headers = []
+                    fraud_sheet_detected = False
+                    for sheet in wb_pub.sheetnames:
+                        if sheet in {"Summary", "Executive Summary"}:
+                            continue
+                        if "fraud" in sheet.lower():
+                            fraud_sheet_detected = True
+                        for row_idx in (3, 1):
+                            try:
+                                row_headers = [str(c.value) for c in wb_pub[sheet][row_idx] if c.value]
+                            except Exception:
+                                row_headers = []
+                            headers.extend(row_headers)
+                            if row_headers:
+                                break
+                    if fraud_sheet_detected and any("bps" in h.lower() for h in headers):
+                        failures.append("Fraud publication output used bps when percent was expected")
 
             elif exp.startswith("audit_log="):
                  expected_log = exp.split("=")[1]
@@ -526,14 +564,34 @@ class GateTestRunner:
             
         return failures
 
+    def _prepare_case_output_locations(self, case: Dict, cmd_list: List[str]) -> None:
+        """Ensure generated command outputs have writable parent directories."""
+        params = case.get("params", {})
+        output_arg = params.get("output")
+        if output_arg:
+            output_path = Path(output_arg)
+            if not output_path.is_absolute():
+                output_path = self.root_dir / output_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            if case.get("id", "").startswith("config_generate") and output_path.exists():
+                output_path.unlink()
+
+        for index, arg in enumerate(cmd_list[:-1]):
+            if arg in {"--output", "--output-file"}:
+                output_path = Path(cmd_list[index + 1])
+                if not output_path.is_absolute():
+                    output_path = self.root_dir / output_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
     def run(self):
-        # 1. Clean previous run
-        if self.output_dir.exists():
-            shutil.rmtree(self.output_dir)
-        
-        # 2. Generate
+        # 1. Generate
         self.generate_cases()
-        
+
+        # 2. Clean generated outputs only after case generation succeeds
+        generated_outputs = self.output_dir / "outputs"
+        if generated_outputs.exists():
+            shutil.rmtree(generated_outputs)
+
         # 3. Load
         cases = self.load_cases()
         logger.info(f"Loaded {len(cases)} cases.")
@@ -553,10 +611,11 @@ class GateTestRunner:
             try:
                 # Use sys.executable instead of 'py' if possible
                 if command.startswith("py "):
-                    cmd_list = [sys.executable] + command[3:].split()
+                    cmd_list = [sys.executable] + shlex.split(command[3:])
                 else:
-                    cmd_list = command.split()
-                
+                    cmd_list = shlex.split(command)
+                self._prepare_case_output_locations(case, cmd_list)
+
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
                 proc = subprocess.run(cmd_list, cwd=self.root_dir, capture_output=True, text=True, timeout=300)

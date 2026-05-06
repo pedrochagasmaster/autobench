@@ -37,12 +37,21 @@ def write_outputs(
     )
     analysis_type = "share" if request.is_share else "rate"
 
+    def _publication_results() -> Any:
+        if not is_multi_rate:
+            return artifacts.results
+        combined_results = {}
+        for rate_type, rate_results in artifacts.results.items():
+            for dim_key, dim_results in rate_results.items():
+                combined_results[f"{rate_type}_{dim_key}"] = dim_results
+        return combined_results
+
     def _write_report(path: str, *, publication: bool) -> None:
         if publication:
             from core.report_generator import ReportGenerator
 
             ReportGenerator(config).generate_publication_workbook(
-                artifacts.results,
+                _publication_results(),
                 path,
                 analysis_type=analysis_type,
                 metadata=artifacts.metadata,

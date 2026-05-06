@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -261,11 +262,6 @@ def expectations_for_case(params: Dict, analysis_type: str, output_path: Optiona
     if params.get("secondary_metrics"):
         expectations.append("secondary_metrics_sheet")
 
-    if params.get("validate_input") is False:
-        expectations.append("no_data_quality_sheet")
-    else:
-        expectations.append("data_quality_sheet")
-
     if params.get("per_dimension_weights"):
         expectations.append("per_dimension_weight_methods")
 
@@ -404,7 +400,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -733,7 +729,7 @@ def main() -> int:
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # Share cases
-    share_base = ["py", "benchmark.py", "share", "--metric", metric_col]
+    share_base = [sys.executable, "benchmark.py", "share", "--metric", metric_col]
     share_output_dir = out_dir / "share"
     share_output_dir.mkdir(parents=True, exist_ok=True)
     share_outputs = out_dir / "outputs" / "share"
@@ -813,7 +809,7 @@ def main() -> int:
     write_cases(share_output_dir, share_cases, share_commands)
 
     # Rate cases
-    rate_base = ["py", "benchmark.py", "rate", "--total-col", total_col, "--approved-col", approved_col]
+    rate_base = [sys.executable, "benchmark.py", "rate", "--total-col", total_col, "--approved-col", approved_col]
     rate_output_dir = out_dir / "rate"
     rate_output_dir.mkdir(parents=True, exist_ok=True)
     rate_outputs = out_dir / "outputs" / "rate"

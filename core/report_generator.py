@@ -717,13 +717,26 @@ class ReportGenerator:
             
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
+            metric_name_lower = str(metric_name).lower()
+            is_fraud_sheet = analysis_type == 'rate' and metric_name_lower.startswith('fraud')
             if analysis_type == 'rate' and fraud_in_bps:
-                convert_all_rates = self._resolve_convert_all_rates(metadata)
+                convert_all_rates = self._resolve_convert_all_rates(metadata) or is_fraud_sheet
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
                     if self._should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
+                if is_fraud_sheet:
+                    renamed_columns = {}
+                    for col in df.columns:
+                        col_str = str(col)
+                        if self._should_convert_rate_column(col_str, True):
+                            if "Target Rate" in col_str:
+                                renamed_columns[col] = col_str.replace("(%)", "(bps)")
+                            else:
+                                renamed_columns[col] = col_str.replace("(%)", "(bps)")
+                    if renamed_columns:
+                        df = df.rename(columns=renamed_columns)
             
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):

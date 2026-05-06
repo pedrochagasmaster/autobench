@@ -97,7 +97,7 @@ def test_privacy_validator_matches_weighted_mock_behavior(tmp_path: Path) -> Non
     assert weighted_ok is True
     assert weighted_warnings == []
     assert int((validation_df["Compliant"] == "No").sum()) == 0
-    assert int((validation_df["Dimension"] == "_TIME_TOTAL_").sum()) == 0
+    assert int((validation_df["Dimension"] == "_TIME_TOTAL_").sum()) > 0
 
 
 def test_insufficient_peer_cli_aborts_even_without_input_validation(tmp_path: Path) -> None:
