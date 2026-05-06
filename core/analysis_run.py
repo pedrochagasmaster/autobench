@@ -316,6 +316,9 @@ def prepare_run_data(
     """Create the loader, resolve the input DataFrame, entity column, and time column."""
     data_loader = DataLoader(config)
     df = resolve_input_dataframe(args, data_loader)
+    if getattr(args, 'df', None) is not None:
+        # TUI validation already normalizes in some paths; repeating is harmless and keeps CLI parity.
+        df = data_loader._normalize_columns(df.copy())
     logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
     entity_col = resolve_entity_column(df, preferred_entity_col)
     time_col = config.get('input', 'time_col')
@@ -424,6 +427,10 @@ def collect_run_diagnostics(
     privacy_validation_df = None
     method_breakdown_df = None
     metadata_updates: Dict[str, Any] = {}
+    structural_summary_df = getattr(analyzer, 'structural_summary_df', None)
+    structural_detail_df = getattr(analyzer, 'structural_detail_df', None)
+    rank_changes_df = getattr(analyzer, 'rank_changes_df', None)
+    subset_search_results = getattr(analyzer, 'subset_search_results', None)
 
     if debug_mode:
         weights_df = analyzer.get_weights_dataframe()
@@ -485,6 +492,17 @@ def collect_run_diagnostics(
         method_breakdown_df = pd.DataFrame(rows)
         logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
 
+    if structural_summary_df is not None and hasattr(structural_summary_df, "empty") and not structural_summary_df.empty:
+        metadata_updates['structural_summary_df'] = structural_summary_df
+    if structural_detail_df is not None and hasattr(structural_detail_df, "empty") and not structural_detail_df.empty:
+        metadata_updates['structural_detail_df'] = structural_detail_df
+    if rank_changes_df is not None and hasattr(rank_changes_df, "empty") and not rank_changes_df.empty:
+        metadata_updates['rank_changes_df'] = rank_changes_df
+    if subset_search_results:
+        subset_search_df = pd.DataFrame(subset_search_results)
+        if not subset_search_df.empty:
+            metadata_updates['subset_search_df'] = subset_search_df
+
     return {
         'weights_df': weights_df,
         'privacy_validation_df': privacy_validation_df,
@@ -535,6 +553,7 @@ def write_audit_log(
 ) -> str:
     """Create the audit log for a completed analysis run."""
     audit_log_file = str(Path(analysis_output_file).with_name(f"{Path(analysis_output_file).stem}_audit.log"))
+    Path(audit_log_file).parent.mkdir(parents=True, exist_ok=True)
     impact_summary = metadata.get('impact_summary', {}) if isinstance(metadata, dict) else {}
     results_summary = {
         'dimensions_analyzed': dimensions_analyzed,
@@ -547,7 +566,20 @@ def write_audit_log(
         'balanced_csv': csv_output,
     }
     results_summary.update(summarize_validation_issues(validation_issues))
-    audit_metadata = {key: value for key, value in metadata.items() if key != 'analyzer_ref'}
+    audit_metadata: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key == 'analyzer_ref':
+            continue
+        # Compact DataFrames + list-of-DataFrame-rows so the audit log stays a
+        # readable summary (§2.8). Without this, `preset_comparison_df`,
+        # `impact_df`, and other tabular metadata blow the audit log up to
+        # tens of MB of `repr(df)` text.
+        if hasattr(value, 'shape') and hasattr(value, 'columns'):
+            audit_metadata[key] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+        elif isinstance(value, list) and value and isinstance(value[0], dict):
+            audit_metadata[key] = f"List[Dict] entries={len(value)} keys={sorted(value[0].keys())}"
+        else:
+            audit_metadata[key] = value
     ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
     return audit_log_file
 
@@ -650,20 +682,39 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
     )
     consistent_weights = analyzer_settings['consistent_weights']
 
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            metric_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            analyzer._solve_per_dimension_weights(
+                df,
+                metric_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        # Insufficient-peers and other privacy-policy guards from
+        # `core/global_weight_optimizer.py` are raised as ValueError. Translate
+        # them into a `RunBlocked` so callers (CLI, TUI, audit log) see a
+        # `run_status="blocked"` compliance summary instead of a misleading
+        # "completed" verdict.
+        block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
+        block_extra: Dict[str, Any] = {'error': str(exc)}
+        if hasattr(analyzer, 'compliance_blocked_peer_count'):
+            block_extra['peer_count'] = int(analyzer.compliance_blocked_peer_count)
+        logger.error("Optimization aborted: %s", exc)
+        blocked_summary = build_compliance_summary(
+            posture=compliance_context.get('compliance_posture'),
+            acknowledgement_given=compliance_context.get('acknowledgement_given', False),
+            blocked_reason=block_reason,
+            blocked_details=block_extra,
+        ).to_dict()
+        raise RunBlocked(str(exc), blocked_summary) from exc
 
     results: Dict[str, Any] = {}
     for dim in dimensions:
@@ -792,6 +843,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
     analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
     artifacts = AnalysisArtifacts(
         results=results,
         metadata=metadata,
@@ -803,7 +855,8 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         impact_df=impact_df,
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
-        analysis_output_file=analysis_output_file,
+        analysis_output_file=str(output_path),
+        publication_output=str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}")),
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -916,20 +969,34 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         logger=logger,
     )
     consistent_weights = analyzer_settings['consistent_weights']
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, total_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            total_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, total_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            analyzer._solve_per_dimension_weights(
+                df,
+                total_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
+        block_extra: Dict[str, Any] = {'error': str(exc)}
+        if hasattr(analyzer, 'compliance_blocked_peer_count'):
+            block_extra['peer_count'] = int(analyzer.compliance_blocked_peer_count)
+        logger.error("Optimization aborted: %s", exc)
+        blocked_summary = build_compliance_summary(
+            posture=compliance_context.get('compliance_posture'),
+            acknowledgement_given=compliance_context.get('acknowledgement_given', False),
+            blocked_reason=block_reason,
+            blocked_details=block_extra,
+        ).to_dict()
+        raise RunBlocked(str(exc), blocked_summary) from exc
 
     all_results: Dict[str, Any] = {}
     for rate_type in request.rate_types:
@@ -1068,6 +1135,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     else:
         analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(analysis_output_file)
 
     artifacts = AnalysisArtifacts(
         results=all_results,
@@ -1080,7 +1148,8 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         impact_df=impact_df,
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
-        analysis_output_file=analysis_output_file,
+        analysis_output_file=str(output_path),
+        publication_output=str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}")),
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )

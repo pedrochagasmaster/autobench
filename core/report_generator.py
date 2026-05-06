@@ -201,13 +201,34 @@ class ReportGenerator:
         ws_summary = wb.create_sheet("Summary")
         self._write_summary_sheet(ws_summary, results, analysis_type, metadata)
         
-        # Create sheets for each result
-        for i, (metric_name, result_data) in enumerate(results.items()):
-            base_name = f"Metric_{i+1}_{metric_name[:20]}"
-            sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
+        # Create sheets for each result. Use the plain metric/dimension name so
+        # the workbook is consistent with pre-refactor archives, the CSV
+        # validator's Dimension column, and OPERATIONAL_GAINS audit deliverables.
+        # `_build_unique_sheet_name` adds a numeric suffix only on collisions
+        # (e.g. when the same dimension is used for the primary and a secondary
+        # metric).
+        for metric_name, result_data in results.items():
+            sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
-        
+
+        self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
+        self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
+        self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
+        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Detail", metadata, "impact_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Secondary Metrics", metadata, "secondary_results")
+        self._write_optional_dataframe_sheet(wb, "Structural Summary", metadata, "structural_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Structural Detail", metadata, "structural_detail_df")
+        self._write_optional_dataframe_sheet(wb, "Rank Changes", metadata, "rank_changes_df")
+        self._write_optional_dataframe_sheet(wb, "Subset Search", metadata, "subset_search_df")
+
+        if metadata is not None and "validation_issues" in metadata:
+            validation_issues = metadata.get("validation_issues") or []
+            has_errors = any("ERROR" in str(getattr(issue, "severity", "")) for issue in validation_issues)
+            self.add_data_quality_sheet(wb, validation_issues, passed=not has_errors)
+
         # Create Metadata sheet
         if metadata:
             ws_meta = wb.create_sheet("Metadata")
@@ -317,13 +338,50 @@ class ReportGenerator:
         row = 3
         for key, value in metadata.items():
             worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
-            
-            if isinstance(value, (list, dict)):
+
+            if hasattr(value, "shape"):
+                worksheet[f'B{row}'] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+            elif isinstance(value, list) and value and not isinstance(value[0], (str, int, float, bool, dict)):
+                worksheet[f'B{row}'] = f"List[{len(value)}]"
+            elif isinstance(value, (list, dict)):
                 worksheet[f'B{row}'] = json.dumps(value, indent=2)
             else:
                 worksheet[f'B{row}'] = str(value)
-            
+
             row += 1
+
+    def _write_optional_dataframe_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        metadata: Optional[Dict[str, Any]],
+        metadata_key: str,
+    ) -> None:
+        if not metadata:
+            return
+        df = metadata.get(metadata_key)
+        if df is None or not hasattr(df, "empty") or df.empty:
+            return
+
+        # Resolve the bold-font class lazily so this helper can be used from
+        # both the analysis workbook (`_generate_excel_report`) and the
+        # publication workbook (`generate_publication_workbook`) without
+        # depending on caller-side initialisation order.
+        font_cls = getattr(self, "_font_class", None)
+        if font_cls is None:
+            try:
+                from openpyxl.styles import Font as font_cls  # type: ignore
+            except ImportError:
+                font_cls = None
+
+        ws = workbook.create_sheet(self._build_unique_sheet_name(sheet_name, workbook.sheetnames))
+        for col_idx, column in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col_idx, value=str(column))
+            if font_cls is not None:
+                ws.cell(row=1, column=col_idx).font = font_cls(bold=True)
+        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
     
     def add_preset_comparison_sheet(
         self,
@@ -569,6 +627,7 @@ class ReportGenerator:
             Summary of results
         """
         logger.info(f"Creating audit log: {log_file}")
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         
         with open(log_file, 'w') as f:
             f.write("=" * 80 + "\n")
@@ -578,6 +637,10 @@ class ReportGenerator:
             f.write("ANALYSIS METADATA\n")
             f.write("-" * 80 + "\n")
             for key, value in metadata.items():
+                if hasattr(value, "shape"):
+                    value = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+                elif isinstance(value, list) and value and not isinstance(value[0], (str, int, float, bool, dict)):
+                    value = f"List[{len(value)}]"
                 f.write(f"{key}: {value}\n")
             f.write("\n")
             
@@ -657,12 +720,15 @@ class ReportGenerator:
                     ws_summary[f'B{row}'] = str(metadata[key])
                     row += 1
         
+        def _publication_sheet_name(metric_name: str) -> str:
+            return str(metric_name)
+
         # Create dimension sheets (publication format)
         for metric_name, result_data in results.items():
             if not isinstance(result_data, (dict, pd.DataFrame)):
                 continue
             
-            sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
+            sheet_name = self._build_unique_sheet_name(_publication_sheet_name(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             
             # Sheet header
@@ -678,15 +744,40 @@ class ReportGenerator:
             else:
                 continue
             
+            metric_name_str = str(metric_name)
+            rate_prefix = metric_name_str.split("_", 1)[0] if analysis_type == "rate" and "_" in metric_name_str else None
+
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
-            if analysis_type == 'rate' and fraud_in_bps:
+            if analysis_type == 'rate':
                 convert_all_rates = self._resolve_convert_all_rates(metadata)
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    if self._should_convert_rate_column(col, convert_all_rates):
+                    if fraud_in_bps and self._should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
+                if fraud_in_bps:
+                    df.columns = [
+                        (
+                            str(col).replace("(%)", "(bps)").replace("Rate %", "Rate (bps)")
+                            if "fraud" in str(col).lower() and "bps" not in str(col).lower()
+                            else col
+                        )
+                        for col in df.columns
+                    ]
+                if rate_prefix == "fraud":
+                    renamed_columns = []
+                    for col in df.columns:
+                        col_str = str(col)
+                        if col_str == "Balanced Peer Average (%)":
+                            renamed_columns.append("Fraud Rate (bps)" if fraud_in_bps else "Fraud Rate (%)")
+                        elif col_str == "Original Peer Average (%)":
+                            renamed_columns.append("Original Fraud Rate (bps)" if fraud_in_bps else "Original Fraud Rate (%)")
+                        elif col_str == "Target Rate (%)":
+                            renamed_columns.append("Target Fraud Rate (bps)" if fraud_in_bps else "Target Fraud Rate (%)")
+                        else:
+                            renamed_columns.append(col)
+                    df.columns = renamed_columns
             
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):
@@ -702,7 +793,21 @@ class ReportGenerator:
                         # Format numbers
                         if isinstance(value, float):
                             cell.number_format = '0.00'
-        
+
+        # Publication-scope diagnostic sheets (Q9 allow-list).
+        # Stakeholders need: Impact Summary, Peer Weights, Privacy Validation,
+        # Rank Changes, Preset Comparison. Solver internals (Weight Methods,
+        # Subset Search, Structural Diagnostics) and Data Quality / Metadata
+        # stay analysis-only.
+        for sheet_name, metadata_key in [
+            ("Impact Summary", "impact_summary_df"),
+            ("Peer Weights", "weights_df"),
+            ("Privacy Validation", "privacy_validation_df"),
+            ("Rank Changes", "rank_changes_df"),
+            ("Preset Comparison", "preset_comparison_df"),
+        ]:
+            self._write_optional_dataframe_sheet(wb, sheet_name, metadata, metadata_key)
+
         # Auto-adjust column widths (skip merged header cells safely)
         from openpyxl.utils import get_column_letter
         for ws in wb.worksheets:

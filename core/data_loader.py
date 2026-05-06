@@ -59,27 +59,14 @@ class DataLoader:
     - Column mapping and normalization
     """
     
-    REQUIRED_MINIMAL_SCHEMA = [
-        'entity_identifier',
-        'transaction_count',
-        'transaction_amount'
-    ]
-    
-    REQUIRED_FULL_SCHEMA = [
-        'entity_identifier',
-        'approved_count',
-        'approved_amount',
-        'total_count',
-        'total_amount'
-    ]
-    
-    OPTIONAL_FULL_SCHEMA = [
-        'declined_count',
-        'declined_amount',
-        'fraud_count',
-        'fraud_amount'
-    ]
-    
+    # Note: schema validation uses the heuristic ``_is_*_like_column`` helpers
+    # (see ``validate_minimal_schema`` / ``validate_full_schema``) rather than
+    # static lists. The previous ``REQUIRED_MINIMAL_SCHEMA`` /
+    # ``REQUIRED_FULL_SCHEMA`` / ``OPTIONAL_FULL_SCHEMA`` constants were dead
+    # code (never read); they were removed per audit complement §2.7. If a
+    # future change wants explicit schemas back, reintroduce them and wire
+    # them into ``validate_*_schema`` so they cannot drift again.
+
     def __init__(self, config: Any):
         """
         Initialize data loader.
@@ -274,7 +261,8 @@ class DataLoader:
         
         try:
             connection = self.config.get_sql_connection()
-            query = f"SELECT * FROM {table_name}"
+            safe_table_name = self._validate_sql_identifier(table_name)
+            query = f"SELECT * FROM {safe_table_name}"
             df = pd.read_sql(query, connection)
             
             logger.info(f"Loaded {len(df)} rows from table")
@@ -287,6 +275,12 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Failed to load SQL table: {str(e)}")
             raise
+
+    @staticmethod
+    def _validate_sql_identifier(identifier: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", identifier):
+            raise ValueError(f"Unsafe SQL table name: {identifier!r}")
+        return identifier
     
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -744,7 +738,7 @@ class DataLoader:
                     message=f"Column '{col}' has {null_pct:.1f}% null values (threshold: {t['max_null_percentage']}%)",
                     row_indices=df[df[col].isnull()].index.tolist()[:100],
                     auto_fix_available=True,
-                    fix_description=f"Fill nulls with 0 or mode for categorical columns"
+                    fix_description="Fill nulls with 0 or mode for categorical columns"
                 ))
             elif null_count > 0:
                 issues.append(ValidationIssue(
@@ -950,6 +944,14 @@ class DataLoader:
             valid_rows = df[total_col] > 0
             if valid_rows.any():
                 rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
+                impossible_mask = rates > 100.0
+                if impossible_mask.any():
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        category="invalid_rates",
+                        message=f"Rate '{rate_name}' has {int(impossible_mask.sum())} values above 100%",
+                        row_indices=rates[impossible_mask].index.tolist()[:50]
+                    ))
                 outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
                 outliers = rates[outlier_mask]
                 if len(outliers) > 0:

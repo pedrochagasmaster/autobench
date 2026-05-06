@@ -1,0 +1,23 @@
+{
+  "sweep": "post_audit_remediation_consolidation",
+  "cases": 1063,
+  "pass": 1063,
+  "fail": 0,
+  "error": 0,
+  "duration_s": 256.5,
+  "mean_seconds_per_case": 0.241,
+  "pre_consolidation_baseline": {
+    "unit_tests": "49 passed, 5 failed (main HEAD prior to remediation)",
+    "gate_test": "config cases passed; share/rate failed due to shlex quoting bug",
+    "sweep": "not runnable on main (gate runner crashes on quoted entities)"
+  },
+  "post_consolidation": {
+    "unit_tests": "82 passed, 0 failed",
+    "gate_test": "Passed 18, Failed 0, Errors 0",
+    "sweep": {
+      "pass": 1063,
+      "fail": 0,
+      "error": 0
+    }
+  }
+}

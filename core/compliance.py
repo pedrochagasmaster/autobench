@@ -21,8 +21,23 @@ class ComplianceSummary:
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        if self.details.get("blocked"):
+            return {
+                "posture": self.posture,
+                "acknowledgement_given": self.acknowledgement_given,
+                "violations": self.violations,
+                "structural_infeasibility": self.structural_infeasibility,
+                "run_status": "blocked",
+                "compliance_verdict": "blocked",
+                "acknowledgement_state": "acknowledged" if self.acknowledgement_given else "required_missing",
+                "posture_consistent": False,
+                **self.details,
+            }
+
         has_violations = self.violations > 0
-        has_structural = bool(self.structural_infeasibility)
+        has_structural = bool(self.structural_infeasibility) and bool(
+            self.structural_infeasibility.get("has_structural_infeasibility")
+        )
 
         if self.posture == "strict":
             run_status = "non_compliant" if has_violations else "compliant"
@@ -62,25 +77,51 @@ def build_compliance_summary(
     acknowledgement_given: bool = False,
     privacy_validation_df: Optional[pd.DataFrame] = None,
     structural_infeasibility: Optional[Dict[str, Any]] = None,
+    blocked_reason: Optional[str] = None,
+    blocked_details: Optional[Dict[str, Any]] = None,
 ) -> ComplianceSummary:
+    """Build a ``ComplianceSummary`` from raw run inputs.
+
+    When ``blocked_reason`` is supplied (e.g. ``"insufficient_peers"`` raised
+    by :mod:`core.global_weight_optimizer`), the resulting summary serialises
+    as ``run_status="blocked"`` / ``compliance_verdict="blocked"`` instead of a
+    misleading ``"completed_with_warnings"``.
+    """
     violations = 0
     if privacy_validation_df is not None and not privacy_validation_df.empty:
         if "compliant" in privacy_validation_df.columns:
-            violations = int((~privacy_validation_df["compliant"]).sum())
+            violations = int((~privacy_validation_df["compliant"].astype(bool)).sum())
+        elif "Compliant" in privacy_validation_df.columns:
+            normalized = privacy_validation_df["Compliant"].astype(str).str.strip().str.lower()
+            violations = int((normalized != "yes").sum())
+
+    details: Dict[str, Any] = {}
+    if blocked_reason:
+        details["blocked"] = True
+        details["reason"] = blocked_reason
+        if blocked_details:
+            details.update(blocked_details)
+
     return ComplianceSummary(
         posture=posture or "strict",
         acknowledgement_given=acknowledgement_given,
         violations=violations,
         structural_infeasibility=structural_infeasibility,
+        details=details,
     )
 
 
 def build_blocked_compliance_summary(
     posture: str,
     acknowledgement_given: bool,
+    reason: str = "acknowledgement required",
+    extra_details: Optional[Dict[str, Any]] = None,
 ) -> ComplianceSummary:
+    details: Dict[str, Any] = {"blocked": True, "reason": reason}
+    if extra_details:
+        details.update(extra_details)
     return ComplianceSummary(
         posture=posture,
         acknowledgement_given=acknowledgement_given,
-        details={"blocked": True, "reason": "acknowledgement required"},
+        details=details,
     )

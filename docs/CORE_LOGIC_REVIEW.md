@@ -188,16 +188,15 @@ RULES = {
 **Recommendation**: Externalize to configuration file with schema validation.
 
 ##### 2.2.2 Epsilon Comparison Inconsistency
-The class uses `COMPARISON_EPSILON = 1e-3` but `DimensionalAnalyzer` uses `1e-6`:
-```python
-# PrivacyValidator
-COMPARISON_EPSILON = 1e-3
 
-# DimensionalAnalyzer  
-COMPARISON_EPSILON = 1e-6
-```
+> **Status (2026-05-06):** Resolved. Both `PrivacyValidator` (line 33) and
+> `DimensionalAnalyzer` (line 22) now import the single
+> `COMPARISON_EPSILON = 1e-9` exported by `core/constants.py`. The note below
+> is preserved for historical context only — do not chase this issue.
 
-**Risk**: Boundary condition disagreements between validator and analyzer.
+The class historically used `COMPARISON_EPSILON = 1e-3` while
+`DimensionalAnalyzer` used `1e-6`, which created boundary-condition
+disagreements between validator and analyzer.
 
 ##### 2.2.3 Complex Additional Constraint Logic
 `evaluate_additional_constraints_with_thresholds()` (lines 293-362) has complex branching for different rule types:
@@ -310,11 +309,15 @@ def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bo
 **Risk**: Column naming changes could break BPS conversion silently.
 
 ##### 4.2.2 Sheet Name Truncation Without Collision Check
-```python
-sheet_name = f"Metric_{i+1}_{metric_name[:20]}"  # Limit sheet name length
-```
 
-**Risk**: Two metrics with same first 20 characters create naming collision.
+> **Status (2026-05-06):** Resolved. `ReportGenerator._build_unique_sheet_name`
+> (lines 100–114) now adds a numeric suffix on collision, and the per-metric
+> sheet uses the plain dimension name instead of the legacy `Metric_{i}_{...}`
+> prefix (sheets are named after the dimension, e.g. `flag_domestic`). Note
+> kept for history; do not reintroduce the legacy naming.
+
+Historical concern: ``sheet_name = f"Metric_{i+1}_{metric_name[:20]}"`` did not
+guard against two metrics sharing the same first 20 characters.
 
 ---
 

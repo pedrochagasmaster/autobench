@@ -644,7 +644,9 @@ class BenchmarkApp(App):
         # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -828,6 +830,9 @@ class BenchmarkApp(App):
         
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
+        for existing in list(root_logger.handlers):
+            if isinstance(existing, LogHandler):
+                root_logger.removeHandler(existing)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
         
@@ -862,6 +867,10 @@ class BenchmarkApp(App):
     def action_run_analysis(self) -> None:
         """Run analysis (Ctrl+R)."""
         self.run_analysis()
+
+    def _current_mode(self) -> str:
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
@@ -1139,8 +1148,7 @@ class BenchmarkApp(App):
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                tabbed_content = self.query_one(TabbedContent)
-                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
+                mode = self._current_mode()
 
                 request = AnalysisRunRequest(
                     mode=mode,
@@ -1270,8 +1278,14 @@ class BenchmarkApp(App):
             request = saved_request
             logger = logging.getLogger("benchmark")
             try:
-                if saved_df is not None:
-                    request.df = saved_df
+                # NOTE (audit complement §2.10): `saved_df` is the raw input
+                # DataFrame and does not carry preset/posture state. If a future
+                # change starts caching preset-derived state in `saved_df`,
+                # invalidate the cache when `request.preset` or
+                # `request.compliance_posture` changes between the
+                # validate-and-confirm callback. Today this is a no-op because
+                # the DataFrame is preset-agnostic.
+                request.df = saved_df
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
@@ -1281,7 +1295,7 @@ class BenchmarkApp(App):
                 )
                 self.call_from_thread(
                     self.notify,
-                    f"Report saved: {artifacts.analysis_output_file}",
+                    f"Report saved: {(artifacts.report_paths or [artifacts.analysis_output_file])[0]}",
                     title="Analysis Complete",
                     severity="information",
                     timeout=10,

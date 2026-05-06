@@ -82,6 +82,49 @@ class TestLPSolver(unittest.TestCase):
         expected_stats_keys = {"method", "max_slack", "sum_slack", "num_vars", "num_constraints"}
         self.assertTrue(expected_stats_keys.issubset(set(result.stats.keys())))
 
+    def test_lambda_penalty_changes_lp_objective(self) -> None:
+        """§9.3 item 2: ``lambda_penalty`` (used by ``strategic_consistency``)
+        must materially flow into the LP objective. Reviewers can otherwise
+        not tell whether the preset's `lambda_penalty=1e8` is honoured.
+        """
+        peers = ["P1", "P2", "P3", "P4"]
+        peer_volumes = {"P1": 60.0, "P2": 20.0, "P3": 10.0, "P4": 10.0}
+        categories = _build_categories("dim1", "cat1", peer_volumes)
+
+        solver = LPSolver()
+        baseline = solver.solve(
+            peers=peers,
+            categories=categories,
+            max_concentration=30.0,
+            peer_volumes=peer_volumes,
+            tolerance=5.0,
+            rank_preservation_strength=0.0,
+            min_weight=0.1,
+            max_weight=10.0,
+        )
+        weighted = solver.solve(
+            peers=peers,
+            categories=categories,
+            max_concentration=30.0,
+            peer_volumes=peer_volumes,
+            tolerance=5.0,
+            rank_preservation_strength=0.0,
+            min_weight=0.1,
+            max_weight=10.0,
+            lambda_penalty=1.0e6,
+        )
+
+        self.assertIsNotNone(baseline)
+        self.assertIsNotNone(weighted)
+        assert baseline is not None and weighted is not None
+
+        baseline_max_slack = float(baseline.stats.get("max_slack", 0.0))
+        weighted_max_slack = float(weighted.stats.get("max_slack", 0.0))
+        # When lambda_penalty is large, the LP prefers crushing slack down to
+        # zero rather than accepting tolerance-bounded slack. The weighted
+        # max_slack must therefore be no greater than the baseline.
+        self.assertLessEqual(weighted_max_slack, baseline_max_slack + 1e-6)
+
 
 class TestHeuristicSolver(unittest.TestCase):
     def test_heuristic_reduces_additional_constraint_penalty(self) -> None:
@@ -110,7 +153,6 @@ class TestHeuristicSolver(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertTrue(result.success)
         self.assertEqual(result.method, "heuristic")
 
         optimized_shares = _weighted_shares(volumes, result.weights)
@@ -123,6 +165,30 @@ class TestHeuristicSolver(unittest.TestCase):
         self.assertAlmostEqual(avg, 1.0, places=6)
         self.assertTrue(all(w >= 0.1 - 1e-6 for w in result.weights.values()))
         self.assertTrue(all(w <= 10.0 + 1e-6 for w in result.weights.values()))
+
+    def test_heuristic_reports_failure_when_zero_tolerance_still_violates_cap(self) -> None:
+        peers = ["P1", "P2", "P3", "P4", "P5", "P6"]
+        volumes = {"P1": 70.0, "P2": 10.0, "P3": 5.0, "P4": 5.0, "P5": 5.0, "P6": 5.0}
+        categories = _build_categories("dim1", "cat1", volumes)
+
+        solver = HeuristicSolver()
+        result = solver.solve(
+            peers=peers,
+            categories=categories,
+            max_concentration=30.0,
+            peer_volumes=volumes.copy(),
+            min_weight=0.1,
+            max_weight=10.0,
+            tolerance=0.0,
+            enforce_additional_constraints=True,
+            dynamic_constraints_enabled=False,
+            rule_name="6/30",
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.success)
+        self.assertEqual(result.method, "heuristic")
 
 
 if __name__ == "__main__":

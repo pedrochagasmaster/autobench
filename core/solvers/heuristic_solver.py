@@ -272,17 +272,45 @@ class HeuristicSolver(PrivacySolver):
 
         optimized_weights = _normalize_mean(optimized_weights, 1.0, min_weight, max_weight)
         
+        residual_cap_violation = False
+        residual_additional_violation = False
+        max_share = max_concentration + tolerance
+        for key in constraint_map.keys():
+            data = constraint_data[key]
+            peer_cat_vols = data['peer_cat_vols']
+            total_weighted = sum(peer_cat_vols[p] * optimized_weights[p] for p in peers)
+            shares = []
+            if total_weighted > 0:
+                for p in peers:
+                    adjusted_share = (peer_cat_vols[p] * optimized_weights[p] / total_weighted) * 100.0
+                    shares.append(adjusted_share)
+                    if adjusted_share > max_share + 1e-9:
+                        residual_cap_violation = True
+            if enforce_additional and rule_name:
+                if not min_entities_check:
+                    residual_additional_violation = True
+                elif data['enforce']:
+                    passed, _details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+                    if not passed:
+                        residual_additional_violation = True
+
+        success = bool(result.success)
+        if tolerance <= 0.0 and (residual_cap_violation or residual_additional_violation):
+            success = False
+
         # Stats are minimal for heuristic
         stats = {
-            'success': result.success,
-            'message': result.message
+            'success': success,
+            'message': result.message,
+            'residual_cap_violation': residual_cap_violation,
+            'residual_additional_violation': residual_additional_violation,
         }
         
         return SolverResult(
             weights=optimized_weights,
             method='heuristic',
             stats=stats,
-            success=result.success
+            success=success
         )
 
     def _representativeness_weight(self, stats: Optional[Dict[str, float]]) -> float:
@@ -349,10 +377,12 @@ class HeuristicSolver(PrivacySolver):
     ) -> Tuple[Optional[Dict[str, Any]], bool]:
         rule_cfg = PrivacyValidator.get_rule_config(rule_name)
         additional = rule_cfg.get('additional') if rule_cfg else None
-        if not additional: return None, False
+        if not additional:
+            return None, False
 
         min_entities = int(rule_cfg.get('min_entities', 0))
-        if min_entities <= 0: return None, False
+        if min_entities <= 0:
+            return None, False
 
         peer_scale = min(1.0, participants / float(min_entities)) if min_entities > 0 else 1.0
         rep_scale = max(self.dynamic_threshold_scale_floor, min(1.0, representativeness))

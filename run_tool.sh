@@ -23,7 +23,7 @@ source "$VENV_DIR/bin/activate"
 
 # Run the TUI application
 # We pass all arguments to the python script, though TUI usually doesn't take many
-python "$TUI_APP" "$@"
+py "$TUI_APP" "$@"
 
 # Deactivate virtual environment (optional, as script exit will handle it)
 deactivate

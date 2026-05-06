@@ -112,18 +112,28 @@ class GlobalWeightOptimizer:
         analyzer._reset_dynamic_constraint_stats()
 
         if rule_name == 'insufficient':
+            # Pre-clear analyzer state so any caller that catches the exception
+            # and inspects the analyzer (audit log writers, TUI confirmed flow,
+            # report generators) sees a self-consistent "blocked" snapshot
+            # rather than partial pre-fallback data. The marker is read by
+            # `core.compliance.build_compliance_summary` to emit a
+            # `run_status="blocked"` summary instead of a misleading
+            # "completed_with_warnings".
+            analyzer.compliance_blocked_reason = "insufficient_peers"
+            analyzer.compliance_blocked_peer_count = peer_count
+            analyzer.global_dimensions_used = []
+            analyzer.removed_dimensions = list(dimensions)
+            for dim in dimensions:
+                analyzer.weight_methods.pop(dim, None)
             logger.error(
                 "Insufficient peers for privacy rule selection (peers=%s). "
-                "Skipping global optimization and using identity weights.",
+                "Aborting analysis to avoid emitting non-compliant identity weights.",
                 peer_count,
             )
-            weights = {peer: 1.0 for peer in peers}
-            analyzer.global_dimensions_used = list(dimensions)
-            analyzer.removed_dimensions = []
-            for dim in analyzer.global_dimensions_used:
-                analyzer.weight_methods[dim] = "Global-Identity"
-            analyzer._store_final_weights(peers, peer_volumes, weights)
-            return
+            raise ValueError(
+                f"Insufficient peers for privacy rule selection: peers={peer_count}. "
+                f"Minimum 5 peers required for standard mode (4 for merchant mode)."
+            )
 
         try:
             det_df, sum_df = analyzer._compute_structural_caps_diagnostics(peers, all_categories, max_concentration)

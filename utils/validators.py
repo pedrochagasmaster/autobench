@@ -47,6 +47,48 @@ class ConfigValidator:
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
     VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    VALID_LP_KEYS = {
+        'max_iterations',
+        'tolerance',
+        'rank_penalty_weight',
+        'rank_constraints',
+        'lambda_penalty',
+        'volume_weighted_penalties',
+        'volume_weighting_exponent',
+    }
+    VALID_CONSTRAINT_KEYS = {
+        'volume_preservation',
+        'consistency_mode',
+        'enforce_additional_constraints',
+        'enforce_single_weight_set',
+        'dynamic_constraints',
+    }
+    VALID_SUBSET_SEARCH_KEYS = {
+        'enabled',
+        'strategy',
+        'max_attempts',
+        'max_tests',
+        'trigger_on_slack',
+        'max_slack_threshold',
+        'prefer_slacks_first',
+    }
+    VALID_DYNAMIC_CONSTRAINT_KEYS = {
+        'enabled',
+        'min_peer_count',
+        'min_effective_peer_count',
+        'min_category_volume_share',
+        'min_overall_volume_share',
+        'min_representativeness',
+        'threshold_scale_floor',
+        'count_scale_floor',
+        'penalty_floor',
+        'penalty_power',
+    }
+    VALID_BAYESIAN_KEYS = {
+        'max_iterations',
+        'learning_rate',
+        'violation_penalty_weight',
+    }
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -148,7 +190,7 @@ class ConfigValidator:
             return errors
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -203,6 +245,12 @@ class ConfigValidator:
             if not isinstance(lp, dict):
                 errors.append("optimization.linear_programming must be a dictionary")
             else:
+                unknown_lp = set(lp.keys()) - cls.VALID_LP_KEYS
+                if unknown_lp:
+                    errors.append(
+                        "Unknown optimization.linear_programming fields: "
+                        + ", ".join(sorted(unknown_lp))
+                    )
                 if 'max_iterations' in lp:
                     if not isinstance(lp['max_iterations'], int) or lp['max_iterations'] <= 0:
                         errors.append("optimization.linear_programming.max_iterations must be a positive integer")
@@ -252,6 +300,12 @@ class ConfigValidator:
             if not isinstance(constraints, dict):
                 errors.append("optimization.constraints must be a dictionary")
             else:
+                unknown_constraints = set(constraints.keys()) - cls.VALID_CONSTRAINT_KEYS
+                if unknown_constraints:
+                    errors.append(
+                        "Unknown optimization.constraints fields: "
+                        + ", ".join(sorted(unknown_constraints))
+                    )
                 if 'volume_preservation' in constraints:
                     vp = constraints['volume_preservation']
                     if not isinstance(vp, (int, float)) or vp < 0 or vp > 1:
@@ -275,6 +329,12 @@ class ConfigValidator:
                     if not isinstance(dyn, dict):
                         errors.append("optimization.constraints.dynamic_constraints must be a dictionary")
                     else:
+                        unknown_dyn = set(dyn.keys()) - cls.VALID_DYNAMIC_CONSTRAINT_KEYS
+                        if unknown_dyn:
+                            errors.append(
+                                "Unknown optimization.constraints.dynamic_constraints fields: "
+                                + ", ".join(sorted(unknown_dyn))
+                            )
                         if 'enabled' in dyn and not isinstance(dyn['enabled'], bool):
                             errors.append("optimization.constraints.dynamic_constraints.enabled must be a boolean")
                         int_fields = ['min_peer_count']
@@ -301,14 +361,21 @@ class ConfigValidator:
             if not isinstance(ss, dict):
                 errors.append("optimization.subset_search must be a dictionary")
             else:
+                unknown_subset = set(ss.keys()) - cls.VALID_SUBSET_SEARCH_KEYS
+                if unknown_subset:
+                    errors.append(
+                        "Unknown optimization.subset_search fields: "
+                        + ", ".join(sorted(unknown_subset))
+                    )
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
                 
                 if 'strategy' in ss and ss['strategy'] not in cls.VALID_STRATEGIES:
                     errors.append(f"optimization.subset_search.strategy must be one of: {', '.join(cls.VALID_STRATEGIES)}")
                 
-                if 'max_attempts' in ss:
-                    if not isinstance(ss['max_attempts'], int) or ss['max_attempts'] <= 0:
+                max_attempts = ss.get('max_attempts', ss.get('max_tests'))
+                if max_attempts is not None:
+                    if not isinstance(max_attempts, int) or max_attempts <= 0:
                         errors.append("optimization.subset_search.max_attempts must be a positive integer")
                 
                 if 'max_slack_threshold' in ss:
@@ -325,6 +392,12 @@ class ConfigValidator:
             if not isinstance(bayesian, dict):
                 errors.append("optimization.bayesian must be a dictionary")
             else:
+                unknown_bayesian = set(bayesian.keys()) - cls.VALID_BAYESIAN_KEYS
+                if unknown_bayesian:
+                    errors.append(
+                        "Unknown optimization.bayesian fields: "
+                        + ", ".join(sorted(unknown_bayesian))
+                    )
                 if 'max_iterations' in bayesian:
                     if not isinstance(bayesian['max_iterations'], int) or bayesian['max_iterations'] <= 0:
                         errors.append("optimization.bayesian.max_iterations must be a positive integer")
@@ -397,18 +470,24 @@ def load_config(path: Path) -> Dict[str, Any]:
         FileNotFoundError: If file doesn't exist
         ImportError: If YAML library not available
     """
-    if not YAML_AVAILABLE:
-        raise ImportError("PyYAML is required to load configuration files. Install with: pip install pyyaml")
-    
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")
     
     # Load file
     with open(path, 'r') as f:
-        try:
-            config = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            raise ConfigValidationError(f"Invalid YAML syntax: {e}")
+        if path.suffix.lower() == ".json":
+            try:
+                import json
+                config = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ConfigValidationError(f"Invalid JSON syntax: {e}")
+        else:
+            if not YAML_AVAILABLE:
+                raise ImportError("PyYAML is required to load YAML configuration files. Install with: pip install pyyaml")
+            try:
+                config = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                raise ConfigValidationError(f"Invalid YAML syntax: {e}")
     
     if config is None:
         raise ConfigValidationError("Configuration file is empty")

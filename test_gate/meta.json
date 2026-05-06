@@ -1,20 +1,17 @@
 {
   "csv": "data/readme_demo.csv",
   "entity_col": "issuer_name",
-  "entity_value": "BANCO SANTANDER",
+  "entity_value": "Target",
   "time_col": null,
   "metric_col": "txn_cnt",
-  "total_col": "txn_cnt",
-  "approved_col": "amt_total",
-  "fraud_col": null,
+  "total_col": "total",
+  "approved_col": "approved",
+  "fraud_col": "fraud",
   "dimensions": [
     "card_type",
     "channel"
   ],
-  "secondary_metrics": [
-    "amt_approved",
-    "amt_fraud"
-  ],
+  "secondary_metrics": [],
   "presets": [
     "balanced_default",
     "compliance_strict",
