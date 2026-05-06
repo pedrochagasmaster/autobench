@@ -746,6 +746,17 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         logger=logger,
     )
     metadata.update(diagnostics['metadata_updates'])
+    if getattr(analyzer, "structural_summary_df", None) is not None and not analyzer.structural_summary_df.empty:
+        metadata["structural_summary_df"] = analyzer.structural_summary_df
+    if getattr(analyzer, "structural_detail_df", None) is not None and not analyzer.structural_detail_df.empty:
+        metadata["structural_detail_df"] = analyzer.structural_detail_df
+    if getattr(analyzer, "rank_changes_df", None) is not None and not analyzer.rank_changes_df.empty:
+        metadata["rank_changes_df"] = analyzer.rank_changes_df
+    subset_results = getattr(analyzer, "subset_search_results", None) or []
+    if subset_results:
+        metadata["subset_search_df"] = pd.DataFrame(subset_results)
+    if secondary_results_df is not None and not secondary_results_df.empty:
+        metadata["secondary_metrics_df"] = secondary_results_df
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
@@ -1018,6 +1029,17 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         logger=logger,
     )
     metadata.update(diagnostics['metadata_updates'])
+    if getattr(analyzer, "structural_summary_df", None) is not None and not analyzer.structural_summary_df.empty:
+        metadata["structural_summary_df"] = analyzer.structural_summary_df
+    if getattr(analyzer, "structural_detail_df", None) is not None and not analyzer.structural_detail_df.empty:
+        metadata["structural_detail_df"] = analyzer.structural_detail_df
+    if getattr(analyzer, "rank_changes_df", None) is not None and not analyzer.rank_changes_df.empty:
+        metadata["rank_changes_df"] = analyzer.rank_changes_df
+    subset_results = getattr(analyzer, "subset_search_results", None) or []
+    if subset_results:
+        metadata["subset_search_df"] = pd.DataFrame(subset_results)
+    if secondary_results_df is not None and not secondary_results_df.empty:
+        metadata["secondary_metrics_df"] = secondary_results_df
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],

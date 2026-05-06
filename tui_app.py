@@ -644,7 +644,9 @@ class BenchmarkApp(App):
         # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -828,6 +830,9 @@ class BenchmarkApp(App):
         
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
+        for existing_handler in list(root_logger.handlers):
+            if isinstance(existing_handler, LogHandler):
+                root_logger.removeHandler(existing_handler)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
         
@@ -858,6 +863,10 @@ class BenchmarkApp(App):
         file_list = self.query_one("#file_list")
         file_list.add_class("-visible")
         file_list.focus()
+
+    def _current_mode(self) -> str:
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def action_run_analysis(self) -> None:
         """Run analysis (Ctrl+R)."""
@@ -1055,7 +1064,19 @@ class BenchmarkApp(App):
         if bayesian:
             optimization["bayesian"] = bayesian
 
-        yaml_data = {"version": "tui-override"}
+        posture = "strict"
+        preset_val = self.query_one("#preset_select").value
+        if preset_val and preset_val != Select.BLANK:
+            if not hasattr(self, 'preset_workflow'):
+                self.preset_workflow = PresetWorkflow()
+            preset_data = self.preset_workflow.load_preset_data(str(preset_val))
+            if isinstance(preset_data, dict):
+                posture = str(preset_data.get("compliance_posture") or posture)
+
+        yaml_data = {
+            "version": "3.0",
+            "compliance_posture": posture,
+        }
         if optimization:
             yaml_data["optimization"] = optimization
         if analysis:
@@ -1139,8 +1160,15 @@ class BenchmarkApp(App):
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                tabbed_content = self.query_one(TabbedContent)
-                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
+                mode = self._current_mode()
+
+                if entity_col == "issuer_name" and csv_path and os.path.exists(csv_path):
+                    headers = list(pd.read_csv(csv_path, nrows=0).columns)
+                    normalized_headers = [h.lower().replace(" ", "_") for h in headers]
+                    if "issuer_name" not in normalized_headers:
+                        self.call_from_thread(self.notify, "Select the entity column before running.", severity="error")
+                        self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
+                        return
 
                 request = AnalysisRunRequest(
                     mode=mode,

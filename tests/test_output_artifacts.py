@@ -5,6 +5,8 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import run_share_analysis
+from core.report_generator import ReportGenerator
+from utils.config_manager import ConfigManager
 
 
 def _share_args(output: Path, df: pd.DataFrame, output_format: str = "both") -> SimpleNamespace:
@@ -74,5 +76,47 @@ def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:
         assert "Peer Weights" in workbook.sheetnames
         assert "Weight Methods" in workbook.sheetnames
         assert "Privacy Validation" in workbook.sheetnames
+    finally:
+        workbook.close()
+
+
+def test_report_generator_writes_extended_diagnostic_sheets(tmp_path: Path) -> None:
+    output = tmp_path / "diagnostics.xlsx"
+    generator = ReportGenerator(ConfigManager())
+    results = {
+        "card_type": pd.DataFrame(
+            {
+                "Category": ["A"],
+                "Balanced Peer Average (%)": [50.0],
+                "Target Rate (%)": [45.0],
+            }
+        )
+    }
+    metadata = {
+        "weights_df": pd.DataFrame({"Peer": ["P1"], "Multiplier": [1.0]}),
+        "method_breakdown_df": pd.DataFrame({"Dimension": ["card_type"], "Method": ["Global-LP"]}),
+        "privacy_validation_df": pd.DataFrame({"Dimension": ["card_type"], "Compliant": ["Yes"]}),
+        "structural_summary_df": pd.DataFrame({"Dimension": ["card_type"], "infeasible_categories": [0]}),
+        "structural_detail_df": pd.DataFrame({"dimension": ["card_type"], "category": ["A"], "margin_over_cap_pp": [0.0]}),
+        "rank_changes_df": pd.DataFrame({"Peer": ["P1"], "Adjusted_Rank": [1]}),
+        "subset_search_df": pd.DataFrame({"selected_dimensions": [["card_type"]], "success": [True]}),
+        "secondary_results_df": pd.DataFrame({"Dimension": ["card_type"], "Category": ["A"], "secondary_metric": [12.0]}),
+    }
+
+    generator.generate_report(results, str(output), format="excel", analysis_type="share", metadata=metadata)
+
+    workbook = load_workbook(output, read_only=True)
+    try:
+        expected = {
+            "Peer Weights",
+            "Weight Methods",
+            "Privacy Validation",
+            "Structural Summary",
+            "Structural Detail",
+            "Rank Changes",
+            "Subset Search",
+            "Secondary Metrics",
+        }
+        assert expected.issubset(set(workbook.sheetnames))
     finally:
         workbook.close()

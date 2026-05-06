@@ -226,6 +226,11 @@ class ReportGenerator:
         self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
         self._write_optional_dataframe_sheet(wb, "Impact Analysis", metadata, "impact_df")
         self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Structural Summary", metadata, "structural_summary_df")
+        self._write_optional_dataframe_sheet(wb, "Structural Detail", metadata, "structural_detail_df")
+        self._write_optional_dataframe_sheet(wb, "Rank Changes", metadata, "rank_changes_df")
+        self._write_optional_dataframe_sheet(wb, "Subset Search", metadata, "subset_search_df")
+        self._write_optional_dataframe_sheet(wb, "Secondary Metrics", metadata, "secondary_results_df")
         if metadata and "validation_issues" in metadata:
             validation_issues = metadata.get("validation_issues") or []
             passed = not any(
@@ -377,7 +382,11 @@ class ReportGenerator:
             ws.cell(row=1, column=col_idx, value=str(column))
         for row_idx, row in enumerate(df.itertuples(index=False), start=2):
             for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                if isinstance(value, (list, dict)):
+                    cell_value = json.dumps(value, default=str)
+                else:
+                    cell_value = value
+                ws.cell(row=row_idx, column=col_idx, value=cell_value)
     
     def add_preset_comparison_sheet(
         self,
