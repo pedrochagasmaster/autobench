@@ -1,0 +1,35 @@
+{
+  "total_cases": 1063,
+  "passed": 1053,
+  "failed": 0,
+  "verification_failed": 10,
+  "timed_out": 0,
+  "runner_error": 0,
+  "elapsed_seconds": 726.756,
+  "suites": {
+    "config": {
+      "total": 9,
+      "passed": 9,
+      "failed": 0,
+      "verification_failed": 0,
+      "timed_out": 0,
+      "runner_error": 0
+    },
+    "rate": {
+      "total": 528,
+      "passed": 523,
+      "failed": 0,
+      "verification_failed": 5,
+      "timed_out": 0,
+      "runner_error": 0
+    },
+    "share": {
+      "total": 526,
+      "passed": 521,
+      "failed": 0,
+      "verification_failed": 5,
+      "timed_out": 0,
+      "runner_error": 0
+    }
+  }
+}

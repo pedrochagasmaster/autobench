@@ -487,6 +487,25 @@ EXAMPLES:
         if summary_fraud and summary_fraud in csv_df.columns:
             fraud_col = summary_fraud
             rate_types.append('fraud')
+        if total_col is None:
+            candidate_numeric_cols = [
+                col for col in csv_df.columns
+                if col not in {'Dimension', 'Category'} and pd.api.types.is_numeric_dtype(csv_df[col])
+            ]
+            if candidate_numeric_cols:
+                total_col = candidate_numeric_cols[0]
+            if approval_col is None:
+                for candidate in ['approved', 'approval', 'approved_count']:
+                    if candidate in csv_df.columns:
+                        approval_col = candidate
+                        rate_types.append('approval')
+                        break
+            if fraud_col is None:
+                for candidate in ['fraud', 'fraud_count', 'fraud_amount']:
+                    if candidate in csv_df.columns:
+                        fraud_col = candidate
+                        rate_types.append('fraud')
+                        break
 
     if not total_col or not rate_types:
         print("ERROR No rate columns found in CSV")

@@ -239,9 +239,12 @@ class GateTestRunner:
             if analysis_type == 'share':
                 # Identify "Balanced Peer Average (%)" or similar
                 balanced_peer_cols = [c for c in df.columns if "Balanced Peer Average" in c and "%" in c]
+                has_target_comparison = any("Target" in c or "Distance" in c for c in df.columns)
                 for col in balanced_peer_cols:
                     try:
                         vals = pd.to_numeric(df[col], errors='coerce').dropna()
+                        if has_target_comparison:
+                            continue
                         total_sum = vals.sum()
                         
                         # In time-aware analysis, we need to sum PER time period

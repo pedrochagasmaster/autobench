@@ -1,0 +1,24 @@
+{
+  "csv": "data/readme_demo.csv",
+  "entity_col": "issuer_name",
+  "entity_value": "Target",
+  "time_col": null,
+  "metric_col": "txn_cnt",
+  "total_col": "total",
+  "approved_col": "approved",
+  "fraud_col": "fraud",
+  "dimensions": [
+    "card_type",
+    "channel"
+  ],
+  "secondary_metrics": [],
+  "presets": [
+    "balanced_default",
+    "compliance_strict",
+    "low_distortion",
+    "minimal_distortion",
+    "research_exploratory",
+    "strategic_consistency"
+  ],
+  "config_template": "config/template.yaml"
+}
