@@ -653,20 +653,27 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
     )
     consistent_weights = analyzer_settings['consistent_weights']
 
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            metric_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            if rule_name == 'insufficient':
+                raise ValueError(
+                    f"Insufficient peers for privacy rule selection: peers={len(peers)}"
+                )
+            analyzer._solve_per_dimension_weights(
+                df,
+                metric_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        raise RunAborted(str(exc)) from exc
 
     results: Dict[str, Any] = {}
     for dim in dimensions:
@@ -922,20 +929,27 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         logger=logger,
     )
     consistent_weights = analyzer_settings['consistent_weights']
-    if consistent_weights:
-        analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
-    else:
-        _, _, peers = analyzer._build_categories(df, total_col, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            total_col,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    try:
+        if consistent_weights:
+            analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
+        else:
+            _, _, peers = analyzer._build_categories(df, total_col, dimensions)
+            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
+            if rule_name == 'insufficient':
+                raise ValueError(
+                    f"Insufficient peers for privacy rule selection: peers={len(peers)}"
+                )
+            analyzer._solve_per_dimension_weights(
+                df,
+                total_col,
+                dimensions,
+                peers,
+                max_concentration,
+                None,
+                rule_name,
+            )
+    except ValueError as exc:
+        raise RunAborted(str(exc)) from exc
 
     all_results: Dict[str, Any] = {}
     for rate_type in request.rate_types:

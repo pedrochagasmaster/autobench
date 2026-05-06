@@ -183,6 +183,29 @@ class TestGlobalWeightOptimizerFallbacks(unittest.TestCase):
         )
         self.assertEqual(analyzer._build_categories_calls, [])
 
+    def test_global_optimizer_aborts_on_insufficient_peers(self) -> None:
+        """Insufficient peer count must raise instead of silently producing identity weights."""
+        analyzer = _FakeAnalyzer(
+            all_categories=[],
+            peer_volumes={'P1': 50.0, 'P2': 50.0},
+            peers=['P1', 'P2'],
+            enforce_single_weight_set=False,
+        )
+
+        def _insufficient_rule(_peer_count: int) -> Tuple[str, float]:
+            return 'insufficient', 0.0
+
+        analyzer._get_privacy_rule = _insufficient_rule  # type: ignore[method-assign]
+        optimizer = GlobalWeightOptimizer(analyzer)
+
+        with self.assertRaises(ValueError) as ctx:
+            optimizer.calculate_global_privacy_weights(
+                df=pd.DataFrame({'year_month': [202501]}),
+                metric_col='metric',
+                dimensions=['flag_domestic'],
+            )
+        self.assertIn('Insufficient peers', str(ctx.exception))
+
     def test_single_weight_set_mode_skips_per_dimension_reweighting(self) -> None:
         # Real dimension violates, but strict single-weight-set mode should keep global weights.
         all_categories = [

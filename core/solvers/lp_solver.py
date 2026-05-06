@@ -173,6 +173,10 @@ class LPSolver(PrivacySolver):
         A_ub_rows: List[np.ndarray] = []
         b_ub: List[float] = []
 
+        # NOTE: This LP encodes max-concentration caps only. Tier participant
+        # requirements (e.g. "at least 3 peers >= 7%" for the 6/30 rule) are
+        # evaluated post-solve because they are count-based, non-linear
+        # constraints that the current solver architecture does not model.
         # Share cap constraints
         cap_idx = 0
         for v in cat_vectors:
@@ -214,10 +218,14 @@ class LPSolver(PrivacySolver):
 
         # Bounds
         bounds: List[Tuple[float, Optional[float]]] = []
-        for _ in range(P): bounds.append((min_weight, max_weight))
-        for _ in range(2 * P): bounds.append((0.0, None))
-        for _ in range(num_cap_constraints): bounds.append((0.0, None))
-        for _ in range(K): bounds.append((0.0, None))
+        for _ in range(P):
+            bounds.append((min_weight, max_weight))
+        for _ in range(2 * P):
+            bounds.append((0.0, None))
+        for _ in range(num_cap_constraints):
+            bounds.append((0.0, None))
+        for _ in range(K):
+            bounds.append((0.0, None))
 
         res = None
         solved_method = None
