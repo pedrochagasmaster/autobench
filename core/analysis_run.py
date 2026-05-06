@@ -316,6 +316,9 @@ def prepare_run_data(
     """Create the loader, resolve the input DataFrame, entity column, and time column."""
     data_loader = DataLoader(config)
     df = resolve_input_dataframe(args, data_loader)
+    if getattr(args, "df", None) is not None:
+        # Preloaded frames may come from the TUI validation path; normalize again to keep CLI parity.
+        df = data_loader._normalize_columns(df.copy())
     logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
     entity_col = resolve_entity_column(df, preferred_entity_col)
     time_col = config.get('input', 'time_col')
@@ -547,9 +550,20 @@ def write_audit_log(
         'balanced_csv': csv_output,
     }
     results_summary.update(summarize_validation_issues(validation_issues))
-    audit_metadata = {key: value for key, value in metadata.items() if key != 'analyzer_ref'}
+    audit_metadata = {
+        key: _compact_metadata_value(value)
+        for key, value in metadata.items()
+        if key != 'analyzer_ref'
+    }
     ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
     return audit_log_file
+
+
+def _compact_metadata_value(value: Any) -> Any:
+    """Keep audit metadata readable when diagnostics include large objects."""
+    if hasattr(value, "shape"):
+        return f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+    return value
 
 
 class RunAborted(Exception):

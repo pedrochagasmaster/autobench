@@ -47,6 +47,13 @@ class ConfigValidator:
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
     VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+
+    @classmethod
+    def _reject_unknown_keys(cls, section: str, config: Dict[str, Any], allowed: set[str]) -> List[str]:
+        unknown = set(config.keys()) - allowed
+        if not unknown:
+            return []
+        return [f"Unknown {section} fields: {', '.join(sorted(unknown))}"]
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -110,6 +117,23 @@ class ConfigValidator:
         if not isinstance(input_config, dict):
             errors.append("input must be a dictionary")
             return errors
+
+        errors.extend(
+            cls._reject_unknown_keys(
+                "input",
+                input_config,
+                {
+                    'entity_col',
+                    'time_col',
+                    'schema_detection_mode',
+                    'validate_input',
+                    'max_csv_size_mb',
+                    'max_csv_rows',
+                    'csv_chunk_size',
+                    'validation_thresholds',
+                },
+            )
+        )
         
         if 'entity_col' in input_config and not isinstance(input_config['entity_col'], str):
             errors.append("input.entity_col must be a string")
@@ -146,9 +170,31 @@ class ConfigValidator:
         if not isinstance(output_config, dict):
             errors.append("output must be a dictionary")
             return errors
+
+        errors.extend(
+            cls._reject_unknown_keys(
+                "output",
+                output_config,
+                {
+                    'format',
+                    'output_format',
+                    'include_debug_sheets',
+                    'include_privacy_validation',
+                    'include_impact_summary',
+                    'include_distortion_summary',
+                    'include_preset_comparison',
+                    'include_calculated_metrics',
+                    'include_audit_log',
+                    'impact_thresholds',
+                    'distortion_thresholds',
+                    'fraud_in_bps',
+                    'log_level',
+                },
+            )
+        )
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -192,6 +238,14 @@ class ConfigValidator:
         if not isinstance(opt_config, dict):
             errors.append("optimization must be a dictionary")
             return errors
+
+        errors.extend(
+            cls._reject_unknown_keys(
+                "optimization",
+                opt_config,
+                {'algorithm', 'linear_programming', 'bounds', 'constraints', 'subset_search', 'bayesian'},
+            )
+        )
         
         # Validate algorithm
         if 'algorithm' in opt_config and opt_config['algorithm'] not in cls.VALID_ALGORITHMS:
@@ -203,6 +257,21 @@ class ConfigValidator:
             if not isinstance(lp, dict):
                 errors.append("optimization.linear_programming must be a dictionary")
             else:
+                errors.extend(
+                    cls._reject_unknown_keys(
+                        "optimization.linear_programming",
+                        lp,
+                        {
+                            'max_iterations',
+                            'tolerance',
+                            'rank_penalty_weight',
+                            'rank_constraints',
+                            'lambda_penalty',
+                            'volume_weighted_penalties',
+                            'volume_weighting_exponent',
+                        },
+                    )
+                )
                 if 'max_iterations' in lp:
                     if not isinstance(lp['max_iterations'], int) or lp['max_iterations'] <= 0:
                         errors.append("optimization.linear_programming.max_iterations must be a positive integer")
@@ -214,6 +283,18 @@ class ConfigValidator:
                 if 'rank_penalty_weight' in lp:
                     if not isinstance(lp['rank_penalty_weight'], (int, float)) or lp['rank_penalty_weight'] < 0:
                         errors.append("optimization.linear_programming.rank_penalty_weight must be >= 0")
+
+                if 'lambda_penalty' in lp:
+                    if not isinstance(lp['lambda_penalty'], (int, float)) or lp['lambda_penalty'] < 0:
+                        errors.append("optimization.linear_programming.lambda_penalty must be >= 0")
+
+                if 'volume_weighted_penalties' in lp:
+                    if not isinstance(lp['volume_weighted_penalties'], bool):
+                        errors.append("optimization.linear_programming.volume_weighted_penalties must be a boolean")
+
+                if 'volume_weighting_exponent' in lp:
+                    if not isinstance(lp['volume_weighting_exponent'], (int, float)) or lp['volume_weighting_exponent'] < 0:
+                        errors.append("optimization.linear_programming.volume_weighting_exponent must be >= 0")
                 
                 if 'rank_constraints' in lp:
                     rc = lp['rank_constraints']
@@ -233,6 +314,13 @@ class ConfigValidator:
             if not isinstance(bounds, dict):
                 errors.append("optimization.bounds must be a dictionary")
             else:
+                errors.extend(
+                    cls._reject_unknown_keys(
+                        "optimization.bounds",
+                        bounds,
+                        {'max_weight', 'min_weight'},
+                    )
+                )
                 if 'max_weight' in bounds:
                     if not isinstance(bounds['max_weight'], (int, float)) or bounds['max_weight'] <= 0:
                         errors.append("optimization.bounds.max_weight must be > 0")
@@ -252,6 +340,19 @@ class ConfigValidator:
             if not isinstance(constraints, dict):
                 errors.append("optimization.constraints must be a dictionary")
             else:
+                errors.extend(
+                    cls._reject_unknown_keys(
+                        "optimization.constraints",
+                        constraints,
+                        {
+                            'volume_preservation',
+                            'consistency_mode',
+                            'enforce_single_weight_set',
+                            'enforce_additional_constraints',
+                            'dynamic_constraints',
+                        },
+                    )
+                )
                 if 'volume_preservation' in constraints:
                     vp = constraints['volume_preservation']
                     if not isinstance(vp, (int, float)) or vp < 0 or vp > 1:
@@ -275,6 +376,24 @@ class ConfigValidator:
                     if not isinstance(dyn, dict):
                         errors.append("optimization.constraints.dynamic_constraints must be a dictionary")
                     else:
+                        errors.extend(
+                            cls._reject_unknown_keys(
+                                "optimization.constraints.dynamic_constraints",
+                                dyn,
+                                {
+                                    'enabled',
+                                    'min_peer_count',
+                                    'min_effective_peer_count',
+                                    'min_category_volume_share',
+                                    'min_overall_volume_share',
+                                    'min_representativeness',
+                                    'threshold_scale_floor',
+                                    'count_scale_floor',
+                                    'penalty_floor',
+                                    'penalty_power',
+                                },
+                            )
+                        )
                         if 'enabled' in dyn and not isinstance(dyn['enabled'], bool):
                             errors.append("optimization.constraints.dynamic_constraints.enabled must be a boolean")
                         int_fields = ['min_peer_count']
@@ -301,6 +420,21 @@ class ConfigValidator:
             if not isinstance(ss, dict):
                 errors.append("optimization.subset_search must be a dictionary")
             else:
+                errors.extend(
+                    cls._reject_unknown_keys(
+                        "optimization.subset_search",
+                        ss,
+                        {
+                            'enabled',
+                            'strategy',
+                            'max_attempts',
+                            'max_tests',
+                            'trigger_on_slack',
+                            'max_slack_threshold',
+                            'prefer_slacks_first',
+                        },
+                    )
+                )
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
                 
@@ -310,6 +444,10 @@ class ConfigValidator:
                 if 'max_attempts' in ss:
                     if not isinstance(ss['max_attempts'], int) or ss['max_attempts'] <= 0:
                         errors.append("optimization.subset_search.max_attempts must be a positive integer")
+
+                if 'max_tests' in ss:
+                    if not isinstance(ss['max_tests'], int) or ss['max_tests'] <= 0:
+                        errors.append("optimization.subset_search.max_tests must be a positive integer")
                 
                 if 'max_slack_threshold' in ss:
                     if not isinstance(ss['max_slack_threshold'], (int, float)) or ss['max_slack_threshold'] < 0:
@@ -325,6 +463,13 @@ class ConfigValidator:
             if not isinstance(bayesian, dict):
                 errors.append("optimization.bayesian must be a dictionary")
             else:
+                errors.extend(
+                    cls._reject_unknown_keys(
+                        "optimization.bayesian",
+                        bayesian,
+                        {'max_iterations', 'learning_rate', 'violation_penalty_weight'},
+                    )
+                )
                 if 'max_iterations' in bayesian:
                     if not isinstance(bayesian['max_iterations'], int) or bayesian['max_iterations'] <= 0:
                         errors.append("optimization.bayesian.max_iterations must be a positive integer")
@@ -348,6 +493,14 @@ class ConfigValidator:
         if not isinstance(analysis_config, dict):
             errors.append("analysis must be a dictionary")
             return errors
+
+        errors.extend(
+            cls._reject_unknown_keys(
+                "analysis",
+                analysis_config,
+                {'best_in_class_percentile', 'fraud_percentile', 'auto_detect_dimensions', 'merchant_mode'},
+            )
+        )
         
         for percentile_field in ['best_in_class_percentile', 'fraud_percentile']:
             if percentile_field in analysis_config:

@@ -270,9 +270,9 @@ def expectations_for_case(params: Dict, analysis_type: str, output_path: Optiona
         expectations.append("per_dimension_weight_methods")
 
     if analysis_type == "rate":
-        if params.get("fraud_col") and params.get("fraud_in_bps") is True:
+        if params.get("fraud_col") and params.get("fraud_in_bps") is True and output_format in ("publication", "both"):
             expectations.append("fraud_in_bps_in_publication")
-        if params.get("fraud_col") and params.get("fraud_in_bps") is False:
+        if params.get("fraud_col") and params.get("fraud_in_bps") is False and output_format in ("publication", "both"):
             expectations.append("fraud_in_percent_in_publication")
 
     if params.get("entity"):
@@ -404,7 +404,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands

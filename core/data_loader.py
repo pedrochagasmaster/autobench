@@ -16,6 +16,12 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def _validate_sql_identifier(identifier: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", identifier):
+        raise ValueError(f"Unsafe SQL table name: {identifier!r}")
+    return identifier
+
+
 class ValidationSeverity(Enum):
     """Severity levels for data validation issues."""
     ERROR = "ERROR"      # Abort analysis - data is invalid
@@ -274,7 +280,8 @@ class DataLoader:
         
         try:
             connection = self.config.get_sql_connection()
-            query = f"SELECT * FROM {table_name}"
+            safe_table_name = _validate_sql_identifier(table_name)
+            query = f"SELECT * FROM {safe_table_name}"
             df = pd.read_sql(query, connection)
             
             logger.info(f"Loaded {len(df)} rows from table")
@@ -744,7 +751,7 @@ class DataLoader:
                     message=f"Column '{col}' has {null_pct:.1f}% null values (threshold: {t['max_null_percentage']}%)",
                     row_indices=df[df[col].isnull()].index.tolist()[:100],
                     auto_fix_available=True,
-                    fix_description=f"Fill nulls with 0 or mode for categorical columns"
+                    fix_description="Fill nulls with 0 or mode for categorical columns"
                 ))
             elif null_count > 0:
                 issues.append(ValidationIssue(
@@ -950,7 +957,15 @@ class DataLoader:
             valid_rows = df[total_col] > 0
             if valid_rows.any():
                 rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
-                outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
+                impossible_mask = rates > 100.0
+                if impossible_mask.any():
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        category="invalid_rates",
+                        message=f"Rate '{rate_name}' has {int(impossible_mask.sum())} values above 100%",
+                        row_indices=rates[impossible_mask].index.tolist()[:50]
+                    ))
+                outlier_mask = rates < 0
                 outliers = rates[outlier_mask]
                 if len(outliers) > 0:
                     issues.append(ValidationIssue(
