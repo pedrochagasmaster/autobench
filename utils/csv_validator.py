@@ -46,8 +46,20 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     wb = load_workbook(excel_path, data_only=True)
     
     # Skip metadata sheets
-    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation', 
-                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes'}
+    skip_sheets = {
+        'Summary',
+        'Metadata',
+        'Peer Weights',
+        'Weight Methods',
+        'Privacy Validation',
+        'Preset Comparison',
+        'Impact Detail',
+        'Impact Summary',
+        'Subset Search',
+        'Structural Summary',
+        'Structural Detail',
+        'Rank Changes',
+    }
     
     dimension_data = {}
     
@@ -516,13 +528,37 @@ EXAMPLES:
         # Find matching Excel sheet
         excel_df = None
         for sheet_name, df in excel_data.items():
+            normalized_sheet = sheet_name
+            if normalized_sheet.startswith("Metric_"):
+                parts = normalized_sheet.split("_", 2)
+                if len(parts) == 3:
+                    normalized_sheet = parts[2]
+            normalized_candidates = {sheet_name, normalized_sheet}
+            for candidate in list(normalized_candidates):
+                if "_" in candidate:
+                    for idx in range(len(candidate.split("_"))):
+                        suffix = "_".join(candidate.split("_")[idx:])
+                        if suffix == dimension:
+                            normalized_candidates.add(dimension)
+                            break
             # Match by sheet name (exact or sanitized)
-            if sheet_name == dimension or sheet_name.replace('_', '/') == dimension:
+            if (
+                dimension in normalized_candidates
+                or any(candidate.replace('_', '/') == dimension for candidate in normalized_candidates)
+            ):
                 excel_df = df
                 break
         
         if excel_df is None:
-            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
+            print(f"FAIL {dimension}: No matching Excel sheet found")
+            all_results.append({
+                "dimension": dimension,
+                "total_checks": 0,
+                "passed": 0,
+                "failed": 1,
+                "skipped": 0,
+                "failures": [],
+            })
             continue
         
         print(f"Validating dimension: {dimension}")
@@ -567,9 +603,14 @@ EXAMPLES:
     print(f"{'='*80}")
     print(f"Dimensions Validated: {len(all_results)}")
     print(f"Total Checks: {total_checks}")
-    print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
-    print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
-    print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    if total_checks > 0:
+        print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
+        print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
+        print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    else:
+        print(f"Passed: {total_passed} (0.0%)")
+        print(f"Failed: {total_failed} (100.0%)")
+        print(f"Skipped: {total_skipped} (0.0%)")
     
     if total_failed == 0:
         print("\nALL VALIDATIONS PASSED")
