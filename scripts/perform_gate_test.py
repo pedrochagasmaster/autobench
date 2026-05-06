@@ -109,7 +109,8 @@ class GateTestRunner:
             data_rows = []
             for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
                 # Check if row is empty
-                if not any(row): continue
+                if not any(row):
+                    continue
                 # Map to headers (truncate row to len headers)
                 # Ensure we handle cases where row is shorter than headers or vice versa
                 row_vals = row[:len(headers)]
@@ -148,7 +149,8 @@ class GateTestRunner:
                 # Skip text columns (like Category if it happens to have %)
                 try:
                     vals = pd.to_numeric(df[col], errors='coerce').dropna()
-                    if vals.empty: continue
+                    if vals.empty:
+                        continue
                     
                     min_val, max_val = vals.min(), vals.max()
                     if min_val < -0.1 or max_val > 100.1: # Small epsilon
@@ -302,7 +304,7 @@ class GateTestRunner:
                 else:
                     # Fallback or warn if not found, but only if sheet is not empty
                     if dq_ws.max_row > 1:
-                        logger.warning(f"Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
+                        logger.warning("Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
 
                 for item in dq_data:
                     # Assuming columns like "Severity", "Message"
