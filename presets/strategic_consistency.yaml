@@ -26,7 +26,7 @@ optimization:
   subset_search:
     enabled: false  # CRITICAL: Never drop dimensions
     strategy: "greedy"
-    max_attempts: 0
+    max_attempts: 1  # Effectively disabled because enabled=false; positive value satisfies the validator
     trigger_on_slack: false  # CRITICAL: Don't drop even if slack occurs
     max_slack_threshold: 999.0  # Effectively disabled
     prefer_slacks_first: false

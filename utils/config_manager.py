@@ -38,15 +38,13 @@ class ConfigManager:
         'bank_name': 'entity_identifier',
         'institution_name': 'entity_identifier',
         
-        # Transaction counts
+        # Transaction counts (share aliases)
         'txn_count': 'transaction_count',
-        'total_txns': 'transaction_count',
         'count': 'transaction_count',
         'cnt': 'transaction_count',
-        
-        # Transaction amounts
+
+        # Transaction amounts (share aliases)
         'txn_amt': 'transaction_amount',
-        'total_amount': 'transaction_amount',
         'tpv': 'transaction_amount',
         'amount': 'transaction_amount',
         'volume': 'transaction_amount',
@@ -153,6 +151,19 @@ class ConfigManager:
         if config_file:
             logger.info(f"Loaded config: {config_file}")
     
+    def _validate_loaded_config(self, config_data: Dict[str, Any]) -> None:
+        """Validate configuration data using the shared schema validator."""
+        try:
+            from .validators import ConfigValidator, ConfigValidationError
+        except ImportError:
+            return
+
+        errors = ConfigValidator.validate(config_data)
+        if errors:
+            raise ConfigValidationError(
+                "Configuration validation failed:\n  " + "\n  ".join(errors)
+            )
+
     def load_config(self, config_file: str) -> None:
         """
         Load configuration from YAML or JSON file.
@@ -179,10 +190,12 @@ class ConfigManager:
                     logger.warning("PyYAML not available, trying JSON format")
                     with open(path, 'r') as f:
                         loaded_config = json.load(f)
+                    self._validate_loaded_config(loaded_config)
             else:
                 # Assume JSON
                 with open(path, 'r') as f:
                     loaded_config = json.load(f)
+                self._validate_loaded_config(loaded_config)
             
             # Merge loaded config into current config
             self._merge_config(loaded_config)

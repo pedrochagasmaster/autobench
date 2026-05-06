@@ -168,7 +168,7 @@ class PresetManager:
             lines.append("")
         
         lines.append("=" * 80)
-        lines.append(f"Use: benchmark config show <preset> to see full details")
+        lines.append("Use: benchmark config show <preset> to see full details")
         
         return "\n".join(lines)
     
