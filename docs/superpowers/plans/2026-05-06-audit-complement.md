@@ -334,3 +334,121 @@ If you want to merge these findings back into GPT's plan, the minimum delta is:
 6. Reconcile **Task 6 Step 6** against the existing `test_heuristic_reduces_additional_constraint_penalty` assertion (§2.14).
 7. Add E701 fixes from §3 Task 12 row to **Task 12 Step 2** (or split solver one-liners during Task 6).
 8. Mention §2.7 (dead schema constants), §2.8 (audit log DF strings), §2.10 (TUI cache invalidation), §2.11 (blocked summary), §2.13 (CLI Report: empty) — most are 1–3 line edits and can be batched into a dedicated cleanup task or each merged into the relevant existing task.
+
+---
+
+## 9. Cross-Reference With Pre-Existing `docs/` Material
+
+GPT's plan references runtime evidence and stub-history reasoning, but does not cross-check claims against the in-tree documentation set. That documentation contains evidence which both **strengthens** and **constrains** the plan. Read these together with §2 above.
+
+### 9.1 `docs/CORE_LOGIC_REVIEW.md` (Feb 2026 reviewer)
+
+Documents long-standing structural concerns that the plan does not address:
+
+- **God-class `DimensionalAnalyzer`** — 40+ ctor params, 30+ methods, ~2,062 lines today. Plan Task 6 only patches the one fallback branch; it leaves the architecture untouched. If the goal of the remediation branch includes "make tests easy to write" (Task 1), the plan should add an explicit non-goal statement: it does **not** restructure `DimensionalAnalyzer`. Otherwise reviewers will expect it.
+- **Epsilon inconsistency** between `PrivacyValidator.COMPARISON_EPSILON = 1e-3` and `DimensionalAnalyzer.COMPARISON_EPSILON = 1e-6`. **Status today:** `core/constants.py` exports `COMPARISON_EPSILON = 1e-9`, and both classes import that shared constant (`PrivacyValidator` line 33, `DimensionalAnalyzer` line 22). The historical doc is now stale on this point — but the plan's Task 11 should still **delete or annotate** that Feb-2026 paragraph in `docs/CORE_LOGIC_REVIEW.md` so future reviewers don't chase a fixed bug.
+- **SQL injection in `DataLoader.load_from_sql_table`** — both this doc (§3.2.1, "Critical") and GPT's plan Task 8 Step 1 flag the same defect. Cross-confirmed.
+- **Sheet name truncation without collision check** (`Metric_{i+1}_{metric_name[:20]}`) — fixed in current code via `_build_unique_sheet_name()` (lines 100-114). Doc is stale on this point too. Worth flagging in Task 11.
+- **Deprecated method wrappers** (`calculate_global_weights`, `calculate_share_distortion`) still present in current code (`tests/test_legacy_wrappers.py` confirms) — not in the plan. Recommend deleting in the same release.
+
+### 9.2 `docs/CORE_LOGIC_REVIEW_FULL.md` (Jan 2026 reviewer)
+
+Reinforces the god-class concern and adds two scalability flags the plan does not cover:
+
+- **LP rank constraints are O(P²)** in "all" mode (`core/solvers/lp_solver.py`). For `P=100`, this generates ~5000 rank constraints. The reviewer recommends a "neighbor-only" mode. **Status today:** the constraint mode is configurable (`rank_constraints.mode = 'all' | 'neighbor'`, default `all`), but `presets/*.yaml` never set it to `neighbor`. The plan does not surface this preset gap.
+- **Privacy logic duplication** between `PrivacyValidator` and `HeuristicSolver._additional_constraints_penalty`. Today `core/privacy_policy.py` exists as a facade but the heuristic solver still implements its own penalty logic and its own `_assess_additional_constraints_applicability` (lines 298-342) duplicating what `PrivacyPolicy.assess_additional_constraints` does. The plan does not consolidate these. Recommend either (a) routing the heuristic solver through `PrivacyPolicy`, or (b) explicitly documenting `PrivacyPolicy` as advisory-only.
+
+### 9.3 `docs/CORE_TECHNICAL_DOC.md` (current ground-truth doc)
+
+Contains assertions that contradict observed behavior on `main`:
+
+- **Line 41-56** describes a pipeline that includes `Privacy Validation`, `Peer Weights`, `Weight Methods`, `Structural Summary/Detail`, `Rank Changes`, `Impact Summary` sheets. **None of those are emitted today** (see §1, §2.6 of this complement and §9.4 below). Plan Task 11 Step 5 already says "ensure the output sheet list matches actual generated sheets" — reinforce it: the current doc lies about output. After Task 3 lands, every sheet promised here must actually be produced.
+- **Lines 760-801** ("Preset and Config Improvement Opportunities") claim items 1–9 are "addressed". Concretely:
+  - Item 1: `max_tests` → `max_attempts` mapping is implemented in `ConfigManager._merge_config()`. Confirmed.
+  - Item 2: "lambda_penalty is wired to LPSolver as cap slack penalty override" — verify against current `core/solvers/lp_solver.py`. The plan's Task 6 Step 5 only adds a comment about additional-constraint scope; it does not check that `lambda_penalty` actually flows into the LP objective. **Recommendation:** add a regression test asserting that `lambda_penalty=100000000` (used by `strategic_consistency`) materially changes the LP objective vs `lambda_penalty=None`.
+  - Item 3: "rank_penalty_weight as multiplier on volume_preservation" — confirmed in `analysis_run.build_dimensional_analyzer` line 78-80 (`rank_preservation_strength = volume_preservation * rank_penalty_weight`).
+  - Item 6: `consistency_mode` is wired through `resolve_consistency_mode()` (`core/analysis_run.py:43-56`). Confirmed.
+  - Item 7: Bayesian iter / learning_rate flow into HeuristicSolver. Confirmed via `core/solvers/heuristic_solver.py:86-87, 220-228`.
+  - Item 8: Internal-dimension filtering via `CategoryBuilder.is_internal_dimension_name`. Confirmed (`core/global_weight_optimizer.py:463`).
+  - Item 9: `enforce_single_weight_set` gating. Confirmed (`core/global_weight_optimizer.py:103, 214-215, 477-481`).
+  - **Status takeaway:** items 1, 3, 6, 7, 8, 9 are honoured by current code. Item 4 ("output toggles") is the regression — see §9.4.
+
+### 9.4 `docs/IMPLEMENTATION_PLAN_FIXES_1_TO_4.md` (Feb 2026)
+
+This plan claims `[x]` for all four workstreams and was verified on 2026-02-02 with `pytest -> 35 passed` and gate `Passed 17, Failed 0`. Today the test count is **49 passed, 5 failed** and gate cannot run cleanly because of the quoting bug GPT identified. Therefore the implementation regressed between Feb 2026 and May 2026. That regression window correlates exactly with the refactor commits documented in GPT's plan §"Git History Root Cause for Stub Modules":
+
+| Commit | Date | Effect |
+|---|---|---|
+| `ae95269` | Feb 2026 | extracted run-setup helpers into `core/analysis_run.py`. |
+| `9b61a50` | Feb 2026 | shrank `benchmark.py` by ~2,485 lines, introduced uncommitted stub imports. |
+| `81cf493` | May 2026 | added stub implementations in this branch to unblock imports. |
+| `cfc267a` | May 2026 | merged stubs into `main`. |
+
+The pre-refactor `benchmark.py` (3,508 lines on commit `9b61a50^`) **had a comprehensive `generate_excel_report()` (lines 1595-2400+) that explicitly created Peer Weights, Weight Methods, Structural Summary, Structural Detail, Rank Changes, Subset Search, Privacy Validation, Preset Comparison, Impact Analysis, Secondary Metrics sheets**. The current `core/excel_reports.generate_excel_report()` is a 50-line wrapper around `ReportGenerator.generate_report()`, and `ReportGenerator._generate_excel_report()` only writes Summary + Metric_* + Metadata. **The diagnostic-sheet generation code was deleted, not extracted.** This is the single largest concrete regression on `main` and is the root cause of GPT's plan Task 3.
+
+This evidence makes Task 3 even more urgent than the plan implies. Recommendation: rewire `ReportGenerator._write_optional_dataframe_sheet()` (Task 3 Step 6) **plus** restore the pre-refactor formatting (column widths, fills, headers) — Task 3 Step 6 as written produces functional but unformatted sheets. Reviewers will compare against the old workbooks and notice the styling regression.
+
+### 9.5 `outputs/investigation_fortbrasil/logic_audit_report.json` (validation snapshot pre-refactor)
+
+This is the strongest piece of in-tree evidence supporting GPT's plan. The JSON snapshot was generated by an earlier, working `benchmark.py` against the FortBrasil dataset and explicitly enumerates which sheets the workbooks contained:
+
+```json
+"sheets": [
+  "Summary", "flag_domestic", "poi", "poi_3ds_category", "poi_ticket_range",
+  "Peer Weights", "Weight Methods", "Structural Summary", "Structural Detail",
+  "Rank Changes", "Privacy Validation", "Preset Comparison", "Impact Analysis",
+  "Data Quality"
+]
+```
+
+Run the same command on today's `main` (with the same dataset) and you get only `Summary, Metric_1_*, ..., Metadata`. This is a **regression test you do not need to write** — the JSON snapshot itself is one. Plan Task 1 should reference this file and the next-door `outputs/investigation_fortbrasil_rerun/before_after_eval.json` as canonical "previously known good" output.
+
+The `before_after_eval.json` file is even more direct — it explicitly compares old and new workbook sheets and CSV diffs for `share_strategic`, `rate_strategic`, and `share_balanced_default`. The `csv_compare.max_abs_diffs` block shows numerical drift on the order of `Balanced_qtde_txns_ttl_Share_%: 4.4709` percentage points between old and new on the `share_strategic` case — that is a material change in business-visible output, not a formatting tweak. **Plan Task 1 should add a new regression test** that re-runs `share strategic_consistency` against a small fixture and asserts that the share/impact distributions remain within a documented tolerance band of the pre-refactor numbers, otherwise the remediation branch may quietly ship a different model.
+
+The same snapshot also confirms the `low_distortion` `_TIME_TOTAL_` reserved-prefix red flag (line 113-115) that `IMPLEMENTATION_PLAN_FIXES_1_TO_4.md` claimed to have fixed. The fix is in the code (`CategoryBuilder.is_internal_dimension_name`) but Task 6 Step 1 of GPT's plan does not reference the existing in-tree fix; reviewers may inadvertently revert it. Add a comment.
+
+### 9.6 `docs/OPERATIONAL_GAINS.md`
+
+The user-facing value proposition (75% balancing-time reduction, single L7/L8 analyst can run it end-to-end, audit-ready outputs) **depends entirely on the diagnostic sheets that no longer exist**. Quoting the doc directly:
+
+> Analysts can understand and debug every decision behind peer weights:
+> - Peer weight multipliers per dimension
+> - How privacy caps shaped the weights
+> - Distortion analysis (raw vs balanced results)
+> - Which solver was used per dimension (global LP, per-dimension LP, Bayesian fallback)
+> - Rank changes before and after balancing
+> - Privacy validation results with pass/fail details
+
+Today's main produces a workbook with `['Summary', 'Metric_1_*', 'Metric_2_*', 'Metadata']`. None of the bullets above can be executed. **The product is, as of `main`, materially broken against its documented value proposition.** Plan Task 3 is therefore not "polish" — it is restoring the tool's reason to exist. Reflect that severity in PR descriptions.
+
+---
+
+## 10. Updated Severity Ranking After Doc Review
+
+After cross-checking against `docs/`:
+
+| Severity | Items |
+|---|---|
+| **P0 — product-broken regression** | §2.6 (publication mode never triggers), §9.4/§9.5 (diagnostic sheets deleted, ALL of `Peer Weights`, `Weight Methods`, `Privacy Validation`, `Structural Summary/Detail`, `Rank Changes`, `Subset Search`, `Preset Comparison`, `Impact Analysis`, `Data Quality`, `Secondary Metrics` are missing on main) |
+| **P1 — silently wrong output** | §2.1 (compliance verdict false positive), §2.2 (preset comparison silently empty), §9.5 (numerical drift in `Balanced_*_Share_%` between pre/post refactor) |
+| **P2 — cannot validate** | §2.3 (CSV validator crashes), GPT plan Task 9 (gate runner shlex+sheet matching) |
+| **P3 — preset/config drift** | §2.4 (preset key drift), §2.5 (validator silent on unknown nested keys), §9.1 stale epsilon docs |
+| **P4 — code quality / dead code** | §2.7 (dead schema constants), §2.8 (audit log DF strings), §2.11 (blocked summary), §2.13 (empty Report: line) |
+
+**Do not merge GPT's remediation plan without addressing every P0 and P1 item.** The plan as written addresses the P0/P1 items adequately when augmented with §2.1 and §2.2 patches. P3 items are also already in scope (Task 7). P4 is icing.
+
+---
+
+## 11. Files Touched by This Audit Pass
+
+This complement document remains read-only — no code or test changes. Documents reviewed in this pass that were **not** covered in the original §7 list:
+
+- `docs/CORE_LOGIC_REVIEW.md` (509 lines)
+- `docs/CORE_LOGIC_REVIEW_FULL.md` (80 lines)
+- `docs/CORE_TECHNICAL_DOC.md` (1158 lines)
+- `docs/IMPLEMENTATION_PLAN_FIXES_1_TO_4.md` (297 lines)
+- `docs/OPERATIONAL_GAINS.md` (95 lines)
+- `outputs/investigation_fortbrasil/logic_audit_report.json` (741 lines, prior pristine validation snapshot)
+- `outputs/investigation_fortbrasil_rerun/before_after_eval.json` (206 lines, before/after diff snapshot)
+- `outputs/investigation/custom_per_dimension.yaml`, `custom_strict_global.yaml` (custom config samples)
+- Pre-refactor `benchmark.py` (commit `9b61a50^`, 3,508 lines) inspected via `git show` to confirm regression scope.
