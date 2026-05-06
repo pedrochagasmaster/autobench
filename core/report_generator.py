@@ -207,6 +207,13 @@ class ReportGenerator:
             sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
+
+        self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
+        self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
+        self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
+        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Detail", metadata, "impact_df")
+        self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
         
         # Create Metadata sheet
         if metadata:
@@ -304,6 +311,27 @@ class ReportGenerator:
             for r_idx, row_data in enumerate(result_data.itertuples(index=False), start=row):
                 for c_idx, value in enumerate(row_data, start=1):
                     worksheet.cell(row=r_idx, column=c_idx, value=value)
+
+    def _write_optional_dataframe_sheet(
+        self,
+        workbook: Any,
+        sheet_name: str,
+        metadata: Optional[Dict[str, Any]],
+        metadata_key: str,
+    ) -> None:
+        if not metadata:
+            return
+        df = metadata.get(metadata_key)
+        if df is None or not hasattr(df, "empty") or df.empty:
+            return
+
+        ws = workbook.create_sheet(self._build_unique_sheet_name(sheet_name, workbook.sheetnames))
+        for col_idx, column in enumerate(df.columns, start=1):
+            ws.cell(row=1, column=col_idx, value=str(column))
+            ws.cell(row=1, column=col_idx).font = self._font_class(bold=True)
+        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
     
     def _write_metadata_sheet(
         self,
@@ -318,10 +346,19 @@ class ReportGenerator:
         for key, value in metadata.items():
             worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
             
-            if isinstance(value, (list, dict)):
-                worksheet[f'B{row}'] = json.dumps(value, indent=2)
+            if hasattr(value, "shape"):
+                display_value = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
+            elif isinstance(value, list) and value and hasattr(value[0], "severity"):
+                display_value = f"ValidationIssue list len={len(value)}"
+            elif isinstance(value, (list, dict)):
+                display_value = json.dumps(value, indent=2, default=str)
             else:
-                worksheet[f'B{row}'] = str(value)
+                display_value = str(value)
+
+            try:
+                worksheet[f'B{row}'] = display_value
+            except Exception:
+                worksheet[f'B{row}'] = str(display_value)
             
             row += 1
     
@@ -680,13 +717,26 @@ class ReportGenerator:
             
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
+            metric_name_lower = str(metric_name).lower()
+            is_fraud_sheet = analysis_type == 'rate' and metric_name_lower.startswith('fraud')
             if analysis_type == 'rate' and fraud_in_bps:
-                convert_all_rates = self._resolve_convert_all_rates(metadata)
+                convert_all_rates = self._resolve_convert_all_rates(metadata) or is_fraud_sheet
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
                     if self._should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
+                if is_fraud_sheet:
+                    renamed_columns = {}
+                    for col in df.columns:
+                        col_str = str(col)
+                        if self._should_convert_rate_column(col_str, True):
+                            if "Target Rate" in col_str:
+                                renamed_columns[col] = col_str.replace("(%)", "(bps)")
+                            else:
+                                renamed_columns[col] = col_str.replace("(%)", "(bps)")
+                    if renamed_columns:
+                        df = df.rename(columns=renamed_columns)
             
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):

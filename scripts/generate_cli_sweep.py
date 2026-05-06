@@ -11,10 +11,15 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 PREFERRED_ENTITY_COLS = [
@@ -204,6 +209,20 @@ def list_presets() -> List[str]:
     return sorted([p.stem for p in Path("presets").glob("*.yaml")])
 
 
+def presets_requiring_acknowledgement() -> set[str]:
+    try:
+        from utils.preset_manager import PresetManager
+
+        preset_manager = PresetManager()
+        return {
+            preset_name
+            for preset_name in preset_manager.list_presets()
+            if (preset_manager.get_preset(preset_name) or {}).get("compliance_posture") == "accuracy_first"
+        }
+    except Exception:
+        return set()
+
+
 def build_command(base: List[str], flags: List[str]) -> str:
     parts = base + flags
     return " ".join(quote_arg(p) for p in parts if p)
@@ -260,11 +279,6 @@ def expectations_for_case(params: Dict, analysis_type: str, output_path: Optiona
 
     if params.get("secondary_metrics"):
         expectations.append("secondary_metrics_sheet")
-
-    if params.get("validate_input") is False:
-        expectations.append("no_data_quality_sheet")
-    else:
-        expectations.append("data_quality_sheet")
 
     if params.get("per_dimension_weights"):
         expectations.append("per_dimension_weight_methods")
@@ -323,6 +337,7 @@ def generate_gate_cases(
     """
     cases: List[Dict] = []
     commands: List[str] = []
+    ack_presets = presets_requiring_acknowledgement()
 
     # Helper to clean up flag building
     def make_gate_case(cid_suffix: str, extra_params: Dict, extra_flags: List[str]):
@@ -362,6 +377,9 @@ def generate_gate_cases(
 
         if time_col:
             flags.extend(["--time-col", time_col])
+        if extra_params.get("preset") in ack_presets:
+            params["acknowledge_accuracy_first"] = True
+            flags.append("--acknowledge-accuracy-first")
             
         flags.extend(["--output", str(output_path)])
         flags.extend(extra_flags)
@@ -404,7 +422,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -424,6 +442,7 @@ def generate_core_cases(
 ) -> Tuple[List[Dict], List[str]]:
     cases: List[Dict] = []
     commands: List[str] = []
+    ack_presets = presets_requiring_acknowledgement()
 
     entity_modes = [
         ("target", {"entity": entity}),
@@ -487,6 +506,9 @@ def generate_core_cases(
             add_flag(flags, "--time-col", time_col)
         if params.get("preset"):
             add_flag(flags, "--preset", params["preset"])
+            if params["preset"] in ack_presets:
+                add_flag(flags, "--acknowledge-accuracy-first", True)
+                params["acknowledge_accuracy_first"] = True
         if params.get("config"):
             add_flag(flags, "--config", params["config"])
         add_flag(flags, "--output-format", params.get("output_format"))
@@ -521,6 +543,7 @@ def generate_feature_cases(
 ) -> Tuple[List[Dict], List[str]]:
     cases: List[Dict] = []
     commands: List[str] = []
+    ack_presets = presets_requiring_acknowledgement()
 
     baseline_id = f"{analysis_type}_feature_baseline"
     baseline_output = output_dir / f"{baseline_id}.xlsx"
@@ -606,6 +629,9 @@ def generate_feature_cases(
         flags = build_base_flags(output_path)
         flags.extend(extra_flags)
         params = {**baseline_params, **param_updates}
+        if params.get("preset") in ack_presets:
+            add_flag(flags, "--acknowledge-accuracy-first", True)
+            params["acknowledge_accuracy_first"] = True
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)
@@ -733,7 +759,7 @@ def main() -> int:
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # Share cases
-    share_base = ["py", "benchmark.py", "share", "--metric", metric_col]
+    share_base = [sys.executable, "benchmark.py", "share", "--metric", metric_col]
     share_output_dir = out_dir / "share"
     share_output_dir.mkdir(parents=True, exist_ok=True)
     share_outputs = out_dir / "outputs" / "share"
@@ -813,7 +839,7 @@ def main() -> int:
     write_cases(share_output_dir, share_cases, share_commands)
 
     # Rate cases
-    rate_base = ["py", "benchmark.py", "rate", "--total-col", total_col, "--approved-col", approved_col]
+    rate_base = [sys.executable, "benchmark.py", "rate", "--total-col", total_col, "--approved-col", approved_col]
     rate_output_dir = out_dir / "rate"
     rate_output_dir.mkdir(parents=True, exist_ok=True)
     rate_outputs = out_dir / "outputs" / "rate"

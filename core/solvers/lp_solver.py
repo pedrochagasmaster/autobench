@@ -173,7 +173,9 @@ class LPSolver(PrivacySolver):
         A_ub_rows: List[np.ndarray] = []
         b_ub: List[float] = []
 
-        # Share cap constraints
+        # Share cap constraints.
+        # Tier participant requirements are evaluated after solving because they
+        # are count-based, non-linear constraints in the current architecture.
         cap_idx = 0
         for v in cat_vectors:
             for p_idx in range(P):
@@ -214,10 +216,14 @@ class LPSolver(PrivacySolver):
 
         # Bounds
         bounds: List[Tuple[float, Optional[float]]] = []
-        for _ in range(P): bounds.append((min_weight, max_weight))
-        for _ in range(2 * P): bounds.append((0.0, None))
-        for _ in range(num_cap_constraints): bounds.append((0.0, None))
-        for _ in range(K): bounds.append((0.0, None))
+        for _ in range(P):
+            bounds.append((min_weight, max_weight))
+        for _ in range(2 * P):
+            bounds.append((0.0, None))
+        for _ in range(num_cap_constraints):
+            bounds.append((0.0, None))
+        for _ in range(K):
+            bounds.append((0.0, None))
 
         res = None
         solved_method = None

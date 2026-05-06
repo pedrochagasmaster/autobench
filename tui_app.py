@@ -644,7 +644,9 @@ class BenchmarkApp(App):
         # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -828,12 +830,19 @@ class BenchmarkApp(App):
         
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
+        for existing_handler in list(root_logger.handlers):
+            if isinstance(existing_handler, LogHandler):
+                root_logger.removeHandler(existing_handler)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
         
         # Clear specific loggers to prevent duplication if they have handlers
         logging.getLogger("benchmark").handlers.clear()
         logging.getLogger("core").handlers.clear()
+
+    def _current_mode(self) -> str:
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
