@@ -740,18 +740,20 @@ Dynamic threshold scaling:
 Level 2 - Output Semantics (What each sheet means)
 -------------------------------------------------------------------------------
 Analysis workbook:
-- Summary: input settings and run metadata
-- Per-dimension sheets: balanced averages, target metrics, BIC, deltas
-- Weight Methods: which solver was used per dimension
-- Rank Changes: baseline vs balanced rankings
-- Structural Summary: count of structurally infeasible buckets by dimension
-- Structural Detail: exact structurally infeasible categories/peers and margins
-- Peer Weights: multipliers and volumes (debug)
-- Privacy Validation: per-category compliance
-- Impact Summary: aggregated distortion/impact (if enabled)
+- Summary: input settings, compliance posture/verdict, and run metadata
+- Metric_* sheets: per-dimension balanced averages, target metrics, BIC, and deltas
+- Peer Weights: peer multipliers and volumes when debug data is available
+- Weight Methods: per-dimension/global weight-source breakdown
+- Privacy Validation: per-category compliance details, including time-total validation rows
+- Preset Comparison: per-preset and per-dimension comparison metrics when enabled
+- Impact Detail: category-level share/rate impact details when enabled
+- Impact Summary: aggregated impact statistics when enabled
+- Metadata: compact serialized metadata for audit/debug context
 
 Publication workbook:
-- Simplified sheets with clean formatting, optional fraud conversion to bps.
+- Executive Summary: stakeholder-facing header metadata
+- One clean sheet per analyzed metric/dimension with simplified formatting
+- Fraud publication columns optionally converted to basis points when `fraud_in_bps` is enabled
 
 CSV/JSON:
 - CSV: either a single DataFrame or per-metric outputs; balanced totals are peer-weighted totals

@@ -47,6 +47,82 @@ class ConfigValidator:
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
     VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    ROOT_KNOWN_FIELDS = set(REQUIRED_FIELDS.keys()) | set(OPTIONAL_FIELDS.keys())
+    INPUT_KNOWN_FIELDS = {
+        'entity_col',
+        'time_col',
+        'schema_detection_mode',
+        'max_csv_size_mb',
+        'max_csv_rows',
+        'csv_chunk_size',
+        'validate_input',
+        'validation_thresholds',
+    }
+    OUTPUT_KNOWN_FIELDS = {
+        'format',
+        'output_format',
+        'include_debug_sheets',
+        'include_privacy_validation',
+        'include_impact_summary',
+        'include_distortion_summary',
+        'include_preset_comparison',
+        'include_calculated_metrics',
+        'include_audit_log',
+        'impact_thresholds',
+        'distortion_thresholds',
+        'fraud_in_bps',
+        'log_level',
+    }
+    LINEAR_PROGRAMMING_KNOWN_FIELDS = {
+        'max_iterations',
+        'tolerance',
+        'rank_penalty_weight',
+        'rank_constraints',
+        'lambda_penalty',
+        'volume_weighted_penalties',
+        'volume_weighting_exponent',
+    }
+    RANK_CONSTRAINT_KNOWN_FIELDS = {'mode', 'neighbor_k'}
+    BOUNDS_KNOWN_FIELDS = {'max_weight', 'min_weight'}
+    CONSTRAINTS_KNOWN_FIELDS = {
+        'volume_preservation',
+        'consistency_mode',
+        'enforce_additional_constraints',
+        'enforce_single_weight_set',
+        'dynamic_constraints',
+    }
+    DYNAMIC_CONSTRAINTS_KNOWN_FIELDS = {
+        'enabled',
+        'min_peer_count',
+        'min_effective_peer_count',
+        'min_category_volume_share',
+        'min_overall_volume_share',
+        'min_representativeness',
+        'threshold_scale_floor',
+        'count_scale_floor',
+        'penalty_floor',
+        'penalty_power',
+    }
+    SUBSET_SEARCH_KNOWN_FIELDS = {
+        'enabled',
+        'strategy',
+        'max_attempts',
+        'max_tests',
+        'trigger_on_slack',
+        'max_slack_threshold',
+        'prefer_slacks_first',
+    }
+    BAYESIAN_KNOWN_FIELDS = {
+        'max_iterations',
+        'learning_rate',
+        'violation_penalty_weight',
+    }
+    ANALYSIS_KNOWN_FIELDS = {
+        'best_in_class_percentile',
+        'fraud_percentile',
+        'auto_detect_dimensions',
+        'merchant_mode',
+    }
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -79,8 +155,7 @@ class ConfigValidator:
             )
         
         # Validate structure - check for unknown fields at root level
-        known_fields = set(cls.REQUIRED_FIELDS.keys()) | set(cls.OPTIONAL_FIELDS.keys())
-        unknown_fields = set(config.keys()) - known_fields
+        unknown_fields = set(config.keys()) - cls.ROOT_KNOWN_FIELDS
         if unknown_fields:
             errors.append(f"Unknown configuration fields: {', '.join(unknown_fields)}")
         
@@ -110,6 +185,9 @@ class ConfigValidator:
         if not isinstance(input_config, dict):
             errors.append("input must be a dictionary")
             return errors
+        unknown = set(input_config.keys()) - cls.INPUT_KNOWN_FIELDS
+        if unknown:
+            errors.append(f"Unknown input fields: {', '.join(sorted(unknown))}")
         
         if 'entity_col' in input_config and not isinstance(input_config['entity_col'], str):
             errors.append("input.entity_col must be a string")
@@ -146,9 +224,12 @@ class ConfigValidator:
         if not isinstance(output_config, dict):
             errors.append("output must be a dictionary")
             return errors
+        unknown = set(output_config.keys()) - cls.OUTPUT_KNOWN_FIELDS
+        if unknown:
+            errors.append(f"Unknown output fields: {', '.join(sorted(unknown))}")
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -192,6 +273,10 @@ class ConfigValidator:
         if not isinstance(opt_config, dict):
             errors.append("optimization must be a dictionary")
             return errors
+        known_top = {'algorithm', 'linear_programming', 'bounds', 'constraints', 'subset_search', 'bayesian'}
+        unknown_top = set(opt_config.keys()) - known_top
+        if unknown_top:
+            errors.append(f"Unknown optimization fields: {', '.join(sorted(unknown_top))}")
         
         # Validate algorithm
         if 'algorithm' in opt_config and opt_config['algorithm'] not in cls.VALID_ALGORITHMS:
@@ -203,6 +288,12 @@ class ConfigValidator:
             if not isinstance(lp, dict):
                 errors.append("optimization.linear_programming must be a dictionary")
             else:
+                unknown_lp = set(lp.keys()) - cls.LINEAR_PROGRAMMING_KNOWN_FIELDS
+                if unknown_lp:
+                    errors.append(
+                        "Unknown optimization.linear_programming fields: "
+                        + ", ".join(sorted(unknown_lp))
+                    )
                 if 'max_iterations' in lp:
                     if not isinstance(lp['max_iterations'], int) or lp['max_iterations'] <= 0:
                         errors.append("optimization.linear_programming.max_iterations must be a positive integer")
@@ -220,6 +311,12 @@ class ConfigValidator:
                     if not isinstance(rc, dict):
                         errors.append("optimization.linear_programming.rank_constraints must be a dictionary")
                     else:
+                        unknown_rc = set(rc.keys()) - cls.RANK_CONSTRAINT_KNOWN_FIELDS
+                        if unknown_rc:
+                            errors.append(
+                                "Unknown optimization.linear_programming.rank_constraints fields: "
+                                + ", ".join(sorted(unknown_rc))
+                            )
                         mode = rc.get('mode')
                         if mode is not None and mode not in ['all', 'neighbor']:
                             errors.append("optimization.linear_programming.rank_constraints.mode must be 'all' or 'neighbor'")
@@ -233,6 +330,12 @@ class ConfigValidator:
             if not isinstance(bounds, dict):
                 errors.append("optimization.bounds must be a dictionary")
             else:
+                unknown_bounds = set(bounds.keys()) - cls.BOUNDS_KNOWN_FIELDS
+                if unknown_bounds:
+                    errors.append(
+                        "Unknown optimization.bounds fields: "
+                        + ", ".join(sorted(unknown_bounds))
+                    )
                 if 'max_weight' in bounds:
                     if not isinstance(bounds['max_weight'], (int, float)) or bounds['max_weight'] <= 0:
                         errors.append("optimization.bounds.max_weight must be > 0")
@@ -252,6 +355,12 @@ class ConfigValidator:
             if not isinstance(constraints, dict):
                 errors.append("optimization.constraints must be a dictionary")
             else:
+                unknown_constraints = set(constraints.keys()) - cls.CONSTRAINTS_KNOWN_FIELDS
+                if unknown_constraints:
+                    errors.append(
+                        "Unknown optimization.constraints fields: "
+                        + ", ".join(sorted(unknown_constraints))
+                    )
                 if 'volume_preservation' in constraints:
                     vp = constraints['volume_preservation']
                     if not isinstance(vp, (int, float)) or vp < 0 or vp > 1:
@@ -275,6 +384,12 @@ class ConfigValidator:
                     if not isinstance(dyn, dict):
                         errors.append("optimization.constraints.dynamic_constraints must be a dictionary")
                     else:
+                        unknown_dyn = set(dyn.keys()) - cls.DYNAMIC_CONSTRAINTS_KNOWN_FIELDS
+                        if unknown_dyn:
+                            errors.append(
+                                "Unknown optimization.constraints.dynamic_constraints fields: "
+                                + ", ".join(sorted(unknown_dyn))
+                            )
                         if 'enabled' in dyn and not isinstance(dyn['enabled'], bool):
                             errors.append("optimization.constraints.dynamic_constraints.enabled must be a boolean")
                         int_fields = ['min_peer_count']
@@ -301,6 +416,15 @@ class ConfigValidator:
             if not isinstance(ss, dict):
                 errors.append("optimization.subset_search must be a dictionary")
             else:
+                unknown_ss = set(ss.keys()) - cls.SUBSET_SEARCH_KNOWN_FIELDS
+                if unknown_ss:
+                    errors.append(
+                        "Unknown optimization.subset_search fields: "
+                        + ", ".join(sorted(unknown_ss))
+                    )
+                if 'max_tests' in ss and 'max_attempts' not in ss:
+                    ss = dict(ss)
+                    ss['max_attempts'] = ss['max_tests']
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
                 
@@ -325,6 +449,12 @@ class ConfigValidator:
             if not isinstance(bayesian, dict):
                 errors.append("optimization.bayesian must be a dictionary")
             else:
+                unknown_bayesian = set(bayesian.keys()) - cls.BAYESIAN_KNOWN_FIELDS
+                if unknown_bayesian:
+                    errors.append(
+                        "Unknown optimization.bayesian fields: "
+                        + ", ".join(sorted(unknown_bayesian))
+                    )
                 if 'max_iterations' in bayesian:
                     if not isinstance(bayesian['max_iterations'], int) or bayesian['max_iterations'] <= 0:
                         errors.append("optimization.bayesian.max_iterations must be a positive integer")
@@ -348,6 +478,9 @@ class ConfigValidator:
         if not isinstance(analysis_config, dict):
             errors.append("analysis must be a dictionary")
             return errors
+        unknown = set(analysis_config.keys()) - cls.ANALYSIS_KNOWN_FIELDS
+        if unknown:
+            errors.append(f"Unknown analysis fields: {', '.join(sorted(unknown))}")
         
         for percentile_field in ['best_in_class_percentile', 'fraud_percentile']:
             if percentile_field in analysis_config:

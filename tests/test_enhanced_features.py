@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.data_loader import DataLoader, ValidationSeverity
 from benchmark import run_share_analysis, run_rate_analysis, run_preset_comparison
+from tests.fixtures.mock_benchmark_data import build_mock_benchmark_df
 from utils.config_manager import ConfigManager
 
 
@@ -272,6 +273,39 @@ class TestValidationAndOutputs(unittest.TestCase):
             expected.add(f"{preset}+perdim")
         self.assertTrue(expected.issubset(set(comparison_df['Preset'].tolist())))
 
+    def test_rate_preset_comparison_uses_rate_metrics(self) -> None:
+        df = build_mock_benchmark_df()
+
+        share_df = run_preset_comparison(
+            df=df,
+            metric_col='total',
+            entity_col='issuer_name',
+            dimensions=['card_type', 'channel'],
+            target_entity='Target',
+            time_col='year_month',
+            analysis_type='share',
+            logger=__import__("logging").getLogger("test_share_presets"),
+        ).sort_values("Preset").reset_index(drop=True)
+
+        rate_df = run_preset_comparison(
+            df=df,
+            metric_col='total',
+            entity_col='issuer_name',
+            dimensions=['card_type', 'channel'],
+            target_entity='Target',
+            time_col='year_month',
+            analysis_type='rate',
+            logger=__import__("logging").getLogger("test_rate_presets"),
+            total_col='total',
+            numerator_cols={'approval': 'approved', 'fraud': 'fraud'},
+        ).sort_values("Preset").reset_index(drop=True)
+
+        self.assertFalse(
+            share_df[['Preset', 'Mean_Impact_PP', 'Max_Impact_PP']].equals(
+                rate_df[['Preset', 'Mean_Impact_PP', 'Max_Impact_PP']]
+            )
+        )
+
 
 class TestValidationEdgeCases:
     """Test edge cases in data validation."""
@@ -335,6 +369,27 @@ class TestValidationEdgeCases:
         errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
         assert any('null' in str(i.message).lower() for i in errors)
 
+    def test_rate_validation_flags_values_above_100_percent_as_error(self, data_loader):
+        """Test rate validation treats impossible percentages as errors."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [100, 100, 100, 100, 100, 100],
+            'approved': [101, 90, 80, 70, 60, 50],
+            'dimension': ['X'] * 6,
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+            target_entity='A',
+        )
+
+        errors = [i for i in issues if i.severity == ValidationSeverity.ERROR]
+        assert any(i.category in {'invalid_rates', 'invalid_rate'} for i in errors)
+
 
 class TestPresetComparison:
     """Test preset comparison edge cases."""
@@ -360,6 +415,18 @@ class TestPresetComparison:
         )
 
         assert result.empty, "Empty dimensions should return empty DataFrame"
+
+
+class TestPresetWorkflow(unittest.TestCase):
+    def test_load_preset_data_returns_dict(self) -> None:
+        from core.preset_workflow import PresetWorkflow
+
+        workflow = PresetWorkflow()
+
+        preset_data = workflow.load_preset_data('balanced_default')
+
+        self.assertIsInstance(preset_data, dict)
+        self.assertEqual(preset_data.get('preset_name'), 'balanced_default')
 
 
 class TestTimeColumnHandling:

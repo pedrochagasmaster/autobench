@@ -63,6 +63,12 @@ class PresetManager:
                 if preset_data is None:
                     logger.warning(f"Empty preset file: {preset_file.name}")
                     continue
+
+                from .validators import ConfigValidator
+
+                errors = ConfigValidator.validate(preset_data)
+                if errors:
+                    raise ValueError("; ".join(errors))
                 
                 preset_name = preset_file.stem
                 self._presets[preset_name] = preset_data
@@ -155,7 +161,7 @@ class PresetManager:
             lines.append("")
         
         lines.append("=" * 80)
-        lines.append(f"Use: benchmark config show <preset> to see full details")
+        lines.append("Use: benchmark config show <preset> to see full details")
         
         return "\n".join(lines)
     

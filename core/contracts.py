@@ -50,6 +50,7 @@ class AnalysisRunRequest:
 
     mode: str = "share"
     csv: Optional[str] = None
+    df: Any = None
     entity: Optional[str] = None
     entity_col: str = "issuer_name"
     preset: Optional[str] = None
@@ -103,10 +104,7 @@ class AnalysisRunRequest:
         return cols
 
     def to_namespace(self) -> argparse.Namespace:
-        data: Dict[str, Any] = {}
-        for f in fields(self):
-            data[f.name] = getattr(self, f.name)
-        data.setdefault("df", None)
+        data: Dict[str, Any] = {f.name: getattr(self, f.name) for f in fields(self)}
         return argparse.Namespace(**data)
 
     @classmethod
@@ -136,7 +134,7 @@ class AnalysisArtifacts:
     analysis_output_file: Optional[str] = None
     analyzer: Any = None
     compliance_summary: Optional[Dict[str, Any]] = None
-    report_paths: Optional[Dict[str, str]] = None
+    report_paths: Optional[List[str]] = None
     csv_output: Optional[str] = None
     publication_output: Optional[str] = None
 
