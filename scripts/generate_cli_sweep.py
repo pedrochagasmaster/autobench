@@ -404,7 +404,7 @@ def generate_gate_cases(
         make_gate_case(
             "fraud_bps",
             {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-in-bps", "--output-format", "publication"]
+            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
         )
 
     return cases, commands
@@ -647,7 +647,7 @@ def generate_config_cases(out_dir: Path, presets: List[str]) -> Tuple[List[Dict]
         cases.append(make_case("config_validate_template", cmd, {"config": str(template_path)}, ["validate_template_ok"]))
         commands.append(cmd)
 
-        output_template = out_dir / "generated_template.yaml"
+        output_template = Path(str(out_dir)) / "generated_template.yaml"
         cmd = f"py benchmark.py config generate {quote_arg(str(output_template))}"
         cases.append(make_case("config_generate_template", cmd, {"output": str(output_template)}, ["template_created"]))
         commands.append(cmd)

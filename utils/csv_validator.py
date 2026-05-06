@@ -35,6 +35,12 @@ def load_csv_data(csv_path: Path) -> pd.DataFrame:
     return df
 
 
+def _sheet_matches_dimension(sheet_name: str, dimension: str) -> bool:
+    normalized_sheet = sheet_name.lower().replace("_", "")
+    normalized_dim = dimension.lower().replace("_", "").replace("/", "")
+    return normalized_sheet == normalized_dim or normalized_sheet.endswith(normalized_dim[:20])
+
+
 def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     """Load dimension sheets from Excel benchmark report.
     
@@ -46,8 +52,21 @@ def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     wb = load_workbook(excel_path, data_only=True)
     
     # Skip metadata sheets
-    skip_sheets = {'Summary', 'Peer Weights', 'Weight Methods', 'Privacy Validation', 
-                   'Subset Search', 'Structural Summary', 'Structural Detail', 'Rank Changes'}
+    skip_sheets = {
+        'Summary',
+        'Metadata',
+        'Peer Weights',
+        'Weight Methods',
+        'Privacy Validation',
+        'Preset Comparison',
+        'Impact Detail',
+        'Impact Summary',
+        'Subset Search',
+        'Structural Summary',
+        'Structural Detail',
+        'Rank Changes',
+        'Data Quality',
+    }
     
     dimension_data = {}
     
@@ -516,13 +535,20 @@ EXAMPLES:
         # Find matching Excel sheet
         excel_df = None
         for sheet_name, df in excel_data.items():
-            # Match by sheet name (exact or sanitized)
-            if sheet_name == dimension or sheet_name.replace('_', '/') == dimension:
+            if _sheet_matches_dimension(sheet_name, dimension):
                 excel_df = df
                 break
         
         if excel_df is None:
-            print(f"WARNING Skipping {dimension}: No matching Excel sheet found")
+            print(f"ERROR {dimension}: No matching Excel sheet found")
+            all_results.append({
+                'dimension': dimension,
+                'total_checks': 0,
+                'passed': 0,
+                'failed': 1,
+                'skipped': 0,
+                'failures': [{'category': dimension, 'rate_type': 'sheet_match'}],
+            })
             continue
         
         print(f"Validating dimension: {dimension}")
@@ -567,10 +593,20 @@ EXAMPLES:
     print(f"{'='*80}")
     print(f"Dimensions Validated: {len(all_results)}")
     print(f"Total Checks: {total_checks}")
-    print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
-    print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
-    print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    if total_checks > 0:
+        print(f"Passed: {total_passed} ({total_passed/total_checks*100:.1f}%)")
+        print(f"Failed: {total_failed} ({total_failed/total_checks*100:.1f}%)")
+        print(f"Skipped: {total_skipped} ({total_skipped/total_checks*100:.1f}%)")
+    else:
+        print("Passed: 0 (0.0%)")
+        print("Failed: 0 (0.0%)")
+        print("Skipped: 0 (0.0%)")
     
+    if total_checks == 0:
+        print("\nVALIDATION FAILED")
+        print("  No matching dimension sheets were found in the Excel workbook")
+        print(f"{'='*80}\n")
+        return 1
     if total_failed == 0:
         print("\nALL VALIDATIONS PASSED")
         print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")

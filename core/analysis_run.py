@@ -316,6 +316,9 @@ def prepare_run_data(
     """Create the loader, resolve the input DataFrame, entity column, and time column."""
     data_loader = DataLoader(config)
     df = resolve_input_dataframe(args, data_loader)
+    if getattr(args, 'df', None) is not None:
+        # TUI validation may already normalize columns; repeating this pass is harmless and keeps CLI parity.
+        df = data_loader._normalize_columns(df.copy())
     logger.info(f"Loaded {len(df)} records with {len(df.columns)} columns")
     entity_col = resolve_entity_column(df, preferred_entity_col)
     time_col = config.get('input', 'time_col')
@@ -494,16 +497,31 @@ def collect_run_diagnostics(
 
 
 def build_report_paths(
-    output_format: str,
-    analysis_output_file: str,
+    artifacts_or_output_format: AnalysisArtifacts | str,
+    output_settings_or_analysis_output: Dict[str, Any] | str,
     publication_output: Optional[str] = None,
 ) -> List[str]:
-    """Build the ordered list of generated report outputs."""
+    """Build the ordered list of generated report outputs.
+
+    Supports both the current artifacts-based calling convention and the legacy
+    positional form used by older tests/helpers.
+    """
+    if isinstance(artifacts_or_output_format, AnalysisArtifacts):
+        artifacts = artifacts_or_output_format
+        output_settings = output_settings_or_analysis_output
+        assert isinstance(output_settings, dict)
+        output_format = output_settings['output_format']
+        analysis_output_file = artifacts.analysis_output_file
+        publication_output = artifacts.publication_output
+    else:
+        output_format = artifacts_or_output_format
+        analysis_output_file = str(output_settings_or_analysis_output)
+
     report_paths: List[str] = []
-    if output_format in ('analysis', 'both'):
-        report_paths.append(analysis_output_file)
+    if output_format in ('analysis', 'both') and analysis_output_file:
+        report_paths.append(str(analysis_output_file))
     if output_format in ('publication', 'both') and publication_output:
-        report_paths.append(publication_output)
+        report_paths.append(str(publication_output))
     return report_paths
 
 
@@ -791,7 +809,9 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
             metadata['impact_details'] = impact_df.to_dict('records')
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
-    analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = Path(request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    analysis_output_file = str(output_path)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
     artifacts = AnalysisArtifacts(
         results=results,
         metadata=metadata,
@@ -804,6 +824,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -826,7 +847,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
-    artifacts.report_paths = build_report_paths(output_settings['output_format'], analysis_output_file, artifacts.publication_output)
+    artifacts.report_paths = build_report_paths(artifacts, output_settings)
     if output_settings['include_audit_log']:
         write_audit_log(
             config,
@@ -1063,11 +1084,13 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
 
     entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
     if request.output:
-        analysis_output_file = request.output
+        output_path = Path(request.output)
     elif len(all_results) > 1:
-        analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        output_path = Path(f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
     else:
-        analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        output_path = Path(f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+    analysis_output_file = str(output_path)
+    publication_output = str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}"))
 
     artifacts = AnalysisArtifacts(
         results=all_results,
@@ -1081,6 +1104,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
         analysis_output_file=analysis_output_file,
+        publication_output=publication_output,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
     )
@@ -1105,7 +1129,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
-    artifacts.report_paths = build_report_paths(output_settings['output_format'], analysis_output_file, artifacts.publication_output)
+    artifacts.report_paths = build_report_paths(artifacts, output_settings)
     if output_settings['include_audit_log']:
         write_audit_log(
             config,

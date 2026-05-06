@@ -644,7 +644,9 @@ class BenchmarkApp(App):
         # Scan for CSV files
         csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
         items = [FileListItem(f) for f in csv_files]
-        self.query_one("#file_list").extend(items)
+        file_list = self.query_one("#file_list")
+        file_list.clear()
+        file_list.extend(items)
 
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
@@ -828,6 +830,9 @@ class BenchmarkApp(App):
         
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
+        for existing_handler in list(root_logger.handlers):
+            if isinstance(existing_handler, LogHandler):
+                root_logger.removeHandler(existing_handler)
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
         
@@ -862,6 +867,10 @@ class BenchmarkApp(App):
     def action_run_analysis(self) -> None:
         """Run analysis (Ctrl+R)."""
         self.run_analysis()
+
+    def _current_mode(self) -> str:
+        active = str(self.query_one(TabbedContent).active)
+        return "share" if active == "share_tab" else "rate"
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
@@ -1133,14 +1142,20 @@ class BenchmarkApp(App):
                 entity = entity_val if entity_val != Select.BLANK else None
                 entity_col_val = self.query_one("#entity_col").value
                 entity_col = entity_col_val if entity_col_val != Select.BLANK else "issuer_name"
+                if entity_col == "issuer_name" and self.current_file:
+                    headers = list(pd.read_csv(self.current_file, nrows=0).columns)
+                    normalized_headers = [h.lower().replace(" ", "_") for h in headers]
+                    if "issuer_name" not in normalized_headers:
+                        self.call_from_thread(self.notify, "Select the entity column before running.", severity="error")
+                        self.call_from_thread(lambda: setattr(self.query_one("#btn_run"), "disabled", False))
+                        return
                 preset_val = self.query_one("#preset_select").value
                 preset = preset_val if preset_val != Select.BLANK else None
                 output_file = self.query_one("#output_file").value or None
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                tabbed_content = self.query_one(TabbedContent)
-                mode = 'share' if tabbed_content.active == 'share_tab' else 'rate'
+                mode = self._current_mode()
 
                 request = AnalysisRunRequest(
                     mode=mode,
@@ -1270,8 +1285,7 @@ class BenchmarkApp(App):
             request = saved_request
             logger = logging.getLogger("benchmark")
             try:
-                if saved_df is not None:
-                    request.df = saved_df
+                request.df = saved_df
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
@@ -1279,9 +1293,10 @@ class BenchmarkApp(App):
                     log_widget.write,
                     f"Compliance: posture={summary.get('compliance_posture')} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
                 )
+                report_label = ", ".join(artifacts.report_paths or [artifacts.analysis_output_file or ""])
                 self.call_from_thread(
                     self.notify,
-                    f"Report saved: {artifacts.analysis_output_file}",
+                    f"Report saved: {report_label}",
                     title="Analysis Complete",
                     severity="information",
                     timeout=10,

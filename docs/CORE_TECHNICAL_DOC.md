@@ -742,16 +742,17 @@ Level 2 - Output Semantics (What each sheet means)
 Analysis workbook:
 - Summary: input settings and run metadata
 - Per-dimension sheets: balanced averages, target metrics, BIC, deltas
+- Peer Weights: multipliers and volumes (when debug data exists)
 - Weight Methods: which solver was used per dimension
-- Rank Changes: baseline vs balanced rankings
-- Structural Summary: count of structurally infeasible buckets by dimension
-- Structural Detail: exact structurally infeasible categories/peers and margins
-- Peer Weights: multipliers and volumes (debug)
 - Privacy Validation: per-category compliance
-- Impact Summary: aggregated distortion/impact (if enabled)
+- Preset Comparison: preset-level impact comparison (if enabled)
+- Impact Detail: category-level impact rows (if enabled)
+- Impact Summary: aggregated impact by dimension (if enabled)
+- Metadata: serialized run metadata and audit context
 
 Publication workbook:
-- Simplified sheets with clean formatting, optional fraud conversion to bps.
+- Executive Summary plus simplified dimension sheets with clean formatting.
+- Fraud-rate publication columns can be converted to basis points when requested.
 
 CSV/JSON:
 - CSV: either a single DataFrame or per-metric outputs; balanced totals are peer-weighted totals

@@ -3,6 +3,7 @@
 This module provides configuration file validation against the v3.0 schema.
 """
 
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -47,6 +48,24 @@ class ConfigValidator:
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
     VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+    LP_ALLOWED_FIELDS = {
+        'max_iterations',
+        'tolerance',
+        'rank_penalty_weight',
+        'rank_constraints',
+        'lambda_penalty',
+        'volume_weighted_penalties',
+        'volume_weighting_exponent',
+    }
+    SUBSET_ALLOWED_FIELDS = {
+        'enabled',
+        'strategy',
+        'max_attempts',
+        'max_tests',
+        'trigger_on_slack',
+        'max_slack_threshold',
+        'prefer_slacks_first',
+    }
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -101,6 +120,13 @@ class ConfigValidator:
             errors.extend(cls._validate_column_mappings(config['column_mappings']))
         
         return errors
+
+    @staticmethod
+    def _validate_unknown_keys(section_name: str, config: Dict[str, Any], allowed: set[str]) -> List[str]:
+        unknown_keys = set(config.keys()) - allowed
+        if not unknown_keys:
+            return []
+        return [f"{section_name} has unknown fields: {', '.join(sorted(unknown_keys))}"]
     
     @classmethod
     def _validate_input(cls, input_config: Dict[str, Any]) -> List[str]:
@@ -148,7 +174,7 @@ class ConfigValidator:
             return errors
         
         if 'format' in output_config and output_config['format'] not in ['xlsx', 'csv', 'json']:
-            errors.append(f"output.format must be one of: xlsx, csv, json")
+            errors.append("output.format must be one of: xlsx, csv, json")
         
         if 'log_level' in output_config and output_config['log_level'] not in cls.VALID_LOG_LEVELS:
             errors.append(f"output.log_level must be one of: {', '.join(cls.VALID_LOG_LEVELS)}")
@@ -203,6 +229,13 @@ class ConfigValidator:
             if not isinstance(lp, dict):
                 errors.append("optimization.linear_programming must be a dictionary")
             else:
+                errors.extend(
+                    cls._validate_unknown_keys(
+                        "optimization.linear_programming",
+                        lp,
+                        cls.LP_ALLOWED_FIELDS,
+                    )
+                )
                 if 'max_iterations' in lp:
                     if not isinstance(lp['max_iterations'], int) or lp['max_iterations'] <= 0:
                         errors.append("optimization.linear_programming.max_iterations must be a positive integer")
@@ -214,6 +247,17 @@ class ConfigValidator:
                 if 'rank_penalty_weight' in lp:
                     if not isinstance(lp['rank_penalty_weight'], (int, float)) or lp['rank_penalty_weight'] < 0:
                         errors.append("optimization.linear_programming.rank_penalty_weight must be >= 0")
+
+                if 'lambda_penalty' in lp:
+                    if not isinstance(lp['lambda_penalty'], (int, float)) or lp['lambda_penalty'] < 0:
+                        errors.append("optimization.linear_programming.lambda_penalty must be >= 0")
+
+                if 'volume_weighted_penalties' in lp and not isinstance(lp['volume_weighted_penalties'], bool):
+                    errors.append("optimization.linear_programming.volume_weighted_penalties must be a boolean")
+
+                if 'volume_weighting_exponent' in lp:
+                    if not isinstance(lp['volume_weighting_exponent'], (int, float)) or lp['volume_weighting_exponent'] <= 0:
+                        errors.append("optimization.linear_programming.volume_weighting_exponent must be > 0")
                 
                 if 'rank_constraints' in lp:
                     rc = lp['rank_constraints']
@@ -301,6 +345,13 @@ class ConfigValidator:
             if not isinstance(ss, dict):
                 errors.append("optimization.subset_search must be a dictionary")
             else:
+                errors.extend(
+                    cls._validate_unknown_keys(
+                        "optimization.subset_search",
+                        ss,
+                        cls.SUBSET_ALLOWED_FIELDS,
+                    )
+                )
                 if 'enabled' in ss and not isinstance(ss['enabled'], bool):
                     errors.append("optimization.subset_search.enabled must be a boolean")
                 
@@ -310,6 +361,10 @@ class ConfigValidator:
                 if 'max_attempts' in ss:
                     if not isinstance(ss['max_attempts'], int) or ss['max_attempts'] <= 0:
                         errors.append("optimization.subset_search.max_attempts must be a positive integer")
+
+                if 'max_tests' in ss:
+                    if not isinstance(ss['max_tests'], int) or ss['max_tests'] <= 0:
+                        errors.append("optimization.subset_search.max_tests must be a positive integer")
                 
                 if 'max_slack_threshold' in ss:
                     if not isinstance(ss['max_slack_threshold'], (int, float)) or ss['max_slack_threshold'] < 0:
@@ -406,7 +461,12 @@ def load_config(path: Path) -> Dict[str, Any]:
     # Load file
     with open(path, 'r') as f:
         try:
-            config = yaml.safe_load(f)
+            if path.suffix.lower() == '.json':
+                config = json.load(f)
+            else:
+                config = yaml.safe_load(f)
+        except json.JSONDecodeError as e:
+            raise ConfigValidationError(f"Invalid JSON syntax: {e}")
         except yaml.YAMLError as e:
             raise ConfigValidationError(f"Invalid YAML syntax: {e}")
     

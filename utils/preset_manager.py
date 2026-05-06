@@ -36,6 +36,7 @@ class PresetManager:
         
         self.preset_dir = Path(preset_dir)
         self._presets: Dict[str, Dict[str, Any]] = {}
+        self._invalid_presets: Dict[str, str] = {}
         self._load_presets()
     
     def _load_presets(self) -> None:
@@ -57,17 +58,16 @@ class PresetManager:
         
         for preset_file in preset_files:
             try:
-                with open(preset_file, 'r') as f:
-                    preset_data = yaml.safe_load(f)
-                
-                if preset_data is None:
-                    logger.warning(f"Empty preset file: {preset_file.name}")
-                    continue
-                
+                from .validators import ConfigValidationError, load_config
+
+                preset_data = load_config(preset_file)
                 preset_name = preset_file.stem
                 self._presets[preset_name] = preset_data
                 logger.debug(f"Loaded preset: {preset_name}")
-            
+            except ConfigValidationError as e:
+                preset_name = preset_file.stem
+                self._invalid_presets[preset_name] = str(e)
+                logger.error("Preset %s failed validation: %s", preset_file.name, e)
             except yaml.YAMLError as e:
                 logger.error(f"Invalid YAML in preset {preset_file.name}: {e}")
             except Exception as e:
@@ -82,6 +82,15 @@ class PresetManager:
             Sorted list of preset names
         """
         return sorted(self._presets.keys())
+
+    @property
+    def invalid_presets(self) -> Dict[str, str]:
+        """Expose invalid preset validation failures."""
+        return dict(self._invalid_presets)
+
+    def get_invalid_presets(self) -> Dict[str, str]:
+        """Return invalid preset names mapped to validation errors."""
+        return dict(self._invalid_presets)
     
     def get_preset(self, name: str) -> Optional[Dict[str, Any]]:
         """Get preset configuration by name.
@@ -153,9 +162,16 @@ class PresetManager:
                     lines.append(f"    Tolerance: {opt['linear_programming']['tolerance']}pp")
             
             lines.append("")
-        
+
+        if self._invalid_presets:
+            lines.extend(["Invalid Presets:", "-" * 80])
+            for name, error in sorted(self._invalid_presets.items()):
+                lines.append(f"  {name}")
+                lines.append(f"    {error}")
+                lines.append("")
+
         lines.append("=" * 80)
-        lines.append(f"Use: benchmark config show <preset> to see full details")
+        lines.append("Use: benchmark config show <preset> to see full details")
         
         return "\n".join(lines)
     
