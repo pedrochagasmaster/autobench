@@ -21,7 +21,7 @@ from core.analysis_run import (
     validate_analysis_input,
     write_audit_log,
 )
-from core.data_loader import DataLoader, ValidationSeverity
+from core.data_loader import ValidationSeverity
 from utils.config_manager import ConfigManager
 
 
@@ -165,15 +165,26 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
     def test_resolve_input_dataframe_prefers_preloaded_dataframe(self) -> None:
         expected_df = pd.DataFrame({'metric': [1]})
         args = SimpleNamespace(df=expected_df)
+
+        result_df = resolve_input_dataframe(args, _StubLoader(['ignored']))
+
+        self.assertIs(result_df, expected_df)
+
+    def test_prepare_run_data_normalizes_preloaded_dataframe(self) -> None:
+        df = pd.DataFrame({'Issuer Name': ['Target'], 'Metric Value': [1]})
+        args = SimpleNamespace(df=df)
         config = ConfigManager()
-        loader = DataLoader(config)
 
-        result_df = resolve_input_dataframe(args, loader)
+        _, prepared_df, entity_col, _ = prepare_run_data(
+            args,
+            config,
+            logging.getLogger(__name__),
+            preferred_entity_col='issuer_name',
+        )
 
-        # Preloaded DataFrames follow the same normalization path as CSV data,
-        # so the result is a copy rather than the original object.
-        self.assertIsNot(result_df, expected_df)
-        pd.testing.assert_frame_equal(result_df.reset_index(drop=True), expected_df.reset_index(drop=True))
+        self.assertIsNot(prepared_df, df)
+        self.assertEqual(entity_col, 'issuer_name')
+        self.assertIn('metric_value', prepared_df.columns)
 
     def test_build_run_config_applies_common_and_extra_overrides(self) -> None:
         args = SimpleNamespace(
