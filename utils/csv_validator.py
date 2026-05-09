@@ -321,6 +321,7 @@ def validate_dimension(
     total_col: str,
     approval_col: Optional[str],
     fraud_col: Optional[str],
+    rate_excel_dfs: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> Dict[str, any]:
     """Validate all categories in a dimension.
     
@@ -363,9 +364,14 @@ def validate_dimension(
                     time_col,
                 )
                 
+                # Use rate-type-specific sheet when available (e.g. approval_card_type)
+                active_excel_df = excel_df
+                if rate_excel_dfs and rate_type in rate_excel_dfs:
+                    active_excel_df = rate_excel_dfs[rate_type]
+
                 # Extract rate from Excel
                 excel_rate = extract_rate_from_excel(
-                    excel_df,
+                    active_excel_df,
                     category,
                     rate_type,
                     time_period,
@@ -544,31 +550,52 @@ EXAMPLES:
     all_results = []
     
     for dimension in csv_df['Dimension'].unique():
-        # Find matching Excel sheet
+        # Find matching Excel sheet(s).
+        # Handles two layouts:
+        #   1. Flat: single sheet named after the dimension (e.g. "card_type")
+        #   2. Per-rate: one sheet per rate type (e.g. "approval_card_type", "fraud_card_type")
         excel_df = None
-        for sheet_name, df in excel_data.items():
-            normalized_sheet = sheet_name
-            if normalized_sheet.startswith("Metric_"):
-                parts = normalized_sheet.split("_", 2)
+        rate_excel_dfs: Dict[str, pd.DataFrame] = {}
+
+        def _sheet_matches_dimension(sheet_name: str, dim: str) -> bool:
+            normalized = sheet_name
+            if normalized.startswith("Metric_"):
+                parts = normalized.split("_", 2)
                 if len(parts) == 3:
-                    normalized_sheet = parts[2]
-            normalized_candidates = {sheet_name, normalized_sheet}
-            for candidate in list(normalized_candidates):
+                    normalized = parts[2]
+            candidates = {sheet_name, normalized}
+            for candidate in list(candidates):
                 if "_" in candidate:
                     for idx in range(len(candidate.split("_"))):
                         suffix = "_".join(candidate.split("_")[idx:])
-                        if suffix == dimension:
-                            normalized_candidates.add(dimension)
-                            break
-            # Match by sheet name (exact or sanitized)
-            if (
-                dimension in normalized_candidates
-                or any(candidate.replace('_', '/') == dimension for candidate in normalized_candidates)
-            ):
+                        if suffix == dim:
+                            return True
+            return dim in candidates or any(c.replace('_', '/') == dim for c in candidates)
+
+        for sheet_name, df in excel_data.items():
+            # Check if this sheet is rate-type-specific: "{rate_type}_{dimension}"
+            matched_rate_type = None
+            for rt in rate_types:
+                prefix = f"{rt}_"
+                if sheet_name.startswith(prefix):
+                    remainder = sheet_name[len(prefix):]
+                    if remainder == dimension:
+                        matched_rate_type = rt
+                        break
+            if matched_rate_type is not None:
+                rate_excel_dfs[matched_rate_type] = df
+                continue
+
+            # Plain dimension match
+            if excel_df is None and _sheet_matches_dimension(sheet_name, dimension):
                 excel_df = df
-                break
-        
-        if excel_df is None:
+
+        # If we have per-rate sheets covering all rate_types, use the first one as
+        # fallback excel_df so downstream code always has something to fall back on.
+        if rate_excel_dfs and excel_df is None:
+            excel_df = next(iter(rate_excel_dfs.values()))
+
+        if excel_df is None and not rate_excel_dfs:
             print(f"FAIL {dimension}: No matching Excel sheet found")
             all_results.append({
                 "dimension": dimension,
@@ -591,6 +618,7 @@ EXAMPLES:
             total_col,
             approval_col,
             fraud_col,
+            rate_excel_dfs=rate_excel_dfs if rate_excel_dfs else None,
         )
         all_results.append(results)
         
