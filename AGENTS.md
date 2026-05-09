@@ -766,14 +766,14 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests: 72 passed, 2 warnings on the remediation branch
-py scripts/perform_gate_test.py # Gate test: 18/18 cases pass on the remediation branch
+py -m pytest tests/ -v          # Unit tests: 82 passed, 2 warnings on main
+py scripts/perform_gate_test.py # Gate test: 14 pass, 3 rate-with-target-entity cases error (pre-existing on main)
 ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
 ```
 
-### Missing modules (incomplete refactoring)
+### Gate test rate errors
 
-The `main` branch at HEAD references several `core.*` modules that were never committed during a recent refactoring (`contracts`, `compliance`, `observability`, `output_artifacts`, `preset_comparison`, `preset_workflow`, `excel_reports`, `privacy_policy`). Stub implementations were created in this setup branch to unblock imports and basic functionality. A few unit tests (5 of 54) fail because these stubs don't replicate the full intended behaviour. If the original author merges the real implementations, these stubs should be replaced.
+Three gate test rate cases (`rate_gate_baseline`, `rate_gate_preset_impact`, `rate_gate_config_csv`) fail silently on main. The CLI `rate` subcommand itself works fine when invoked directly. The failures are specific to the gate test runner's invocation pattern for those cases.
 
 ### Test data
 
