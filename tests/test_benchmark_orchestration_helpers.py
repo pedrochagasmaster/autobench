@@ -194,7 +194,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         settings = resolve_output_settings(config)
 
         self.assertTrue(settings['include_impact_summary'])
-        self.assertIn('output_format', settings)
+        self.assertEqual(settings.output_format, 'analysis')
 
     def test_prepare_run_data_uses_loader_and_resolves_entity_column(self) -> None:
         config = ConfigManager()

@@ -1142,7 +1142,7 @@ def _execute_run(
     weight_metric_col = mode_spec.weight_metric_col(request)
 
     try:
-        analyzer.fit_privacy_weights(df, weight_metric_col, dimensions)
+        weighting_result = analyzer.fit_privacy_weights(df, weight_metric_col, dimensions)
     except ValueError as exc:
         _handle_optimization_failure(
             exc,
@@ -1179,11 +1179,11 @@ def _execute_run(
             secondary_metrics=request.secondary_metrics,
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
-            include_privacy_validation=output_settings['include_privacy_validation'],
-            include_impact_summary=output_settings['include_impact_summary'],
-            include_preset_comparison=output_settings['include_preset_comparison'],
-            include_calculated_metrics=output_settings['include_calculated_metrics'],
-            output_format=output_settings['output_format'],
+            include_privacy_validation=output_settings.include_privacy_validation,
+            include_impact_summary=output_settings.include_impact_summary,
+            include_preset_comparison=output_settings.include_preset_comparison,
+            include_calculated_metrics=output_settings.include_calculated_metrics,
+            output_format=output_settings.output_format,
             consistency_mode=analyzer_settings['consistency_mode'],
             enforce_single_weight_set=analyzer_settings['enforce_single_weight_set'],
         ),
@@ -1205,9 +1205,10 @@ def _execute_run(
         validation_metric_col=weight_metric_col,
         dimensions=dimensions,
         debug_mode=debug_mode,
-        include_privacy_validation=output_settings['include_privacy_validation'],
+        include_privacy_validation=output_settings.include_privacy_validation,
         consistent_weights=consistent_weights,
         logger=logger,
+        weighting_result=weighting_result,
     )
     metadata.update(diagnostics['metadata_updates'])
     compliance_summary = build_compliance_summary(
@@ -1223,7 +1224,7 @@ def _execute_run(
     metadata['posture_consistent'] = compliance_summary['posture_consistent']
 
     preset_comparison_df = None
-    if output_settings['include_preset_comparison']:
+    if output_settings.include_preset_comparison:
         preset_comparison_df = execute_preset_comparison(
             df=df,
             metric_col=weight_metric_col,
