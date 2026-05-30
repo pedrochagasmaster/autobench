@@ -1,12 +1,16 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import logging
+import threading
 
 import pandas as pd
+import pytest
 
 from core.analysis_run import apply_prepared_dataset, build_run_config
 from core.contracts import AnalysisRunRequest, PreparedDataset
-from tui_app import BenchmarkApp
+from tui_app import BenchmarkApp, LogHandler, write_log_message
 from utils.config_manager import ConfigManager, ResolvedConfig
+from textual.widgets import Log
 
 
 def test_analysis_run_request_preserves_preloaded_dataframe() -> None:
@@ -120,3 +124,40 @@ def test_missing_advanced_widget_is_surfaced_not_swallowed() -> None:
     mock_logger.warning.assert_called_once()
     app.notify.assert_called_once()
     assert "adv_missing_widget" in str(app.notify.call_args)
+
+
+def test_write_log_message_writes_directly_on_app_thread() -> None:
+    log_widget = MagicMock(spec=Log)
+    app = MagicMock()
+    app._thread_id = threading.get_ident()
+    log_widget.app = app
+
+    write_log_message(log_widget, "app-thread message")
+
+    log_widget.write.assert_called_once_with("app-thread message\n")
+    app.call_from_thread.assert_not_called()
+
+
+def test_write_log_message_uses_call_from_thread_on_worker_thread() -> None:
+    log_widget = MagicMock(spec=Log)
+    app = MagicMock()
+    app._thread_id = threading.get_ident() + 1
+    log_widget.app = app
+
+    write_log_message(log_widget, "worker message")
+
+    app.call_from_thread.assert_called_once_with(log_widget.write, "worker message\n")
+    log_widget.write.assert_not_called()
+
+
+def test_log_handler_emit_uses_thread_safe_helper() -> None:
+    log_widget = MagicMock(spec=Log)
+    app = MagicMock()
+    app._thread_id = threading.get_ident()
+    log_widget.app = app
+    handler = LogHandler(log_widget)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+
+    handler.emit(logging.LogRecord("test", logging.INFO, "", 0, "hello", (), None))
+
+    log_widget.write.assert_called_once_with("hello\n")

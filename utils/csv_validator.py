@@ -35,6 +35,22 @@ def load_csv_data(csv_path: Path) -> pd.DataFrame:
     return df
 
 
+def is_share_export_csv(csv_df: pd.DataFrame) -> bool:
+    """Detect share balanced CSV exports, which this validator does not support."""
+    if 'Balanced_Total' in csv_df.columns:
+        return False
+    if any(col.startswith('Balanced_') and col.endswith('_Share_%') for col in csv_df.columns):
+        return True
+    balanced_cols = [col for col in csv_df.columns if col.startswith('Balanced_')]
+    share_metric_cols = [
+        col for col in balanced_cols
+        if col not in {'Balanced_Approval_Total', 'Balanced_Fraud_Total'}
+        and not col.endswith('_Share_%')
+        and 'Total' not in col
+    ]
+    return bool(share_metric_cols)
+
+
 def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     """Load dimension sheets from Excel benchmark report.
     
@@ -445,6 +461,13 @@ EXAMPLES:
         csv_df = load_csv_data(csv_path)
         print(f"  OK Loaded {len(csv_df)} rows")
 
+        if is_share_export_csv(csv_df):
+            print("ERROR Share exports are not supported by this validator yet.")
+            print("  This tool validates rate balanced totals only")
+            print("  (Balanced_Total, Balanced_Approval_Total, Balanced_Fraud_Total).")
+            print("  Use a rate analysis export with --export-balanced-csv instead.")
+            return 1
+
         print("Loading Excel data...")
         excel_data = load_excel_data(excel_path)
         print(f"  OK Loaded {len(excel_data)} dimension sheets")
@@ -461,8 +484,7 @@ EXAMPLES:
     approval_col = None
     fraud_col = None
 
-    # Detect Share Analysis (Dynamic metric name)
-    # Look for column: Balanced_{metric}_Share_%
+    # Detect Share Analysis (Dynamic metric name) — rejected earlier by is_share_export_csv
     share_col = None
     for col in csv_df.columns:
         if col.startswith("Balanced_") and col.endswith("_Share_%"):
@@ -478,9 +500,8 @@ EXAMPLES:
             fraud_col = 'Balanced_Fraud_Total'
             rate_types.append('fraud')
     elif share_col:
-        # Share analysis
-        rate_types.append('share')
-        total_col = share_col # Use this as the "value" column for share rate
+        print("ERROR Share exports are not supported by this validator yet.")
+        return 1
     else:
         summary_total = summary_metadata.get('Total Column') or summary_metadata.get('Total Column (Shared Denominator)')
         summary_approval = summary_metadata.get('Approval Column')

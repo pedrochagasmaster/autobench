@@ -57,6 +57,18 @@ except ImportError as e:
     print(f"Error importing benchmark modules: {e}")
     sys.exit(1)
 
+def write_log_message(log_widget: Log, message: str) -> None:
+    """Write to a Textual Log from the app thread or a worker thread."""
+    app = log_widget.app
+    if app is None:
+        return
+    text = message if message.endswith("\n") else f"{message}\n"
+    if getattr(app, "_thread_id", None) == threading.get_ident():
+        log_widget.write(text)
+    else:
+        app.call_from_thread(log_widget.write, text)
+
+
 class LogHandler(logging.Handler):
     """Custom logging handler to send logs to a Textual Log widget."""
     def __init__(self, log_widget: Log):
@@ -65,8 +77,7 @@ class LogHandler(logging.Handler):
 
     def emit(self, record):
         msg = self.format(record)
-        # Schedule the write on the main thread
-        self.log_widget.app.call_from_thread(self.log_widget.write, msg + "\n")
+        write_log_message(self.log_widget, msg)
 
 class FileListItem(ListItem):
     """Custom ListItem that stores the file path."""
@@ -677,9 +688,35 @@ class BenchmarkApp(App):
         file_list.clear()
         file_list.extend(items)
 
+    def _resolve_csv_path(self, raw_path: str) -> Optional[str]:
+        """Normalize and validate a CSV path from manual entry or browse."""
+        csv_path = raw_path.strip()
+        if not csv_path:
+            return None
+        if not os.path.isfile(csv_path):
+            self.notify(
+                f"CSV file not found: {csv_path}",
+                title="Invalid Path",
+                severity="error",
+                timeout=6,
+            )
+            self.query_one("#log_output").write(f"CSV file not found: {csv_path}\n")
+            return None
+        return csv_path
+
+    def _try_load_csv_from_path_input(self) -> None:
+        """Load headers when the user submits or leaves the CSV path field."""
+        csv_path = self._resolve_csv_path(self.query_one("#csv_path").value)
+        if csv_path:
+            self.load_csv_headers(csv_path)
+
     def load_csv_headers(self, file_path):
         """Load CSV headers and populate Select widgets."""
         try:
+            resolved = self._resolve_csv_path(file_path)
+            if not resolved:
+                return
+            file_path = resolved
             # Read only headers
             cols = pd.read_csv(file_path, nrows=0).columns.tolist()
             self.csv_columns = cols
@@ -746,6 +783,16 @@ class BenchmarkApp(App):
             self.query_one("#csv_path").value = str(file_path)
             self.query_one("#file_list").remove_class("-visible")
             self.load_csv_headers(file_path)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter in text inputs."""
+        if event.input.id == "csv_path":
+            self._try_load_csv_from_path_input()
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        """Handle focus leaving text inputs."""
+        if event.input.id == "csv_path":
+            self._try_load_csv_from_path_input()
 
     def load_presets(self):
         """Load available presets through the shared preset workflow."""
@@ -954,7 +1001,7 @@ class BenchmarkApp(App):
         """Run analysis (Ctrl+R)."""
         self.run_analysis()
 
-    def _current_mode(self) -> str:
+    def _analysis_mode(self) -> str:
         active = str(self.query_one(TabbedContent).active)
         return "share" if active == "share_tab" else "rate"
 
@@ -1111,7 +1158,7 @@ class BenchmarkApp(App):
                 time_col_val = self.query_one("#time_col").value
                 time_col = time_col_val if time_col_val != Select.BLANK else None
 
-                mode = self._current_mode()
+                mode = self._analysis_mode()
 
                 request = AnalysisRunRequest(
                     mode=mode,
