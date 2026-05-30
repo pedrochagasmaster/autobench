@@ -659,11 +659,16 @@ EXAMPLES:
         print(f"Failed: {total_failed} (100.0%)")
         print(f"Skipped: {total_skipped} (0.0%)")
     
-    if total_failed == 0:
+    if total_failed == 0 and total_checks > 0:
         print("\nALL VALIDATIONS PASSED")
         print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")
         print(f"{'='*80}\n")
         return 0
+    elif total_checks == 0:
+        print("\nVALIDATION FAILED")
+        print("  No matching dimensions found between CSV and Excel")
+        print(f"{'='*80}\n")
+        return 1
     else:
         print("\nVALIDATION FAILED")
         print(f"  {total_failed} rate calculations do not match within tolerance")

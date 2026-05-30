@@ -42,6 +42,11 @@ Thumbs.db
 # Data files
 data/
 
+# Generated sweep and gate artifacts
+test_sweeps/
+test_gate/config/generated_template.yaml
+outputs/
+
 # Old/backup files
 *_old.py
 *_backup*.py
@@ -59,6 +64,7 @@ config.json
 *.txt
 *.xlsx
 *.csv
+!tests/fixtures/*.csv
 *.csv.gz
 /offline_packages/*
 autobench_deploy.zip

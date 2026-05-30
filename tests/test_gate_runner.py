@@ -38,7 +38,7 @@ def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> 
 
     workbook = load_workbook(workbook_path, read_only=True, data_only=False)
     try:
-        failures = runner.verify_workbook_content(workbook, "share_gate_error", "share")
+        failures = runner.verify_workbook_content(workbook, "share_gate_error", "share", {})
     finally:
         workbook.close()
 
@@ -75,3 +75,32 @@ def test_verify_case_requires_bps_headers_for_fraud_publication(tmp_path: Path) 
     failures = runner.verify_case(case)
 
     assert "Fraud publication output is missing bps header" in failures
+
+
+def test_all_generator_expectations_are_registered() -> None:
+    from scripts.generate_cli_sweep import expectations_for_case
+    from scripts.gate_expectations import resolve_expectation
+
+    sample = expectations_for_case(
+        {
+            "output_format": "both",
+            "export_balanced_csv": True,
+            "include_calculated": True,
+            "compare_presets": True,
+            "analyze_distortion": True,
+            "secondary_metrics": ["txn_cnt"],
+            "per_dimension_weights": True,
+            "validate_input": False,
+            "entity": "Target",
+            "fraud_col": "fraud",
+            "fraud_in_bps": True,
+        },
+        "rate",
+        Path("outputs/sample.xlsx"),
+    )
+    for token in sample:
+        assert resolve_expectation(token) is not None, token
+        spec = resolve_expectation(token)
+        assert spec is not None
+        if spec.status == "enforced" and not spec.prefix_match:
+            assert spec.token == token

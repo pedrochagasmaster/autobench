@@ -857,6 +857,7 @@ def _build_share_mode_metadata(
     resolved: ResolvedConfig,
     consistent_weights: bool,
     observability: RunObservability,
+    weighting_result: Optional[WeightingResult] = None,
     **_: Any,
 ) -> Dict[str, Any]:
     metadata = {
@@ -867,15 +868,29 @@ def _build_share_mode_metadata(
         'trigger_subset_on_slack': resolved.subset_search.trigger_on_slack,
         'max_cap_slack': resolved.subset_search.max_slack_threshold,
         'analyzer_ref': analyzer,
-        'last_lp_stats': getattr(analyzer, 'last_lp_stats', {}),
-        'slack_subset_triggered': getattr(analyzer, 'slack_subset_triggered', False),
+        'last_lp_stats': (
+            weighting_result.last_lp_stats
+            if weighting_result is not None
+            else getattr(analyzer, 'last_lp_stats', {})
+        ),
+        'slack_subset_triggered': (
+            weighting_result.slack_subset_triggered
+            if weighting_result is not None
+            else getattr(analyzer, 'slack_subset_triggered', False)
+        ),
         'observability': observability.as_metadata(),
     }
     if consistent_weights:
-        metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
-        metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
-        metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
-        metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
+        if weighting_result is not None:
+            metadata['global_dimensions_used'] = list(weighting_result.global_dimensions_used)
+            metadata['removed_dimensions'] = list(weighting_result.removed_dimensions)
+            metadata['per_dimension_weighted'] = list(weighting_result.per_dimension_weights.keys())
+            metadata['subset_search_results'] = list(weighting_result.subset_search_results)
+        else:
+            metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
+            metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
+            metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
+            metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
     return metadata
 
 
@@ -884,7 +899,7 @@ def _build_rate_mode_metadata(
     request: AnalysisRunRequest,
     config: ConfigManager,
     results: Dict[str, Any],
-    output_settings: Dict[str, Any],
+    output_settings: OutputSettings,
     observability: RunObservability,
     **_: Any,
 ) -> Dict[str, Any]:
@@ -902,7 +917,7 @@ def _build_rate_mode_metadata(
         'fraud_col': request.fraud_col,
         'total_col': request.total_col,
         'bic_percentiles': bic_percentiles,
-        'fraud_in_bps': output_settings['fraud_in_bps'],
+        'fraud_in_bps': output_settings.fraud_in_bps,
         'observability': observability.as_metadata(),
     }
 
@@ -929,7 +944,7 @@ def _export_share_balanced_csv(
     df: pd.DataFrame,
     analyzer: DimensionalAnalyzer,
     dimensions: List[str],
-    output_settings: Dict[str, Any],
+    output_settings: OutputSettings,
     logger: logging.Logger,
 ) -> None:
     export_balanced_csv(
@@ -942,7 +957,7 @@ def _export_share_balanced_csv(
         dimensions=dimensions,
         metric_col=request.metric,
         secondary_metrics=request.secondary_metrics,
-        include_calculated=output_settings['include_calculated_metrics'],
+        include_calculated=output_settings.include_calculated_metrics,
     )
 
 
@@ -954,7 +969,7 @@ def _export_rate_balanced_csv(
     df: pd.DataFrame,
     analyzer: DimensionalAnalyzer,
     dimensions: List[str],
-    output_settings: Dict[str, Any],
+    output_settings: OutputSettings,
     logger: logging.Logger,
 ) -> None:
     analyzer.secondary_metrics = request.secondary_metrics
@@ -969,7 +984,7 @@ def _export_rate_balanced_csv(
         dimensions=dimensions,
         total_col=request.total_col,
         numerator_cols=request.numerator_cols,
-        include_calculated=output_settings['include_calculated_metrics'],
+        include_calculated=output_settings.include_calculated_metrics,
     )
 
 
@@ -1006,7 +1021,7 @@ SHARE_MODE_SPEC = AnalysisModeSpec(
         df=kwargs['df'],
         dimensions=kwargs['dimensions'],
         resolved_entity=kwargs['resolved_entity'],
-        include_impact_summary=kwargs['output_settings']['include_impact_summary'],
+        include_impact_summary=kwargs['output_settings'].include_impact_summary,
         logger=kwargs['logger'],
     ),
     resolve_output_filename=_share_output_filename,
@@ -1061,7 +1076,7 @@ RATE_MODE_SPEC = AnalysisModeSpec(
         dimensions=kwargs['dimensions'],
         total_col=kwargs['request'].total_col,
         numerator_cols=kwargs['request'].numerator_cols,
-        include_impact_summary=kwargs['output_settings']['include_impact_summary'],
+        include_impact_summary=kwargs['output_settings'].include_impact_summary,
     ),
     resolve_output_filename=_rate_output_filename,
     export_balanced_csv_fn=_export_rate_balanced_csv,
@@ -1196,8 +1211,27 @@ def _execute_run(
             consistent_weights=consistent_weights,
             output_settings=output_settings,
             observability=observability,
+            weighting_result=weighting_result,
         ),
     }
+    metadata.update(
+        RunSummary(
+            entity=str(metadata.get('entity', 'PEER-ONLY')),
+            entity_column=entity_col,
+            total_records=len(df),
+            unique_entities=int(df[entity_col].nunique()),
+            peer_count=int(metadata.get('peer_count', 0)),
+            dimensions_analyzed=dimensions_analyzed,
+            dimension_names=list(dimension_names),
+            preset=getattr(args, 'preset', None),
+            compliance_posture=config.get('compliance_posture'),
+            debug_mode=debug_mode,
+            consistent_weights=consistent_weights,
+            output_format=output_settings.output_format,
+            timestamp=metadata.get('timestamp'),
+            privacy_rule=getattr(analyzer, 'privacy_rule_name', None),
+        ).to_metadata_dict()
+    )
 
     diagnostics = collect_run_diagnostics(
         analyzer=analyzer,
@@ -1284,11 +1318,11 @@ def _execute_run(
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
     artifacts.report_paths = build_report_paths(
-        output_settings['output_format'],
+        output_settings.output_format,
         analysis_output_file,
         artifacts.publication_output,
     )
-    if output_settings['include_audit_log']:
+    if output_settings.include_audit_log:
         write_audit_log(
             config,
             analysis_output_file=analysis_output_file,

@@ -719,9 +719,6 @@ class DimensionalAnalyzer:
             self, df, metric_col, dimensions, max_concentration, peer_volumes, peers, all_categories
         )
 
-        
-        return best_dims, best_weights
-
     def _solve_per_dimension_weights(
         self,
         df: pd.DataFrame,

@@ -3,10 +3,9 @@ Unit tests for solver isolation (LPSolver, HeuristicSolver).
 """
 
 import unittest
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
-import numpy as np
-
+from core.contracts import SolverRequest
 from core.solvers.lp_solver import LPSolver, _SCIPY_AVAILABLE
 from core.solvers.heuristic_solver import HeuristicSolver
 
@@ -52,14 +51,16 @@ class TestLPSolver(unittest.TestCase):
 
         solver = LPSolver()
         result = solver.solve(
-            peers=peers,
-            categories=categories,
-            max_concentration=50.0,
-            peer_volumes=peer_volumes,
-            tolerance=0.0,
-            rank_preservation_strength=0.0,
-            min_weight=0.5,
-            max_weight=2.0,
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=50.0,
+                peer_volumes=peer_volumes,
+                tolerance=0.0,
+                rank_preservation_strength=0.0,
+                min_weight=0.5,
+                max_weight=2.0,
+            )
         )
 
         self.assertIsNotNone(result)
@@ -93,25 +94,29 @@ class TestLPSolver(unittest.TestCase):
 
         solver = LPSolver()
         baseline = solver.solve(
-            peers=peers,
-            categories=categories,
-            max_concentration=30.0,
-            peer_volumes=peer_volumes,
-            tolerance=5.0,
-            rank_preservation_strength=0.0,
-            min_weight=0.1,
-            max_weight=10.0,
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=30.0,
+                peer_volumes=peer_volumes,
+                tolerance=5.0,
+                rank_preservation_strength=0.0,
+                min_weight=0.1,
+                max_weight=10.0,
+            )
         )
         weighted = solver.solve(
-            peers=peers,
-            categories=categories,
-            max_concentration=30.0,
-            peer_volumes=peer_volumes,
-            tolerance=5.0,
-            rank_preservation_strength=0.0,
-            min_weight=0.1,
-            max_weight=10.0,
-            lambda_penalty=1.0e6,
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=30.0,
+                peer_volumes=peer_volumes,
+                tolerance=5.0,
+                rank_preservation_strength=0.0,
+                min_weight=0.1,
+                max_weight=10.0,
+                lambda_penalty=1.0e6,
+            )
         )
 
         self.assertIsNotNone(baseline)
@@ -120,9 +125,6 @@ class TestLPSolver(unittest.TestCase):
 
         baseline_max_slack = float(baseline.stats.get("max_slack", 0.0))
         weighted_max_slack = float(weighted.stats.get("max_slack", 0.0))
-        # When lambda_penalty is large, the LP prefers crushing slack down to
-        # zero rather than accepting tolerance-bounded slack. The weighted
-        # max_slack must therefore be no greater than the baseline.
         self.assertLessEqual(weighted_max_slack, baseline_max_slack + 1e-6)
 
 
@@ -139,16 +141,18 @@ class TestHeuristicSolver(unittest.TestCase):
         baseline_penalty = solver._additional_constraints_penalty(list(baseline_shares.values()), "6/30")
 
         result = solver.solve(
-            peers=peers,
-            categories=categories,
-            max_concentration=30.0,
-            peer_volumes=peer_volumes,
-            min_weight=0.1,
-            max_weight=10.0,
-            tolerance=0.0,
-            enforce_additional_constraints=True,
-            dynamic_constraints_enabled=False,
-            rule_name="6/30",
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=30.0,
+                peer_volumes=peer_volumes,
+                min_weight=0.1,
+                max_weight=10.0,
+                tolerance=0.0,
+                enforce_additional_constraints=True,
+                dynamic_constraints_enabled=False,
+                rule_name="6/30",
+            )
         )
 
         self.assertIsNotNone(result)
@@ -173,16 +177,18 @@ class TestHeuristicSolver(unittest.TestCase):
 
         solver = HeuristicSolver()
         result = solver.solve(
-            peers=peers,
-            categories=categories,
-            max_concentration=30.0,
-            peer_volumes=volumes.copy(),
-            min_weight=0.1,
-            max_weight=10.0,
-            tolerance=0.0,
-            enforce_additional_constraints=True,
-            dynamic_constraints_enabled=False,
-            rule_name="6/30",
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=30.0,
+                peer_volumes=volumes.copy(),
+                min_weight=0.1,
+                max_weight=10.0,
+                tolerance=0.0,
+                enforce_additional_constraints=True,
+                dynamic_constraints_enabled=False,
+                rule_name="6/30",
+            )
         )
 
         self.assertIsNotNone(result)

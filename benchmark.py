@@ -98,6 +98,71 @@ def get_presets_help() -> str:
         return ""
 
 
+def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: list) -> None:
+    """Register CLI flags shared by share and rate analysis subcommands."""
+    parser.add_argument('--csv', required=True, help='Path to CSV input file')
+    parser.add_argument('--entity', help='Name of the entity to benchmark (omit for peer-only analysis)')
+    parser.add_argument('--entity-col', default='issuer_name', help='Entity identifier column name (default: issuer_name)')
+    parser.add_argument('--output', '-o', help='Output file path (default: auto-generated)')
+
+    dim_group = parser.add_mutually_exclusive_group()
+    dim_group.add_argument('--dimensions', nargs='+', help='Specific dimensions to analyze')
+    dim_group.add_argument('--auto', action='store_true', default=None, help='Auto-detect all available dimensions')
+
+    parser.add_argument('--time-col', help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
+    parser.add_argument('--config', help='Configuration file (YAML)')
+    parser.add_argument('--preset', choices=preset_choices, help='Preset configuration name')
+    parser.add_argument(
+        '--compliance-posture',
+        choices=['strict', 'best_effort', 'accuracy_first'],
+        help='Explicit final compliance posture for this run',
+    )
+    parser.add_argument(
+        '--acknowledge-accuracy-first',
+        action='store_true',
+        default=None,
+        help='Required acknowledgement for accuracy_first runs',
+    )
+    parser.add_argument('--debug', action='store_true', default=None, help='Enable debug mode (includes unweighted averages and weight details)')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Logging level (default: INFO)')
+    parser.add_argument(
+        '--per-dimension-weights',
+        action='store_true',
+        default=None,
+        help='Optimize each dimension independently (disables global weighting mode)',
+    )
+    parser.add_argument('--export-balanced-csv', action='store_true', help='Export balanced metrics to CSV')
+    parser.add_argument('--compare-presets', action='store_true', default=None, help='Compare all presets and report impact for each')
+    parser.add_argument('--analyze-impact', action='store_true', default=None, help='Include impact details and summary sheets in output')
+    parser.add_argument('--analyze-distortion', action='store_true', default=None, help='Alias for --analyze-impact (deprecated)')
+    parser.add_argument(
+        '--validate-input',
+        action='store_true',
+        default=None,
+        dest='validate_input',
+        help='Enable input data validation before analysis (default: enabled)',
+    )
+    parser.add_argument('--no-validate-input', action='store_false', dest='validate_input', help='Disable input data validation')
+    parser.add_argument(
+        '--output-format',
+        choices=['analysis', 'publication', 'both'],
+        default=None,
+        help='Output format: analysis (default), publication, or both',
+    )
+    parser.add_argument(
+        '--publication-format',
+        action='store_const',
+        const='publication',
+        dest='output_format',
+        help='Convenience alias for --output-format=publication',
+    )
+    parser.add_argument('--include-calculated', action='store_true', default=None, help='Include calculated metrics in balanced CSV export')
+    parser.add_argument('--auto-subset-search', action='store_true', default=None, help='Automatically search for largest feasible global dimension subset')
+    parser.add_argument('--subset-search-max-tests', type=int, help='Maximum attempts during subset search')
+    parser.add_argument('--trigger-subset-on-slack', action='store_true', default=None, help='Trigger subset search if LP uses slack')
+    parser.add_argument('--max-cap-slack', type=float, help='Slack sum threshold to trigger subset search')
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     
@@ -159,90 +224,11 @@ EXAMPLES:
         help='Share-based dimensional analysis',
         description='Analyze how an entity\'s volume is distributed across dimensions'
     )
-    
-    # Required arguments
-    share_parser.add_argument('--csv', required=True, 
-                             help='Path to CSV input file')
+    add_common_run_flags(share_parser, preset_choices=preset_choices)
     share_parser.add_argument('--metric', required=True,
                              help='Metric column name to analyze (e.g., txn_cnt, tpv, transaction_count, transaction_amount)')
-    
-    # Secondary metrics (can specify multiple)
     share_parser.add_argument('--secondary-metrics', nargs='+',
                              help='Secondary metric columns to analyze using weights derived from the primary metric (space-separated list)')
-    
-    # Optional - Essential
-    share_parser.add_argument('--entity',
-                             help='Name of the entity to benchmark (omit for peer-only analysis)')
-    share_parser.add_argument('--entity-col', default='issuer_name',
-                             help='Entity identifier column name (default: issuer_name)')
-    share_parser.add_argument('--output', '-o',
-                             help='Output file path (default: auto-generated)')
-    
-    # Dimension selection
-    dim_group = share_parser.add_mutually_exclusive_group()
-    dim_group.add_argument('--dimensions', nargs='+',
-                          help='Specific dimensions to analyze (e.g., flag_domestic cp_cnp)')
-    # NOTE: default=None with store_true allows distinguishing "not provided" from
-    # "explicitly False", enabling clean CLI-to-config override logic
-    dim_group.add_argument('--auto', action='store_true', default=None,
-                          help='Auto-detect all available dimensions')
-    
-    # Time awareness
-    share_parser.add_argument('--time-col', 
-                             help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
-    
-    # Configuration
-    share_parser.add_argument('--config',
-                             help='Configuration file (YAML)')
-    share_parser.add_argument('--preset', choices=preset_choices,
-                             help='Preset configuration name')
-    share_parser.add_argument('--compliance-posture',
-                             choices=['strict', 'best_effort', 'accuracy_first'],
-                             help='Explicit final compliance posture for this run')
-    share_parser.add_argument('--acknowledge-accuracy-first', action='store_true', default=None,
-                             help='Required acknowledgement for accuracy_first runs')
-    
-    # Debug/Logging
-    share_parser.add_argument('--debug', action='store_true', default=None,
-                             help='Enable debug mode (includes unweighted averages and weight details)')
-    share_parser.add_argument('--log-level',
-                             choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                             help='Logging level (default: INFO)')
-    share_parser.add_argument('--per-dimension-weights', action='store_true', default=None,
-                             help='Optimize each dimension independently (disables global weighting mode)')
-    share_parser.add_argument('--export-balanced-csv', action='store_true',
-                             help='Export balanced shares and volumes to CSV (without weights or original values)')
-    
-    # Enhanced Analysis Options
-    share_parser.add_argument('--compare-presets', action='store_true', default=None,
-                             help='Compare all presets and report impact for each')
-    share_parser.add_argument('--analyze-impact', action='store_true', default=None,
-                             help='Include impact details and summary sheets in output')
-    share_parser.add_argument('--analyze-distortion', action='store_true', default=None,
-                             help='Alias for --analyze-impact (deprecated)')
-    share_parser.add_argument('--validate-input', action='store_true', default=None,
-                             dest='validate_input',
-                             help='Enable input data validation before analysis (default: enabled)')
-    share_parser.add_argument('--no-validate-input', action='store_false', dest='validate_input',
-                             help='Disable input data validation')
-    share_parser.add_argument('--output-format', choices=['analysis', 'publication', 'both'],
-                             default=None,
-                             help='Output format: analysis (default), publication, or both')
-    share_parser.add_argument('--publication-format', action='store_const', const='publication',
-                             dest='output_format',
-                             help='Convenience alias for --output-format=publication')
-    share_parser.add_argument('--include-calculated', action='store_true', default=None,
-                             help='Include calculated metrics (raw/balanced share, impact) in balanced CSV export')
-
-    # Advanced Optimization
-    share_parser.add_argument('--auto-subset-search', action='store_true', default=None,
-                             help='Automatically search for largest feasible global dimension subset')
-    share_parser.add_argument('--subset-search-max-tests', type=int,
-                             help='Maximum attempts during subset search')
-    share_parser.add_argument('--trigger-subset-on-slack', action='store_true', default=None,
-                             help='Trigger subset search if LP uses slack')
-    share_parser.add_argument('--max-cap-slack', type=float,
-                             help='Slack sum threshold to trigger subset search')
 
     # ========================================================================
     # RATE ANALYSIS COMMAND
@@ -252,99 +238,20 @@ EXAMPLES:
         help='Rate-based dimensional analysis',
         description='Analyze approval rates or fraud rates across dimensions'
     )
-    
-    # Required arguments
-    rate_parser.add_argument('--csv', required=True,
-                            help='Path to CSV input file')
+    add_common_run_flags(rate_parser, preset_choices=preset_choices)
     rate_parser.add_argument('--total-col', required=True,
                             help='Total transactions column (e.g., txn_cnt)')
-    
-    # Secondary metrics (can specify multiple)
     rate_parser.add_argument('--secondary-metrics', nargs='+',
                             help='Secondary metric columns (e.g., txn_count) to analyze using weights derived from the total column (space-separated list)')
-    
-    # Rate type selection (both can be specified for simultaneous analysis)
     rate_parser.add_argument('--approved-col',
                             help='Approved transactions column (for approval rate)')
     rate_parser.add_argument('--fraud-col',
                             help='Fraud transactions column (for fraud rate)')
-    
-    # Optional - Essential
-    rate_parser.add_argument('--entity',
-                            help='Name of the entity to benchmark (omit for peer-only analysis)')
-    rate_parser.add_argument('--entity-col', default='issuer_name',
-                            help='Entity identifier column name (default: issuer_name)')
-    rate_parser.add_argument('--output', '-o',
-                            help='Output file path (default: auto-generated)')
-    
-    # Dimension selection
-    rate_dim_group = rate_parser.add_mutually_exclusive_group()
-    rate_dim_group.add_argument('--dimensions', nargs='+',
-                               help='Specific dimensions to analyze')
-    rate_dim_group.add_argument('--auto', action='store_true', default=None,
-                               help='Auto-detect all dimensions')
-    
-    # Time awareness
-    rate_parser.add_argument('--time-col', 
-                            help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
-    
-    # Configuration
-    rate_parser.add_argument('--config',
-                            help='Configuration file (YAML)')
-    rate_parser.add_argument('--preset', choices=preset_choices,
-                            help='Preset configuration name')
-    rate_parser.add_argument('--compliance-posture',
-                            choices=['strict', 'best_effort', 'accuracy_first'],
-                            help='Explicit final compliance posture for this run')
-    rate_parser.add_argument('--acknowledge-accuracy-first', action='store_true', default=None,
-                            help='Required acknowledgement for accuracy_first runs')
-    
-    # Debug/Logging
-    rate_parser.add_argument('--debug', action='store_true', default=None,
-                            help='Enable debug mode (includes unweighted averages and weight details)')
-    rate_parser.add_argument('--log-level',
-                            choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                            help='Logging level (default: INFO)')
-    rate_parser.add_argument('--per-dimension-weights', action='store_true', default=None,
-                            help='Optimize each dimension independently (disables global weighting mode)')
-    rate_parser.add_argument('--export-balanced-csv', action='store_true',
-                            help='Export balanced shares and volumes to CSV (without weights or original values)')
-    
-    # Enhanced Analysis Options
-    rate_parser.add_argument('--compare-presets', action='store_true', default=None,
-                            help='Compare all presets and report impact for each')
-    rate_parser.add_argument('--analyze-impact', action='store_true', default=None,
-                            help='Include impact details and summary sheets in output')
-    rate_parser.add_argument('--analyze-distortion', action='store_true', default=None,
-                            help='Alias for --analyze-impact (deprecated)')
-    rate_parser.add_argument('--validate-input', action='store_true', default=None,
-                            dest='validate_input',
-                            help='Enable input data validation before analysis (default: enabled)')
-    rate_parser.add_argument('--no-validate-input', action='store_false', dest='validate_input',
-                            help='Disable input data validation')
-    rate_parser.add_argument('--output-format', choices=['analysis', 'publication', 'both'],
-                            default=None,
-                            help='Output format: analysis (default), publication, or both')
-    rate_parser.add_argument('--publication-format', action='store_const', const='publication',
-                            dest='output_format',
-                            help='Convenience alias for --output-format=publication')
-    rate_parser.add_argument('--include-calculated', action='store_true', default=None,
-                            help='Include calculated metrics (rate impact) in balanced CSV export')
     rate_parser.add_argument('--fraud-in-bps', action='store_true', default=None,
                             dest='fraud_in_bps',
                             help='Convert fraud rates to basis points in publication format (default: enabled)')
     rate_parser.add_argument('--no-fraud-in-bps', action='store_false', dest='fraud_in_bps',
                             help='Keep fraud rates as percentages in publication format')
-    
-    # Advanced Optimization
-    rate_parser.add_argument('--auto-subset-search', action='store_true', default=None,
-                            help='Automatically search for largest feasible global dimension subset')
-    rate_parser.add_argument('--subset-search-max-tests', type=int,
-                            help='Maximum attempts during subset search')
-    rate_parser.add_argument('--trigger-subset-on-slack', action='store_true', default=None,
-                            help='Trigger subset search if LP uses slack')
-    rate_parser.add_argument('--max-cap-slack', type=float,
-                            help='Slack sum threshold to trigger subset search')
 
     # ========================================================================
     # CONFIG MANAGEMENT COMMAND

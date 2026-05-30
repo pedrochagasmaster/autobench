@@ -34,7 +34,7 @@ class SolverRequest:
     enforce_additional_constraints: bool = False
     dynamic_constraints_enabled: bool = False
     time_column: Optional[str] = None
-    min_peer_count_for_constraints: int = 6
+    min_peer_count_for_constraints: int = 4
     min_effective_peer_count: int = 3
     min_category_volume_share: float = 0.01
     min_overall_volume_share: float = 0.01

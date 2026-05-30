@@ -7,9 +7,17 @@ import logging
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_ROOT_DIR = _SCRIPT_DIR.parent
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
+
 import pandas as pd
 import numpy as np
 from openpyxl import load_workbook
+
+from scripts.gate_expectations import resolve_expectation  # noqa: E402
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,11 +33,21 @@ class GateTestRunner:
     def generate_cases(self):
         """Run generate_cli_sweep.py in gate mode."""
         logger.info("Generating gate test cases...")
+        fixture = self.root_dir / "tests" / "fixtures" / "gate_demo.csv"
         cmd = [
             sys.executable,
             str(self.generate_script),
             "--mode", "gate",
-            "--out-dir", str(self.output_dir)
+            "--out-dir", str(self.output_dir),
+            "--csv", str(fixture),
+            "--entity-col", "issuer_name",
+            "--entity", "Target",
+            "--metric-col", "txn_cnt",
+            "--total-col", "total",
+            "--approved-col", "approved",
+            "--fraud-col", "fraud",
+            "--dimensions", "card_type", "channel",
+            "--time-col", "year_month",
         ]
         result = subprocess.run(cmd, cwd=self.root_dir, capture_output=True, text=True)
         if result.returncode != 0:
@@ -53,9 +71,10 @@ class GateTestRunner:
                         cases.append(json.loads(line))
         return cases
 
-    def verify_workbook_content(self, wb, case_id: str, analysis_type: str) -> List[str]:
+    def verify_workbook_content(self, wb, case_id: str, analysis_type: str, params: Optional[Dict] = None) -> List[str]:
         """Deep verification of workbook content (sanity checks)."""
         failures = []
+        params = params or {}
         reserved = {
             "Summary", "Metadata", "Data Quality", "Preset Comparison", "Impact Analysis",
             "Impact Summary", "Impact Detail", "Peer Weights", "Weight Methods",
@@ -109,6 +128,9 @@ class GateTestRunner:
             # 0. Duplicates Check
             # Identify key columns for uniqueness check
             key_candidates = ["Category", "Time", "Month", "Year", "Quarter", "Period", "ano_mes", "Date", "date"]
+            time_col = params.get("time_col")
+            if time_col and time_col not in key_candidates:
+                key_candidates.insert(1, time_col)
             keys = [c for c in df.columns if c in key_candidates]
             if keys:
                 # If we have keys, check for duplicates
@@ -306,11 +328,17 @@ class GateTestRunner:
 
         return failures
 
-    def verify_case(self, case: Dict) -> List[str]:
+    def verify_case(self, case: Dict, *, stdout: str = "", stderr: str = "") -> List[str]:
         """Verify expectations for a single case."""
         failures = []
         params = case.get("params", {})
         expectations = case.get("expectations", [])
+
+        for exp in expectations:
+            if resolve_expectation(exp) is None:
+                failures.append(f"Unregistered expectation token: {exp}")
+        if failures:
+            return failures
         
         # Determine analysis type
         if "share_" in case["id"]:
@@ -326,10 +354,16 @@ class GateTestRunner:
         
         if output_arg:
             analysis_file = Path(output_arg)
-        elif any(e in expectations for e in ["list_presets_output", "preset_details_output", "validate_template_ok"]):
-            # These cases check stdout or exit code, which are already handled/ignored here.
-            # So we consider them passed if we reached here (execution success).
-            return failures
+        elif "list_presets_output" in expectations or "preset_details_output" in expectations or "validate_template_ok" in expectations:
+            return self._verify_config_stdout(expectations, stdout, stderr, failures)
+        elif "output_filename_auto_generated" in expectations:
+            # Auto-generated outputs use benchmark naming; search outputs dir
+            pattern = f"benchmark_{analysis_type}_*.xlsx"
+            matches = sorted(self.root_dir.glob(pattern))
+            if not matches:
+                failures.append(f"No auto-generated output matching {pattern}")
+                return failures
+            analysis_file = matches[-1]
         else:
             # Try to find file matching pattern if auto-generated
             failures.append("Cannot verify output: explicit output path not found in params")
@@ -352,13 +386,37 @@ class GateTestRunner:
         wb_pub = None
 
         for exp in expectations:
+            if exp == "list_presets_output" or exp == "preset_details_output" or exp == "validate_template_ok":
+                continue
+            if exp.startswith("output_base="):
+                expected = Path(exp.split("=", 1)[1])
+                if not expected.is_absolute():
+                    expected = self.root_dir / expected
+                output_format = params.get("output_format", "analysis")
+                candidates = [expected]
+                if output_format == "publication":
+                    candidates = [
+                        expected.with_name(f"{expected.stem}_publication{expected.suffix}")
+                    ]
+                elif output_format == "both":
+                    candidates.append(
+                        expected.with_name(f"{expected.stem}_publication{expected.suffix}")
+                    )
+                if not any(path.exists() for path in candidates):
+                    failures.append(f"Expected output file missing: {candidates[0]}")
+                continue
+            if exp == "output_filename_auto_generated":
+                if not analysis_file.exists():
+                    failures.append(f"Auto-generated analysis workbook missing: {analysis_file}")
+                continue
+
             if exp == "analysis_workbook":
                 if not analysis_file.exists():
                     failures.append(f"Analysis workbook missing: {analysis_file}")
                 else:
                     try:
                         wb_analysis = load_workbook(analysis_file, read_only=True, data_only=True)
-                        content_failures = self.verify_workbook_content(wb_analysis, case["id"], analysis_type)
+                        content_failures = self.verify_workbook_content(wb_analysis, case["id"], analysis_type, params)
                         failures.extend(content_failures)
                     except Exception as e:
                         failures.append(f"Invalid analysis workbook: {e}")
@@ -375,15 +433,18 @@ class GateTestRunner:
             elif exp == "balanced_csv":
                 if not csv_file.exists():
                     failures.append(f"Balanced CSV missing: {csv_file}")
+                elif analysis_type == "share":
+                    try:
+                        df_csv = pd.read_csv(csv_file)
+                        required = {"Dimension", "Category"}
+                        if not required.issubset(df_csv.columns):
+                            failures.append(f"Share CSV missing required columns: {required - set(df_csv.columns)}")
+                        balanced_cols = [c for c in df_csv.columns if c.startswith("Balanced_")]
+                        if not balanced_cols:
+                            failures.append("Share CSV missing Balanced_* columns")
+                    except Exception as e:
+                        failures.append(f"Failed to read share CSV: {e}")
                 elif analysis_file.exists():
-                    # Skip CSV validation for Share analysis
-                    # Reason: Share CSV exports Market Share (Impact), while Excel report contains Category Mix.
-                    # Mismatched metrics make validation impossible with current validator.
-                    if analysis_type == "share":
-                        logger.info(f"Skipping CSV validation for Share case {case['id']} (Metric mismatch: Market Share vs Mix)")
-                        continue
-
-                    # Run CSV Validator
                     validator_script = self.root_dir / "utils" / "csv_validator.py"
                     cmd = [sys.executable, str(validator_script), str(analysis_file), str(csv_file)]
                     try:
@@ -567,6 +628,26 @@ class GateTestRunner:
             
         return failures
 
+    def _verify_config_stdout(
+        self,
+        expectations: List[str],
+        stdout: str,
+        stderr: str,
+        failures: List[str],
+    ) -> List[str]:
+        combined = f"{stdout}\n{stderr}".lower()
+        if "list_presets_output" in expectations:
+            for preset_path in sorted((self.root_dir / "presets").glob("*.yaml")):
+                if preset_path.stem.lower() not in combined:
+                    failures.append(f"Preset list output missing preset: {preset_path.stem}")
+        if "preset_details_output" in expectations:
+            if "tolerance" not in combined and "optimization" not in combined:
+                failures.append("Preset details output missing key fields")
+        if "validate_template_ok" in expectations:
+            if "valid" not in combined and "success" not in combined:
+                failures.append("Config validate output did not indicate success")
+        return failures
+
     def run(self):
         # 1. Generate
         self.generate_cases()
@@ -623,7 +704,7 @@ class GateTestRunner:
                     continue
                 
                 # Verify
-                failures = self.verify_case(case)
+                failures = self.verify_case(case, stdout=proc.stdout, stderr=proc.stderr)
                 if failures:
                     logger.error(f"Verification failed for {case_id}:")
                     for f in failures:

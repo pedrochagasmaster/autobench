@@ -7,6 +7,19 @@ from openpyxl import load_workbook
 from benchmark import run_share_analysis
 
 
+def test_core_modules_import_without_benchmark() -> None:
+    import importlib
+    import sys
+
+    saved = {name: sys.modules.pop(name) for name in list(sys.modules) if name in {"benchmark", "core.analysis_run", "core.output_artifacts"}}
+    try:
+        importlib.import_module("core.analysis_run")
+        importlib.import_module("core.output_artifacts")
+        assert "benchmark" not in sys.modules
+    finally:
+        sys.modules.update(saved)
+
+
 def _share_args(output: Path, df: pd.DataFrame, output_format: str = "both") -> SimpleNamespace:
     return SimpleNamespace(
         csv="",
