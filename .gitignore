@@ -60,6 +60,7 @@ config.json
 # Keep these patterns
 !presets.json
 !config.template.json
+!requirements-dev.txt
 
 *.txt
 *.xlsx
