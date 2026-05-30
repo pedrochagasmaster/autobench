@@ -331,21 +331,21 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertFalse(diagnostics['method_breakdown_df'].empty)
         self.assertIn('Method', diagnostics['method_breakdown_df'].columns)
 
-    def test_collect_run_diagnostics_skips_privacy_when_disabled(self) -> None:
+    def test_collect_run_diagnostics_keeps_compliance_privacy_when_sheet_disabled(self) -> None:
         build_called = {'count': 0}
 
         def _build_privacy(_df, _metric_col, _dimensions):
             build_called['count'] += 1
-            return pd.DataFrame({'Compliant': ['Yes']})
+            return pd.DataFrame({'Compliant': ['No'], 'Peer': ['PeerA']})
 
         analyzer = SimpleNamespace(
             get_weights_dataframe=lambda: pd.DataFrame(),
             build_privacy_validation_dataframe=_build_privacy,
-            global_dimensions_used=[],
+            global_dimensions_used=['channel'],
             removed_dimensions=[],
             per_dimension_weights={},
-            weight_methods={},
-            global_weights={},
+            weight_methods={'channel': 'Global-LP'},
+            global_weights={'PeerA': {'multiplier': 1.0, 'weight': 100.0}},
         )
 
         diagnostics = collect_run_diagnostics(
@@ -359,9 +359,10 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             logger=logging.getLogger(__name__),
         )
 
-        self.assertEqual(build_called['count'], 0)
+        self.assertEqual(build_called['count'], 1)
         self.assertIsNone(diagnostics['privacy_validation_df'])
-        self.assertIsNone(diagnostics['method_breakdown_df'])
+        self.assertEqual(diagnostics['compliance_privacy_validation_df']['Compliant'].tolist(), ['No'])
+        self.assertFalse(diagnostics['method_breakdown_df'].empty)
 
     def test_build_report_paths_respects_output_mode(self) -> None:
         report_paths = build_report_paths('both', 'analysis.xlsx', 'publication.xlsx')

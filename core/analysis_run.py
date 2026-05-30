@@ -451,6 +451,7 @@ def collect_run_diagnostics(
     """Collect debug-oriented run artifacts shared by share and rate flows."""
     weights_df = None
     privacy_validation_df = None
+    output_privacy_validation_df = None
     method_breakdown_df = None
     metadata_updates: Dict[str, Any] = {}
 
@@ -470,67 +471,67 @@ def collect_run_diagnostics(
         if not weights_df.empty:
             logger.info(f"Captured weights data: {len(weights_df)} weight entries")
 
-    build_privacy_artifacts = include_privacy_validation or debug_mode
-    if build_privacy_artifacts:
-        privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, validation_metric_col, dimensions)
-        if not privacy_validation_df.empty:
-            logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
-            if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
-                structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
-                structural_categories = int(
-                    privacy_validation_df.loc[
-                        privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
-                        ['Dimension', 'Category', 'Time_Period']
-                    ].drop_duplicates().shape[0]
-                )
-                metadata_updates['structural_infeasible_validation_rows'] = structural_rows
-                metadata_updates['structural_infeasible_validation_categories'] = structural_categories
+    privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, validation_metric_col, dimensions)
+    if include_privacy_validation or debug_mode:
+        output_privacy_validation_df = privacy_validation_df
+    if privacy_validation_df is not None and not privacy_validation_df.empty:
+        logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
+        if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
+            structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
+            structural_categories = int(
+                privacy_validation_df.loc[
+                    privacy_validation_df['Structural_Infeasible_Category'] == 'Yes',
+                    ['Dimension', 'Category', 'Time_Period']
+                ].drop_duplicates().shape[0]
+            )
+            metadata_updates['structural_infeasible_validation_rows'] = structural_rows
+            metadata_updates['structural_infeasible_validation_categories'] = structural_categories
 
-        rows = []
-        dims_all = list(dimensions)
-        used_dims = set(_from_result('global_dimensions_used', []))
-        removed_dims = set(_from_result('removed_dimensions', []))
-        per_dim_dict: Dict[str, Dict[str, float]] = _from_result('per_dimension_weights', {})
-        weight_methods: Dict[str, str] = _from_result('weight_methods', {})
-        global_w = _from_result('global_weights', {})
-        peers = set(global_w.keys())
-        for dim_name, weight_map in per_dim_dict.items():
-            peers.update(weight_map.keys())
-        if (
-            not peers
-            and privacy_validation_df is not None
-            and not privacy_validation_df.empty
-            and 'Peer' in privacy_validation_df.columns
-        ):
-            peers.update(str(peer) for peer in privacy_validation_df['Peer'].dropna().unique())
-        for dim_name in dims_all:
-            if dim_name in weight_methods:
-                method = weight_methods[dim_name]
-            elif dim_name in per_dim_dict:
-                method = 'Per-Dimension-LP'
-            elif dim_name in used_dims:
-                method = 'Global-LP'
-            elif dim_name in removed_dims:
-                method = 'Global weights (dropped in LP)'
+    rows = []
+    dims_all = list(dimensions)
+    used_dims = set(_from_result('global_dimensions_used', []))
+    removed_dims = set(_from_result('removed_dimensions', []))
+    per_dim_dict: Dict[str, Dict[str, float]] = _from_result('per_dimension_weights', {})
+    weight_methods: Dict[str, str] = _from_result('weight_methods', {})
+    global_w = _from_result('global_weights', {})
+    peers = set(global_w.keys())
+    for dim_name, weight_map in per_dim_dict.items():
+        peers.update(weight_map.keys())
+    if (
+        not peers
+        and privacy_validation_df is not None
+        and not privacy_validation_df.empty
+        and 'Peer' in privacy_validation_df.columns
+    ):
+        peers.update(str(peer) for peer in privacy_validation_df['Peer'].dropna().unique())
+    for dim_name in dims_all:
+        if dim_name in weight_methods:
+            method = weight_methods[dim_name]
+        elif dim_name in per_dim_dict:
+            method = 'Per-Dimension-LP'
+        elif dim_name in used_dims:
+            method = 'Global-LP'
+        elif dim_name in removed_dims:
+            method = 'Global weights (dropped in LP)'
+        else:
+            method = 'Global weights'
+
+        for peer in sorted(peers):
+            if dim_name in per_dim_dict and peer in per_dim_dict[dim_name]:
+                multiplier = float(per_dim_dict[dim_name][peer])
             else:
-                method = 'Global weights'
-
-            for peer in sorted(peers):
-                if dim_name in per_dim_dict and peer in per_dim_dict[dim_name]:
-                    multiplier = float(per_dim_dict[dim_name][peer])
-                else:
-                    multiplier = float(global_w.get(peer, {}).get('multiplier', 1.0))
-                global_weight_pct = global_w.get(peer, {}).get('weight', None)
-                rows.append({
-                    'Dimension': dim_name,
-                    'Method': method,
-                    'Peer': peer,
-                    'Multiplier': round(multiplier, 6),
-                    'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None,
-                })
-        if rows:
-            method_breakdown_df = pd.DataFrame(rows)
-            logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
+                multiplier = float(global_w.get(peer, {}).get('multiplier', 1.0))
+            global_weight_pct = global_w.get(peer, {}).get('weight', None)
+            rows.append({
+                'Dimension': dim_name,
+                'Method': method,
+                'Peer': peer,
+                'Multiplier': round(multiplier, 6),
+                'Global_Weight_%': round(global_weight_pct, 4) if isinstance(global_weight_pct, (int, float)) else None,
+            })
+    if rows:
+        method_breakdown_df = pd.DataFrame(rows)
+        logger.info(f"Built method breakdown data: {len(method_breakdown_df)} entries")
 
     if structural_summary_df is not None and hasattr(structural_summary_df, "empty") and not structural_summary_df.empty:
         metadata_updates['structural_summary_df'] = structural_summary_df
@@ -545,7 +546,8 @@ def collect_run_diagnostics(
 
     return {
         'weights_df': weights_df,
-        'privacy_validation_df': privacy_validation_df,
+        'privacy_validation_df': output_privacy_validation_df,
+        'compliance_privacy_validation_df': privacy_validation_df,
         'method_breakdown_df': method_breakdown_df,
         'metadata_updates': metadata_updates,
     }
@@ -1248,7 +1250,7 @@ def _execute_run(
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
-        privacy_validation_df=diagnostics['privacy_validation_df'],
+        privacy_validation_df=diagnostics['compliance_privacy_validation_df'],
         structural_infeasibility=metadata.get('structural_infeasibility_summary', {}),
     ).to_dict()
     metadata['compliance_summary'] = compliance_summary

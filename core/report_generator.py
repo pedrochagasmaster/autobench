@@ -355,7 +355,12 @@ class ReportGenerator:
                 ws.cell(row=1, column=col_idx).font = font_cls(bold=True)
         for row_idx, row in enumerate(df.itertuples(index=False), start=2):
             for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
+
+    def _excel_safe_value(self, value: Any) -> Any:
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value)
+        return value
     
     def add_preset_comparison_sheet(
         self,

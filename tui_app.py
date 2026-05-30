@@ -50,6 +50,7 @@ try:
     from core.contracts import AnalysisRunRequest, PreparedDataset
     from core.preset_workflow import PresetWorkflow
     from utils.logger import setup_logging
+    from utils.config_manager import ConfigManager
     from core.data_loader import ValidationIssue, ValidationSeverity
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
@@ -826,11 +827,25 @@ class BenchmarkApp(App):
                     break
         return value
 
-    def update_advanced_parameters(self, preset_name: str) -> None:
-        """Populate editable advanced optimization inputs from preset YAML."""
+    def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
         if not hasattr(self, 'preset_workflow'):
             self.preset_workflow = PresetWorkflow()
 
+        raw_data = self.preset_workflow.load_preset_data(preset_name)
+        if not raw_data:
+            return {}
+
+        try:
+            return ConfigManager(preset=preset_name).config
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Falling back to raw preset data for advanced parameters: %s",
+                exc,
+            )
+            return raw_data
+
+    def update_advanced_parameters(self, preset_name: str) -> None:
+        """Populate editable advanced optimization inputs from preset YAML."""
         for inp in self.query("Input"):
             if inp.id and inp.id.startswith("adv_"):
                 inp.value = ""
@@ -838,7 +853,7 @@ class BenchmarkApp(App):
             if cb.id and cb.id.startswith("adv_"):
                 cb.value = False
 
-        data = self.preset_workflow.load_preset_data(preset_name)
+        data = self._load_advanced_parameter_data(preset_name)
         if not data:
             return
 
