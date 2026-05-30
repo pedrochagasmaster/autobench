@@ -5,7 +5,7 @@ import threading
 import glob
 import pandas as pd
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from textual.app import App, ComposeResult
@@ -32,6 +32,7 @@ from textual.worker import Worker, WorkerState
 from textual import work
 from textual.logging import TextualHandler
 from datetime import datetime
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 
 # Import shared run orchestration and adapter dependencies.
@@ -46,7 +47,7 @@ try:
         resolve_dimensions,
         validate_analysis_input,
     )
-    from core.contracts import AnalysisRunRequest
+    from core.contracts import AnalysisRunRequest, PreparedDataset
     from core.preset_workflow import PresetWorkflow
     from utils.logger import setup_logging
     from core.data_loader import ValidationIssue, ValidationSeverity
@@ -200,6 +201,33 @@ class BenchmarkApp(App):
         ("escape", "close_browser", "Close"),
         ("ctrl+a", "toggle_advanced", "Advanced"),
         ("ctrl+e", "export_advanced", "Export Adv"),
+    ]
+
+    ADVANCED_FIELD_MAP: List[Dict[str, Any]] = [
+        {"widget_id": "adv_lp_tolerance", "keys": ("optimization", "linear_programming", "tolerance"), "kind": "input"},
+        {"widget_id": "adv_lp_max_iterations", "keys": ("optimization", "linear_programming", "max_iterations"), "kind": "input"},
+        {"widget_id": "adv_lp_lambda_penalty", "keys": ("optimization", "linear_programming", "lambda_penalty"), "kind": "input"},
+        {"widget_id": "adv_lp_volume_weighting_exponent", "keys": ("optimization", "linear_programming", "volume_weighting_exponent"), "kind": "input"},
+        {"widget_id": "adv_lp_volume_weighted_penalties", "keys": ("optimization", "linear_programming", "volume_weighted_penalties"), "kind": "checkbox", "always_write": True},
+        {"widget_id": "adv_constraints_volume_preservation", "keys": ("optimization", "constraints", "volume_preservation"), "kind": "input"},
+        {"widget_id": "adv_bounds_min_weight", "keys": ("optimization", "bounds", "min_weight"), "kind": "input"},
+        {"widget_id": "adv_bounds_max_weight", "keys": ("optimization", "bounds", "max_weight"), "kind": "input"},
+        {"widget_id": "adv_subset_enabled", "keys": ("optimization", "subset_search", "enabled"), "kind": "checkbox", "always_write": True},
+        {"widget_id": "adv_subset_strategy", "keys": ("optimization", "subset_search", "strategy"), "kind": "input"},
+        {
+            "widget_id": "adv_subset_max_attempts",
+            "keys": ("optimization", "subset_search", "max_attempts"),
+            "kind": "input",
+            "read_keys": [("optimization", "subset_search", "max_tests")],
+        },
+        {"widget_id": "adv_subset_max_slack_threshold", "keys": ("optimization", "subset_search", "max_slack_threshold"), "kind": "input"},
+        {"widget_id": "adv_subset_trigger_on_slack", "keys": ("optimization", "subset_search", "trigger_on_slack"), "kind": "checkbox", "always_write": True},
+        {"widget_id": "adv_subset_prefer_slacks_first", "keys": ("optimization", "subset_search", "prefer_slacks_first"), "kind": "checkbox", "always_write": True},
+        {"widget_id": "adv_bayes_max_iterations", "keys": ("optimization", "bayesian", "max_iterations"), "kind": "input"},
+        {"widget_id": "adv_bayes_learning_rate", "keys": ("optimization", "bayesian", "learning_rate"), "kind": "input"},
+        {"widget_id": "adv_analysis_bic_percentile", "keys": ("analysis", "best_in_class_percentile"), "kind": "input"},
+        {"widget_id": "adv_output_debug_sheets", "keys": ("output", "include_debug_sheets"), "kind": "checkbox", "always_write": True},
+        {"widget_id": "adv_output_privacy_validation", "keys": ("output", "include_privacy_validation"), "kind": "checkbox", "always_write": True},
     ]
 
     CSS = """
@@ -729,6 +757,75 @@ class BenchmarkApp(App):
             self.update_advanced_parameters(options[0][0])
         self.advanced_config_path = None
 
+    @staticmethod
+    def _nested_get(data: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
+        current: Any = data
+        for key in keys:
+            if not isinstance(current, dict) or key not in current:
+                return None
+            current = current[key]
+        return current
+
+    @staticmethod
+    def _nested_set(data: Dict[str, Any], keys: Tuple[str, ...], value: Any) -> None:
+        current = data
+        for key in keys[:-1]:
+            current = current.setdefault(key, {})
+        current[keys[-1]] = value
+
+    @staticmethod
+    def _try_parse_number(value: str) -> Any:
+        if value == "":
+            return None
+        try:
+            return float(value) if "." in value else int(value)
+        except ValueError:
+            return value
+
+    def _warn_missing_widget(self, widget_id: str) -> None:
+        logging.getLogger(__name__).warning("Advanced widget not found: %s", widget_id)
+        self.notify(
+            f"Advanced widget missing: {widget_id}",
+            title="Advanced Optimization",
+            severity="warning",
+            timeout=4,
+        )
+
+    def _safe_set_input(self, field_id: str, value: Any) -> None:
+        try:
+            self.query_one(f"#{field_id}", Input).value = str(value)
+        except NoMatches:
+            self._warn_missing_widget(field_id)
+
+    def _safe_set_checkbox(self, field_id: str, value: Any) -> None:
+        try:
+            self.query_one(f"#{field_id}", Checkbox).value = bool(value)
+        except NoMatches:
+            self._warn_missing_widget(field_id)
+
+    def _get_input(self, field_id: str) -> str:
+        try:
+            return self.query_one(f"#{field_id}", Input).value.strip()
+        except NoMatches:
+            self._warn_missing_widget(field_id)
+            return ""
+
+    def _get_bool(self, checkbox_id: str) -> bool:
+        try:
+            return self.query_one(f"#{checkbox_id}", Checkbox).value
+        except NoMatches:
+            self._warn_missing_widget(checkbox_id)
+            return False
+
+    def _read_field_value_from_preset(self, data: Dict[str, Any], spec: Dict[str, Any]) -> Any:
+        value = self._nested_get(data, tuple(spec["keys"]))
+        if value is None:
+            for alt_keys in spec.get("read_keys", []):
+                value = self._nested_get(data, tuple(alt_keys))
+                if value is not None:
+                    break
+        return value
+
     def update_advanced_parameters(self, preset_name: str) -> None:
         """Populate editable advanced optimization inputs from preset YAML."""
         if not hasattr(self, 'preset_workflow'):
@@ -745,82 +842,59 @@ class BenchmarkApp(App):
         if not data:
             return
 
-        opt = data.get("optimization", {})
-        lp = opt.get("linear_programming", {})
-        bounds = opt.get("bounds", {})
-        subset = opt.get("subset_search", {})
-        constraints = opt.get("constraints", {})
-        bayes = opt.get("bayesian", {})
-        analysis = data.get("analysis", {})
-        output = data.get("output", {})
-        
-        # Helper to safely set Input value
-        def safe_set_input(field_id, value):
-            try:
-                self.query_one(f"#{field_id}", Input).value = str(value)
-            except Exception:
-                pass
-        
-        # Helper to safely set Checkbox value
-        def safe_set_checkbox(field_id, value):
-            try:
-                self.query_one(f"#{field_id}", Checkbox).value = bool(value)
-            except Exception:
-                pass
+        for spec in self.ADVANCED_FIELD_MAP:
+            value = self._read_field_value_from_preset(data, spec)
+            if value is None:
+                continue
+            if spec["kind"] == "input":
+                self._safe_set_input(spec["widget_id"], value)
+            else:
+                self._safe_set_checkbox(spec["widget_id"], value)
 
-        # LINEAR PROGRAMMING
-        if "tolerance" in lp:
-            safe_set_input("adv_lp_tolerance", lp["tolerance"])
-        if "max_iterations" in lp:
-            safe_set_input("adv_lp_max_iterations", lp["max_iterations"])
-        if "lambda_penalty" in lp:
-            safe_set_input("adv_lp_lambda_penalty", lp["lambda_penalty"])
-        if "volume_weighting_exponent" in lp:
-            safe_set_input("adv_lp_volume_weighting_exponent", lp["volume_weighting_exponent"])
-        if "volume_weighted_penalties" in lp:
-            safe_set_checkbox("adv_lp_volume_weighted_penalties", lp["volume_weighted_penalties"])
-        
-        # CONSTRAINTS
-        if "volume_preservation" in constraints:
-            safe_set_input("adv_constraints_volume_preservation", constraints["volume_preservation"])
-        
-        # BOUNDS
-        if "min_weight" in bounds:
-            safe_set_input("adv_bounds_min_weight", bounds["min_weight"])
-        if "max_weight" in bounds:
-            safe_set_input("adv_bounds_max_weight", bounds["max_weight"])
-        
-        # SUBSET SEARCH
-        if subset.get("enabled") is not None:
-            safe_set_checkbox("adv_subset_enabled", subset["enabled"])
-        if subset.get("strategy"):
-            safe_set_input("adv_subset_strategy", subset["strategy"])
-        # max_attempts or max_tests (alias)
-        max_att = subset.get("max_attempts") or subset.get("max_tests")
-        if max_att is not None:
-            safe_set_input("adv_subset_max_attempts", max_att)
-        if subset.get("max_slack_threshold") is not None:
-            safe_set_input("adv_subset_max_slack_threshold", subset["max_slack_threshold"])
-        if subset.get("trigger_on_slack") is not None:
-            safe_set_checkbox("adv_subset_trigger_on_slack", subset["trigger_on_slack"])
-        if subset.get("prefer_slacks_first") is not None:
-            safe_set_checkbox("adv_subset_prefer_slacks_first", subset["prefer_slacks_first"])
-        
-        # BAYESIAN
-        if "max_iterations" in bayes:
-            safe_set_input("adv_bayes_max_iterations", bayes["max_iterations"])
-        if "learning_rate" in bayes:
-            safe_set_input("adv_bayes_learning_rate", bayes["learning_rate"])
-        
-        # ANALYSIS
-        if "best_in_class_percentile" in analysis:
-            safe_set_input("adv_analysis_bic_percentile", analysis["best_in_class_percentile"])
-        
-        # OUTPUT
-        if "include_debug_sheets" in output:
-            safe_set_checkbox("adv_output_debug_sheets", output["include_debug_sheets"])
-        if "include_privacy_validation" in output:
-            safe_set_checkbox("adv_output_privacy_validation", output["include_privacy_validation"])
+    def _collect_advanced_override_data(self) -> Dict[str, Any]:
+        yaml_data: Dict[str, Any] = {}
+        for spec in self.ADVANCED_FIELD_MAP:
+            widget_id = spec["widget_id"]
+            keys = tuple(spec["keys"])
+            if spec["kind"] == "checkbox":
+                self._nested_set(yaml_data, keys, self._get_bool(widget_id))
+                continue
+            raw = self._get_input(widget_id)
+            if raw == "":
+                continue
+            parsed = self._try_parse_number(raw)
+            self._nested_set(yaml_data, keys, parsed if parsed is not None else raw)
+        return yaml_data
+
+    def apply_advanced_overrides(self) -> None:
+        """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
+        yaml_data = self._collect_advanced_override_data()
+        if not yaml_data:
+            self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
+            return
+
+        posture = "strict"
+        preset_val = self.query_one("#preset_select").value
+        if preset_val and preset_val != Select.BLANK:
+            if not hasattr(self, 'preset_workflow'):
+                self.preset_workflow = PresetWorkflow()
+            preset_data = self.preset_workflow.load_preset_data(str(preset_val))
+            if isinstance(preset_data, dict):
+                posture = preset_data.get("compliance_posture", posture)
+
+        try:
+            if not hasattr(self, 'preset_workflow'):
+                self.preset_workflow = PresetWorkflow()
+            tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
+            self.advanced_config_path = str(tmp_path)
+            self.notify(
+                f"Advanced overrides applied (file: {tmp_path.name})",
+                title="Advanced Overrides",
+                severity="information",
+                timeout=6,
+            )
+        except Exception as e:
+            self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
 
     def setup_logging_capture(self):
         """Redirect logging to the TUI Log widget."""
@@ -849,9 +923,6 @@ class BenchmarkApp(App):
             self.run_analysis()
             
         elif event.button.id == "btn_preset_help":
-            self.push_screen(PresetHelpScreen())
-            
-        elif event.button.id == "btn_help_presets":
             self.push_screen(PresetHelpScreen())
         elif event.button.id == "btn_apply_advanced":
             self.apply_advanced_overrides()
@@ -961,129 +1032,6 @@ class BenchmarkApp(App):
         # Apply then export
         self.apply_advanced_overrides()
         self.export_advanced_overrides()
-
-    def apply_advanced_overrides(self) -> None:
-        """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
-        
-        def get_input(fid):
-            try:
-                return self.query_one(f"#{fid}", Input).value.strip()
-            except Exception:
-                return ""
-        
-        def try_number(v):
-            if v == "":
-                return None
-            try:
-                return float(v) if '.' in v else int(v)
-            except ValueError:
-                return v
-        
-        def get_bool(cid):
-            try:
-                return self.query_one(f"#{cid}", Checkbox).value
-            except Exception:
-                return False
-
-        # LINEAR PROGRAMMING
-        lp = {}
-        val = try_number(get_input("adv_lp_tolerance"))
-        if val is not None:
-            lp["tolerance"] = val
-        val = try_number(get_input("adv_lp_max_iterations"))
-        if val is not None:
-            lp["max_iterations"] = val
-        val = try_number(get_input("adv_lp_lambda_penalty"))
-        if val is not None:
-            lp["lambda_penalty"] = val
-        val = try_number(get_input("adv_lp_volume_weighting_exponent"))
-        if val is not None:
-            lp["volume_weighting_exponent"] = val
-        lp["volume_weighted_penalties"] = get_bool("adv_lp_volume_weighted_penalties")
-
-        # CONSTRAINTS
-        constraints = {}
-        val = try_number(get_input("adv_constraints_volume_preservation"))
-        if val is not None:
-            constraints["volume_preservation"] = val
-
-        # BOUNDS
-        bounds = {}
-        val = try_number(get_input("adv_bounds_min_weight"))
-        if val is not None:
-            bounds["min_weight"] = val
-        val = try_number(get_input("adv_bounds_max_weight"))
-        if val is not None:
-            bounds["max_weight"] = val
-
-        # SUBSET SEARCH
-        subset = {}
-        subset["enabled"] = get_bool("adv_subset_enabled")
-        val = get_input("adv_subset_strategy")
-        if val:
-            subset["strategy"] = val
-        val = try_number(get_input("adv_subset_max_attempts"))
-        if val is not None:
-            subset["max_attempts"] = val
-        val = try_number(get_input("adv_subset_max_slack_threshold"))
-        if val is not None:
-            subset["max_slack_threshold"] = val
-        subset["trigger_on_slack"] = get_bool("adv_subset_trigger_on_slack")
-        subset["prefer_slacks_first"] = get_bool("adv_subset_prefer_slacks_first")
-
-        # BAYESIAN
-        bayesian = {}
-        val = try_number(get_input("adv_bayes_max_iterations"))
-        if val is not None:
-            bayesian["max_iterations"] = val
-        val = try_number(get_input("adv_bayes_learning_rate"))
-        if val is not None:
-            bayesian["learning_rate"] = val
-
-        # ANALYSIS
-        analysis = {}
-        val = try_number(get_input("adv_analysis_bic_percentile"))
-        if val is not None:
-            analysis["best_in_class_percentile"] = val
-
-        # OUTPUT
-        output = {}
-        output["include_debug_sheets"] = get_bool("adv_output_debug_sheets")
-        output["include_privacy_validation"] = get_bool("adv_output_privacy_validation")
-
-        # Build config
-        optimization = {}
-        if lp:
-            optimization["linear_programming"] = lp
-        if constraints:
-            optimization["constraints"] = constraints
-        if bounds:
-            optimization["bounds"] = bounds
-        if subset:
-            optimization["subset_search"] = subset
-        if bayesian:
-            optimization["bayesian"] = bayesian
-
-        yaml_data = {"version": "tui-override"}
-        if optimization:
-            yaml_data["optimization"] = optimization
-        if analysis:
-            yaml_data["analysis"] = analysis
-        if output:
-            yaml_data["output"] = output
-
-        if len(yaml_data) == 1:  # only version key
-            self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
-            return
-
-        try:
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
-            tmp_path = self.preset_workflow.write_override_file(yaml_data)
-            self.advanced_config_path = str(tmp_path)
-            self.notify(f"Advanced overrides applied (file: {tmp_path.name})", title="Advanced Overrides", severity="information", timeout=6)
-        except Exception as e:
-            self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
 
     def export_advanced_overrides(self) -> None:
         """Export current advanced override values to a timestamped YAML file (persistent)."""
@@ -1248,6 +1196,13 @@ class BenchmarkApp(App):
                             total_col=request.total_col,
                             numerator_cols=request.numerator_cols,
                         )
+                        request.prepared_dataset = PreparedDataset(
+                            df=df,
+                            entity_col=resolved_entity_col,
+                            time_col=resolved_time_col,
+                            data_loader=loader,
+                            validation_issues=issues if issues is not None else [],
+                        )
                         if issues:
                             has_errors = any(issue.severity == ValidationSeverity.ERROR for issue in issues)
 
@@ -1286,6 +1241,8 @@ class BenchmarkApp(App):
                 # validate-and-confirm callback. Today this is a no-op because
                 # the DataFrame is preset-agnostic.
                 request.df = saved_df
+                if saved_df is not None and request.prepared_dataset is None:
+                    request.prepared_dataset = PreparedDataset(df=saved_df)
                 artifacts = execute_run(request, logger)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
