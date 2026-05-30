@@ -836,7 +836,344 @@ Deletion labels:
   - `mypy core/ utils/`
   - Future: `mypy benchmark.py` after extraction.
 
-## D. Deletion candidates by safety
+
+## D. Thermo-nuclear structural review
+
+This pass applies a stricter approval bar than ordinary cleanup. The goal is
+not to make the current shape prettier; it is to find restructurings that
+delete categories of complexity while preserving behavior.
+
+Measured pressure points:
+
+- Files over 1k lines: `core/dimensional_analyzer.py` (2108),
+  `tui_app.py` (1319), `benchmark.py` (1272), `core/analysis_run.py` (1190).
+- Other large files: `core/data_loader.py` (968),
+  `scripts/generate_cli_sweep.py` (941), `core/privacy_validator.py` (834),
+  `core/report_generator.py` (828), `utils/config_manager.py` (686),
+  `utils/csv_validator.py` (676), `scripts/perform_gate_test.py` (649),
+  `core/global_weight_optimizer.py` (605).
+- Largest functions:
+  - `core/global_weight_optimizer.py:calculate_global_privacy_weights`:
+    about 512 lines.
+  - `benchmark.py:export_balanced_csv`: about 420 lines.
+  - `core/analysis_run.py:execute_rate_run`: about 293 lines.
+  - `benchmark.py:create_parser`: about 282 lines.
+  - `core/analysis_run.py:execute_share_run`: about 270 lines.
+  - `scripts/perform_gate_test.py:verify_case`: about 260 lines.
+  - `scripts/perform_gate_test.py:verify_workbook_content`: about 252 lines.
+  - `tui_app.py:compose`: about 233 lines.
+  - `tui_app.py:run_analysis`: about 206 lines.
+
+These are not cosmetic size issues. They show that behavior is still organized
+around giant procedural flows, mutable bags, and repeated condition chains.
+
+### T01 - The canonical code-judo move is an `AnalysisMode` model
+
+- Severity: Critical
+- Confidence: Confirmed
+- Category: structural simplification, spaghetti reduction
+- Location: `benchmark.py`, `core/analysis_run.py`, `tui_app.py`,
+  `scripts/generate_cli_sweep.py`
+- Problem: Share and rate are modeled as duplicated procedural branches across
+  the CLI parser, TUI form extraction, sweep generation, run execution, impact
+  calculation, and CSV export. This is the root of many smaller findings.
+- Evidence: share/rate parser blocks repeat common flags; run execution has two
+  large sibling functions; TUI manually extracts share and rate fields; sweep
+  generator has separate share/rate case construction.
+- Why it matters: every new cross-cutting option spreads through several
+  branches. The code keeps growing by adding special cases instead of making
+  the mode contract explicit.
+- Code-judo direction: introduce a small `AnalysisModeSpec` with the mode name,
+  required metric columns, CLI/TUI field descriptors, validation input builder,
+  result calculator, impact calculator, and CSV export schema. This should not
+  be a generic framework. It should be a boring domain table for the two real
+  modes that already exist.
+- What gets simpler: parser construction, TUI request building, sweep case
+  generation, run finalization, and mode-specific validation become consumers
+  of one contract instead of separate copy-paste trees.
+- Behavior risk: medium; this touches public CLI and output behavior.
+- Validation:
+  - Snapshot or smoke `py benchmark.py share --help` and
+    `py benchmark.py rate --help`.
+  - `py -m pytest tests/test_cli_runtime_behavior.py tests/test_output_artifacts.py -v`
+  - `py scripts/perform_gate_test.py`
+
+### T02 - Replace mutable analyzer side effects with a `WeightingResult`
+
+- Severity: Critical
+- Confidence: Confirmed
+- Category: boundary cleanliness, architecture
+- Location: `core/dimensional_analyzer.py`, `core/global_weight_optimizer.py`,
+  `core/analysis_run.py`, `core/output_artifacts.py`
+- Problem: weight fitting mutates many analyzer attributes, and later phases
+  mine those attributes using `getattr`, `hasattr`, fallback defaults, and
+  metadata dict updates.
+- Evidence: diagnostics harvest `global_weights`, `per_dimension_weights`,
+  `weight_methods`, `rank_changes_df`, `structural_summary_df`,
+  `structural_detail_df`, `subset_search_results`, and more from analyzer
+  state. Output paths pass `analyzer_ref` through metadata.
+- Why it matters: readers must know temporal ordering: which method was called
+  before which attribute exists. This is hidden coupling, not a clean
+  interface.
+- Code-judo direction: make weight fitting return a `WeightingResult` dataclass
+  containing global weights, per-dimension weights, methods, diagnostics,
+  privacy rule, removed dimensions, rank changes, and structural diagnostics.
+  The analyzer can still store it for backward compatibility, but the run
+  pipeline should pass the result explicitly.
+- What gets simpler: diagnostics, CSV export, report generation, and tests stop
+  spelunking mutable analyzer state.
+- Behavior risk: high because this touches compliance/reporting internals.
+- Validation:
+  - Characterization tests around `calculate_global_privacy_weights`.
+  - `py -m pytest tests/test_solvers.py tests/test_global_weight_optimizer_fallbacks.py -v`
+  - `py scripts/perform_gate_test.py`
+
+### T03 - `GlobalWeightOptimizer.calculate_global_privacy_weights` is too large to keep patching
+
+- Severity: High
+- Confidence: Confirmed
+- Category: file-size, decomposition
+- Location: `core/global_weight_optimizer.py`
+- Problem: a single 500+ line method owns category building, rule selection,
+  insufficient-peer blocking, LP attempts, slack handling, subset search,
+  fallback behavior, final state assignment, and diagnostics.
+- Evidence: the method is the largest function in active core code.
+- Why it matters: every optimizer bug fix risks control-flow regression because
+  phases are interleaved.
+- Code-judo direction: split into explicit phases that return small objects:
+  `build_weighting_problem`, `solve_full_problem`, `decide_subset_fallback`,
+  `solve_removed_dimensions`, and `assemble_weighting_result`. The goal is not
+  more layers; it is to make fallback decisions visible and testable.
+- What gets simpler: tests can lock down each phase without needing a fake
+  analyzer with dozens of attributes.
+- Behavior risk: high.
+- Validation:
+  - Add phase-level characterization tests before moving code.
+  - `py -m pytest tests/test_global_weight_optimizer_fallbacks.py tests/test_solvers.py -v`
+  - `py scripts/perform_gate_test.py`
+
+### T04 - `AnalysisArtifacts.metadata` is an untyped junk drawer
+
+- Severity: High
+- Confidence: Confirmed
+- Category: type boundary, abstraction quality
+- Location: `core/contracts.py`, `core/analysis_run.py`,
+  `core/output_artifacts.py`, `core/report_generator.py`
+- Problem: run metadata carries core facts, output options, compliance summary,
+  diagnostics, dataframe references, observability, and sometimes analyzer
+  references in a loose dict.
+- Evidence: report generation and publication output depend on metadata keys
+  such as `weights_df`, `privacy_validation_df`, `impact_summary_df`,
+  `rank_changes_df`, `analyzer_ref`, and many scalar settings.
+- Why it matters: output behavior depends on string keys and informal shape.
+  Refactors cannot tell which metadata is public, diagnostic, or internal.
+- Code-judo direction: split metadata into explicit dataclasses:
+  `RunSummary`, `ComplianceSummary`, `DiagnosticFrames`, `OutputSettings`, and
+  `AuditLogPayload`. Keep final workbook metadata rendering as a conversion
+  step, not the internal transport format.
+- What gets simpler: output code stops checking ad-hoc keys, and report tests
+  can assert typed fields before Excel serialization.
+- Behavior risk: medium.
+- Validation:
+  - `py -m pytest tests/test_output_artifacts.py tests/test_report_generator_dependencies.py -v`
+  - Workbook sheet parity via gate.
+
+### T05 - `benchmark.py` should not be over 1k lines
+
+- Severity: High
+- Confidence: Confirmed
+- Category: file-size, canonical layer
+- Location: `benchmark.py`
+- Problem: the CLI file is still 1272 lines, with a 282-line parser, a
+  420-line CSV exporter, Excel compatibility wrappers, and analysis result
+  printing.
+- Evidence: its size crossed the 1k-line quality threshold and core modules
+  still import it.
+- Why it matters: entrypoint files should be easy to scan. This one is still a
+  mixed layer: parser, compatibility API, CSV business logic, report wrappers,
+  and console presentation.
+- Code-judo direction: make `benchmark.py` only build the parser from mode
+  specs, convert args to `AnalysisRunRequest`, call core execution, and print a
+  small completion summary. Everything else should move to core modules or
+  disappear.
+- What gets simpler: `benchmark.py` becomes a true public shell instead of a
+  dependency target.
+- Behavior risk: medium because tests import private helpers from it today.
+- Validation:
+  - Retarget private-helper tests first.
+  - `py -m pytest tests/test_cli_runtime_behavior.py tests/test_benchmark_orchestration_helpers.py -v`
+
+### T06 - `tui_app.py` is not a form model; it is a procedural script with widgets
+
+- Severity: High
+- Confidence: Confirmed
+- Category: UI architecture, spaghetti
+- Location: `tui_app.py`
+- Problem: the TUI keeps widget construction, widget lookup, validation,
+  request assembly, config override generation, logging, and run orchestration
+  inside a 1122-line app class.
+- Evidence: `compose`, `run_analysis`, `update_advanced_parameters`, and
+  `apply_advanced_overrides` are all large and manually mirror the same fields.
+- Why it matters: UI changes become fragile because field identity, config
+  paths, and request fields are repeated as strings.
+- Code-judo direction: introduce a small declarative form spec shared with the
+  CLI/config mode spec: widget id, request field, config path, parser,
+  formatter, and validation requirement.
+- What gets simpler: dozens of manual `query_one` calls and silent fallbacks
+  disappear.
+- Behavior risk: medium.
+- Validation:
+  - `py -m pytest tests/test_tui_contracts.py tests/test_preset_workflow.py -v`
+  - Manual TUI run for share, rate, and advanced overrides.
+
+### T07 - Gate and sweep tooling need an expectation model, not more branches
+
+- Severity: High
+- Confidence: Confirmed
+- Category: reliability, test architecture
+- Location: `scripts/perform_gate_test.py`, `scripts/generate_cli_sweep.py`,
+  `scripts/run_cli_sweep.py`
+- Problem: gate verification is a large conditional chain, and the generator
+  can emit expectations the verifier does not enforce.
+- Evidence: `verify_case` is about 260 lines, `verify_workbook_content` is
+  about 252 lines, and config expectations pass mostly by process exit.
+- Why it matters: this is test theater risk. More expectations will make the
+  file larger without increasing confidence unless each token has a handler.
+- Code-judo direction: create an expectation registry with token, verifier
+  function, required artifacts, and enforced-vs-informational status. The
+  generator should only emit registered tokens.
+- What gets simpler: `verify_case` becomes a dispatcher, not a growing `elif`
+  ladder.
+- Behavior risk: low to medium; this is tooling-only but protects cleanup.
+- Validation:
+  - Meta-test: every emitted expectation is registered.
+  - `py -m pytest tests/test_gate_runner.py -v`
+  - `py scripts/perform_gate_test.py`
+
+### T08 - The config system needs one schema boundary
+
+- Severity: High
+- Confidence: Confirmed
+- Category: type boundary, config sprawl
+- Location: `utils/config_manager.py`, `utils/validators.py`,
+  `core/analysis_run.py`, `tui_app.py`
+- Problem: config is loaded as nested dicts, validated separately, mapped to
+  CLI overrides, mapped again to analyzer kwargs, and partially recreated by
+  the TUI.
+- Evidence: `ConfigManager._get_default_config`, `_apply_cli_overrides`,
+  `build_dimensional_analyzer`, and TUI advanced override code all encode
+  overlapping schema knowledge.
+- Why it matters: the real invariant is not explicit. Optional/default fallback
+  code hides schema mistakes.
+- Code-judo direction: one typed schema boundary after merge: `ResolvedConfig`
+  with nested typed sections. CLI/TUI/presets can still be flexible at the edge,
+  but core code should only see resolved typed values.
+- What gets simpler: many `config.get(...)`, nested dict lookups, and duplicate
+  defaults disappear from core flow.
+- Behavior risk: high because presets and CLI overrides are public.
+- Validation:
+  - `py -m pytest tests/test_preset_validation.py tests/test_privacy_rules_config.py -v`
+  - Config command subprocess tests.
+
+### T09 - Solver APIs should stop pretending to support two interfaces
+
+- Severity: Medium
+- Confidence: Confirmed
+- Category: abstraction quality, type boundary
+- Location: `core/solvers/base_solver.py`, `core/solvers/lp_solver.py`,
+  `core/solvers/heuristic_solver.py`
+- Problem: solvers accept either `SolverRequest` or legacy kwargs through
+  `coerce_request`.
+- Evidence: `PrivacySolver.solve` exposes request plus optional peers,
+  categories, max concentration, peer volumes, and arbitrary kwargs.
+- Why it matters: this doubles the contract and encourages ad-hoc calls. The
+  codebase already has `SolverRequest`; the kwargs path is phantom
+  compatibility unless external callers exist.
+- Code-judo direction: make `SolverRequest` the only internal API. If external
+  compatibility is needed, keep one adapter outside the solver package.
+- What gets simpler: solver signatures, tests, and request construction.
+- Behavior risk: medium if users import solvers directly.
+- Validation:
+  - Search external/internal call sites.
+  - `py -m pytest tests/test_solvers.py -v`
+
+### T10 - Tests should stop blessing private seams before refactors continue
+
+- Severity: Medium
+- Confidence: Confirmed
+- Category: testability, abstraction quality
+- Location: `tests/test_benchmark_orchestration_helpers.py`,
+  `tests/test_data_loader_normalization.py`, `tests/test_solvers.py`,
+  `tests/test_report_generator_dependencies.py`
+- Problem: tests assert private helper behavior, so they preserve the current
+  decomposition even where the decomposition is the problem.
+- Evidence: tests import and assert `_build_dimensional_analyzer`,
+  `_resolve_consistency_mode`, `_normalize_columns`,
+  `_additional_constraints_penalty`, `_build_unique_sheet_name`, and
+  `_should_convert_rate_column`.
+- Why it matters: maintainers get punished for moving code to better owners.
+- Code-judo direction: add public behavior tests first, then delete private seam
+  tests as each area gets refactored.
+- What gets simpler: refactoring can target behavior instead of preserving
+  accidental helper names.
+- Behavior risk: low if replacement tests are added before deletion.
+- Validation:
+  - Add CLI/config/output smoke tests listed in F28-F34.
+  - `py -m pytest tests/ -v`
+
+### T11 - Generated/client-specific material needs a repository boundary
+
+- Severity: Medium
+- Confidence: Confirmed
+- Category: architecture, tooling
+- Location: `test_sweeps/**`, `outputs/**`, `tool_extension_project/**`,
+  `docs/superpowers/plans/**`
+- Problem: generated artifacts, historical plans, and client-specific scripts
+  live beside active product code.
+- Evidence: committed sweep metadata references private Windows paths; extension
+  scripts hardcode Nubank data; investigation outputs reference proprietary
+  datasets.
+- Why it matters: agents and maintainers waste time distinguishing active code
+  from historical residue.
+- Code-judo direction: enforce a simple repo policy: product code and tests stay
+  tracked, generated artifacts are ignored, historical/client-specific
+  investigations move to archive or external docs, and only portable fixtures
+  live under `tests/fixtures`.
+- What gets simpler: repo exploration and cleanup become dramatically more
+  reliable.
+- Behavior risk: low if deletion candidates are validated.
+- Validation:
+  - `py -m pytest tests/ -v`
+  - `py scripts/perform_gate_test.py`
+  - Search for proprietary path strings after cleanup.
+
+### T12 - Report generation should not be a formatter plus policy engine
+
+- Severity: Medium
+- Confidence: Confirmed
+- Category: boundary cleanliness, modularity
+- Location: `core/report_generator.py`, `core/excel_reports.py`,
+  `core/output_artifacts.py`
+- Problem: report generation mixes workbook formatting, publication policy,
+  diagnostic allow-lists, rate-unit conversion, metadata unpacking, and sheet
+  construction.
+- Evidence: `ReportGenerator` is over 800 lines and
+  `generate_publication_workbook` is about 173 lines. `output_artifacts.py`
+  also transforms publication metadata before calling it.
+- Why it matters: output policy changes and Excel formatting changes are tied
+  together.
+- Code-judo direction: split output into report content model, analysis workbook
+  renderer, publication workbook renderer, and shared Excel formatting helpers.
+  Keep allow-list policy out of low-level sheet writing.
+- What gets simpler: publication scope changes become policy tests, not Excel
+  integration spelunking.
+- Behavior risk: medium.
+- Validation:
+  - `py -m pytest tests/test_output_artifacts.py tests/test_report_generator_dependencies.py -v`
+  - Gate workbook sheet checks.
+
+
+## E. Deletion candidates by safety
 
 ### Safe to delete now
 
@@ -869,7 +1206,7 @@ Deletion labels:
 - Deprecated distortion/weight-effect wrapper methods and CLI/config aliases.
 - SQL loader support until owner confirms it is not a programmatic API.
 
-## E. Suggested PR sequence
+## F. Suggested PR sequence
 
 1. Documentation-only cleanup:
    - Add/keep this audit as the canonical cleanup inventory.
@@ -902,7 +1239,7 @@ Deletion labels:
     - Add dev dependency manifest and gradually bring extracted entrypoint logic
       under type checks.
 
-## F. Minimum validation by cleanup type
+## G. Minimum validation by cleanup type
 
 General code cleanup:
 
@@ -952,7 +1289,7 @@ py scripts/generate_cli_sweep.py --mode core --csv <portable_fixture.csv> --out-
 py scripts/run_cli_sweep.py --sweep-dir test_sweeps --results-json test_sweeps/results.json --workers 4 --limit 20
 ```
 
-## G. Do not simplify away
+## H. Do not simplify away
 
 - Mastercard Control 3.2 privacy caps and additional participant thresholds.
 - Compliance posture and acknowledgement behavior.
