@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field, fields
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional
 
 
 @dataclass
@@ -33,7 +34,7 @@ class SolverRequest:
     enforce_additional_constraints: bool = False
     dynamic_constraints_enabled: bool = False
     time_column: Optional[str] = None
-    min_peer_count_for_constraints: int = 6
+    min_peer_count_for_constraints: int = 4
     min_effective_peer_count: int = 3
     min_category_volume_share: float = 0.01
     min_overall_volume_share: float = 0.01
@@ -76,6 +77,7 @@ class AnalysisRunRequest:
     fraud_in_bps: bool = True
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
+    prepared_dataset: Optional["PreparedDataset"] = None
 
     @property
     def is_share(self) -> bool:
@@ -147,3 +149,143 @@ class PreparedDataset:
     entity_col: str = "issuer_name"
     time_col: Optional[str] = None
     data_loader: Any = None
+    validation_issues: Optional[List[Any]] = None
+
+
+@dataclass
+class WeightingResult:
+    """Immutable snapshot of global/per-dimension weight optimization output."""
+
+    global_weights: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    per_dimension_weights: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    weight_methods: Dict[str, str] = field(default_factory=dict)
+    last_lp_stats: Dict[str, Any] = field(default_factory=dict)
+    privacy_rule_name: Optional[str] = None
+    removed_dimensions: List[str] = field(default_factory=list)
+    global_dimensions_used: List[str] = field(default_factory=list)
+    rank_changes_df: Any = None
+    structural_summary_df: Any = None
+    structural_detail_df: Any = None
+    subset_search_results: List[Dict[str, Any]] = field(default_factory=list)
+    compliance_blocked_reason: Optional[str] = None
+    compliance_blocked_peer_count: Optional[int] = None
+    additional_constraint_violations: List[Dict[str, Any]] = field(default_factory=list)
+    slack_subset_triggered: bool = False
+
+
+@dataclass
+class OutputSettings:
+    """Resolved output/report flags for a completed analysis run."""
+
+    include_preset_comparison: bool = False
+    include_impact_summary: bool = False
+    include_calculated_metrics: bool = False
+    include_privacy_validation: bool = False
+    include_audit_log: bool = True
+    output_format: str = "analysis"
+    fraud_in_bps: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
+
+
+@dataclass
+class RunSummary:
+    """Core run facts shared by share and rate analysis."""
+
+    entity: str = "PEER-ONLY"
+    entity_column: str = "issuer_name"
+    total_records: int = 0
+    unique_entities: int = 0
+    peer_count: int = 0
+    dimensions_analyzed: int = 0
+    dimension_names: List[str] = field(default_factory=list)
+    preset: Optional[str] = None
+    compliance_posture: Optional[str] = None
+    debug_mode: bool = False
+    consistent_weights: bool = True
+    output_format: str = "analysis"
+    timestamp: Optional[datetime] = None
+    privacy_rule: Optional[str] = None
+
+    def to_metadata_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DiagnosticFrames:
+    """Diagnostic DataFrames collected after weight optimization."""
+
+    structural_summary_df: Any = None
+    structural_detail_df: Any = None
+    rank_changes_df: Any = None
+    subset_search_df: Any = None
+    weights_df: Any = None
+    privacy_validation_df: Any = None
+    method_breakdown_df: Any = None
+
+    def metadata_updates(self) -> Dict[str, Any]:
+        updates: Dict[str, Any] = {}
+        if self.structural_summary_df is not None and hasattr(self.structural_summary_df, "empty"):
+            if not self.structural_summary_df.empty:
+                updates["structural_summary_df"] = self.structural_summary_df
+        if self.structural_detail_df is not None and hasattr(self.structural_detail_df, "empty"):
+            if not self.structural_detail_df.empty:
+                updates["structural_detail_df"] = self.structural_detail_df
+        if self.rank_changes_df is not None and hasattr(self.rank_changes_df, "empty"):
+            if not self.rank_changes_df.empty:
+                updates["rank_changes_df"] = self.rank_changes_df
+        if self.subset_search_df is not None and hasattr(self.subset_search_df, "empty"):
+            if not self.subset_search_df.empty:
+                updates["subset_search_df"] = self.subset_search_df
+        return updates
+
+
+def weighting_result_from_analyzer(analyzer: Any) -> WeightingResult:
+    """Build a WeightingResult snapshot from analyzer side-effect fields."""
+    return WeightingResult(
+        global_weights=dict(getattr(analyzer, "global_weights", {}) or {}),
+        per_dimension_weights={
+            dim: dict(weights)
+            for dim, weights in (getattr(analyzer, "per_dimension_weights", {}) or {}).items()
+        },
+        weight_methods=dict(getattr(analyzer, "weight_methods", {}) or {}),
+        last_lp_stats=dict(getattr(analyzer, "last_lp_stats", {}) or {}),
+        privacy_rule_name=getattr(analyzer, "privacy_rule_name", None),
+        removed_dimensions=list(getattr(analyzer, "removed_dimensions", []) or []),
+        global_dimensions_used=list(getattr(analyzer, "global_dimensions_used", []) or []),
+        rank_changes_df=getattr(analyzer, "rank_changes_df", None),
+        structural_summary_df=getattr(analyzer, "structural_summary_df", None),
+        structural_detail_df=getattr(analyzer, "structural_detail_df", None),
+        subset_search_results=list(getattr(analyzer, "subset_search_results", []) or []),
+        compliance_blocked_reason=getattr(analyzer, "compliance_blocked_reason", None),
+        compliance_blocked_peer_count=getattr(analyzer, "compliance_blocked_peer_count", None),
+        additional_constraint_violations=list(
+            getattr(analyzer, "additional_constraint_violations", []) or []
+        ),
+        slack_subset_triggered=bool(getattr(analyzer, "slack_subset_triggered", False)),
+    )
+
+
+def apply_weighting_result_to_analyzer(analyzer: Any, result: WeightingResult) -> None:
+    """Apply WeightingResult fields onto analyzer for backward-compatible readers."""
+    analyzer.global_weights = dict(result.global_weights)
+    analyzer.per_dimension_weights = {
+        dim: dict(weights) for dim, weights in result.per_dimension_weights.items()
+    }
+    analyzer.weight_methods = dict(result.weight_methods)
+    analyzer.last_lp_stats = dict(result.last_lp_stats)
+    analyzer.privacy_rule_name = result.privacy_rule_name
+    analyzer.removed_dimensions = list(result.removed_dimensions)
+    analyzer.global_dimensions_used = list(result.global_dimensions_used)
+    analyzer.rank_changes_df = result.rank_changes_df
+    analyzer.structural_summary_df = result.structural_summary_df
+    analyzer.structural_detail_df = result.structural_detail_df
+    analyzer.subset_search_results = list(result.subset_search_results)
+    analyzer.compliance_blocked_reason = result.compliance_blocked_reason
+    analyzer.compliance_blocked_peer_count = result.compliance_blocked_peer_count
+    analyzer.additional_constraint_violations = list(result.additional_constraint_violations)
+    analyzer.slack_subset_triggered = result.slack_subset_triggered

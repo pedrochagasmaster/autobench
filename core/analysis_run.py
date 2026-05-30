@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
-from core.contracts import AnalysisArtifacts, AnalysisRunRequest, PreparedDataset
+from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
+from core.contracts import AnalysisArtifacts, AnalysisRunRequest, OutputSettings, PreparedDataset, RunSummary, WeightingResult
 from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
@@ -19,7 +21,7 @@ from core.output_artifacts import write_outputs
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
 from core.report_generator import ReportGenerator
 from core.validation_runner import run_input_validation
-from utils.config_manager import ConfigManager
+from utils.config_manager import ConfigManager, ResolvedConfig
 
 COMMON_CLI_OVERRIDES = (
     'entity_col',
@@ -41,11 +43,11 @@ COMMON_CLI_OVERRIDES = (
 
 
 def resolve_consistency_mode(
-    opt_config: Dict[str, Any],
+    resolved: ResolvedConfig,
     logger: logging.Logger,
 ) -> Tuple[bool, str]:
     """Translate config consistency mode into a bool for the analyzer."""
-    consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+    consistency_mode = resolved.constraints.consistency_mode
     mode_normalized = str(consistency_mode).strip().lower().replace('_', '-')
     if mode_normalized in ('per-dimension', 'perdimension', 'per dimension'):
         return False, consistency_mode
@@ -60,31 +62,28 @@ def build_dimensional_analyzer(
     *,
     target_entity: Optional[str],
     entity_col: str,
-    analysis_config: Dict[str, Any],
-    opt_config: Dict[str, Any],
+    resolved: ResolvedConfig,
     time_col: Optional[str],
     debug_mode: bool,
     bic_percentile: float,
     logger: logging.Logger,
     consistent_weights: Optional[bool] = None,
 ) -> Tuple[DimensionalAnalyzer, Dict[str, Any]]:
-    """Build a DimensionalAnalyzer from merged config."""
-    dyn_constraints = opt_config.get('constraints', {}).get('dynamic_constraints', {})
+    """Build a DimensionalAnalyzer from merged resolved configuration."""
+    dyn_constraints = resolved.constraints.dynamic_constraints
     if consistent_weights is None:
-        consistent_weights, consistency_mode = resolve_consistency_mode(opt_config, logger)
+        consistent_weights, consistency_mode = resolve_consistency_mode(resolved, logger)
     else:
-        consistency_mode = opt_config.get('constraints', {}).get('consistency_mode', 'global')
+        consistency_mode = resolved.constraints.consistency_mode
 
-    rank_penalty_weight = opt_config['linear_programming'].get('rank_penalty_weight', 1.0)
-    volume_preservation = opt_config['constraints']['volume_preservation']
+    rank_penalty_weight = resolved.linear_programming.rank_penalty_weight
+    volume_preservation = resolved.constraints.volume_preservation
     rank_preservation_strength = volume_preservation * float(rank_penalty_weight)
-    lambda_penalty = opt_config['linear_programming'].get('lambda_penalty')
-    bayesian_max_iterations = opt_config.get('bayesian', {}).get('max_iterations', 500)
-    bayesian_learning_rate = opt_config.get('bayesian', {}).get('learning_rate', 0.01)
-    violation_penalty_weight = opt_config.get('bayesian', {}).get('violation_penalty_weight', 1000.0)
-    enforce_single_weight_set = bool(
-        opt_config.get('constraints', {}).get('enforce_single_weight_set', False)
-    )
+    lambda_penalty = resolved.linear_programming.lambda_penalty
+    bayesian_max_iterations = resolved.bayesian.max_iterations
+    bayesian_learning_rate = resolved.bayesian.learning_rate
+    violation_penalty_weight = resolved.bayesian.violation_penalty_weight
+    enforce_single_weight_set = resolved.constraints.enforce_single_weight_set
 
     analyzer = DimensionalAnalyzer(
         target_entity=target_entity,
@@ -92,25 +91,25 @@ def build_dimensional_analyzer(
         bic_percentile=bic_percentile,
         debug_mode=debug_mode,
         consistent_weights=consistent_weights,
-        merchant_mode=analysis_config.get('merchant_mode', False),
-        rank_constraint_mode=opt_config['linear_programming'].get('rank_constraints', {}).get('mode', 'all'),
-        rank_constraint_k=opt_config['linear_programming'].get('rank_constraints', {}).get('neighbor_k', 1),
-        max_iterations=opt_config['linear_programming']['max_iterations'],
-        tolerance=opt_config['linear_programming']['tolerance'],
-        max_weight=opt_config['bounds']['max_weight'],
-        min_weight=opt_config['bounds']['min_weight'],
+        merchant_mode=resolved.analysis.merchant_mode,
+        rank_constraint_mode=resolved.linear_programming.rank_constraints.get('mode', 'all'),
+        rank_constraint_k=resolved.linear_programming.rank_constraints.get('neighbor_k', 1),
+        max_iterations=resolved.linear_programming.max_iterations,
+        tolerance=resolved.linear_programming.tolerance,
+        max_weight=resolved.bounds.max_weight,
+        min_weight=resolved.bounds.min_weight,
         volume_preservation_strength=rank_preservation_strength,
-        prefer_slacks_first=opt_config['subset_search'].get('prefer_slacks_first', False),
-        auto_subset_search=opt_config['subset_search'].get('enabled', True),
-        subset_search_max_tests=opt_config['subset_search'].get('max_attempts', 200),
-        greedy_subset_search=(opt_config['subset_search'].get('strategy', 'greedy') == 'greedy'),
-        trigger_subset_on_slack=opt_config['subset_search'].get('trigger_on_slack', True),
-        max_cap_slack=opt_config['subset_search'].get('max_slack_threshold', 0.0),
+        prefer_slacks_first=resolved.subset_search.prefer_slacks_first,
+        auto_subset_search=resolved.subset_search.enabled,
+        subset_search_max_tests=resolved.subset_search.max_attempts,
+        greedy_subset_search=(resolved.subset_search.strategy == 'greedy'),
+        trigger_subset_on_slack=resolved.subset_search.trigger_on_slack,
+        max_cap_slack=resolved.subset_search.max_slack_threshold,
         time_column=time_col,
-        volume_weighted_penalties=opt_config['linear_programming'].get('volume_weighted_penalties', False),
-        volume_weighting_exponent=opt_config['linear_programming'].get('volume_weighting_exponent', 1.0),
+        volume_weighted_penalties=resolved.linear_programming.volume_weighted_penalties,
+        volume_weighting_exponent=resolved.linear_programming.volume_weighting_exponent,
         lambda_penalty=lambda_penalty,
-        enforce_additional_constraints=opt_config.get('constraints', {}).get('enforce_additional_constraints', True),
+        enforce_additional_constraints=resolved.constraints.enforce_additional_constraints,
         dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
         min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
         min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
@@ -165,21 +164,21 @@ def build_run_config(
     )
 
 
-def resolve_output_settings(config: ConfigManager) -> Dict[str, Any]:
+def resolve_output_settings(config: ConfigManager) -> OutputSettings:
     """Resolve commonly-used output flags from merged config."""
     include_impact_summary = config.get('output', 'include_impact_summary', default=None)
     if include_impact_summary is None:
         include_impact_summary = config.get('output', 'include_distortion_summary', default=False)
 
-    return {
-        'include_preset_comparison': config.get('output', 'include_preset_comparison', default=False),
-        'include_impact_summary': include_impact_summary,
-        'include_calculated_metrics': config.get('output', 'include_calculated_metrics', default=False),
-        'include_privacy_validation': config.get('output', 'include_privacy_validation', default=False),
-        'include_audit_log': config.get('output', 'include_audit_log', default=True),
-        'output_format': config.get('output', 'output_format', default='analysis'),
-        'fraud_in_bps': config.get('output', 'fraud_in_bps', default=True),
-    }
+    return OutputSettings(
+        include_preset_comparison=config.get('output', 'include_preset_comparison', default=False),
+        include_impact_summary=include_impact_summary,
+        include_calculated_metrics=config.get('output', 'include_calculated_metrics', default=False),
+        include_privacy_validation=config.get('output', 'include_privacy_validation', default=False),
+        include_audit_log=config.get('output', 'include_audit_log', default=True),
+        output_format=config.get('output', 'output_format', default='analysis'),
+        fraud_in_bps=config.get('output', 'fraud_in_bps', default=True),
+    )
 
 
 def build_common_run_metadata(
@@ -325,6 +324,33 @@ def prepare_run_data(
     return data_loader, df, entity_col, time_col
 
 
+def apply_prepared_dataset(
+    request: AnalysisRunRequest,
+    config: ConfigManager,
+    logger: logging.Logger,
+    *,
+    preferred_entity_col: str,
+) -> Tuple[Optional[DataLoader], Optional[pd.DataFrame], Optional[str], Optional[str], bool]:
+    """Use a pre-validated dataset from the request when available.
+
+    Returns ``(data_loader, df, entity_col, time_col, used_prepared)``.
+    """
+    prepared = request.prepared_dataset
+    if prepared is None or prepared.df is None:
+        return None, None, None, None, False
+
+    data_loader = prepared.data_loader or DataLoader(config)
+    df = prepared.df
+    entity_col = prepared.entity_col or resolve_entity_column(df, preferred_entity_col)
+    time_col = prepared.time_col if prepared.time_col is not None else config.get('input', 'time_col')
+    logger.info(
+        "Using pre-validated dataset (%s records, %s columns)",
+        len(df),
+        len(df.columns),
+    )
+    return data_loader, df, entity_col, time_col, True
+
+
 def resolve_target_entity(
     df: pd.DataFrame,
     entity_col: str,
@@ -418,19 +444,27 @@ def collect_run_diagnostics(
     dimensions: List[str],
     debug_mode: bool,
     include_privacy_validation: bool,
-    export_csv: bool,
     consistent_weights: bool,
     logger: logging.Logger,
+    weighting_result: Optional[WeightingResult] = None,
 ) -> Dict[str, Any]:
     """Collect debug-oriented run artifacts shared by share and rate flows."""
     weights_df = None
     privacy_validation_df = None
+    output_privacy_validation_df = None
     method_breakdown_df = None
     metadata_updates: Dict[str, Any] = {}
-    structural_summary_df = getattr(analyzer, 'structural_summary_df', None)
-    structural_detail_df = getattr(analyzer, 'structural_detail_df', None)
-    rank_changes_df = getattr(analyzer, 'rank_changes_df', None)
-    subset_search_results = getattr(analyzer, 'subset_search_results', None)
+
+    def _from_result(field: str, default: Any = None) -> Any:
+        if weighting_result is not None and hasattr(weighting_result, field):
+            value = getattr(weighting_result, field)
+            return default if value is None else value
+        return getattr(analyzer, field, default)
+
+    structural_summary_df = _from_result('structural_summary_df')
+    structural_detail_df = _from_result('structural_detail_df')
+    rank_changes_df = _from_result('rank_changes_df')
+    subset_search_results = _from_result('subset_search_results', [])
 
     if debug_mode:
         weights_df = analyzer.get_weights_dataframe()
@@ -438,7 +472,9 @@ def collect_run_diagnostics(
             logger.info(f"Captured weights data: {len(weights_df)} weight entries")
 
     privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, validation_metric_col, dimensions)
-    if not privacy_validation_df.empty:
+    if include_privacy_validation or debug_mode:
+        output_privacy_validation_df = privacy_validation_df
+    if privacy_validation_df is not None and not privacy_validation_df.empty:
         logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
             structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
@@ -453,15 +489,20 @@ def collect_run_diagnostics(
 
     rows = []
     dims_all = list(dimensions)
-    used_dims = set(getattr(analyzer, 'global_dimensions_used', []))
-    removed_dims = set(getattr(analyzer, 'removed_dimensions', []))
-    per_dim_dict: Dict[str, Dict[str, float]] = getattr(analyzer, 'per_dimension_weights', {})
-    weight_methods: Dict[str, str] = getattr(analyzer, 'weight_methods', {})
-    global_w = getattr(analyzer, 'global_weights', {})
+    used_dims = set(_from_result('global_dimensions_used', []))
+    removed_dims = set(_from_result('removed_dimensions', []))
+    per_dim_dict: Dict[str, Dict[str, float]] = _from_result('per_dimension_weights', {})
+    weight_methods: Dict[str, str] = _from_result('weight_methods', {})
+    global_w = _from_result('global_weights', {})
     peers = set(global_w.keys())
     for dim_name, weight_map in per_dim_dict.items():
         peers.update(weight_map.keys())
-    if not peers and privacy_validation_df is not None and not privacy_validation_df.empty and 'Peer' in privacy_validation_df.columns:
+    if (
+        not peers
+        and privacy_validation_df is not None
+        and not privacy_validation_df.empty
+        and 'Peer' in privacy_validation_df.columns
+    ):
         peers.update(str(peer) for peer in privacy_validation_df['Peer'].dropna().unique())
     for dim_name in dims_all:
         if dim_name in weight_methods:
@@ -505,7 +546,8 @@ def collect_run_diagnostics(
 
     return {
         'weights_df': weights_df,
-        'privacy_validation_df': privacy_validation_df,
+        'privacy_validation_df': output_privacy_validation_df,
+        'compliance_privacy_validation_df': privacy_validation_df,
         'method_breakdown_df': method_breakdown_df,
         'metadata_updates': metadata_updates,
     }
@@ -623,38 +665,473 @@ def execute_run(request: AnalysisRunRequest, logger: logging.Logger) -> Analysis
     raise RunAborted(f"Unsupported analysis mode: {request.mode}")
 
 
-def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
+@dataclass
+class AnalysisModeSpec:
+    """Per-mode hooks for the shared analysis run pipeline."""
+
+    start_event: str
+    extra_config_overrides: Dict[str, Any]
+    resolve_preferred_entity_col: Callable[[AnalysisRunRequest, ConfigManager], str]
+    validate_request: Callable[[AnalysisRunRequest, pd.DataFrame], None]
+    build_validation_kwargs: Callable[
+        [AnalysisRunRequest, str, Optional[str], List[str]],
+        Dict[str, Any],
+    ]
+    weight_metric_col: Callable[[AnalysisRunRequest], str]
+    initial_bic_percentile: Callable[[AnalysisRunRequest, ConfigManager], float]
+    run_analysis: Callable[
+        [AnalysisRunRequest, DimensionalAnalyzer, pd.DataFrame, List[str], ConfigManager],
+        Dict[str, Any],
+    ]
+    secondary_metrics_kwargs: Callable[[AnalysisRunRequest, List[str]], Dict[str, Any]]
+    build_mode_metadata: Callable[..., Dict[str, Any]]
+    preset_comparison_extra: Callable[[AnalysisRunRequest], Dict[str, Any]]
+    compute_impact: Callable[..., Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[str, Any]]]
+    resolve_output_filename: Callable[[AnalysisRunRequest, Optional[str], Dict[str, Any]], str]
+    export_balanced_csv_fn: Callable[..., None]
+
+
+def _handle_optimization_failure(
+    exc: ValueError,
+    *,
+    analyzer: DimensionalAnalyzer,
+    compliance_context: Dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
+    block_extra: Dict[str, Any] = {'error': str(exc)}
+    if hasattr(analyzer, 'compliance_blocked_peer_count'):
+        block_extra['peer_count'] = int(analyzer.compliance_blocked_peer_count)
+    logger.error("Optimization aborted: %s", exc)
+    blocked_summary = build_compliance_summary(
+        posture=compliance_context.get('compliance_posture'),
+        acknowledgement_given=compliance_context.get('acknowledgement_given', False),
+        blocked_reason=block_reason,
+        blocked_details=block_extra,
+    ).to_dict()
+    raise RunBlocked(str(exc), blocked_summary) from exc
+
+
+def _compute_share_impact(
+    *,
+    request: AnalysisRunRequest,
+    analyzer: DimensionalAnalyzer,
+    df: pd.DataFrame,
+    dimensions: List[str],
+    resolved_entity: Optional[str],
+    include_impact_summary: bool,
+    logger: logging.Logger,
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[str, Any]]:
+    """Share impact compares target entity share vs balanced peers.
+
+    Peer-only mode has no target entity, so share impact is undefined. Rate
+    impact compares raw vs balanced peer-group rates and remains defined without
+    a target entity.
+    """
+    metadata_updates: Dict[str, Any] = {}
+    if not include_impact_summary:
+        return None, None, metadata_updates
+    if not resolved_entity:
+        logger.info("Impact skipped: peer-only share has no target entity to compare")
+        return None, None, metadata_updates
+
+    impact_df = analyzer.calculate_share_impact(df, request.metric, dimensions, resolved_entity)
+    impact_summary_df = None
+    if impact_df is not None and not impact_df.empty:
+        impact_summary = {
+            'mean_impact_pp': round(impact_df['Impact_PP'].mean(), 4),
+            'mean_abs_impact_pp': round(impact_df['Impact_PP'].abs().mean(), 4),
+            'std_impact_pp': round(impact_df['Impact_PP'].std(), 4) if len(impact_df) > 1 else 0.0,
+            'min_impact_pp': round(impact_df['Impact_PP'].min(), 4),
+            'max_impact_pp': round(impact_df['Impact_PP'].max(), 4),
+            'categories_analyzed': len(impact_df),
+        }
+        metadata_updates['impact_summary'] = impact_summary
+        if 'Dimension' in impact_df.columns:
+            impact_summary_df = pd.DataFrame([
+                {
+                    'Dimension': dim,
+                    'Mean_Abs_Impact_PP': round(dim_data['Impact_PP'].abs().mean(), 4),
+                    'Max_Abs_Impact_PP': round(dim_data['Impact_PP'].abs().max(), 4),
+                    'Categories': len(dim_data),
+                }
+                for dim in impact_df['Dimension'].unique()
+                for dim_data in [impact_df[impact_df['Dimension'] == dim]]
+            ])
+        metadata_updates['impact_details'] = impact_df.to_dict('records')
+    return impact_df, impact_summary_df, metadata_updates
+
+
+def _compute_rate_impact(
+    *,
+    analyzer: DimensionalAnalyzer,
+    df: pd.DataFrame,
+    dimensions: List[str],
+    total_col: str,
+    numerator_cols: Dict[str, str],
+    include_impact_summary: bool,
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[str, Any]]:
+    metadata_updates: Dict[str, Any] = {}
+    if not include_impact_summary:
+        return None, None, metadata_updates
+
+    impact_df = analyzer.calculate_rate_impact(df, total_col, numerator_cols, dimensions)
+    impact_summary_df = None
+    if impact_df is not None and not impact_df.empty:
+        impact_summary: Dict[str, Any] = {}
+        rate_cols = [col for col in impact_df.columns if col.endswith('_Impact_PP')]
+        for col in rate_cols:
+            rate_name = col.replace('_Impact_PP', '')
+            impact_summary[f'{rate_name}_mean_abs_impact_pp'] = round(impact_df[col].abs().mean(), 4)
+            impact_summary[f'{rate_name}_max_abs_impact_pp'] = round(impact_df[col].abs().max(), 4)
+        if rate_cols:
+            impact_summary['mean_abs_impact_pp'] = round(impact_df[rate_cols].abs().stack().mean(), 4)
+        metadata_updates['impact_summary'] = impact_summary
+        if 'Dimension' in impact_df.columns:
+            impact_summary_df = pd.DataFrame([
+                {
+                    'Dimension': dim,
+                    'Mean_Abs_Impact_PP': round(sum(dim_data[col].abs().mean() for col in rate_cols) / len(rate_cols), 4) if rate_cols else 0.0,
+                    'Max_Abs_Impact_PP': round(max(dim_data[col].abs().max() for col in rate_cols), 4) if rate_cols else 0.0,
+                    'Categories': len(dim_data),
+                }
+                for dim in impact_df['Dimension'].unique()
+                for dim_data in [impact_df[impact_df['Dimension'] == dim]]
+            ])
+        metadata_updates['impact_details'] = impact_df.to_dict('records')
+    return impact_df, impact_summary_df, metadata_updates
+
+
+def _run_share_analysis(
+    request: AnalysisRunRequest,
+    analyzer: DimensionalAnalyzer,
+    df: pd.DataFrame,
+    dimensions: List[str],
+    _config: ConfigManager,
+) -> Dict[str, Any]:
+    results: Dict[str, Any] = {}
+    for dim in dimensions:
+        results[dim] = analyzer.analyze_dimension_share(df=df, dimension_column=dim, metric_col=request.metric)
+    if not results:
+        raise RunAborted('No analysis results generated')
+    return results
+
+
+def _run_rate_analysis(
+    request: AnalysisRunRequest,
+    analyzer: DimensionalAnalyzer,
+    df: pd.DataFrame,
+    dimensions: List[str],
+    config: ConfigManager,
+) -> Dict[str, Any]:
+    default_bic = config.get('analysis', 'best_in_class_percentile', default=0.85)
+    fraud_bic = config.get('analysis', 'fraud_percentile', default=0.15)
+    bic_percentiles: Dict[str, float] = {}
+    if request.approved_col:
+        bic_percentiles['approval'] = default_bic
+    if request.fraud_col:
+        bic_percentiles['fraud'] = fraud_bic
+
+    all_results: Dict[str, Any] = {}
+    for rate_type in request.rate_types:
+        analyzer.bic_percentile = bic_percentiles[rate_type]
+        numerator_col = request.numerator_cols[rate_type]
+        results: Dict[str, Any] = {}
+        for dim in dimensions:
+            results[dim] = analyzer.analyze_dimension_rate(
+                df=df,
+                dimension_column=dim,
+                total_col=request.total_col,
+                numerator_col=numerator_col,
+            )
+        if results:
+            all_results[rate_type] = results
+    if not all_results:
+        raise RunAborted('No analysis results generated for any rate type')
+    return all_results
+
+
+def _build_share_mode_metadata(
+    *,
+    request: AnalysisRunRequest,
+    config: ConfigManager,
+    analyzer: DimensionalAnalyzer,
+    resolved: ResolvedConfig,
+    consistent_weights: bool,
+    observability: RunObservability,
+    weighting_result: Optional[WeightingResult] = None,
+    **_: Any,
+) -> Dict[str, Any]:
+    metadata = {
+        'analysis_type': 'share',
+        'metric': request.metric,
+        'bic_percentile': config.get('analysis', 'best_in_class_percentile'),
+        'auto_subset_search': resolved.subset_search.enabled,
+        'trigger_subset_on_slack': resolved.subset_search.trigger_on_slack,
+        'max_cap_slack': resolved.subset_search.max_slack_threshold,
+        'analyzer_ref': analyzer,
+        'last_lp_stats': (
+            weighting_result.last_lp_stats
+            if weighting_result is not None
+            else getattr(analyzer, 'last_lp_stats', {})
+        ),
+        'slack_subset_triggered': (
+            weighting_result.slack_subset_triggered
+            if weighting_result is not None
+            else getattr(analyzer, 'slack_subset_triggered', False)
+        ),
+        'observability': observability.as_metadata(),
+    }
+    if consistent_weights:
+        if weighting_result is not None:
+            metadata['global_dimensions_used'] = list(weighting_result.global_dimensions_used)
+            metadata['removed_dimensions'] = list(weighting_result.removed_dimensions)
+            metadata['per_dimension_weighted'] = list(weighting_result.per_dimension_weights.keys())
+            metadata['subset_search_results'] = list(weighting_result.subset_search_results)
+        else:
+            metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
+            metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
+            metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
+            metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
+    return metadata
+
+
+def _build_rate_mode_metadata(
+    *,
+    request: AnalysisRunRequest,
+    config: ConfigManager,
+    results: Dict[str, Any],
+    output_settings: OutputSettings,
+    observability: RunObservability,
+    **_: Any,
+) -> Dict[str, Any]:
+    default_bic = config.get('analysis', 'best_in_class_percentile', default=0.85)
+    fraud_bic = config.get('analysis', 'fraud_percentile', default=0.15)
+    bic_percentiles: Dict[str, float] = {}
+    if request.approved_col:
+        bic_percentiles['approval'] = default_bic
+    if request.fraud_col:
+        bic_percentiles['fraud'] = fraud_bic
+    return {
+        'analysis_type': 'multi_rate' if len(results) > 1 else f"{request.rate_types[0]}_rate",
+        'rate_types': request.rate_types,
+        'approved_col': request.approved_col,
+        'fraud_col': request.fraud_col,
+        'total_col': request.total_col,
+        'bic_percentiles': bic_percentiles,
+        'fraud_in_bps': output_settings.fraud_in_bps,
+        'observability': observability.as_metadata(),
+    }
+
+
+def _share_output_filename(request: AnalysisRunRequest, resolved_entity: Optional[str], _results: Dict[str, Any]) -> str:
+    entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
+    return request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+
+def _rate_output_filename(request: AnalysisRunRequest, resolved_entity: Optional[str], results: Dict[str, Any]) -> str:
+    entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
+    if request.output:
+        return request.output
+    if len(results) > 1:
+        return f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+
+def _export_share_balanced_csv(
+    *,
+    request: AnalysisRunRequest,
+    results: Dict[str, Any],
+    analysis_output_file: str,
+    df: pd.DataFrame,
+    analyzer: DimensionalAnalyzer,
+    dimensions: List[str],
+    output_settings: OutputSettings,
+    logger: logging.Logger,
+) -> None:
+    export_balanced_csv(
+        results,
+        analysis_output_file,
+        logger,
+        analysis_type='share',
+        df=df,
+        analyzer=analyzer,
+        dimensions=dimensions,
+        metric_col=request.metric,
+        secondary_metrics=request.secondary_metrics,
+        include_calculated=output_settings.include_calculated_metrics,
+    )
+
+
+def _export_rate_balanced_csv(
+    *,
+    request: AnalysisRunRequest,
+    results: Dict[str, Any],
+    analysis_output_file: str,
+    df: pd.DataFrame,
+    analyzer: DimensionalAnalyzer,
+    dimensions: List[str],
+    output_settings: OutputSettings,
+    logger: logging.Logger,
+) -> None:
+    analyzer.secondary_metrics = request.secondary_metrics
+    export_balanced_csv(
+        None,
+        analysis_output_file,
+        logger,
+        analysis_type='rate',
+        all_results=results,
+        df=df,
+        analyzer=analyzer,
+        dimensions=dimensions,
+        total_col=request.total_col,
+        numerator_cols=request.numerator_cols,
+        include_calculated=output_settings.include_calculated_metrics,
+    )
+
+
+def _validate_share_request(request: AnalysisRunRequest, df: pd.DataFrame) -> None:
+    if not request.metric or request.metric not in df.columns:
+        raise RunAborted(f"Metric column '{request.metric}' not found in data")
+
+
+SHARE_MODE_SPEC = AnalysisModeSpec(
+    start_event='share-run-started',
+    extra_config_overrides={},
+    resolve_preferred_entity_col=lambda _request, config: config.get('input', 'entity_col'),
+    validate_request=_validate_share_request,
+    build_validation_kwargs=lambda request, entity_col, time_col, dimensions: {
+        'analysis_type': 'share',
+        'metric_col': request.metric,
+        'entity_col': entity_col,
+        'time_col': time_col,
+        'target_entity': request.entity,
+        'dimensions': dimensions,
+    },
+    weight_metric_col=lambda request: request.metric,
+    initial_bic_percentile=lambda _request, config: config.get('analysis', 'best_in_class_percentile', default=0.85),
+    run_analysis=_run_share_analysis,
+    secondary_metrics_kwargs=lambda request, dimensions: {
+        'metric_col': request.metric,
+        'dimensions': dimensions,
+    },
+    build_mode_metadata=_build_share_mode_metadata,
+    preset_comparison_extra=lambda _request: {'analysis_type': 'share'},
+    compute_impact=lambda **kwargs: _compute_share_impact(
+        request=kwargs['request'],
+        analyzer=kwargs['analyzer'],
+        df=kwargs['df'],
+        dimensions=kwargs['dimensions'],
+        resolved_entity=kwargs['resolved_entity'],
+        include_impact_summary=kwargs['output_settings'].include_impact_summary,
+        logger=kwargs['logger'],
+    ),
+    resolve_output_filename=_share_output_filename,
+    export_balanced_csv_fn=_export_share_balanced_csv,
+)
+
+
+def _validate_rate_request(request: AnalysisRunRequest, df: pd.DataFrame) -> None:
+    if not request.approved_col and not request.fraud_col:
+        raise RunAborted('At least one of --approved-col or --fraud-col must be specified')
+    if not request.total_col or request.total_col not in df.columns:
+        raise RunAborted(f"Total column '{request.total_col}' not found in data")
+    for column in [request.approved_col, request.fraud_col]:
+        if column and column not in df.columns:
+            raise RunAborted(f"Rate column '{column}' not found in data")
+
+
+RATE_MODE_SPEC = AnalysisModeSpec(
+    start_event='rate-run-started',
+    extra_config_overrides={},  # filled per-request in _execute_run
+    resolve_preferred_entity_col=lambda request, _config: request.entity_col,
+    validate_request=_validate_rate_request,
+    build_validation_kwargs=lambda request, entity_col, time_col, dimensions: {
+        'analysis_type': 'rate',
+        'total_col': request.total_col,
+        'numerator_cols': request.numerator_cols,
+        'entity_col': entity_col,
+        'time_col': time_col,
+        'target_entity': request.entity,
+        'dimensions': dimensions,
+    },
+    weight_metric_col=lambda request: request.total_col,
+    initial_bic_percentile=lambda request, config: (
+        config.get('analysis', 'best_in_class_percentile', default=0.85)
+        if request.approved_col
+        else config.get('analysis', 'fraud_percentile', default=0.15)
+    ),
+    run_analysis=_run_rate_analysis,
+    secondary_metrics_kwargs=lambda request, dimensions: {
+        'total_col': request.total_col,
+        'dimensions': dimensions,
+    },
+    build_mode_metadata=_build_rate_mode_metadata,
+    preset_comparison_extra=lambda request: {
+        'analysis_type': 'rate',
+        'total_col': request.total_col,
+        'numerator_cols': request.numerator_cols,
+    },
+    compute_impact=lambda **kwargs: _compute_rate_impact(
+        analyzer=kwargs['analyzer'],
+        df=kwargs['df'],
+        dimensions=kwargs['dimensions'],
+        total_col=kwargs['request'].total_col,
+        numerator_cols=kwargs['request'].numerator_cols,
+        include_impact_summary=kwargs['output_settings'].include_impact_summary,
+    ),
+    resolve_output_filename=_rate_output_filename,
+    export_balanced_csv_fn=_export_rate_balanced_csv,
+)
+
+
+def _execute_run(
+    request: AnalysisRunRequest,
+    mode_spec: AnalysisModeSpec,
+    logger: logging.Logger,
+    *,
+    extra_config_overrides: Optional[Dict[str, Any]] = None,
+) -> AnalysisArtifacts:
     args = request.to_namespace()
-    config = build_run_config(args)
+    config_overrides = dict(mode_spec.extra_config_overrides)
+    if extra_config_overrides:
+        config_overrides.update(extra_config_overrides)
+    config = build_run_config(args, extra_overrides=config_overrides or None)
     compliance_context = enforce_compliance_preconditions(config, request)
     output_settings = resolve_output_settings(config)
     observability = RunObservability()
-    observability.record('share-run-started', entity=request.entity, csv=request.csv)
+    observability.record(mode_spec.start_event, entity=request.entity, csv=request.csv)
 
+    preferred_entity_col = mode_spec.resolve_preferred_entity_col(request, config)
     try:
-        data_loader, df, entity_col, time_col = prepare_run_data(
-            args,
+        prepared_loader, prepared_df, prepared_entity_col, prepared_time_col, used_prepared = apply_prepared_dataset(
+            request,
             config,
             logger,
-            preferred_entity_col=config.get('input', 'entity_col'),
+            preferred_entity_col=preferred_entity_col,
         )
+        if used_prepared:
+            data_loader = prepared_loader
+            df = prepared_df
+            entity_col = prepared_entity_col
+            time_col = prepared_time_col
+        else:
+            data_loader, df, entity_col, time_col = prepare_run_data(
+                args,
+                config,
+                logger,
+                preferred_entity_col=preferred_entity_col,
+            )
     except ValueError as exc:
         raise RunAborted(str(exc)) from exc
 
-    metric_col = request.metric
-    if not metric_col or metric_col not in df.columns:
-        raise RunAborted(f"Metric column '{metric_col}' not found in data")
+    mode_spec.validate_request(request, df)
 
     validation_issues, should_abort = validate_analysis_input(
         df=df,
         config=config,
         data_loader=data_loader,
-        analysis_type='share',
-        metric_col=metric_col,
-        entity_col=entity_col,
-        dimensions=request.dimensions,
-        time_col=time_col,
-        target_entity=request.entity,
+        **mode_spec.build_validation_kwargs(request, entity_col, time_col, request.dimensions),
     )
     if should_abort:
         raise RunAborted('Analysis aborted due to validation errors')
@@ -667,73 +1144,43 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
     if dimensions is None:
         raise RunAborted('No dimensions available for analysis')
 
-    opt_config = config.config['optimization']
-    analysis_config = config.config['analysis']
+    resolved = config.resolve()
     debug_mode = config.get('output', 'include_debug_sheets', default=False)
     analyzer, analyzer_settings = build_dimensional_analyzer(
         target_entity=resolved_entity,
         entity_col=entity_col,
-        analysis_config=analysis_config,
-        opt_config=opt_config,
+        resolved=resolved,
         time_col=time_col,
         debug_mode=debug_mode,
-        bic_percentile=analysis_config.get('best_in_class_percentile', 0.85),
+        bic_percentile=mode_spec.initial_bic_percentile(request, config),
         logger=logger,
     )
     consistent_weights = analyzer_settings['consistent_weights']
+    weight_metric_col = mode_spec.weight_metric_col(request)
 
     try:
-        if consistent_weights:
-            analyzer.calculate_global_privacy_weights(df, metric_col, dimensions)
-        else:
-            _, _, peers = analyzer._build_categories(df, metric_col, dimensions)
-            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-            analyzer._solve_per_dimension_weights(
-                df,
-                metric_col,
-                dimensions,
-                peers,
-                max_concentration,
-                None,
-                rule_name,
-            )
+        weighting_result = analyzer.fit_privacy_weights(df, weight_metric_col, dimensions)
     except ValueError as exc:
-        # Insufficient-peers and other privacy-policy guards from
-        # `core/global_weight_optimizer.py` are raised as ValueError. Translate
-        # them into a `RunBlocked` so callers (CLI, TUI, audit log) see a
-        # `run_status="blocked"` compliance summary instead of a misleading
-        # "completed" verdict.
-        block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
-        block_extra: Dict[str, Any] = {'error': str(exc)}
-        if hasattr(analyzer, 'compliance_blocked_peer_count'):
-            block_extra['peer_count'] = int(analyzer.compliance_blocked_peer_count)
-        logger.error("Optimization aborted: %s", exc)
-        blocked_summary = build_compliance_summary(
-            posture=compliance_context.get('compliance_posture'),
-            acknowledgement_given=compliance_context.get('acknowledgement_given', False),
-            blocked_reason=block_reason,
-            blocked_details=block_extra,
-        ).to_dict()
-        raise RunBlocked(str(exc), blocked_summary) from exc
+        _handle_optimization_failure(
+            exc,
+            analyzer=analyzer,
+            compliance_context=compliance_context,
+            logger=logger,
+        )
 
-    results: Dict[str, Any] = {}
-    for dim in dimensions:
-        result_df = analyzer.analyze_dimension_share(df=df, dimension_column=dim, metric_col=metric_col)
-        results[dim] = result_df
-    if not results:
-        raise RunAborted('No analysis results generated')
+    results = mode_spec.run_analysis(request, analyzer, df, dimensions, config)
 
     secondary_results_df = None
     if request.secondary_metrics:
-        from benchmark import get_balanced_metrics_df
-
         secondary_results_df = get_balanced_metrics_df(
             df=df,
             analyzer=analyzer,
-            dimensions=dimensions,
-            metric_col=metric_col,
             secondary_metrics=request.secondary_metrics,
+            **mode_spec.secondary_metrics_kwargs(request, dimensions),
         )
+
+    dimensions_analyzed = len(results) if request.is_share else len(dimensions)
+    dimension_names = list(results.keys()) if request.is_share else dimensions
 
     metadata = {
         **build_common_run_metadata(
@@ -744,52 +1191,66 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
             entity_col=entity_col,
             total_records=len(df),
             unique_entities=df[entity_col].nunique(),
-            dimensions_analyzed=len(results),
-            dimension_names=list(results.keys()),
+            dimensions_analyzed=dimensions_analyzed,
+            dimension_names=dimension_names,
             secondary_metrics=request.secondary_metrics,
             debug_mode=debug_mode,
             consistent_weights=consistent_weights,
-            include_privacy_validation=output_settings['include_privacy_validation'],
-            include_impact_summary=output_settings['include_impact_summary'],
-            include_preset_comparison=output_settings['include_preset_comparison'],
-            include_calculated_metrics=output_settings['include_calculated_metrics'],
-            output_format=output_settings['output_format'],
+            include_privacy_validation=output_settings.include_privacy_validation,
+            include_impact_summary=output_settings.include_impact_summary,
+            include_preset_comparison=output_settings.include_preset_comparison,
+            include_calculated_metrics=output_settings.include_calculated_metrics,
+            output_format=output_settings.output_format,
             consistency_mode=analyzer_settings['consistency_mode'],
             enforce_single_weight_set=analyzer_settings['enforce_single_weight_set'],
         ),
-        'analysis_type': 'share',
-        'metric': metric_col,
-        'bic_percentile': config.get('analysis', 'best_in_class_percentile'),
-        'auto_subset_search': opt_config.get('subset_search', {}).get('enabled'),
-        'trigger_subset_on_slack': opt_config.get('subset_search', {}).get('trigger_on_slack'),
-        'max_cap_slack': opt_config.get('subset_search', {}).get('max_slack_threshold'),
-        'analyzer_ref': analyzer,
-        'last_lp_stats': getattr(analyzer, 'last_lp_stats', {}),
-        'slack_subset_triggered': getattr(analyzer, 'slack_subset_triggered', False),
-        'observability': observability.as_metadata(),
+        **mode_spec.build_mode_metadata(
+            request=request,
+            config=config,
+            analyzer=analyzer,
+            resolved=resolved,
+            results=results,
+            consistent_weights=consistent_weights,
+            output_settings=output_settings,
+            observability=observability,
+            weighting_result=weighting_result,
+        ),
     }
-    if consistent_weights:
-        metadata['global_dimensions_used'] = getattr(analyzer, 'global_dimensions_used', [])
-        metadata['removed_dimensions'] = getattr(analyzer, 'removed_dimensions', [])
-        metadata['per_dimension_weighted'] = list(getattr(analyzer, 'per_dimension_weights', {}).keys())
-        metadata['subset_search_results'] = getattr(analyzer, 'subset_search_results', [])
+    metadata.update(
+        RunSummary(
+            entity=str(metadata.get('entity', 'PEER-ONLY')),
+            entity_column=entity_col,
+            total_records=len(df),
+            unique_entities=int(df[entity_col].nunique()),
+            peer_count=int(metadata.get('peer_count', 0)),
+            dimensions_analyzed=dimensions_analyzed,
+            dimension_names=list(dimension_names),
+            preset=getattr(args, 'preset', None),
+            compliance_posture=config.get('compliance_posture'),
+            debug_mode=debug_mode,
+            consistent_weights=consistent_weights,
+            output_format=output_settings.output_format,
+            timestamp=metadata.get('timestamp'),
+            privacy_rule=getattr(analyzer, 'privacy_rule_name', None),
+        ).to_metadata_dict()
+    )
 
     diagnostics = collect_run_diagnostics(
         analyzer=analyzer,
         df=df,
-        validation_metric_col=metric_col,
+        validation_metric_col=weight_metric_col,
         dimensions=dimensions,
         debug_mode=debug_mode,
-        include_privacy_validation=output_settings['include_privacy_validation'],
-        export_csv=request.export_balanced_csv,
+        include_privacy_validation=output_settings.include_privacy_validation,
         consistent_weights=consistent_weights,
         logger=logger,
+        weighting_result=weighting_result,
     )
     metadata.update(diagnostics['metadata_updates'])
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
-        privacy_validation_df=diagnostics['privacy_validation_df'],
+        privacy_validation_df=diagnostics['compliance_privacy_validation_df'],
         structural_infeasibility=metadata.get('structural_infeasibility_summary', {}),
     ).to_dict()
     metadata['compliance_summary'] = compliance_summary
@@ -799,50 +1260,33 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
     metadata['posture_consistent'] = compliance_summary['posture_consistent']
 
     preset_comparison_df = None
-    if output_settings['include_preset_comparison']:
+    if output_settings.include_preset_comparison:
         preset_comparison_df = execute_preset_comparison(
             df=df,
-            metric_col=metric_col,
+            metric_col=weight_metric_col,
             entity_col=entity_col,
             dimensions=dimensions,
             target_entity=resolved_entity,
             time_col=time_col,
-            analysis_type='share',
             logger=logger,
             analyzer_factory=build_dimensional_analyzer,
+            **mode_spec.preset_comparison_extra(request),
         )
         if preset_comparison_df is not None and not preset_comparison_df.empty:
             metadata['preset_comparison'] = preset_comparison_df.to_dict('records')
 
-    impact_df = None
-    impact_summary_df = None
-    if output_settings['include_impact_summary'] and resolved_entity:
-        impact_df = analyzer.calculate_share_impact(df, metric_col, dimensions, resolved_entity)
-        if impact_df is not None and not impact_df.empty:
-            impact_summary = {
-                'mean_impact_pp': round(impact_df['Impact_PP'].mean(), 4),
-                'mean_abs_impact_pp': round(impact_df['Impact_PP'].abs().mean(), 4),
-                'std_impact_pp': round(impact_df['Impact_PP'].std(), 4) if len(impact_df) > 1 else 0.0,
-                'min_impact_pp': round(impact_df['Impact_PP'].min(), 4),
-                'max_impact_pp': round(impact_df['Impact_PP'].max(), 4),
-                'categories_analyzed': len(impact_df),
-            }
-            metadata['impact_summary'] = impact_summary
-            if 'Dimension' in impact_df.columns:
-                impact_summary_df = pd.DataFrame([
-                    {
-                        'Dimension': dim,
-                        'Mean_Abs_Impact_PP': round(dim_data['Impact_PP'].abs().mean(), 4),
-                        'Max_Abs_Impact_PP': round(dim_data['Impact_PP'].abs().max(), 4),
-                        'Categories': len(dim_data),
-                    }
-                    for dim in impact_df['Dimension'].unique()
-                    for dim_data in [impact_df[impact_df['Dimension'] == dim]]
-                ])
-            metadata['impact_details'] = impact_df.to_dict('records')
+    impact_df, impact_summary_df, impact_metadata = mode_spec.compute_impact(
+        request=request,
+        analyzer=analyzer,
+        df=df,
+        dimensions=dimensions,
+        resolved_entity=resolved_entity,
+        output_settings=output_settings,
+        logger=logger,
+    )
+    metadata.update(impact_metadata)
 
-    entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
-    analysis_output_file = request.output or f"benchmark_share_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    analysis_output_file = mode_spec.resolve_output_filename(request, resolved_entity, results)
     output_path = Path(analysis_output_file)
     artifacts = AnalysisArtifacts(
         results=results,
@@ -863,328 +1307,46 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
 
     artifacts = write_outputs(request, artifacts, config=config, logger=logger)
     if request.export_balanced_csv:
-        from benchmark import export_balanced_csv
-
-        export_balanced_csv(
-            results,
-            analysis_output_file,
-            logger,
-            analysis_type='share',
+        mode_spec.export_balanced_csv_fn(
+            request=request,
+            results=results,
+            analysis_output_file=analysis_output_file,
             df=df,
             analyzer=analyzer,
             dimensions=dimensions,
-            metric_col=metric_col,
-            secondary_metrics=request.secondary_metrics,
-            include_calculated=output_settings['include_calculated_metrics'],
+            output_settings=output_settings,
+            logger=logger,
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
-    artifacts.report_paths = build_report_paths(output_settings['output_format'], analysis_output_file, artifacts.publication_output)
-    if output_settings['include_audit_log']:
+    artifacts.report_paths = build_report_paths(
+        output_settings.output_format,
+        analysis_output_file,
+        artifacts.publication_output,
+    )
+    if output_settings.include_audit_log:
         write_audit_log(
             config,
             analysis_output_file=analysis_output_file,
             metadata=metadata,
             report_paths=artifacts.report_paths,
-            dimensions_analyzed=len(results),
+            dimensions_analyzed=dimensions_analyzed,
             csv_output=artifacts.csv_output,
             impact_df=impact_df,
             privacy_validation_df=artifacts.privacy_validation_df,
             validation_issues=validation_issues,
         )
     return artifacts
+
+
+def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
+    return _execute_run(request, SHARE_MODE_SPEC, logger)
 
 
 def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
-    if not request.approved_col and not request.fraud_col:
-        raise RunAborted('At least one of --approved-col or --fraud-col must be specified')
-
-    args = request.to_namespace()
-    config = build_run_config(args, extra_overrides={'fraud_in_bps': request.fraud_in_bps})
-    compliance_context = enforce_compliance_preconditions(config, request)
-    output_settings = resolve_output_settings(config)
-    observability = RunObservability()
-    observability.record('rate-run-started', entity=request.entity, csv=request.csv)
-
-    try:
-        data_loader, df, entity_col, time_col = prepare_run_data(
-            args,
-            config,
-            logger,
-            preferred_entity_col=request.entity_col,
-        )
-    except ValueError as exc:
-        raise RunAborted(str(exc)) from exc
-
-    total_col = request.total_col
-    if not total_col or total_col not in df.columns:
-        raise RunAborted(f"Total column '{total_col}' not found in data")
-    for column in [request.approved_col, request.fraud_col]:
-        if column and column not in df.columns:
-            raise RunAborted(f"Rate column '{column}' not found in data")
-
-    validation_issues, should_abort = validate_analysis_input(
-        df=df,
-        config=config,
-        data_loader=data_loader,
-        analysis_type='rate',
-        total_col=total_col,
-        numerator_cols=request.numerator_cols,
-        entity_col=entity_col,
-        dimensions=request.dimensions,
-        time_col=time_col,
-        target_entity=request.entity,
+    return _execute_run(
+        request,
+        RATE_MODE_SPEC,
+        logger,
+        extra_config_overrides={'fraud_in_bps': request.fraud_in_bps},
     )
-    if should_abort:
-        raise RunAborted('Analysis aborted due to validation errors')
-
-    resolved_entity = resolve_target_entity(df, entity_col, request.entity, logger)
-    if request.entity and resolved_entity is None:
-        raise RunAborted('Target entity could not be resolved')
-
-    dimensions = resolve_dimensions(args, config, data_loader, df, logger)
-    if dimensions is None:
-        raise RunAborted('No dimensions available for analysis')
-
-    bic_percentiles: Dict[str, float] = {}
-    default_bic = config.get('analysis', 'best_in_class_percentile', default=0.85)
-    fraud_bic = config.get('analysis', 'fraud_percentile', default=0.15)
-    if request.approved_col:
-        bic_percentiles['approval'] = default_bic
-    if request.fraud_col:
-        bic_percentiles['fraud'] = fraud_bic
-
-    opt_config = config.config['optimization']
-    analysis_config = config.config['analysis']
-    debug_mode = config.get('output', 'include_debug_sheets', default=False)
-    first_rate_type = request.rate_types[0]
-    analyzer, analyzer_settings = build_dimensional_analyzer(
-        target_entity=resolved_entity,
-        entity_col=entity_col,
-        analysis_config=analysis_config,
-        opt_config=opt_config,
-        time_col=time_col,
-        debug_mode=debug_mode,
-        bic_percentile=bic_percentiles[first_rate_type],
-        logger=logger,
-    )
-    consistent_weights = analyzer_settings['consistent_weights']
-    try:
-        if consistent_weights:
-            analyzer.calculate_global_privacy_weights(df, total_col, dimensions)
-        else:
-            _, _, peers = analyzer._build_categories(df, total_col, dimensions)
-            rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-            analyzer._solve_per_dimension_weights(
-                df,
-                total_col,
-                dimensions,
-                peers,
-                max_concentration,
-                None,
-                rule_name,
-            )
-    except ValueError as exc:
-        block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
-        block_extra: Dict[str, Any] = {'error': str(exc)}
-        if hasattr(analyzer, 'compliance_blocked_peer_count'):
-            block_extra['peer_count'] = int(analyzer.compliance_blocked_peer_count)
-        logger.error("Optimization aborted: %s", exc)
-        blocked_summary = build_compliance_summary(
-            posture=compliance_context.get('compliance_posture'),
-            acknowledgement_given=compliance_context.get('acknowledgement_given', False),
-            blocked_reason=block_reason,
-            blocked_details=block_extra,
-        ).to_dict()
-        raise RunBlocked(str(exc), blocked_summary) from exc
-
-    all_results: Dict[str, Any] = {}
-    for rate_type in request.rate_types:
-        analyzer.bic_percentile = bic_percentiles[rate_type]
-        numerator_col = request.numerator_cols[rate_type]
-        results: Dict[str, Any] = {}
-        for dim in dimensions:
-            results[dim] = analyzer.analyze_dimension_rate(
-                df=df,
-                dimension_column=dim,
-                total_col=total_col,
-                numerator_col=numerator_col,
-            )
-        if results:
-            all_results[rate_type] = results
-    if not all_results:
-        raise RunAborted('No analysis results generated for any rate type')
-
-    secondary_results_df = None
-    if request.secondary_metrics:
-        from benchmark import get_balanced_metrics_df
-
-        secondary_results_df = get_balanced_metrics_df(
-            df=df,
-            analyzer=analyzer,
-            dimensions=dimensions,
-            total_col=total_col,
-            secondary_metrics=request.secondary_metrics,
-        )
-
-    metadata = {
-        **build_common_run_metadata(
-            args,
-            config,
-            analyzer,
-            resolved_entity=resolved_entity,
-            entity_col=entity_col,
-            total_records=len(df),
-            unique_entities=df[entity_col].nunique(),
-            dimensions_analyzed=len(dimensions),
-            dimension_names=dimensions,
-            secondary_metrics=request.secondary_metrics,
-            debug_mode=debug_mode,
-            consistent_weights=consistent_weights,
-            include_privacy_validation=output_settings['include_privacy_validation'],
-            include_impact_summary=output_settings['include_impact_summary'],
-            include_preset_comparison=output_settings['include_preset_comparison'],
-            include_calculated_metrics=output_settings['include_calculated_metrics'],
-            output_format=output_settings['output_format'],
-            consistency_mode=analyzer_settings['consistency_mode'],
-            enforce_single_weight_set=analyzer_settings['enforce_single_weight_set'],
-        ),
-        'analysis_type': 'multi_rate' if len(all_results) > 1 else f"{request.rate_types[0]}_rate",
-        'rate_types': request.rate_types,
-        'approved_col': request.approved_col,
-        'fraud_col': request.fraud_col,
-        'total_col': total_col,
-        'bic_percentiles': bic_percentiles,
-        'fraud_in_bps': output_settings['fraud_in_bps'],
-        'observability': observability.as_metadata(),
-    }
-
-    diagnostics = collect_run_diagnostics(
-        analyzer=analyzer,
-        df=df,
-        validation_metric_col=total_col,
-        dimensions=dimensions,
-        debug_mode=debug_mode,
-        include_privacy_validation=output_settings['include_privacy_validation'],
-        export_csv=request.export_balanced_csv,
-        consistent_weights=consistent_weights,
-        logger=logger,
-    )
-    metadata.update(diagnostics['metadata_updates'])
-    compliance_summary = build_compliance_summary(
-        posture=compliance_context['compliance_posture'],
-        acknowledgement_given=compliance_context['acknowledgement_given'],
-        privacy_validation_df=diagnostics['privacy_validation_df'],
-        structural_infeasibility=metadata.get('structural_infeasibility_summary', {}),
-    ).to_dict()
-    metadata['compliance_summary'] = compliance_summary
-    metadata['run_status'] = compliance_summary['run_status']
-    metadata['compliance_verdict'] = compliance_summary['compliance_verdict']
-    metadata['acknowledgement_state'] = compliance_summary['acknowledgement_state']
-    metadata['posture_consistent'] = compliance_summary['posture_consistent']
-
-    preset_comparison_df = None
-    if output_settings['include_preset_comparison']:
-        preset_comparison_df = execute_preset_comparison(
-            df=df,
-            metric_col=total_col,
-            entity_col=entity_col,
-            dimensions=dimensions,
-            target_entity=resolved_entity,
-            time_col=time_col,
-            analysis_type='rate',
-            logger=logger,
-            analyzer_factory=build_dimensional_analyzer,
-            total_col=total_col,
-            numerator_cols=request.numerator_cols,
-        )
-        if preset_comparison_df is not None and not preset_comparison_df.empty:
-            metadata['preset_comparison'] = preset_comparison_df.to_dict('records')
-
-    impact_df = None
-    impact_summary_df = None
-    if output_settings['include_impact_summary']:
-        impact_df = analyzer.calculate_rate_impact(df, total_col, request.numerator_cols, dimensions)
-        if impact_df is not None and not impact_df.empty:
-            impact_summary = {}
-            rate_cols = [col for col in impact_df.columns if col.endswith('_Impact_PP')]
-            for col in rate_cols:
-                rate_name = col.replace('_Impact_PP', '')
-                impact_summary[f'{rate_name}_mean_abs_impact_pp'] = round(impact_df[col].abs().mean(), 4)
-                impact_summary[f'{rate_name}_max_abs_impact_pp'] = round(impact_df[col].abs().max(), 4)
-            if rate_cols:
-                impact_summary['mean_abs_impact_pp'] = round(impact_df[rate_cols].abs().stack().mean(), 4)
-            metadata['impact_summary'] = impact_summary
-            if 'Dimension' in impact_df.columns:
-                impact_summary_df = pd.DataFrame([
-                    {
-                        'Dimension': dim,
-                        'Mean_Abs_Impact_PP': round(sum(dim_data[col].abs().mean() for col in rate_cols) / len(rate_cols), 4) if rate_cols else 0.0,
-                        'Max_Abs_Impact_PP': round(max(dim_data[col].abs().max() for col in rate_cols), 4) if rate_cols else 0.0,
-                        'Categories': len(dim_data),
-                    }
-                    for dim in impact_df['Dimension'].unique()
-                    for dim_data in [impact_df[impact_df['Dimension'] == dim]]
-                ])
-            metadata['impact_details'] = impact_df.to_dict('records')
-
-    entity_name = resolved_entity.replace(' ', '_') if resolved_entity else 'PEER_ONLY'
-    if request.output:
-        analysis_output_file = request.output
-    elif len(all_results) > 1:
-        analysis_output_file = f"benchmark_multi_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    else:
-        analysis_output_file = f"benchmark_{request.rate_types[0]}_rate_{entity_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    output_path = Path(analysis_output_file)
-
-    artifacts = AnalysisArtifacts(
-        results=all_results,
-        metadata=metadata,
-        weights_df=diagnostics['weights_df'],
-        method_breakdown_df=diagnostics['method_breakdown_df'],
-        privacy_validation_df=diagnostics['privacy_validation_df'],
-        secondary_results_df=secondary_results_df,
-        preset_comparison_df=preset_comparison_df,
-        impact_df=impact_df,
-        impact_summary_df=impact_summary_df,
-        validation_issues=validation_issues,
-        analysis_output_file=str(output_path),
-        publication_output=str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}")),
-        analyzer=analyzer,
-        compliance_summary=compliance_summary,
-    )
-
-    artifacts = write_outputs(request, artifacts, config=config, logger=logger)
-    if request.export_balanced_csv:
-        from benchmark import export_balanced_csv
-
-        analyzer.secondary_metrics = request.secondary_metrics
-        export_balanced_csv(
-            None,
-            analysis_output_file,
-            logger,
-            analysis_type='rate',
-            all_results=all_results,
-            df=df,
-            analyzer=analyzer,
-            dimensions=dimensions,
-            total_col=total_col,
-            numerator_cols=request.numerator_cols,
-            include_calculated=output_settings['include_calculated_metrics'],
-        )
-        artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
-
-    artifacts.report_paths = build_report_paths(output_settings['output_format'], analysis_output_file, artifacts.publication_output)
-    if output_settings['include_audit_log']:
-        write_audit_log(
-            config,
-            analysis_output_file=analysis_output_file,
-            metadata=metadata,
-            report_paths=artifacts.report_paths,
-            dimensions_analyzed=len(dimensions),
-            csv_output=artifacts.csv_output,
-            impact_df=impact_df,
-            privacy_validation_df=artifacts.privacy_validation_df,
-            validation_issues=validation_issues,
-        )
-    return artifacts

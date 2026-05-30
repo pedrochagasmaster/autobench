@@ -18,7 +18,16 @@ from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
 from .global_weight_optimizer import GlobalWeightOptimizer
 from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
-from .contracts import SolverRequest
+from .contracts import SolverRequest, WeightingResult
+from .impact_calculator import (
+    build_weight_map_for_dimension,
+    calculate_impact_summary as _calculate_impact_summary,
+    calculate_rate_impact as _calculate_rate_impact,
+    calculate_share_impact as _calculate_share_impact,
+)
+from .privacy_validation_builder import build_privacy_validation_dataframe as _build_privacy_validation_dataframe
+from .solver_request_builder import build_heuristic_request, build_lp_request
+from .subset_search import search_largest_feasible_subset
 from .constants import (
     COMPARISON_EPSILON as SHARED_COMPARISON_EPSILON,
     BORDERLINE_CAP_EXCESS_TOLERANCE_PP,
@@ -511,21 +520,13 @@ class DimensionalAnalyzer:
         peer_volumes: Dict[str, float],
         tolerance: Optional[float] = None,
     ) -> SolverRequest:
-        return SolverRequest(
+        return build_lp_request(
+            self,
             peers=peers,
             categories=categories,
             max_concentration=max_concentration,
             peer_volumes=peer_volumes,
-            rank_preservation_strength=self.rank_preservation_strength,
-            rank_constraint_mode=self.rank_constraint_mode,
-            rank_constraint_k=self.rank_constraint_k,
-            tolerance=float(self.tolerance if tolerance is None else tolerance),
-            volume_weighted_penalties=self.volume_weighted_penalties,
-            volume_weighting_exponent=self.volume_weighting_exponent,
-            lambda_penalty=self.lambda_penalty,
-            max_iterations=self.max_iterations,
-            min_weight=self.min_weight,
-            max_weight=self.max_weight,
+            tolerance=tolerance,
         )
 
     def _build_heuristic_request(
@@ -539,32 +540,15 @@ class DimensionalAnalyzer:
         rule_name: Optional[str],
         tolerance: Optional[float] = None,
     ) -> SolverRequest:
-        return SolverRequest(
+        return build_heuristic_request(
+            self,
             peers=peers,
             categories=categories,
             max_concentration=max_concentration,
             peer_volumes=peer_volumes,
             target_weights=target_weights,
             rule_name=rule_name,
-            min_weight=self.min_weight,
-            max_weight=self.max_weight,
-            tolerance=float(self.tolerance if tolerance is None else tolerance),
-            max_iterations=self.bayesian_max_iterations,
-            learning_rate=self.bayesian_learning_rate,
-            violation_penalty_weight=self.violation_penalty_weight,
-            merchant_mode=self.merchant_mode,
-            enforce_additional_constraints=self.enforce_additional_constraints,
-            dynamic_constraints_enabled=self.dynamic_constraints_enabled,
-            time_column=self.time_column,
-            min_peer_count_for_constraints=self.min_peer_count_for_constraints,
-            min_effective_peer_count=self.min_effective_peer_count,
-            min_category_volume_share=self.min_category_volume_share,
-            min_overall_volume_share=self.min_overall_volume_share,
-            min_representativeness=self.min_representativeness,
-            dynamic_threshold_scale_floor=self.dynamic_threshold_scale_floor,
-            dynamic_count_scale_floor=self.dynamic_count_scale_floor,
-            representativeness_penalty_floor=self.representativeness_penalty_floor,
-            representativeness_penalty_power=self.representativeness_penalty_power,
+            tolerance=tolerance,
         )
 
     def _get_dynamic_additional_thresholds(
@@ -731,176 +715,9 @@ class DimensionalAnalyzer:
         peers: List[str],
         all_categories: List[Dict[str, Any]],
     ) -> Tuple[List[str], Optional[Dict[str, float]]]:
-        self.subset_search_results.clear()
-        best_dims: List[str] = []
-        best_weights: Optional[Dict[str, float]] = None
-        best_score: Tuple[int, float] = (0, float('inf'))
-        max_tests = max(int(self.subset_search_max_tests), 1)
-        
-        if self.greedy_subset_search:
-            # GREEDY MODE: Start with all dimensions, remove one at a time
-            trial_dims = list(dimensions)
-            tested = 0
-            while tested < max_tests and len(trial_dims) > 0:
-                tested += 1
-                trial_cats, trial_peer_vols, _ = self._build_categories(df, metric_col, trial_dims)
-                if not trial_cats:
-                    if len(trial_dims) > 1:
-                        scores = self._dimension_unbalance_scores(all_categories if all_categories else trial_cats)
-                        drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
-                        self.subset_search_results.append({
-                            'Attempt': tested,
-                            'Dimensions': list(trial_dims),
-                            'Count': len(trial_dims),
-                            'Success': False,
-                            'Max_Slack': None,
-                            'Sum_Slack': None,
-                            'Method': None,
-                            'Note': f"No cats; dropping {drop_dim}",
-                        })
-                        trial_dims = [d for d in trial_dims if d != drop_dim]
-                        continue
-                    else:
-                        break
-                lp_result = self.lp_solver.solve(
-                    self._build_lp_request(
-                        peers=peers,
-                        categories=trial_cats,
-                        max_concentration=max_concentration,
-                        peer_volumes=trial_peer_vols,
-                    )
-                )
-                if lp_result and lp_result.success:
-                    self.last_lp_stats = lp_result.stats
-                    sol = lp_result.weights
-                    stats = dict(lp_result.stats)
-                else:
-                    sol = None
-                    stats = {}
-                sum_slack = float(stats.get('sum_slack', 0.0) or 0.0) if stats else None
-                max_slack = float(stats.get('max_slack', 0.0) or 0.0) if stats else None
-                method = stats.get('method') if stats else None
-                success = sol is not None
-                note = ''
-                if success and self.trigger_subset_on_slack and self._is_slack_excess(sum_slack):
-                    success = False
-                    note = f"Rejected due to slack {sum_slack:.6f} > {self.max_cap_slack:.6f}"
-                self.subset_search_results.append({
-                    'Attempt': tested,
-                    'Dimensions': list(trial_dims),
-                    'Count': len(trial_dims),
-                    'Success': bool(success),
-                    'Max_Slack': (max_slack if success else (None if note else max_slack)),
-                    'Sum_Slack': (sum_slack if success else (None if note else sum_slack)),
-                    'Method': method,
-                    'Note': note,
-                })
-                if success and sol is not None:
-                    score = (len(trial_dims), sum_slack)
-                    if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
-                        best_score = score
-                        best_dims = list(trial_dims)
-                        best_weights = sol
-                    if len(trial_dims) == len(dimensions) and not self._is_slack_excess(sum_slack):
-                        break
-                    if not self._is_slack_excess(sum_slack):
-                        break
-                if len(trial_dims) <= 1:
-                    break
-                scores = self._dimension_unbalance_scores(trial_cats)
-                drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
-                trial_dims = [d for d in trial_dims if d != drop_dim]
-        else:
-            # RANDOM MODE: Test random subsets starting with n-1, then n-2, etc.
-            import random
-            import itertools
-            
-            tested = 0
-            n = len(dimensions)
-            
-            # Try subsets in decreasing size order: n-1, n-2, ..., 1
-            for subset_size in range(n - 1, 0, -1):
-                if tested >= max_tests:
-                    break
-                
-                # Generate all combinations of this size
-                all_combinations = list(itertools.combinations(dimensions, subset_size))
-                
-                # Shuffle to test randomly
-                random.shuffle(all_combinations)
-                
-                # Test combinations until we find a feasible one or exhaust max_tests
-                for combo in all_combinations:
-                    if tested >= max_tests:
-                        break
-                    
-                    tested += 1
-                    trial_dims = list(combo)
-                    trial_cats, trial_peer_vols, _ = self._build_categories(df, metric_col, trial_dims)
-                    
-                    if not trial_cats:
-                        self.subset_search_results.append({
-                            'Attempt': tested,
-                            'Dimensions': list(trial_dims),
-                            'Count': len(trial_dims),
-                            'Success': False,
-                            'Max_Slack': None,
-                            'Sum_Slack': None,
-                            'Method': None,
-                            'Note': 'No categories found',
-                        })
-                        continue
-                    
-                    lp_result = self.lp_solver.solve(
-                        self._build_lp_request(
-                            peers=peers,
-                            categories=trial_cats,
-                            max_concentration=max_concentration,
-                            peer_volumes=trial_peer_vols,
-                        )
-                    )
-                    if lp_result and lp_result.success:
-                        self.last_lp_stats = lp_result.stats
-                        sol = lp_result.weights
-                        stats = dict(lp_result.stats)
-                    else:
-                        sol = None
-                        stats = {}
-                    sum_slack = float(stats.get('sum_slack', 0.0) or 0.0) if stats else None
-                    max_slack = float(stats.get('max_slack', 0.0) or 0.0) if stats else None
-                    method = stats.get('method') if stats else None
-                    success = sol is not None
-                    note = ''
-                    
-                    if success and self.trigger_subset_on_slack and self._is_slack_excess(sum_slack):
-                        success = False
-                        note = f"Rejected due to slack {sum_slack:.6f} > {self.max_cap_slack:.6f}"
-                    
-                    self.subset_search_results.append({
-                        'Attempt': tested,
-                        'Dimensions': list(trial_dims),
-                        'Count': len(trial_dims),
-                        'Success': bool(success),
-                        'Max_Slack': (max_slack if success else (None if note else max_slack)),
-                        'Sum_Slack': (sum_slack if success else (None if note else sum_slack)),
-                        'Method': method,
-                        'Note': note,
-                    })
-                    
-                    if success and sol is not None:
-                        score = (len(trial_dims), sum_slack)
-                        if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
-                            best_score = score
-                            best_dims = list(trial_dims)
-                            best_weights = sol
-                        
-                        # If we found a feasible solution at this size, we're done
-                        # (no need to test smaller subsets)
-                        if not self._is_slack_excess(sum_slack):
-                            logger.info(f"Random search found feasible subset of size {subset_size} after {tested} attempts")
-                            return best_dims, best_weights
-        
-        return best_dims, best_weights
+        return search_largest_feasible_subset(
+            self, df, metric_col, dimensions, max_concentration, peer_volumes, peers, all_categories
+        )
 
     def _solve_per_dimension_weights(
         self,
@@ -976,14 +793,8 @@ class DimensionalAnalyzer:
                 logger.warning(f"Per-dimension solving failed for '{dimension}'")
 
     def _build_weight_map_for_dimension(self, dimension: str) -> Dict[str, float]:
-        weight_map: Dict[str, float] = {}
-        if self.global_weights:
-            for peer, info in self.global_weights.items():
-                weight_map[peer] = float(info.get('multiplier', 1.0))
-        if dimension in self.per_dimension_weights:
-            for peer, mult in self.per_dimension_weights[dimension].items():
-                weight_map[peer] = float(mult)
-        return weight_map
+        return build_weight_map_for_dimension(self, dimension)
+
 
     def _get_peer_multiplier(self, dimension_column: str, peer: str) -> float:
         if dimension_column in self.per_dimension_weights and peer in self.per_dimension_weights[dimension_column]:
@@ -1066,15 +877,39 @@ class DimensionalAnalyzer:
 
 
     def calculate_global_privacy_weights(
-        self, 
-        df: pd.DataFrame, 
+        self,
+        df: pd.DataFrame,
         metric_col: str,
-        dimensions: List[str]
-    ) -> None:
+        dimensions: List[str],
+    ) -> Optional[WeightingResult]:
         """Delegate global optimization workflow to the specialized optimizer."""
         start_time = perf_counter()
-        self.global_weight_optimizer.calculate_global_privacy_weights(df, metric_col, dimensions)
+        result = self.global_weight_optimizer.calculate_global_privacy_weights(df, metric_col, dimensions)
         logger.info("Global privacy weight optimization completed in %.3fs", perf_counter() - start_time)
+        return result
+
+    def fit_privacy_weights(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        dimensions: List[str],
+    ) -> Optional[WeightingResult]:
+        """Fit privacy weights using global or per-dimension optimization."""
+        if self.consistent_weights:
+            return self.calculate_global_privacy_weights(df, metric_col, dimensions)
+
+        _, _, peers = self._build_categories(df, metric_col, dimensions)
+        rule_name, max_concentration = self._get_privacy_rule(len(peers))
+        self._solve_per_dimension_weights(
+            df,
+            metric_col,
+            dimensions,
+            peers,
+            max_concentration,
+            None,
+            rule_name,
+        )
+        return None
     
     def get_weights_dataframe(self) -> pd.DataFrame:
         """Return a dataframe of global weights and per-dimension weights for debugging."""
@@ -1434,391 +1269,19 @@ class DimensionalAnalyzer:
         return result_df
 
     def build_privacy_validation_dataframe(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> pd.DataFrame:
-        """Build detailed privacy validation dataframe showing original and balanced shares for each dimension-category-(time) combination."""
-        validation_rows: List[Dict[str, Any]] = []
-        all_categories, peer_volumes, _ = self._build_categories(df, metric_col, dimensions)
-        peers = list(self.global_weights.keys())
-        if not peers:
-            per_dim_peers = set()
-            for weights in self.per_dimension_weights.values():
-                per_dim_peers.update(weights.keys())
-            peers = sorted(per_dim_peers) if per_dim_peers else sorted(peer_volumes.keys())
-        peer_count = len(peers)
-        if peer_count == 0:
-            return pd.DataFrame()
-        constraint_stats = self._build_constraint_stats(all_categories, peers, peer_volumes) if all_categories else {}
-        rule_name, max_concentration = self._get_privacy_rule(peer_count)
-        weights = {p: float(self.global_weights.get(p, {}).get('multiplier', 1.0)) for p in peers}
+        """Build detailed privacy validation dataframe showing original and balanced shares."""
+        return _build_privacy_validation_dataframe(self, df, metric_col, dimensions)
 
-        def append_time_total_rows(time_period: Any) -> None:
-            time_df = df[df[self.time_column] == time_period]
-            entity_agg = time_df.groupby(self.entity_column).agg({metric_col: 'sum'}).reset_index()
-            peer_data = []
-            for peer_entity in peers:
-                peer_vol = float(entity_agg[entity_agg[self.entity_column] == peer_entity][metric_col].sum())
-                peer_data.append({'peer': peer_entity, 'volume': peer_vol})
-
-            total_original_vol = sum(p['volume'] for p in peer_data)
-            total_balanced_vol = sum(p['volume'] * weights.get(p['peer'], 1.0) for p in peer_data)
-            for peer_info in peer_data:
-                peer = peer_info['peer']
-                peer_weight = weights.get(peer, 1.0)
-                original_share = (peer_info['volume'] / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
-                balanced_vol = peer_info['volume'] * peer_weight
-                balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                is_violation = self._is_share_violation(balanced_share, max_concentration)
-                validation_rows.append({
-                    'Dimension': '_TIME_TOTAL_',
-                    'Time_Period': time_period,
-                    'Category': str(time_period),
-                    'Peer': peer,
-                    'Rule_Name': rule_name,
-                    'Weight_Source': 'Global',
-                    'Weight_Method': self.weight_methods.get('_TIME_TOTAL_', 'Global-LP'),
-                    'Multiplier': peer_weight,
-                    'Original_Volume': peer_info['volume'],
-                    'Original_Share_%': round(original_share, 4),
-                    'Balanced_Volume': balanced_vol,
-                    'Balanced_Share_%': round(balanced_share, 4),
-                    'Privacy_Cap_%': max_concentration,
-                    'Tolerance_%': self.tolerance,
-                    'Additional_Constraints_Enforced': 'No',
-                    'Additional_Constraints_Relaxed': 'No',
-                    'Additional_Constraints_Passed': 'Yes',
-                    'Additional_Constraint_Detail': 'Time total cap validation',
-                    'Structural_Infeasible_Peer': 'No',
-                    'Structural_Infeasible_Category': 'No',
-                    'Structural_Margin_Peer_pp': 0.0,
-                    'Structural_Margin_Category_pp': 0.0,
-                    'Compliant': 'No' if is_violation else 'Yes',
-                    'Violation_Margin_%': round(balanced_share - max_concentration, 4) if is_violation else 0.0,
-                })
-
-        # Structural diagnostics are peer-level, keyed by (dimension, category, peer).
-        # Expose both peer-level and category-level infeasibility markers in validation output.
-        structural_peer_margin: Dict[Tuple[str, str, str], float] = {}
-        structural_category_margin: Dict[Tuple[str, str], float] = {}
-        if self.structural_detail_df is not None and not self.structural_detail_df.empty:
-            for row in self.structural_detail_df.itertuples(index=False):
-                dimension_key = str(getattr(row, 'dimension', ''))
-                category_key = str(getattr(row, 'category', ''))
-                peer_key = str(getattr(row, 'peer', ''))
-                margin = float(getattr(row, 'margin_over_cap_pp', 0.0) or 0.0)
-                if margin <= 0:
-                    continue
-                peer_lookup = (dimension_key, category_key, peer_key)
-                cat_lookup = (dimension_key, category_key)
-                structural_peer_margin[peer_lookup] = max(structural_peer_margin.get(peer_lookup, 0.0), margin)
-                structural_category_margin[cat_lookup] = max(structural_category_margin.get(cat_lookup, 0.0), margin)
-
-        for dimension in dimensions:
-            dim_weights = dict(weights)
-            if dimension in self.per_dimension_weights:
-                dim_weights.update(self.per_dimension_weights[dimension])
-            weight_source = "Per-Dimension" if dimension in self.per_dimension_weights else "Global"
-            weight_method = self.weight_methods.get(dimension, "Global-LP")
-            if self.time_column and self.time_column in df.columns:
-                time_periods = self._get_time_periods(df)
-                for time_period in time_periods:
-                    time_df = df[df[self.time_column] == time_period]
-                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
-                    for category in entity_dim_agg[dimension].unique():
-                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                        structural_dim = f"{dimension}_{self.time_column}"
-                        structural_cat = f"{category}_{time_period}"
-                        peer_data = []
-                        for peer_entity in peers:
-                            peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
-                            peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
-                        total_original_vol = sum(p['volume'] for p in peer_data)
-                        total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
-                        balanced_shares: List[float] = []
-                        for peer_info in peer_data:
-                            peer_weight = dim_weights.get(peer_info['peer'], 1.0)
-                            balanced_vol = peer_info['volume'] * peer_weight
-                            balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                            balanced_shares.append(balanced_share)
-
-                        peer_category_volumes = {p['peer']: p['volume'] for p in peer_data}
-                        stats = constraint_stats.get((f"{dimension}_{self.time_column}", f"{category}_{time_period}", time_period))
-                        enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
-                            rule_name, dimension, peer_category_volumes, stats
-                        )
-                        if enforce:
-                            additional_passed, additional_details = self._evaluate_additional_constraints(
-                                balanced_shares, rule_name, thresholds
-                            )
-                            threshold_detail = f" Thresholds={thresholds}" if thresholds else ""
-                            additional_detail = "; ".join(additional_details) if additional_details else ""
-                            additional_detail = f"{additional_detail}{threshold_detail}".strip()
-                            additional_enforced = "Yes"
-                        else:
-                            additional_passed = True
-                            additional_enforced = "No"
-                            if reason == 'no_additional':
-                                additional_detail = "Not applicable"
-                            else:
-                                additional_detail = f"Skipped ({reason})"
-                        additional_relaxed = "Yes" if relaxed else "No"
-
-                        for idx, peer_info in enumerate(peer_data):
-                            peer, peer_vol = peer_info['peer'], peer_info['volume']
-                            peer_weight = dim_weights.get(peer, 1.0)
-                            original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
-                            balanced_vol = peer_vol * peer_weight
-                            balanced_share = balanced_shares[idx]
-                            is_violation = self._is_share_violation(balanced_share, max_concentration)
-                            compliant = (not is_violation) and additional_passed
-                            violation_margin = balanced_share - max_concentration if is_violation else 0.0
-                            structural_peer_pp = structural_peer_margin.get((structural_dim, structural_cat, str(peer)), 0.0)
-                            structural_category_pp = structural_category_margin.get((structural_dim, structural_cat), 0.0)
-                            validation_rows.append({
-                                'Dimension': dimension,
-                                'Time_Period': time_period,
-                                'Category': category,
-                                'Peer': peer,
-                                'Rule_Name': rule_name,
-                                'Weight_Source': weight_source,
-                                'Weight_Method': weight_method,
-                                'Multiplier': peer_weight,
-                                'Original_Volume': peer_vol,
-                                'Original_Share_%': round(original_share, 4),
-                                'Balanced_Volume': balanced_vol,
-                                'Balanced_Share_%': round(balanced_share, 4),
-                                'Privacy_Cap_%': max_concentration,
-                                'Tolerance_%': self.tolerance,
-                                'Additional_Constraints_Enforced': additional_enforced,
-                                'Additional_Constraints_Relaxed': additional_relaxed,
-                                'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
-                                'Additional_Constraint_Detail': additional_detail,
-                                'Structural_Infeasible_Peer': 'Yes' if structural_peer_pp > 0 else 'No',
-                                'Structural_Infeasible_Category': 'Yes' if structural_category_pp > 0 else 'No',
-                                'Structural_Margin_Peer_pp': round(structural_peer_pp, 4) if structural_peer_pp > 0 else 0.0,
-                                'Structural_Margin_Category_pp': round(structural_category_pp, 4) if structural_category_pp > 0 else 0.0,
-                                'Compliant': 'Yes' if compliant else 'No',
-                                'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
-                            })
-                for time_period in time_periods:
-                    append_time_total_rows(time_period)
-            else:
-                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
-                for category in entity_dim_agg[dimension].unique():
-                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                    structural_dim = str(dimension)
-                    structural_cat = str(category)
-                    peer_data = []
-                    for peer_entity in peers:
-                        peer_cat_vol = float(cat_df[cat_df[self.entity_column] == peer_entity][metric_col].sum())
-                        peer_data.append({'peer': peer_entity, 'volume': peer_cat_vol})
-                    total_original_vol = sum(p['volume'] for p in peer_data)
-                    total_balanced_vol = sum(p['volume'] * dim_weights.get(p['peer'], 1.0) for p in peer_data)
-                    balanced_shares: List[float] = []
-                    for peer_info in peer_data:
-                        peer_weight = dim_weights.get(peer_info['peer'], 1.0)
-                        balanced_vol = peer_info['volume'] * peer_weight
-                        balanced_share = (balanced_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                        balanced_shares.append(balanced_share)
-
-                    peer_category_volumes = {p['peer']: p['volume'] for p in peer_data}
-                    stats = constraint_stats.get((dimension, category, None))
-                    enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
-                        rule_name, dimension, peer_category_volumes, stats
-                    )
-                    if enforce:
-                        additional_passed, additional_details = self._evaluate_additional_constraints(
-                            balanced_shares, rule_name, thresholds
-                        )
-                        threshold_detail = f" Thresholds={thresholds}" if thresholds else ""
-                        additional_detail = "; ".join(additional_details) if additional_details else ""
-                        additional_detail = f"{additional_detail}{threshold_detail}".strip()
-                        additional_enforced = "Yes"
-                    else:
-                        additional_passed = True
-                        additional_enforced = "No"
-                        if reason == 'no_additional':
-                            additional_detail = "Not applicable"
-                        else:
-                            additional_detail = f"Skipped ({reason})"
-                    additional_relaxed = "Yes" if relaxed else "No"
-
-                    for idx, peer_info in enumerate(peer_data):
-                        peer, peer_vol = peer_info['peer'], peer_info['volume']
-                        peer_weight = dim_weights.get(peer, 1.0)
-                        original_share = (peer_vol / total_original_vol * 100.0) if total_original_vol > 0 else 0.0
-                        balanced_vol = peer_vol * peer_weight
-                        balanced_share = balanced_shares[idx]
-                        is_violation = self._is_share_violation(balanced_share, max_concentration)
-                        compliant = (not is_violation) and additional_passed
-                        violation_margin = balanced_share - max_concentration if is_violation else 0.0
-                        structural_peer_pp = structural_peer_margin.get((structural_dim, structural_cat, str(peer)), 0.0)
-                        structural_category_pp = structural_category_margin.get((structural_dim, structural_cat), 0.0)
-                        validation_rows.append({
-                            'Dimension': dimension,
-                            'Time_Period': None,
-                            'Category': category,
-                            'Peer': peer,
-                            'Rule_Name': rule_name,
-                            'Weight_Source': weight_source,
-                            'Weight_Method': weight_method,
-                            'Multiplier': peer_weight,
-                            'Original_Volume': peer_vol,
-                            'Original_Share_%': round(original_share,  4),
-                            'Balanced_Volume': balanced_vol,
-                            'Balanced_Share_%': round(balanced_share, 4),
-                            'Privacy_Cap_%': max_concentration,
-                            'Tolerance_%': self.tolerance,
-                            'Additional_Constraints_Enforced': additional_enforced,
-                            'Additional_Constraints_Relaxed': additional_relaxed,
-                            'Additional_Constraints_Passed': 'Yes' if additional_passed else 'No',
-                            'Additional_Constraint_Detail': additional_detail,
-                            'Structural_Infeasible_Peer': 'Yes' if structural_peer_pp > 0 else 'No',
-                            'Structural_Infeasible_Category': 'Yes' if structural_category_pp > 0 else 'No',
-                            'Structural_Margin_Peer_pp': round(structural_peer_pp, 4) if structural_peer_pp > 0 else 0.0,
-                            'Structural_Margin_Category_pp': round(structural_category_pp, 4) if structural_category_pp > 0 else 0.0,
-                            'Compliant': 'Yes' if compliant else 'No',
-                            'Violation_Margin_%': round(violation_margin, 4) if violation_margin > 0 else 0.0
-                        })
-        return pd.DataFrame(validation_rows)
     
     def calculate_share_impact(
         self,
         df: pd.DataFrame,
         metric_col: str,
         dimensions: List[str],
-        target_entity: Optional[str] = None
+        target_entity: Optional[str] = None,
     ) -> pd.DataFrame:
-        """
-        Calculate impact between raw and balanced market share.
-        
-        For each dimension-category(-time) combination, computes:
-        - Raw share (unweighted peer group average)
-        - Balanced share (privacy-constrained weighted average)
-        - Impact in percentage points (balanced - raw)
-        
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Input dataframe
-        metric_col : str
-            Column containing metric values
-        dimensions : List[str]
-            Dimensions to analyze
-        target_entity : Optional[str]
-            Target entity (uses self.target_entity if not provided)
-            
-        Returns:
-        --------
-        pd.DataFrame
-            Impact details with columns: Dimension, Category, Time_Period,
-            Entity, Raw_Share_%, Balanced_Share_%, Impact_PP
-        """
-        entity = target_entity or self.target_entity
-        if not entity:
-            logger.warning("No target entity specified for impact calculation")
-            return pd.DataFrame()
-        
-        if metric_col not in df.columns:
-            logger.error(f"Metric column '{metric_col}' not found in DataFrame")
-            return pd.DataFrame()
-        
-        if df[metric_col].isna().any():
-            nan_count = df[metric_col].isna().sum()
-            logger.warning(f"Metric column '{metric_col}' contains {nan_count} NaN values - these rows will be excluded")
-            df = df[df[metric_col].notna()].copy()
-        
-        if (df[metric_col] < 0).any():
-            neg_count = (df[metric_col] < 0).sum()
-            logger.warning(f"Metric column '{metric_col}' contains {neg_count} negative values - these rows will be excluded")
-            df = df[df[metric_col] >= 0].copy()
-        
-        if df.empty:
-            logger.warning("No valid data remaining after filtering NaN/negative values")
-            return pd.DataFrame()
+        return _calculate_share_impact(self, df, metric_col, dimensions, target_entity)
 
-        impact_rows: List[Dict[str, Any]] = []
-        
-        for dimension in dimensions:
-            # Get dimension-specific weights merged with global fallback
-            dim_weights = self._build_weight_map_for_dimension(dimension)
-            
-            if self.time_column and self.time_column in df.columns:
-                time_periods = self._get_time_periods(df)
-                null_count = df[self.time_column].isna().sum()
-                if null_count > 0:
-                    logger.warning(f"Time column '{self.time_column}' contains {null_count} null values - excluded from time-based analysis")
-                for time_period in time_periods:
-                    time_df = df[df[self.time_column] == time_period]
-                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
-                    
-                    for category in entity_dim_agg[dimension].unique():
-                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                        
-                        # Calculate entity share
-                        entity_vol = float(cat_df[cat_df[self.entity_column] == entity][metric_col].sum())
-                        
-                        # Raw: simple sum of all volumes
-                        total_raw_vol = float(cat_df[metric_col].sum())
-                        raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
-                        
-                        # Balanced: weighted sum of peer volumes only (excluding entity)
-                        peer_cat_df = cat_df[cat_df[self.entity_column] != entity]
-                        total_balanced_vol = entity_vol  # Entity counts as own weight
-                        for _, row in peer_cat_df.iterrows():
-                            peer = row[self.entity_column]
-                            peer_vol = float(row[metric_col])
-                            peer_weight = dim_weights.get(peer, 1.0)
-                            total_balanced_vol += peer_vol * peer_weight
-                        
-                        balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                        impact_pp = balanced_share - raw_share
-                        
-                        impact_rows.append({
-                            'Dimension': dimension,
-                            'Category': category,
-                            'Time_Period': time_period,
-                            'Entity': entity,
-                            'Entity_Volume': entity_vol,
-                            'Raw_Total_Volume': total_raw_vol,
-                            'Balanced_Total_Volume': total_balanced_vol,
-                            'Raw_Share_%': round(raw_share, 4),
-                            'Balanced_Share_%': round(balanced_share, 4),
-                            'Impact_PP': round(impact_pp, 4),
-                        })
-            else:
-                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg({metric_col: 'sum'}).reset_index()
-                
-                for category in entity_dim_agg[dimension].unique():
-                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                    
-                    entity_vol = float(cat_df[cat_df[self.entity_column] == entity][metric_col].sum())
-                    total_raw_vol = float(cat_df[metric_col].sum())
-                    raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
-                    
-                    peer_cat_df = cat_df[cat_df[self.entity_column] != entity]
-                    total_balanced_vol = entity_vol
-                    for _, row in peer_cat_df.iterrows():
-                        peer = row[self.entity_column]
-                        peer_vol = float(row[metric_col])
-                        peer_weight = dim_weights.get(peer, 1.0)
-                        total_balanced_vol += peer_vol * peer_weight
-                    
-                    balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
-                    impact_pp = balanced_share - raw_share
-                    
-                    impact_rows.append({
-                        'Dimension': dimension,
-                        'Category': category,
-                        'Time_Period': None,
-                        'Entity': entity,
-                        'Entity_Volume': entity_vol,
-                        'Raw_Total_Volume': total_raw_vol,
-                        'Balanced_Total_Volume': total_balanced_vol,
-                        'Raw_Share_%': round(raw_share, 4),
-                        'Balanced_Share_%': round(balanced_share, 4),
-                        'Impact_PP': round(impact_pp, 4),
-                    })
-        
-        return pd.DataFrame(impact_rows)
 
     def calculate_share_distortion(
         self,
@@ -1839,128 +1302,10 @@ class DimensionalAnalyzer:
         df: pd.DataFrame,
         total_col: str,
         numerator_cols: Dict[str, str],
-        dimensions: List[str]
+        dimensions: List[str],
     ) -> pd.DataFrame:
-        """
-        Calculate impact on rate metrics (raw vs balanced rates).
-        
-        For each rate and dimension-category(-time) combination, computes:
-        - Raw rate (simple weighted average by volume)
-        - Balanced rate (privacy-constrained weighted average)
-        - Impact in percentage points
-        
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Input dataframe
-        total_col : str
-            Column containing totals/denominators
-        numerator_cols : Dict[str, str]
-            Mapping of rate name to numerator column
-        dimensions : List[str]
-            Dimensions to analyze
-            
-        Returns:
-        --------
-        pd.DataFrame
-            Impact details with columns per rate
-        """
-        impact_rows: List[Dict[str, Any]] = []
-        
-        for dimension in dimensions:
-            dim_weights = self._build_weight_map_for_dimension(dimension)
-            
-            if self.time_column and self.time_column in df.columns:
-                time_periods = self._get_time_periods(df)
-                null_count = df[self.time_column].isna().sum()
-                if null_count > 0:
-                    logger.warning(f"Time column '{self.time_column}' contains {null_count} null values - excluded from time-based analysis")
-                for time_period in time_periods:
-                    time_df = df[df[self.time_column] == time_period]
-                    
-                    all_num_cols = [total_col] + list(numerator_cols.values())
-                    entity_dim_agg = time_df.groupby([self.entity_column, dimension]).agg(
-                        {col: 'sum' for col in all_num_cols}
-                    ).reset_index()
-                    
-                    for category in entity_dim_agg[dimension].unique():
-                        cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                        if self.target_entity:
-                            peer_cat_df = cat_df[cat_df[self.entity_column] != self.target_entity]
-                        else:
-                            peer_cat_df = cat_df
-                        
-                        row_data = {
-                            'Dimension': dimension,
-                            'Category': category,
-                            'Time_Period': time_period,
-                        }
-                        
-                        for rate_name, num_col in numerator_cols.items():
-                            # Raw rate: sum of numerators / sum of denominators
-                            total_num = float(peer_cat_df[num_col].sum())
-                            total_denom = float(peer_cat_df[total_col].sum())
-                            raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
-                            
-                            # Balanced rate: weighted sums
-                            balanced_num = 0.0
-                            balanced_denom = 0.0
-                            for _, prow in peer_cat_df.iterrows():
-                                peer = prow[self.entity_column]
-                                w = dim_weights.get(peer, 1.0)
-                                balanced_num += float(prow[num_col]) * w
-                                balanced_denom += float(prow[total_col]) * w
-                            
-                            balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
-                            impact_pp = balanced_rate - raw_rate
-                            
-                            row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
-                            row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
-                            row_data[f'{rate_name}_Impact_PP'] = round(impact_pp, 4)
-                        
-                        impact_rows.append(row_data)
-            else:
-                all_num_cols = [total_col] + list(numerator_cols.values())
-                entity_dim_agg = df.groupby([self.entity_column, dimension]).agg(
-                    {col: 'sum' for col in all_num_cols}
-                ).reset_index()
-                
-                for category in entity_dim_agg[dimension].unique():
-                    cat_df = entity_dim_agg[entity_dim_agg[dimension] == category]
-                    if self.target_entity:
-                        peer_cat_df = cat_df[cat_df[self.entity_column] != self.target_entity]
-                    else:
-                        peer_cat_df = cat_df
-                    
-                    row_data = {
-                        'Dimension': dimension,
-                        'Category': category,
-                        'Time_Period': None,
-                    }
-                    
-                    for rate_name, num_col in numerator_cols.items():
-                        total_num = float(peer_cat_df[num_col].sum())
-                        total_denom = float(peer_cat_df[total_col].sum())
-                        raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
-                        
-                        balanced_num = 0.0
-                        balanced_denom = 0.0
-                        for _, prow in peer_cat_df.iterrows():
-                            peer = prow[self.entity_column]
-                            w = dim_weights.get(peer, 1.0)
-                            balanced_num += float(prow[num_col]) * w
-                            balanced_denom += float(prow[total_col]) * w
-                        
-                        balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
-                        impact_pp = balanced_rate - raw_rate
-                        
-                        row_data[f'{rate_name}_Raw_%'] = round(raw_rate, 4)
-                        row_data[f'{rate_name}_Balanced_%'] = round(balanced_rate, 4)
-                        row_data[f'{rate_name}_Impact_PP'] = round(impact_pp, 4)
-                    
-                    impact_rows.append(row_data)
-        
-        return pd.DataFrame(impact_rows)
+        return _calculate_rate_impact(self, df, total_col, numerator_cols, dimensions)
+
 
     def calculate_rate_weight_effect(
         self,
@@ -1982,119 +1327,10 @@ class DimensionalAnalyzer:
     def calculate_impact_summary(
         self,
         impact_df: pd.DataFrame,
-        analysis_type: str = 'share'
+        analysis_type: str = 'share',
     ) -> pd.DataFrame:
-        """
-        Calculate summary statistics for impact.
-        
-        Computes mean, min, max, std for each:
-        - Dimension
-        - Category
-        - Time period (if present)
-        - Overall
-        
-        Parameters:
-        -----------
-        impact_df : pd.DataFrame
-            Output from calculate_share_impact() or calculate_rate_impact()
-        analysis_type : str
-            'share' or 'rate' - determines which columns to summarize
-            
-        Returns:
-        --------
-        pd.DataFrame
-            Summary statistics with aggregation level column
-        """
-        if impact_df.empty:
-            return pd.DataFrame()
-        
-        summary_rows: List[Dict[str, Any]] = []
-        
-        if analysis_type == 'share':
-            metric_col = 'Impact_PP'
-            if metric_col not in impact_df.columns and 'Distortion_PP' in impact_df.columns:
-                metric_col = 'Distortion_PP'  # Backward compatibility
-            if metric_col not in impact_df.columns:
-                logger.warning(f"Column {metric_col} not found in impact dataframe")
-                return pd.DataFrame()
-            
-            # Overall summary
-            summary_rows.append({
-                'Aggregation': 'Overall',
-                'Level': 'All Data',
-                'Mean_Impact_PP': round(impact_df[metric_col].mean(), 4),
-                'Min_Impact_PP': round(impact_df[metric_col].min(), 4),
-                'Max_Impact_PP': round(impact_df[metric_col].max(), 4),
-                'Std_Impact_PP': round(impact_df[metric_col].std(), 4) if len(impact_df) > 1 else 0.0,
-                'Count': len(impact_df),
-            })
-            
-            # By dimension
-            for dim in impact_df['Dimension'].unique():
-                dim_df = impact_df[impact_df['Dimension'] == dim]
-                summary_rows.append({
-                    'Aggregation': 'By Dimension',
-                    'Level': dim,
-                    'Mean_Impact_PP': round(dim_df[metric_col].mean(), 4),
-                    'Min_Impact_PP': round(dim_df[metric_col].min(), 4),
-                    'Max_Impact_PP': round(dim_df[metric_col].max(), 4),
-                    'Std_Impact_PP': round(dim_df[metric_col].std(), 4) if len(dim_df) > 1 else 0.0,
-                    'Count': len(dim_df),
-                })
-            
-            # By time (if present)
-            if 'Time_Period' in impact_df.columns and impact_df['Time_Period'].notna().any():
-                for time_period in impact_df['Time_Period'].dropna().unique():
-                    time_df = impact_df[impact_df['Time_Period'] == time_period]
-                    summary_rows.append({
-                        'Aggregation': 'By Time Period',
-                        'Level': str(time_period),
-                        'Mean_Impact_PP': round(time_df[metric_col].mean(), 4),
-                        'Min_Impact_PP': round(time_df[metric_col].min(), 4),
-                        'Max_Impact_PP': round(time_df[metric_col].max(), 4),
-                        'Std_Impact_PP': round(time_df[metric_col].std(), 4) if len(time_df) > 1 else 0.0,
-                        'Count': len(time_df),
-                    })
-        else:
-            # Rate analysis - summarize impact columns
-            effect_cols = [col for col in impact_df.columns if col.endswith('_Impact_PP')]
-            if not effect_cols:
-                # Backward compatibility
-                effect_cols = [col for col in impact_df.columns if col.endswith('_Weight_Effect_PP')]
-            if not effect_cols:
-                logger.warning("No impact columns found in impact dataframe")
-                return pd.DataFrame()
-            
-            for rate_col in effect_cols:
-                rate_name = rate_col.replace('_Impact_PP', '').replace('_Weight_Effect_PP', '')
-                
-                # Overall summary
-                summary_rows.append({
-                    'Aggregation': 'Overall',
-                    'Level': 'All Data',
-                    'Rate': rate_name,
-                    'Mean_Impact_PP': round(impact_df[rate_col].mean(), 4),
-                    'Min_Impact_PP': round(impact_df[rate_col].min(), 4),
-                    'Max_Impact_PP': round(impact_df[rate_col].max(), 4),
-                    'Std_Impact_PP': round(impact_df[rate_col].std(), 4) if len(impact_df) > 1 else 0.0,
-                    'Count': len(impact_df),
-                })
-                
-                # By dimension
-                for dim in impact_df['Dimension'].unique():
-                    dim_df = impact_df[impact_df['Dimension'] == dim]
-                    summary_rows.append({
-                        'Aggregation': 'By Dimension',
-                        'Level': dim,
-                        'Rate': rate_name,
-                        'Mean_Impact_PP': round(dim_df[rate_col].mean(), 4),
-                        'Min_Impact_PP': round(dim_df[rate_col].min(), 4),
-                        'Max_Impact_PP': round(dim_df[rate_col].max(), 4),
-                        'Std_Impact_PP': round(dim_df[rate_col].std(), 4) if len(dim_df) > 1 else 0.0,
-                        'Count': len(dim_df),
-                    })
-        
-        return pd.DataFrame(summary_rows)
+        return _calculate_impact_summary(self, impact_df, analysis_type)
+
 
     def calculate_distortion_summary(
         self,

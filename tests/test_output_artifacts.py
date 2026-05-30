@@ -7,6 +7,19 @@ from openpyxl import load_workbook
 from benchmark import run_share_analysis
 
 
+def test_core_modules_import_without_benchmark() -> None:
+    import importlib
+    import sys
+
+    saved = {name: sys.modules.pop(name) for name in list(sys.modules) if name in {"benchmark", "core.analysis_run", "core.output_artifacts"}}
+    try:
+        importlib.import_module("core.analysis_run")
+        importlib.import_module("core.output_artifacts")
+        assert "benchmark" not in sys.modules
+    finally:
+        sys.modules.update(saved)
+
+
 def _share_args(output: Path, df: pd.DataFrame, output_format: str = "both") -> SimpleNamespace:
     return SimpleNamespace(
         csv="",
@@ -49,6 +62,10 @@ def _share_df() -> pd.DataFrame:
     )
 
 
+def _gate_demo_df() -> pd.DataFrame:
+    return pd.read_csv(Path("tests/fixtures/gate_demo.csv"))
+
+
 def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
 
@@ -74,6 +91,79 @@ def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:
         assert "Weight Methods" in workbook.sheetnames
         assert "Privacy Validation" in workbook.sheetnames
         assert "Rank Changes" in workbook.sheetnames
+    finally:
+        workbook.close()
+
+
+def test_analysis_workbook_keeps_weight_methods_when_privacy_sheet_disabled(tmp_path: Path) -> None:
+    output = tmp_path / "share.xlsx"
+    config_path = tmp_path / "no_privacy_sheet.yaml"
+    config_path.write_text(
+        '\n'.join(
+            [
+                'version: "3.0"',
+                'compliance_posture: strict',
+                'output:',
+                '  include_debug_sheets: false',
+                '  include_privacy_validation: false',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    args = _share_args(output, _gate_demo_df(), output_format="analysis")
+    args.config = str(config_path)
+    args.debug = False
+    args.dimensions = ["card_type", "channel"]
+    args.time_col = "year_month"
+
+    result = run_share_analysis(args, __import__("logging").getLogger("test_privacy_sheet_disabled"))
+
+    assert result == 0
+    workbook = load_workbook(output, read_only=True)
+    try:
+        assert "Weight Methods" in workbook.sheetnames
+        assert "Privacy Validation" not in workbook.sheetnames
+    finally:
+        workbook.close()
+
+
+def test_subset_search_diagnostics_with_dimension_lists_write_to_workbook(tmp_path: Path) -> None:
+    output = tmp_path / "share.xlsx"
+    config_path = tmp_path / "subset_search.yaml"
+    config_path.write_text(
+        '\n'.join(
+            [
+                'version: "3.0"',
+                'compliance_posture: strict',
+                'optimization:',
+                '  bounds:',
+                '    max_weight: 1.0',
+                '    min_weight: 0.9',
+                '  linear_programming:',
+                '    tolerance: 50.0',
+                '  subset_search:',
+                '    enabled: false',
+                'output:',
+                '  include_debug_sheets: false',
+                '  include_privacy_validation: false',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    args = _share_args(output, _gate_demo_df(), output_format="analysis")
+    args.config = str(config_path)
+    args.debug = False
+    args.dimensions = ["card_type", "channel"]
+    args.time_col = "year_month"
+
+    result = run_share_analysis(args, __import__("logging").getLogger("test_subset_lists"))
+
+    assert result == 0
+    workbook = load_workbook(output, read_only=True)
+    try:
+        assert "Subset Search" in workbook.sheetnames
+        headers = [cell.value for cell in next(workbook["Subset Search"].iter_rows(max_row=1))]
+        assert "Dimensions" in headers
     finally:
         workbook.close()
 

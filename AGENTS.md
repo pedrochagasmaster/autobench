@@ -126,41 +126,66 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 
 ```
 📁 Project Root
-├── benchmark.py              # CLI entry point (~3000 lines)
+├── benchmark.py              # CLI entry point (~1300 lines)
 ├── tui_app.py                # TUI application (~1400 lines)
-├── requirements.txt          # Dependencies
+├── requirements.txt          # Runtime dependencies
+├── requirements-dev.txt      # Dev tools (pytest, ruff, mypy)
 ├── AGENTS.md                 # This file
-├── 📁 docs/                  # Project documentation (Plans, Reviews, Gains)
+├── 📁 docs/                  # Project documentation
+│   ├── CORE_TECHNICAL_DOC.md    # Canonical technical reference
+│   ├── OPERATIONAL_GAINS.md     # Operational notes
+│   └── archive/                 # Historical docs (not authoritative)
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
-│   ├── dimensional_analyzer.py  # Core algorithm (~2200 lines) ⭐ CRITICAL
-│   ├── data_loader.py           # Data ingestion + validation (~755 lines)
-│   ├── privacy_validator.py     # Privacy enforcement (412 lines)
-│   ├── report_generator.py      # Excel generation (~650 lines)
-│   └── validation_runner.py     # Validation orchestration (121 lines)
+│   ├── analysis_run.py          # Shared CLI/TUI orchestration
+│   ├── analysis_calculator.py   # Dimension analysis calculations
+│   ├── balanced_export.py       # Balanced CSV/metrics export
+│   ├── category_builder.py      # Category construction for LP
+│   ├── compliance.py            # Compliance posture + acknowledgement
+│   ├── constants.py             # Shared constants
+│   ├── contracts.py             # Orchestration dataclasses
+│   ├── data_loader.py           # Data ingestion + validation
+│   ├── diagnostics_engine.py    # Run diagnostics assembly
+│   ├── dimensional_analyzer.py  # Core algorithm facade ⭐ CRITICAL
+│   ├── excel_reports.py         # Excel workbook generation helpers
+│   ├── global_weight_optimizer.py # Global LP/Bayesian weight optimization
+│   ├── impact_calculator.py     # Share/rate impact summaries
+│   ├── observability.py         # Audit logging helpers
+│   ├── output_artifacts.py      # Output facade (workbooks, CSV, audit)
+│   ├── preset_comparison.py     # Preset comparison runs
+│   ├── preset_workflow.py       # Preset/override file workflow
+│   ├── privacy_policy.py        # Privacy rule selection
+│   ├── privacy_validation_builder.py # Privacy validation DataFrames
+│   ├── privacy_validator.py     # Privacy enforcement (Control 3.2)
+│   ├── report_generator.py      # Excel report formatting
+│   ├── solver_request_builder.py # Shared SolverRequest construction
+│   ├── subset_search.py         # Feasible subset search
+│   ├── validation_runner.py     # Validation orchestration
+│   └── 📁 solvers/
+│       ├── base_solver.py       # Solver interface
+│       ├── lp_solver.py         # SciPy linprog LP solver
+│       └── heuristic_solver.py  # Bayesian/heuristic fallback
 ├── 📁 utils/
 │   ├── __init__.py              # Exports: ConfigManager, setup_logging
-│   ├── config_manager.py        # Config handling (554 lines)
+│   ├── config_manager.py        # Config handling + ResolvedConfig
 │   ├── preset_manager.py        # Preset loading
 │   ├── validators.py            # Config schema validation
 │   ├── csv_validator.py         # CSV output validation
 │   ├── CSV_VALIDATOR_README.md  # Validator documentation
 │   └── logger.py                # Logging setup
 ├── 📁 config/
-│   └── template.yaml            # Default config template (v3.0)
-├── 📁 presets/
-│   ├── balanced_default.yaml      # tolerance=2.0, random search
-│   ├── compliance_strict.yaml     # tolerance=0.0, greedy search
-│   ├── research_exploratory.yaml  # Relaxed constraints
-│   └── strategic_consistency.yaml # tolerance=25.0, volume-weighted
-├── 📁 scripts/               # Helper scripts (Gate Test, Sweep Generator)
-├── 📁 tests/                 # Unit tests
-├── 📁 test_sweeps/           # Generated sweep test cases
-├── 📁 tool_extension_project/ # Extension project components
+│   ├── template.yaml            # Default config template (v3.0)
+│   └── privacy_rules.yaml       # Privacy rule definitions
+├── 📁 presets/               # Shipped preset YAML files
+├── 📁 scripts/               # Gate test, sweep generator/runner
+├── 📁 tests/                 # Unit tests + fixtures/
+│   └── fixtures/                # Portable test data (gate_demo.csv, etc.)
+├── 📁 test_gate/             # Committed gate case definitions (portable)
 ├── 📁 data/                  # Input data (gitignored)
-├── 📁 outputs/               # Generated reports (gitignored)
-└── 📁 old/                   # Legacy code (reference only)
+└── 📁 outputs/               # Generated reports (gitignored)
 ```
+
+**Generated-artifact policy:** product code and portable fixtures under `tests/fixtures/` and `test_gate/` are tracked. Generated `test_sweeps/`, gate run outputs, and investigation scratch under `outputs/` are gitignored and regenerated on demand.
 
 ---
 
@@ -638,12 +663,12 @@ py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
 
 For comprehensive coverage, use the sweep generator to create and run hundreds of test cases:
 
-```powershell
-# Generate core test cases
-py scripts/generate_cli_sweep.py --mode core --out-dir test_sweeps
+```bash
+# Generate core test cases (use the portable gate fixture)
+py scripts/generate_cli_sweep.py --mode core --csv tests/fixtures/gate_demo.csv --out-dir test_sweeps
 
 # Run generated commands
-test_sweeps/commands.ps1
+py scripts/run_cli_sweep.py --sweep-dir test_sweeps --results-json test_sweeps/results.json
 ```
 
 **Modes**:
@@ -766,18 +791,20 @@ On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by 
 ### Running tests
 
 ```bash
-py -m pytest tests/ -v          # Unit tests: 82 passed, 2 warnings on main
-py scripts/perform_gate_test.py # Gate test: 14 pass, 3 rate-with-target-entity cases error (pre-existing on main)
+pip install -r requirements.txt -r requirements-dev.txt
+py -m pytest tests/ -v          # Unit tests: 100+ passed
+py scripts/perform_gate_test.py # Gate test: 18 pass (portable fixture, no data/ required)
 ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
+mypy core/ utils/               # Typecheck extracted modules
 ```
 
-### Gate test rate errors
+### Gate test
 
-Three gate test rate cases (`rate_gate_baseline`, `rate_gate_preset_impact`, `rate_gate_config_csv`) fail silently on main. The CLI `rate` subcommand itself works fine when invoked directly. The failures are specific to the gate test runner's invocation pattern for those cases.
+The gate uses the tracked fixture `tests/fixtures/gate_demo.csv` and passes on clean clones without any file in `data/`.
 
 ### Test data
 
-Input CSVs are gitignored (`data/*.csv`). For a quick smoke test, create `data/readme_demo.csv` with at least 7 entities (6 peers + 1 target) to satisfy the minimum peer count for the 6/30 privacy rule. The README contains a sample dataset.
+Input CSVs under `data/` remain gitignored. For ad-hoc runs, use `tests/fixtures/gate_demo.csv` (7 entities: 6 peers + 1 target).
 
 ### No external services
 

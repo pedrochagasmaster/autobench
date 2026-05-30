@@ -22,7 +22,7 @@ def write_outputs(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    from benchmark import generate_excel_report, generate_multi_rate_excel_report
+    from core.excel_reports import generate_excel_report, generate_multi_rate_excel_report
 
     output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
     publication_file = artifacts.publication_output or output_file

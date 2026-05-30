@@ -8,7 +8,10 @@ the defensive ``or {}`` in the workflow caller are exercised here.
 
 from __future__ import annotations
 
+import yaml
+
 from core.preset_workflow import PresetWorkflow
+from utils.config_manager import ConfigManager
 
 
 def test_load_preset_data_returns_dict_for_shipped_preset() -> None:
@@ -37,3 +40,27 @@ def test_preset_manager_load_preset_alias_matches_get_preset() -> None:
     via_get = pm.get_preset("compliance_strict")
     via_load = pm.load_preset("compliance_strict")
     assert via_get == via_load
+
+
+def test_write_override_file_emits_valid_v3_override_with_posture() -> None:
+    workflow = PresetWorkflow()
+    override_data = {
+        "optimization": {
+            "linear_programming": {"tolerance": 2.5},
+        },
+    }
+
+    override_path = workflow.write_override_file(override_data, posture="strict")
+    try:
+        with open(override_path, encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle)
+
+        assert loaded["version"] == "3.0"
+        assert loaded["compliance_posture"] == "strict"
+        assert loaded["optimization"]["linear_programming"]["tolerance"] == 2.5
+
+        config = ConfigManager(config_file=str(override_path), preset="balanced_default")
+        assert config.get("compliance_posture") == "strict"
+        assert config.get("optimization", "linear_programming", "tolerance") == 2.5
+    finally:
+        override_path.unlink(missing_ok=True)

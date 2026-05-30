@@ -11,6 +11,12 @@ from datetime import datetime
 import json
 import logging
 
+from core.report_content import (
+    apply_rate_display_conversion,
+    resolve_convert_all_rates,
+    should_convert_rate_column,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,43 +65,11 @@ class ReportGenerator:
 
     @staticmethod
     def _resolve_convert_all_rates(metadata: Optional[Dict[str, Any]]) -> bool:
-        if not metadata:
-            return False
-        analysis_label = str(metadata.get('analysis_type', '')).lower()
-        rate_types = [str(rt).lower() for rt in metadata.get('rate_types', [])]
-        if rate_types and all(rt == 'fraud' for rt in rate_types):
-            return True
-        return 'fraud_rate' in analysis_label and not rate_types
+        return resolve_convert_all_rates(metadata)
 
     @staticmethod
     def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
-        col_lower = str(column_name).lower().strip()
-        non_rate_markers = (
-            'impact',
-            'effect',
-            'distortion',
-            'weight',
-            'multiplier',
-            'total',
-            'volume',
-            'count',
-            'numerator',
-            'denominator',
-        )
-        if any(marker in col_lower for marker in non_rate_markers):
-            return False
-
-        rate_patterns = (
-            col_lower.endswith('_raw_%'),
-            col_lower.endswith('_balanced_%'),
-            col_lower in {'target rate (%)', 'balanced peer average (%)', 'bic (%)'},
-            'rate' in col_lower,
-        )
-        if not any(rate_patterns):
-            return False
-        if convert_all_rates:
-            return True
-        return 'fraud' in col_lower
+        return should_convert_rate_column(column_name, convert_all_rates)
 
     @staticmethod
     def _build_unique_sheet_name(raw_name: str, existing_names: List[str]) -> str:
@@ -381,7 +355,12 @@ class ReportGenerator:
                 ws.cell(row=1, column=col_idx).font = font_cls(bold=True)
         for row_idx, row in enumerate(df.itertuples(index=False), start=2):
             for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
+
+    def _excel_safe_value(self, value: Any) -> Any:
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value)
+        return value
     
     def add_preset_comparison_sheet(
         self,

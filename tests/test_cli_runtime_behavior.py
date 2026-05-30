@@ -100,6 +100,52 @@ def test_privacy_validator_matches_weighted_mock_behavior(tmp_path: Path) -> Non
     assert int((validation_df["Dimension"] == "_TIME_TOTAL_").sum()) > 0
 
 
+def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
+    csv_path = write_mock_benchmark_csv(tmp_path / "mock.csv")
+    output = tmp_path / "rate_output.xlsx"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmark.py",
+            "rate",
+            "--total-col",
+            "total",
+            "--approved-col",
+            "approved",
+            "--fraud-col",
+            "fraud",
+            "--csv",
+            str(csv_path),
+            "--entity-col",
+            "issuer_name",
+            "--entity",
+            "Target",
+            "--dimensions",
+            "card_type",
+            "channel",
+            "--time-col",
+            "year_month",
+            "--output",
+            str(output),
+            "--debug",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0
+    assert output.exists()
+    workbook = load_workbook(output, read_only=True)
+    try:
+        assert "Privacy Validation" in workbook.sheetnames
+        assert not any(name.startswith("Metric_") and "txn_cnt" in name for name in workbook.sheetnames)
+    finally:
+        workbook.close()
+
+
 def test_insufficient_peer_cli_aborts_even_without_input_validation(tmp_path: Path) -> None:
     csv_path = write_insufficient_peer_csv(tmp_path / "insufficient.csv")
     output = tmp_path / "insufficient.xlsx"

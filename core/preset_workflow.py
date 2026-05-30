@@ -23,7 +23,11 @@ class PresetWorkflow:
     def load_preset_data(self, preset_name: str) -> Dict[str, Any]:
         return self._pm.get_preset(preset_name) or {}
 
-    def write_override_file(self, data: Dict[str, Any]) -> Path:
+    def write_override_file(self, data: Dict[str, Any], *, posture: str) -> Path:
+        """Write a partial v3.0 override YAML with inherited compliance posture."""
+        payload = dict(data)
+        payload["version"] = "3.0"
+        payload["compliance_posture"] = posture
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".yaml",
@@ -31,7 +35,7 @@ class PresetWorkflow:
             delete=False,
             dir=".",
         )
-        yaml.dump(data, tmp, default_flow_style=False)
+        yaml.dump(payload, tmp, default_flow_style=False)
         tmp.close()
         return Path(tmp.name)
 
