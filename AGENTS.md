@@ -798,6 +798,8 @@ ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py 
 mypy core/ utils/               # Typecheck extracted modules
 ```
 
+Pull requests must pass `.github/workflows/ci.yml` (lint, unit tests, gate on Python 3.10 and 3.12).
+
 ### Gate test
 
 The gate uses the tracked fixture `tests/fixtures/gate_demo.csv` and passes on clean clones without any file in `data/`.

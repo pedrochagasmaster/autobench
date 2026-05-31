@@ -48,7 +48,20 @@ Once installed, verify the tool works by running (on the server):
 ```bash
 cd /ads_storage/autobench
 ./run_tool.sh share --help
+./run_tool.sh config list
+./run_tool.sh share \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --no-validate-input \
+  --output /tmp/setup_smoke.xlsx
 ```
+
+For release packaging, rollback, and bundle checksums, see
+`docs/RELEASE_PROCESS.md`.
 
 ## Manual Alternative (Dependencies)
 

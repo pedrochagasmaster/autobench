@@ -2,7 +2,12 @@
 
 ## Overview
 
-The `csv_validator.py` script validates that the balanced totals exported to CSV correctly produce the approval rates and fraud rates shown in the Excel benchmark report.
+The `csv_validator.py` script validates **rate** balanced CSV exports against
+Excel benchmark reports. It confirms that exported balanced totals reproduce the
+approval and fraud rates shown in the workbook.
+
+Share balanced CSV exports (`Balanced_{metric}` columns) are **not** supported yet.
+The tool exits with an explicit error if a share export is detected.
 
 ## Purpose
 

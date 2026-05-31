@@ -78,7 +78,8 @@ def quote_arg(value: str) -> str:
         return ""
     value = str(value)
     if any(ch in value for ch in [" ", "\t", "\""]):
-        return f'"{value.replace("\"", "\\\"")}"'
+        escaped = value.replace('"', '\\"')
+        return f'"{escaped}"'
     return value
 
 
