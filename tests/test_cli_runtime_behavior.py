@@ -146,6 +146,67 @@ def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
         workbook.close()
 
 
+def test_case01_regression_fixture_is_publishable_with_validation_enabled(tmp_path: Path) -> None:
+    output = tmp_path / "case01_regression.xlsx"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmark.py",
+            "rate",
+            "--csv",
+            "tests/fixtures/case01_regression.csv",
+            "--entity",
+            "Target",
+            "--entity-col",
+            "issuer_name",
+            "--dimensions",
+            "product_group_year_month",
+            "product_group_function_year_month",
+            "--total-col",
+            "amount_txn_pure_local_currency",
+            "--approved-col",
+            "amount_approved_local_currency",
+            "--fraud-col",
+            "amount_fraud_local_currency",
+            "--secondary-metrics",
+            "count_txn_pure",
+            "qt_declined",
+            "--preset",
+            "compliance_strict",
+            "--output",
+            str(output),
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Compliance Verdict: fully_compliant" in result.stdout
+    workbook = load_workbook(output, read_only=True)
+    try:
+        assert "Data Quality" in workbook.sheetnames
+        assert "Secondary Metrics" in workbook.sheetnames
+
+        summary_rows = list(workbook["Summary"].iter_rows(values_only=True))
+        assert ("Compliance Verdict:", "fully_compliant") in summary_rows
+        assert ("Input Validation:", "pass") in summary_rows
+
+        dq_rows = list(workbook["Data Quality"].iter_rows(values_only=True))
+        headers = dq_rows[6]
+        assert headers[:5] == ("Severity", "Category", "Message", "Details", "Sample Rows")
+        low_denom = next(row for row in dq_rows if row[1] == "low_denominator")
+        assert '"affected_categories"' in low_denom[3]
+        assert "<missing>" in low_denom[3]
+
+        validation = pd.read_excel(output, sheet_name="Privacy Validation")
+        assert int((validation["Compliant"] == "No").sum()) == 0
+    finally:
+        workbook.close()
+
+
 def test_insufficient_peer_cli_aborts_even_without_input_validation(tmp_path: Path) -> None:
     csv_path = write_insufficient_peer_csv(tmp_path / "insufficient.csv")
     output = tmp_path / "insufficient.xlsx"
