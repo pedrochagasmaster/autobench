@@ -786,7 +786,11 @@ data/*.csv                # Input data
 
 ### Python launcher
 
-On Linux (including Cloud Agent VMs), `py` is a symlink to `python3` created by the update script (`ln -sf /usr/bin/python3 /usr/local/bin/py`). The rest of the documentation and AGENTS.md assume `py` as the launcher; this works after the update script runs.
+On Linux Cloud Agent VMs, use the `py` launcher (Windows-style) for commands in this doc. The VM image usually provides `/usr/local/bin/py` → `python3`. The repo install hook (`scripts/cloud_install.sh`, wired via `.cursor/environment.json`) **must not** write to `/usr/local/bin` as an unprivileged user. If `py` is missing, the script creates `~/.local/bin/py` instead.
+
+### Environment install
+
+Cloud startup runs `bash scripts/cloud_install.sh` (see `.cursor/environment.json`). It installs runtime + dev dependencies only. If your dashboard still has an inline install script with `ln -sf … /usr/local/bin/py`, remove that line or point the environment at this repo’s `environment.json`.
 
 ### Running tests
 
@@ -807,12 +811,6 @@ The gate uses the tracked fixture `tests/fixtures/gate_demo.csv` and passes on c
 ### Test data
 
 Input CSVs under `data/` remain gitignored. For ad-hoc runs, use `tests/fixtures/gate_demo.csv` (7 entities: 6 peers + 1 target).
-
-### Agent skills
-
-Skills live in `.agents/skills/` and are managed via `skills-lock.json` (see
-`.cursor/skills/README.md`). Update with `npx skills update -y` from the repo
-root. Run `/setup-matt-pocock-skills` once if `docs/agents/` is missing.
 
 ### No external services
 
