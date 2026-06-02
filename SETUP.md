@@ -56,9 +56,12 @@ cd /ads_storage/autobench
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
-  --no-validate-input \
   --output /tmp/setup_smoke.xlsx
 ```
+
+The smoke workbook should show `Input Validation: pass` and a publishable
+compliance verdict. Use `--no-validate-input` only for diagnostic runs where the
+result is not intended for publication.
 
 For release packaging, rollback, and bundle checksums, see
 `docs/RELEASE_PROCESS.md`.

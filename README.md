@@ -73,7 +73,6 @@ py benchmark.py share \
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
-  --no-validate-input \
   --output gate_demo_share.xlsx
 ```
 
@@ -87,7 +86,6 @@ py benchmark.py rate \
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
-  --no-validate-input \
   --export-balanced-csv \
   --output gate_demo_rate.xlsx
 ```
@@ -111,6 +109,7 @@ Success signals:
 
 - CLI commands exit 0 and write `gate_demo_*.xlsx`.
 - Rate run also writes `gate_demo_rate_balanced.csv`.
+- The workbook `Summary` shows `Input Validation: pass` and `Compliance Verdict: fully_compliant`.
 - TUI completes without a thread/logging crash and shows a saved report path.
 
 Generated `.xlsx`, `.csv`, and `benchmark_log_*.txt` files are gitignored local
@@ -252,6 +251,11 @@ Common sheets:
 - Additional diagnostics based on flags (`--debug`, `--analyze-impact`, subset search paths)
 
 Balanced CSV is useful for BI ingestion (Power BI, Tableau, pipelines).
+
+Secondary metrics requested with `--secondary-metrics` are exported as
+supplemental weighted context using the final peer weights. They are not
+independent privacy-compliance surfaces; the compliance verdict is based on the
+primary share metric or rate denominator/numerator contract for the run.
 
 ## Excel Sheet Guide
 

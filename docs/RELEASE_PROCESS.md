@@ -38,7 +38,6 @@ cd /ads_storage/autobench
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
-  --no-validate-input \
   --output /tmp/release_smoke.xlsx
 ```
 
@@ -47,6 +46,7 @@ Expected signals:
 - Help and preset list commands exit 0.
 - Smoke analysis exits 0 and writes `/tmp/release_smoke.xlsx`.
 - Workbook contains `Summary`, dimension sheets, `Weight Methods`, and `Rank Changes`.
+- Workbook `Summary` shows `Input Validation: pass` and `Compliance Verdict: fully_compliant`.
 
 ## Rollback
 

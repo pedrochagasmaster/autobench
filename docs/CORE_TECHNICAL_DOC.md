@@ -706,6 +706,14 @@ Balanced peer average (share analysis):
 Balanced peer rate (rate analysis):
   balanced_rate_c = sum_{peer} (m_p * numerator_{p,c}) / sum_{peer} (m_p * denom_{p,c})
 
+Secondary metrics:
+  - Requested secondary metrics are rendered as supplemental balanced totals
+    using the final peer multipliers from the primary analysis surface.
+  - They do not create independent privacy-compliance surfaces.
+  - The strict compliance verdict is based on the primary share metric or the
+    rate analysis denominator/numerator contract, plus input data quality and
+    final privacy validation.
+
 Best-in-class (BIC):
   - Uses configured percentile (analysis.best_in_class_percentile).
   - For fraud, the configured analysis.fraud_percentile is used when building
@@ -747,7 +755,8 @@ Analysis workbook:
 - Privacy Validation: per-category compliance, including `_TIME_TOTAL_` rows for time-aware runs
 - Preset Comparison: preset and per-dimension comparison metrics (if enabled)
 - Impact Detail / Impact Summary: detailed and aggregated distortion or impact (if enabled)
-- Data Quality: validation issues when input validation runs
+- Secondary Metrics: supplemental weighted context, not an independent compliance verdict surface
+- Data Quality: validation issues when input validation runs, including structured details and sample rows when available
 - Metadata: serialized runtime metadata and compact diagnostics references
 
 Publication workbook:
