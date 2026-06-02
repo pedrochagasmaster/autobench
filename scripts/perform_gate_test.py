@@ -82,6 +82,24 @@ class GateTestRunner:
             "Structural Summary", "Structural Detail", "Rank Changes"
         }
         dim_sheets = [s for s in wb.sheetnames if s not in reserved]
+
+        if "Summary" in wb.sheetnames:
+            summary_ws = wb["Summary"]
+            summary_values: Dict[str, Any] = {}
+            for row in summary_ws.iter_rows(min_row=1, max_row=40, values_only=True):
+                if not row or row[0] is None:
+                    continue
+                key = str(row[0]).strip()
+                if key:
+                    summary_values[key] = row[1] if len(row) > 1 else None
+
+            verdict = summary_values.get("Compliance Verdict:")
+            if verdict != "fully_compliant":
+                failures.append(f"Summary Compliance Verdict expected fully_compliant, got {verdict!r}")
+
+            input_validation = summary_values.get("Input Validation:")
+            if "Data Quality" in wb.sheetnames and input_validation != "pass":
+                failures.append(f"Summary Input Validation expected pass, got {input_validation!r}")
         
         if not dim_sheets:
             # Not necessarily a failure if no dimensions requested? But unusual for gate test.
