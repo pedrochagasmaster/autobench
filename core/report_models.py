@@ -18,8 +18,16 @@ class ReportModel:
     privacy_validation_df: Optional[pd.DataFrame] = None
     weights_df: Optional[pd.DataFrame] = None
     method_breakdown_df: Optional[pd.DataFrame] = None
+    secondary_results_df: Optional[pd.DataFrame] = None
+    preset_comparison_df: Optional[pd.DataFrame] = None
     impact_df: Optional[pd.DataFrame] = None
+    impact_summary_df: Optional[pd.DataFrame] = None
     data_quality_df: Optional[pd.DataFrame] = None
+    structural_summary_df: Optional[pd.DataFrame] = None
+    structural_detail_df: Optional[pd.DataFrame] = None
+    rank_changes_df: Optional[pd.DataFrame] = None
+    subset_search_df: Optional[pd.DataFrame] = None
+    validation_issues: Any = None
 
     @classmethod
     def from_analysis_result(
@@ -47,8 +55,16 @@ class ReportModel:
             privacy_validation_df=frames.get("privacy_validation_df"),
             weights_df=frames.get("weights_df"),
             method_breakdown_df=frames.get("method_breakdown_df"),
+            secondary_results_df=frames.get("secondary_results_df"),
+            preset_comparison_df=frames.get("preset_comparison_df"),
             impact_df=frames.get("impact_df"),
+            impact_summary_df=frames.get("impact_summary_df"),
             data_quality_df=frames.get("data_quality_df"),
+            structural_summary_df=frames.get("structural_summary_df"),
+            structural_detail_df=frames.get("structural_detail_df"),
+            rank_changes_df=frames.get("rank_changes_df"),
+            subset_search_df=frames.get("subset_search_df"),
+            validation_issues=frames.get("validation_issues"),
         )
 
     @classmethod
@@ -80,5 +96,42 @@ class ReportModel:
             privacy_validation_df=artifacts.privacy_validation_df,
             weights_df=artifacts.weights_df,
             method_breakdown_df=artifacts.method_breakdown_df,
+            secondary_results_df=artifacts.secondary_results_df,
+            preset_comparison_df=artifacts.preset_comparison_df,
             impact_df=artifacts.impact_df,
+            impact_summary_df=artifacts.impact_summary_df,
+            structural_summary_df=metadata.get("structural_summary_df"),
+            structural_detail_df=metadata.get("structural_detail_df"),
+            rank_changes_df=metadata.get("rank_changes_df"),
+            subset_search_df=metadata.get("subset_search_df"),
+            validation_issues=artifacts.validation_issues,
         )
+
+    def to_metadata(self, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Render model fields into the legacy metadata keys used by workbooks."""
+        metadata = dict(base or {})
+        metadata.setdefault("compliance_summary", dict(self.compliance_summary))
+        for key, value in self.summary.to_metadata_dict().items():
+            if value not in (None, [], {}) and key not in metadata:
+                metadata[key] = value
+
+        optional_frames = {
+            "privacy_validation_df": self.privacy_validation_df,
+            "weights_df": self.weights_df,
+            "method_breakdown_df": self.method_breakdown_df,
+            "secondary_results": self.secondary_results_df,
+            "secondary_results_df": self.secondary_results_df,
+            "preset_comparison_df": self.preset_comparison_df,
+            "impact_df": self.impact_df,
+            "impact_summary_df": self.impact_summary_df,
+            "structural_summary_df": self.structural_summary_df,
+            "structural_detail_df": self.structural_detail_df,
+            "rank_changes_df": self.rank_changes_df,
+            "subset_search_df": self.subset_search_df,
+        }
+        for key, value in optional_frames.items():
+            if value is not None and key not in metadata:
+                metadata[key] = value
+        if self.validation_issues is not None and "validation_issues" not in metadata:
+            metadata["validation_issues"] = self.validation_issues
+        return metadata

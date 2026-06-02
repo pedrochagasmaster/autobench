@@ -1412,7 +1412,15 @@ def _execute_run(
             privacy_validation_df=diagnostics['privacy_validation_df'],
             weights_df=diagnostics['weights_df'],
             method_breakdown_df=diagnostics['method_breakdown_df'],
+            secondary_results_df=secondary_results_df,
+            preset_comparison_df=preset_comparison_df,
             impact_df=impact_df,
+            impact_summary_df=impact_summary_df,
+            structural_summary_df=metadata.get("structural_summary_df"),
+            structural_detail_df=metadata.get("structural_detail_df"),
+            rank_changes_df=metadata.get("rank_changes_df"),
+            subset_search_df=metadata.get("subset_search_df"),
+            validation_issues=validation_issues,
         ),
     )
 

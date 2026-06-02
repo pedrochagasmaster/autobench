@@ -61,7 +61,7 @@ def write_outputs(
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    from core.excel_reports import generate_excel_report, generate_multi_rate_excel_report
+    from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
     from core.report_models import ReportModel
 
     report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
@@ -119,41 +119,25 @@ def write_outputs(
         if request.is_rate and isinstance(artifacts.results, dict) and all(
             isinstance(v, dict) for v in artifacts.results.values()
         ):
-            generate_multi_rate_excel_report(
-                artifacts.results,
+            generate_multi_rate_report_model_excel(
+                report_model,
                 path,
-                entity_name,
-                logger,
-                artifacts.metadata or {},
-                weights_df=artifacts.weights_df,
+                entity_name=entity_name,
+                logger=logger,
+                metadata=artifacts.metadata or {},
                 numerator_cols=request.numerator_cols,
-                privacy_validation_df=artifacts.privacy_validation_df,
-                method_breakdown_df=artifacts.method_breakdown_df,
-                secondary_results=artifacts.secondary_results_df,
-                preset_comparison_df=artifacts.preset_comparison_df,
-                impact_df=artifacts.impact_df,
-                impact_summary_df=artifacts.impact_summary_df,
-                validation_issues=artifacts.validation_issues,
                 config=config,
             )
             return
 
         analysis_type = "share" if request.is_share else "rate"
-        generate_excel_report(
-            artifacts.results,
+        generate_report_model_excel(
+            report_model,
             path,
-            entity_name,
-            analysis_type,
-            logger,
+            entity_name=entity_name,
+            analysis_type=analysis_type,
+            logger=logger,
             metadata=artifacts.metadata,
-            weights_df=artifacts.weights_df,
-            method_breakdown_df=artifacts.method_breakdown_df,
-            privacy_validation_df=artifacts.privacy_validation_df,
-            secondary_results=artifacts.secondary_results_df,
-            preset_comparison_df=artifacts.preset_comparison_df,
-            impact_df=artifacts.impact_df,
-            impact_summary_df=artifacts.impact_summary_df,
-            validation_issues=artifacts.validation_issues,
             config=config,
         )
 

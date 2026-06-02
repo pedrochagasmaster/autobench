@@ -127,6 +127,26 @@ class ReportGenerator:
             raise ValueError(f"Unsupported format: {format}")
         
         logger.info(f"Report saved to: {output_file}")
+
+    def generate_report_model(
+        self,
+        report_model: ReportModel,
+        output_file: str,
+        *,
+        analysis_type: str = 'rate',
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Generate an Excel workbook from a typed report model."""
+        logger.info("Generating excel report from ReportModel: %s", output_file)
+        self._ensure_excel_support()
+        self._generate_excel_report(
+            report_model.results,
+            output_file,
+            analysis_type,
+            report_model.to_metadata(metadata),
+            report_model=report_model,
+        )
+        logger.info("Report saved to: %s", output_file)
     
     def _ensure_excel_support(self) -> None:
         """
@@ -151,7 +171,8 @@ class ReportGenerator:
         results: Dict[str, Any],
         output_file: str,
         analysis_type: str,
-        metadata: Optional[Dict[str, Any]]
+        metadata: Optional[Dict[str, Any]],
+        report_model: Optional[ReportModel] = None,
     ) -> None:
         """Generate Excel workbook report."""
         try:
@@ -168,7 +189,7 @@ class ReportGenerator:
         self._align_class = Alignment
         
         metadata = dict(metadata or {})
-        model = ReportModel.from_artifacts(
+        model = report_model or (ReportModel.from_artifacts(
             AnalysisArtifacts(
                 results=results,
                 metadata=metadata,
@@ -178,7 +199,7 @@ class ReportGenerator:
                 impact_df=metadata.get("impact_df"),
                 compliance_summary=metadata.get("compliance_summary"),
             )
-        ) if metadata.get("compliance_summary") else None
+        ) if metadata.get("compliance_summary") else None)
 
         wb = Workbook()
         
