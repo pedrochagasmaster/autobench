@@ -7,9 +7,10 @@ repo is checked out.
 ## Source
 
 These skills are vendored from
-[`mattpocock/skills`](https://github.com/mattpocock/skills) (commit at the time
-of import). Upstream is MIT-licensed; the original `LICENSE` file is preserved
-alongside this README.
+[`mattpocock/skills`](https://github.com/mattpocock/skills) at commit
+[`aaf2453`](https://github.com/mattpocock/skills/commit/aaf2453) (2026-06-02).
+Upstream is MIT-licensed; the original `LICENSE` file is preserved alongside
+this README.
 
 To update, re-clone upstream and copy the relevant buckets:
 
