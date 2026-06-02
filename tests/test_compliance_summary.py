@@ -1,6 +1,7 @@
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
+from core.contracts import DataQualityResult
 from core.dimensional_analyzer import DimensionalAnalyzer
 
 
@@ -107,9 +108,12 @@ def test_compliance_summary_rechecks_strict_10_40_secondary_rule() -> None:
 
     assert summary["run_status"] == "non_compliant"
     assert summary["strict_final_validation"]["secondary_rule_fail_categories"] == 1
+    evaluation = summary["strict_final_validation"]["rule_evaluations"][0]
+    assert evaluation["rule_name"] == "10/40"
+    assert evaluation["secondary_rule_passed"] is False
 
 
-def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -> None:
+def test_compliance_summary_rejects_strict_10_40_with_too_few_participants() -> None:
     privacy_validation_df = pd.DataFrame(
         {
             "Dimension": ["card_type"] * 4,
@@ -126,9 +130,45 @@ def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -
         posture="strict", privacy_validation_df=privacy_validation_df
     ).to_dict()
 
+    assert summary["run_status"] == "non_compliant"
+    assert summary["compliance_verdict"] == "violations_detected"
+    assert summary["strict_final_validation"]["participant_count_fail_categories"] == 1
+    assert summary["strict_final_validation"]["total_violations"] == 1
+    evaluation = summary["strict_final_validation"]["rule_evaluations"][0]
+    assert evaluation["participant_count_passed"] is False
+
+
+def test_compliance_summary_accepts_strict_10_40_primary_secondary_and_participant_rules() -> None:
+    privacy_validation_df = pd.DataFrame(
+        {
+            "Dimension": ["card_type"] * 10,
+            "Category": ["Credit"] * 10,
+            "Rule_Name": ["10/40"] * 10,
+            "Balanced_Share_%": [40.0, 20.0, 10.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0],
+            "Privacy_Cap_%": [40.0] * 10,
+            "Additional_Constraints_Relaxed": ["No"] * 10,
+            "Compliant": ["Yes"] * 10,
+        }
+    )
+
+    summary = build_compliance_summary(
+        posture="strict", privacy_validation_df=privacy_validation_df
+    ).to_dict()
+
     assert summary["run_status"] == "compliant"
     assert summary["compliance_verdict"] == "fully_compliant"
     assert summary["strict_final_validation"]["total_violations"] == 0
+
+
+def test_strict_compliance_requires_publishable_data_quality() -> None:
+    summary = build_compliance_summary(
+        posture="strict",
+        data_quality=DataQualityResult(checked=False),
+    ).to_dict()
+
+    assert summary["compliance_verdict"] == "not_publishable_input"
+    assert summary["data_quality_checked"] is False
+    assert summary["data_quality_publishable"] is False
 
 
 def test_time_aware_privacy_validation_includes_time_total_rows() -> None:

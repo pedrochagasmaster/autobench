@@ -46,6 +46,39 @@ class SolverRequest:
 
 
 @dataclass
+class DataQualityResult:
+    """Input validation status for an analysis run."""
+
+    checked: bool
+    errors: int = 0
+    warnings: int = 0
+    infos: int = 0
+    issues: Optional[List[Any]] = None
+    should_abort: bool = False
+
+    @property
+    def publishable(self) -> bool:
+        return self.checked and self.errors == 0
+
+    def __iter__(self):
+        yield self.issues
+        yield self.should_abort
+
+
+@dataclass
+class WeightingComplianceState:
+    """Compliance facts produced by the weighting workflow."""
+
+    rule_name: Optional[str] = None
+    primary_cap_passed: bool = False
+    secondary_rule_passed: bool = False
+    relaxation_used: bool = False
+    heuristic_converged: Optional[bool] = None
+    residual_violations: int = 0
+    verdict: str = "unknown"
+
+
+@dataclass
 class AnalysisRunRequest:
     """Unified request object for share and rate analysis runs."""
 
@@ -139,6 +172,7 @@ class AnalysisArtifacts:
     report_paths: Optional[List[str]] = None
     csv_output: Optional[str] = None
     publication_output: Optional[str] = None
+    report_model: Any = None
 
 
 @dataclass
@@ -171,6 +205,7 @@ class WeightingResult:
     compliance_blocked_peer_count: Optional[int] = None
     additional_constraint_violations: List[Dict[str, Any]] = field(default_factory=list)
     slack_subset_triggered: bool = False
+    compliance_state: WeightingComplianceState = field(default_factory=WeightingComplianceState)
 
 
 @dataclass
@@ -213,6 +248,31 @@ class RunSummary:
 
     def to_metadata_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class AnalysisPlan:
+    """Typed analysis lifecycle plan derived from a request and resolved config."""
+
+    request: AnalysisRunRequest
+    resolved_config: Any
+    entity: Optional[str]
+    entity_column: str
+    dimensions: List[str]
+    metric_columns: Dict[str, str]
+    output_settings: OutputSettings
+
+
+@dataclass
+class AnalysisResult:
+    """Typed domain result before rendering to reports/audit artifacts."""
+
+    plan: AnalysisPlan
+    weighting: WeightingResult
+    privacy_validation: Any
+    data_quality: Any
+    results: Any
+    compliance_summary: Dict[str, Any]
 
 
 @dataclass
@@ -267,6 +327,16 @@ def weighting_result_from_analyzer(analyzer: Any) -> WeightingResult:
             getattr(analyzer, "additional_constraint_violations", []) or []
         ),
         slack_subset_triggered=bool(getattr(analyzer, "slack_subset_triggered", False)),
+        compliance_state=getattr(
+            analyzer,
+            "weighting_compliance_state",
+            WeightingComplianceState(
+                rule_name=getattr(analyzer, "privacy_rule_name", None),
+                secondary_rule_passed=not bool(getattr(analyzer, "additional_constraint_violations", []) or []),
+                relaxation_used=bool(getattr(analyzer, "dynamic_constraints_enabled", False)),
+                residual_violations=len(getattr(analyzer, "additional_constraint_violations", []) or []),
+            ),
+        ),
     )
 
 
@@ -289,3 +359,4 @@ def apply_weighting_result_to_analyzer(analyzer: Any, result: WeightingResult) -
     analyzer.compliance_blocked_peer_count = result.compliance_blocked_peer_count
     analyzer.additional_constraint_violations = list(result.additional_constraint_violations)
     analyzer.slack_subset_triggered = result.slack_subset_triggered
+    analyzer.weighting_compliance_state = result.compliance_state

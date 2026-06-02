@@ -242,6 +242,9 @@ class LPSolver(PrivacySolver):
 
         stats = {
             'method': solved_method or 'highs',
+            'converged': True,
+            'residual_cap_violation': max_slack_abs > 0,
+            'residual_additional_violation': False,
             'max_slack': max_slack_pct,
             'sum_slack': sum_slack_pct,
             'max_slack_abs': max_slack_abs,

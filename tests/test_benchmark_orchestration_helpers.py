@@ -1,5 +1,6 @@
 import logging
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ import pandas as pd
 
 from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
+    build_analysis_plan,
     build_common_run_metadata,
     build_report_paths,
     build_run_config,
@@ -21,6 +23,8 @@ from core.analysis_run import (
     validate_analysis_input,
     write_audit_log,
 )
+from core.audit_log import build_audit_log_model
+from core.contracts import AnalysisRunRequest
 from core.data_loader import ValidationSeverity
 from utils.config_manager import ConfigManager
 
@@ -221,6 +225,32 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertTrue(config.get('analysis', 'auto_detect_dimensions'))
         self.assertTrue(config.get('output', 'include_preset_comparison'))
         self.assertFalse(config.get('output', 'fraud_in_bps'))
+
+    def test_build_analysis_plan_contains_resolved_dimensions_and_output_settings(self) -> None:
+        request = AnalysisRunRequest(
+            mode="share",
+            csv="tests/fixtures/gate_demo.csv",
+            entity="Target",
+            metric="txn_cnt",
+            dimensions=["card_type"],
+        )
+
+        plan = build_analysis_plan(request, ConfigManager().resolve())
+
+        self.assertEqual(plan.dimensions, ["card_type"])
+        self.assertEqual(plan.output_settings.output_format, "analysis")
+        self.assertEqual(plan.metric_columns["metric"], "txn_cnt")
+
+    def test_core_analysis_does_not_read_raw_optimization_config_values(self) -> None:
+        offenders = []
+        for path in Path("core").glob("*.py"):
+            if path.name in {"analysis_run.py"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if ".get('optimization'" in text or '.get(\"optimization\"' in text:
+                offenders.append(str(path))
+
+        self.assertEqual(offenders, [])
 
     def test_resolve_output_settings_supports_legacy_distortion_flag(self) -> None:
         config = ConfigManager()
@@ -431,7 +461,10 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
         validation_issues = [SimpleNamespace(severity=ValidationSeverity.ERROR)]
 
-        with patch('core.analysis_run.ReportGenerator') as report_generator_cls:
+        with patch('core.analysis_run.ReportGenerator') as report_generator_cls, patch(
+            'core.analysis_run.build_audit_log_model',
+            wraps=build_audit_log_model,
+        ) as audit_model_builder:
             audit_log_file = write_audit_log(
                 config,
                 analysis_output_file='benchmark_share_target.xlsx',
@@ -444,6 +477,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
                 validation_issues=validation_issues,
             )
 
+        audit_model_builder.assert_called_once()
         report_generator_cls.assert_called_once_with(config)
         create_log = report_generator_cls.return_value.create_audit_log
         create_log.assert_called_once()

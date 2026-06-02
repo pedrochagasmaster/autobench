@@ -10,6 +10,7 @@ from core.analysis_run import apply_prepared_dataset, build_run_config
 from core.contracts import AnalysisRunRequest, PreparedDataset
 from tui_app import BenchmarkApp, LogHandler, write_log_message
 from utils.config_manager import ConfigManager, ResolvedConfig
+from utils.config_overrides import ADVANCED_FIELD_SPECS, ConfigOverrideBuilder
 from textual.widgets import Log
 
 
@@ -99,6 +100,26 @@ def test_benchmark_app_advanced_field_map_covers_load_and_save_keys() -> None:
         spec for spec in BenchmarkApp.ADVANCED_FIELD_MAP if spec["widget_id"] == "adv_subset_max_attempts"
     )
     assert ("optimization", "subset_search", "max_tests") in max_attempts_spec.get("read_keys", [])
+
+
+def test_config_override_specs_contain_required_widget_ids() -> None:
+    widget_ids = {spec.widget_id for spec in ADVANCED_FIELD_SPECS}
+
+    assert "adv_lp_tolerance" in widget_ids
+    assert "adv_output_privacy_validation" in widget_ids
+
+
+def test_config_override_builder_writes_nested_values() -> None:
+    builder = ConfigOverrideBuilder()
+    values = {
+        "adv_lp_tolerance": "2.5",
+        "adv_output_privacy_validation": True,
+    }
+
+    data = builder.read_from_mapping(values)
+
+    assert data["optimization"]["linear_programming"]["tolerance"] == 2.5
+    assert data["output"]["include_privacy_validation"] is True
 
 
 def test_advanced_parameters_use_effective_preset_defaults() -> None:
