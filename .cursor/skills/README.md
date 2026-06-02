@@ -7,9 +7,10 @@ repo is checked out.
 ## Source
 
 These skills are vendored from
-[`mattpocock/skills`](https://github.com/mattpocock/skills) (commit at the time
-of import). Upstream is MIT-licensed; the original `LICENSE` file is preserved
-alongside this README.
+[`mattpocock/skills`](https://github.com/mattpocock/skills) at commit
+[`aaf2453`](https://github.com/mattpocock/skills/commit/aaf2453) (2026-06-02).
+Upstream is MIT-licensed; the original `LICENSE` file is preserved alongside
+this README.
 
 To update, re-clone upstream and copy the relevant buckets:
 
@@ -58,16 +59,6 @@ After that, the most useful entrypoints are:
 
 See the upstream [README](https://github.com/mattpocock/skills) for the full
 catalog and rationale.
-
-## Additional skills (skills CLI)
-
-Installed via `npx skills add` and tracked in `skills-lock.json` at the repo root:
-
-- **thermo-nuclear-review** — `.agents/skills/thermo-nuclear-review/` (from
-  `cursor/plugins`). Comprehensive security/correctness audit of branch changes.
-  Invoke with `/thermo-nuclear-review` or ask for a thermo-nuclear review.
-
-Update with `npx skills update -y` from the repo root.
 
 ## Cloud-agent notes
 
