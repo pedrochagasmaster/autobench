@@ -18,7 +18,7 @@ from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
 from .global_weight_optimizer import GlobalWeightOptimizer
 from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
-from .contracts import SolverRequest, WeightingResult
+from .contracts import SolverRequest, WeightLookup, WeightingResult
 from .impact_calculator import (
     build_weight_map_for_dimension,
     calculate_impact_summary as _calculate_impact_summary,
@@ -1284,8 +1284,9 @@ class DimensionalAnalyzer:
         metric_col: str,
         dimensions: List[str],
         target_entity: Optional[str] = None,
+        weight_lookup: Optional[WeightLookup] = None,
     ) -> pd.DataFrame:
-        return _calculate_share_impact(self, df, metric_col, dimensions, target_entity)
+        return _calculate_share_impact(self, df, metric_col, dimensions, target_entity, weight_lookup)
 
 
     def calculate_share_distortion(
@@ -1308,8 +1309,9 @@ class DimensionalAnalyzer:
         total_col: str,
         numerator_cols: Dict[str, str],
         dimensions: List[str],
+        weight_lookup: Optional[WeightLookup] = None,
     ) -> pd.DataFrame:
-        return _calculate_rate_impact(self, df, total_col, numerator_cols, dimensions)
+        return _calculate_rate_impact(self, df, total_col, numerator_cols, dimensions, weight_lookup)
 
 
     def calculate_rate_weight_effect(

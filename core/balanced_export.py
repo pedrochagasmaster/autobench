@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from core.contracts import WeightLookup
 from core.dimensional_analyzer import DimensionalAnalyzer
 
 
@@ -17,7 +18,8 @@ def get_balanced_metrics_df(
     metric_col: Optional[str] = None,
     secondary_metrics: Optional[list] = None,
     total_col: Optional[str] = None,
-    numerator_cols: Optional[Dict[str, str]] = None
+    numerator_cols: Optional[Dict[str, str]] = None,
+    weight_lookup: Optional[WeightLookup] = None,
 ) -> pd.DataFrame:
     """
     Calculate balanced metrics for primary and secondary metrics.
@@ -25,15 +27,7 @@ def get_balanced_metrics_df(
     """
     rows = []
     entity_col = analyzer.entity_column
-    
-    # Get global weights or per-dimension weights
-    def get_weight(dimension: str, peer: str) -> float:
-        """Get weight multiplier for a peer in a dimension."""
-        if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
-            return float(analyzer.per_dimension_weights[dimension][peer])
-        if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
-            return float(analyzer.global_weights[peer].get('multiplier', 1.0))
-        return 1.0
+    weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
     
     # Check if time column is available
     time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
@@ -117,7 +111,7 @@ def get_balanced_metrics_df(
                     balanced_metric = 0.0
                     for _, row in cat_df.iterrows():
                         peer = row[entity_col]
-                        weight = get_weight(dimension, peer)
+                        weight = weights.multiplier(peer, dimension)
                         balanced_metric += row[metric] * weight
                     
                     # Column name based on metric type
@@ -166,7 +160,8 @@ def export_balanced_csv(
     numerator_cols: Optional[Dict[str, str]] = None,
     metric_col: Optional[str] = None,
     secondary_metrics: Optional[list] = None,
-    include_calculated: bool = False
+    include_calculated: bool = False,
+    weight_lookup: Optional[WeightLookup] = None,
 ) -> None:
     """
     Export balanced metrics to CSV in concatenated dimension format.
@@ -200,16 +195,7 @@ def export_balanced_csv(
         
         # Get entity column and weights
         entity_col = analyzer.entity_column
-        
-        # Get global weights or per-dimension weights
-        def get_weight(dimension: str, peer: str) -> float:
-            """Get weight multiplier for a peer in a dimension."""
-            weight = 1.0
-            if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
-                weight = float(analyzer.global_weights[peer].get('multiplier', 1.0))
-            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
-                weight = float(analyzer.per_dimension_weights[dimension][peer])
-            return weight
+        weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
         
         # Check if time column is available
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
@@ -298,7 +284,7 @@ def export_balanced_csv(
                     
                     for _, row in cat_df.iterrows():
                         peer = row[entity_col]
-                        weight = get_weight(dimension, peer)
+                        weight = weights.multiplier(peer, dimension)
                         is_target = analyzer.target_entity is not None and peer == analyzer.target_entity
 
                         # Balanced totals should always be peer-only
@@ -418,16 +404,7 @@ def export_balanced_csv(
         
         # Get entity column and weights
         entity_col = analyzer.entity_column
-        
-        # Get global weights or per-dimension weights
-        def get_weight(dimension: str, peer: str) -> float:
-            """Get weight multiplier for a peer in a dimension."""
-            weight = 1.0
-            if hasattr(analyzer, 'global_weights') and peer in analyzer.global_weights:
-                weight = float(analyzer.global_weights[peer].get('multiplier', 1.0))
-            if dimension in analyzer.per_dimension_weights and peer in analyzer.per_dimension_weights[dimension]:
-                weight = float(analyzer.per_dimension_weights[dimension][peer])
-            return weight
+        weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
         
         # Check if time column is available
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
@@ -499,7 +476,7 @@ def export_balanced_csv(
                         peer = row[entity_col]
                         if analyzer.target_entity is not None and peer == analyzer.target_entity:
                             continue
-                        weight = get_weight(dimension, peer)
+                        weight = weights.multiplier(peer, dimension)
 
                         for m_type, m_col in metrics_to_calculate:
                             if m_col in row:
@@ -532,7 +509,7 @@ def export_balanced_csv(
                                 balanced_peer_total = 0.0
                                 for _, prow in peer_rows.iterrows():
                                     peer = prow[entity_col]
-                                    weight = get_weight(dimension, peer)
+                                    weight = weights.multiplier(peer, dimension)
                                     balanced_peer_total += float(prow[m_col]) * weight
                                 raw_denom = target_val + raw_peer_total
                                 bal_denom = target_val + balanced_peer_total

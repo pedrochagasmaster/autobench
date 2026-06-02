@@ -23,6 +23,7 @@ from core.contracts import (
     OutputSettings,
     PreparedDataset,
     RunSummary,
+    WeightLookup,
     WeightingResult,
 )
 from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
@@ -785,6 +786,7 @@ def _compute_share_impact(
     resolved_entity: Optional[str],
     include_impact_summary: bool,
     logger: logging.Logger,
+    weighting_result: WeightingResult,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[str, Any]]:
     """Share impact compares target entity share vs balanced peers.
 
@@ -799,7 +801,13 @@ def _compute_share_impact(
         logger.info("Impact skipped: peer-only share has no target entity to compare")
         return None, None, metadata_updates
 
-    impact_df = analyzer.calculate_share_impact(df, request.metric, dimensions, resolved_entity)
+    impact_df = analyzer.calculate_share_impact(
+        df,
+        request.metric,
+        dimensions,
+        resolved_entity,
+        WeightLookup.from_weighting_result(weighting_result),
+    )
     impact_summary_df = None
     if impact_df is not None and not impact_df.empty:
         impact_summary = {
@@ -834,12 +842,19 @@ def _compute_rate_impact(
     total_col: str,
     numerator_cols: Dict[str, str],
     include_impact_summary: bool,
+    weighting_result: WeightingResult,
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Dict[str, Any]]:
     metadata_updates: Dict[str, Any] = {}
     if not include_impact_summary:
         return None, None, metadata_updates
 
-    impact_df = analyzer.calculate_rate_impact(df, total_col, numerator_cols, dimensions)
+    impact_df = analyzer.calculate_rate_impact(
+        df,
+        total_col,
+        numerator_cols,
+        dimensions,
+        WeightLookup.from_weighting_result(weighting_result),
+    )
     impact_summary_df = None
     if impact_df is not None and not impact_df.empty:
         impact_summary: Dict[str, Any] = {}
@@ -1012,6 +1027,7 @@ def _export_share_balanced_csv(
     dimensions: List[str],
     output_settings: OutputSettings,
     logger: logging.Logger,
+    weighting_result: WeightingResult,
 ) -> None:
     export_balanced_csv(
         results,
@@ -1024,6 +1040,7 @@ def _export_share_balanced_csv(
         metric_col=request.metric,
         secondary_metrics=request.secondary_metrics,
         include_calculated=output_settings.include_calculated_metrics,
+        weight_lookup=WeightLookup.from_weighting_result(weighting_result),
     )
 
 
@@ -1037,6 +1054,7 @@ def _export_rate_balanced_csv(
     dimensions: List[str],
     output_settings: OutputSettings,
     logger: logging.Logger,
+    weighting_result: WeightingResult,
 ) -> None:
     analyzer.secondary_metrics = request.secondary_metrics
     export_balanced_csv(
@@ -1051,6 +1069,7 @@ def _export_rate_balanced_csv(
         total_col=request.total_col,
         numerator_cols=request.numerator_cols,
         include_calculated=output_settings.include_calculated_metrics,
+        weight_lookup=WeightLookup.from_weighting_result(weighting_result),
     )
 
 
@@ -1089,6 +1108,7 @@ SHARE_MODE_SPEC = AnalysisModeSpec(
         resolved_entity=kwargs['resolved_entity'],
         include_impact_summary=kwargs['output_settings'].include_impact_summary,
         logger=kwargs['logger'],
+        weighting_result=kwargs['weighting_result'],
     ),
     resolve_output_filename=_share_output_filename,
     export_balanced_csv_fn=_export_share_balanced_csv,
@@ -1143,6 +1163,7 @@ RATE_MODE_SPEC = AnalysisModeSpec(
         total_col=kwargs['request'].total_col,
         numerator_cols=kwargs['request'].numerator_cols,
         include_impact_summary=kwargs['output_settings'].include_impact_summary,
+        weighting_result=kwargs['weighting_result'],
     ),
     resolve_output_filename=_rate_output_filename,
     export_balanced_csv_fn=_export_rate_balanced_csv,
@@ -1241,6 +1262,7 @@ def _execute_run(
             df=df,
             analyzer=analyzer,
             secondary_metrics=request.secondary_metrics,
+            weight_lookup=WeightLookup.from_weighting_result(weighting_result),
             **mode_spec.secondary_metrics_kwargs(request, dimensions),
         )
 
@@ -1366,6 +1388,7 @@ def _execute_run(
         resolved_entity=resolved_entity,
         output_settings=output_settings,
         logger=logger,
+        weighting_result=weighting_result,
     )
     metadata.update(impact_metadata)
 
@@ -1406,6 +1429,7 @@ def _execute_run(
             dimensions=dimensions,
             output_settings=output_settings,
             logger=logger,
+            weighting_result=weighting_result,
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 

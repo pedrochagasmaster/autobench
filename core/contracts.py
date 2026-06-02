@@ -208,6 +208,51 @@ class WeightingResult:
     compliance_state: WeightingComplianceState = field(default_factory=WeightingComplianceState)
 
 
+@dataclass(frozen=True)
+class WeightLookup:
+    """Typed view over privacy multipliers used by downstream readers.
+
+    Per-dimension multipliers intentionally override global multipliers because
+    fallback solving can produce dimension-specific feasible weights.
+    """
+
+    global_weights: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    per_dimension_weights: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+
+    @classmethod
+    def from_weighting_result(cls, result: WeightingResult) -> "WeightLookup":
+        return cls(
+            global_weights=result.global_weights,
+            per_dimension_weights=result.per_dimension_weights,
+        )
+
+    @classmethod
+    def from_analyzer(cls, analyzer: Any) -> "WeightLookup":
+        return cls(
+            global_weights=getattr(analyzer, "global_weights", {}) or {},
+            per_dimension_weights=getattr(analyzer, "per_dimension_weights", {}) or {},
+        )
+
+    def multiplier(self, peer: str, dimension: Optional[str] = None) -> float:
+        if dimension is not None:
+            dim_weights = self.per_dimension_weights.get(dimension, {})
+            if peer in dim_weights:
+                return float(dim_weights[peer])
+
+        peer_weight = self.global_weights.get(peer, {})
+        if isinstance(peer_weight, Mapping):
+            return float(peer_weight.get("multiplier", 1.0))
+        return float(peer_weight or 1.0)
+
+    def map_for_dimension(self, dimension: str) -> Dict[str, float]:
+        weight_map: Dict[str, float] = {}
+        for peer in self.global_weights:
+            weight_map[peer] = self.multiplier(peer)
+        for peer in self.per_dimension_weights.get(dimension, {}):
+            weight_map[peer] = self.multiplier(peer, dimension)
+        return weight_map
+
+
 @dataclass
 class OutputSettings:
     """Resolved output/report flags for a completed analysis run."""

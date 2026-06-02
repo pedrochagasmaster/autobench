@@ -7,18 +7,13 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from core.contracts import WeightLookup
+
 logger = logging.getLogger(__name__)
 
 
 def build_weight_map_for_dimension(analyzer, dimension: str) -> Dict[str, float]:
-    weight_map: Dict[str, float] = {}
-    if analyzer.global_weights:
-        for peer, info in analyzer.global_weights.items():
-            weight_map[peer] = float(info.get('multiplier', 1.0))
-    if dimension in analyzer.per_dimension_weights:
-        for peer, mult in analyzer.per_dimension_weights[dimension].items():
-            weight_map[peer] = float(mult)
-    return weight_map
+    return WeightLookup.from_analyzer(analyzer).map_for_dimension(dimension)
 
 
 def calculate_share_impact(
@@ -27,6 +22,7 @@ def calculate_share_impact(
     metric_col: str,
     dimensions: List[str],
     target_entity: Optional[str] = None,
+    weight_lookup: Optional[WeightLookup] = None,
 ) -> pd.DataFrame:
     """Calculate impact between raw and balanced market share."""
     entity = target_entity or analyzer.target_entity
@@ -57,9 +53,10 @@ def calculate_share_impact(
         return pd.DataFrame()
 
     impact_rows: List[Dict[str, Any]] = []
+    weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
 
     for dimension in dimensions:
-        dim_weights = build_weight_map_for_dimension(analyzer, dimension)
+        dim_weights = weights.map_for_dimension(dimension)
 
         if analyzer.time_column and analyzer.time_column in df.columns:
             time_periods = analyzer._get_time_periods(df)
@@ -143,12 +140,14 @@ def calculate_rate_impact(
     total_col: str,
     numerator_cols: Dict[str, str],
     dimensions: List[str],
+    weight_lookup: Optional[WeightLookup] = None,
 ) -> pd.DataFrame:
     """Calculate impact on rate metrics (raw vs balanced rates)."""
     impact_rows: List[Dict[str, Any]] = []
+    weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
 
     for dimension in dimensions:
-        dim_weights = build_weight_map_for_dimension(analyzer, dimension)
+        dim_weights = weights.map_for_dimension(dimension)
 
         if analyzer.time_column and analyzer.time_column in df.columns:
             time_periods = analyzer._get_time_periods(df)
