@@ -1,0 +1,4 @@
+{
+  "name": "autobench-python",
+  "install": "bash scripts/cloud_install.sh"
+}
