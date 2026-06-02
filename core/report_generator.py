@@ -16,6 +16,8 @@ from core.report_content import (
     resolve_convert_all_rates,
     should_convert_rate_column,
 )
+from core.contracts import AnalysisArtifacts
+from core.report_models import ReportModel
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,19 @@ class ReportGenerator:
         self._fill_class = PatternFill
         self._align_class = Alignment
         
+        metadata = dict(metadata or {})
+        model = ReportModel.from_artifacts(
+            AnalysisArtifacts(
+                results=results,
+                metadata=metadata,
+                weights_df=metadata.get("weights_df"),
+                method_breakdown_df=metadata.get("method_breakdown_df"),
+                privacy_validation_df=metadata.get("privacy_validation_df"),
+                impact_df=metadata.get("impact_df"),
+                compliance_summary=metadata.get("compliance_summary"),
+            )
+        ) if metadata.get("compliance_summary") else None
+
         wb = Workbook()
         
         # Remove default sheet
@@ -173,7 +188,7 @@ class ReportGenerator:
         
         # Create Summary sheet
         ws_summary = wb.create_sheet("Summary")
-        self._write_summary_sheet(ws_summary, results, analysis_type, metadata)
+        self._write_summary_sheet(ws_summary, results, analysis_type, metadata, report_model=model)
         
         # Create sheets for each result. Use the plain metric/dimension name so
         # the workbook is consistent with pre-refactor archives, the CSV
@@ -216,7 +231,8 @@ class ReportGenerator:
         worksheet: Any,
         results: Dict[str, Any],
         analysis_type: str,
-        metadata: Optional[Dict[str, Any]]
+        metadata: Optional[Dict[str, Any]],
+        report_model: Optional[ReportModel] = None,
     ) -> None:
         """Write summary information to worksheet."""
         # Header
@@ -248,7 +264,11 @@ class ReportGenerator:
             worksheet[f'B{row}'] = f"{metadata.get('participants', 'N/A')} participants, " \
                                    f"{metadata.get('max_concentration', 'N/A')}% max"
             row += 2
-            compliance_summary = metadata.get('compliance_summary', {})
+            compliance_summary = (
+                report_model.compliance_summary
+                if report_model is not None
+                else metadata.get('compliance_summary', {})
+            )
             for label, key in [
                 ("Compliance Posture:", "compliance_posture"),
                 ("Compliance Verdict:", "compliance_verdict"),
@@ -257,6 +277,32 @@ class ReportGenerator:
             ]:
                 worksheet[f'A{row}'] = label
                 worksheet[f'B{row}'] = metadata.get(key, compliance_summary.get(key, 'N/A'))
+                row += 1
+            strict_final = compliance_summary.get("strict_final_validation", {})
+            for label, value in [
+                ("Primary Cap:", "pass" if strict_final.get("primary_cap_fail_rows", 0) == 0 else "fail"),
+                (
+                    "Secondary/Additional Rule:",
+                    "pass" if strict_final.get("secondary_rule_fail_categories", 0) == 0 else "fail",
+                ),
+                ("Relaxation Used:", "yes" if strict_final.get("relaxed_rows", 0) else "no"),
+                (
+                    "Strict Final Validation:",
+                    "pass" if strict_final.get("total_violations", 0) == 0 else "fail",
+                ),
+                (
+                    "Input Validation:",
+                    "pass"
+                    if compliance_summary.get("data_quality_publishable") is True
+                    else (
+                        "disabled"
+                        if compliance_summary.get("data_quality_checked") is False
+                        else "warn/error"
+                    ),
+                ),
+            ]:
+                worksheet[f'A{row}'] = label
+                worksheet[f'B{row}'] = value
                 row += 1
             row += 1
         

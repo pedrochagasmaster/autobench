@@ -7,7 +7,18 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from core.privacy_rules import PrivacyRuleEvaluation, evaluate_rule
+from core.privacy_validation import PrivacyValidationResult
+
 VALID_COMPLIANCE_POSTURES = frozenset({"strict", "best_effort", "accuracy_first"})
+
+
+def _as_validation_dataframe(
+    privacy_validation: Optional[pd.DataFrame | PrivacyValidationResult],
+) -> Optional[pd.DataFrame]:
+    if isinstance(privacy_validation, PrivacyValidationResult):
+        return privacy_validation.to_dataframe()
+    return privacy_validation
 
 
 def _count_at_or_above(values: List[float], threshold: float) -> int:
@@ -124,7 +135,9 @@ class ComplianceSummary:
         else:
             run_status = "completed"
 
-        if has_violations:
+        if self.details.get("input_verdict") == "not_publishable_input":
+            compliance_verdict = "not_publishable_input"
+        elif has_violations:
             compliance_verdict = "violations_detected"
         elif has_structural:
             compliance_verdict = "structural_infeasibility"
@@ -151,10 +164,11 @@ def build_compliance_summary(
     *,
     posture: Optional[str],
     acknowledgement_given: bool = False,
-    privacy_validation_df: Optional[pd.DataFrame] = None,
+    privacy_validation_df: Optional[pd.DataFrame | PrivacyValidationResult] = None,
     structural_infeasibility: Optional[Dict[str, Any]] = None,
     blocked_reason: Optional[str] = None,
     blocked_details: Optional[Dict[str, Any]] = None,
+    data_quality: Any = None,
 ) -> ComplianceSummary:
     """Build a ``ComplianceSummary`` from raw run inputs.
 
@@ -163,6 +177,7 @@ def build_compliance_summary(
     as ``run_status="blocked"`` / ``compliance_verdict="blocked"`` instead of a
     misleading ``"completed_with_warnings"``.
     """
+    privacy_validation_df = _as_validation_dataframe(privacy_validation_df)
     violations = 0
     if privacy_validation_df is not None and not privacy_validation_df.empty:
         if "compliant" in privacy_validation_df.columns:
@@ -176,6 +191,19 @@ def build_compliance_summary(
     if strict_final_validation.get("checked"):
         details["strict_final_validation"] = strict_final_validation
         violations += int(strict_final_validation.get("total_violations", 0))
+
+    if data_quality is not None:
+        details.update(
+            {
+                "data_quality_checked": bool(getattr(data_quality, "checked", False)),
+                "data_quality_publishable": bool(getattr(data_quality, "publishable", False)),
+                "validation_errors": int(getattr(data_quality, "errors", 0)),
+                "validation_warnings": int(getattr(data_quality, "warnings", 0)),
+            }
+        )
+        if (posture or "strict") == "strict" and not bool(getattr(data_quality, "publishable", False)):
+            details["input_verdict"] = "not_publishable_input"
+            violations += 1
 
     if blocked_reason:
         details["blocked"] = True

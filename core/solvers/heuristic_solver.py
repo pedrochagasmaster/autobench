@@ -264,6 +264,7 @@ class HeuristicSolver(PrivacySolver):
         # Stats are minimal for heuristic
         stats = {
             'success': success,
+            'converged': success,
             'message': result.message,
             'residual_cap_violation': residual_cap_violation,
             'residual_additional_violation': residual_additional_violation,

@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -74,6 +75,19 @@ def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> N
     assert result == 0
     assert output.exists()
     assert (tmp_path / "share_publication.xlsx").exists()
+
+
+def test_output_writer_receives_report_model(tmp_path: Path) -> None:
+    output = tmp_path / "share.xlsx"
+
+    with patch("core.output_artifacts.OutputArtifactWriter") as writer_cls:
+        result = run_share_analysis(
+            _share_args(output, _share_df(), output_format="analysis"),
+            __import__("logging").getLogger("test_report_model_boundary"),
+        )
+
+    assert result == 0
+    assert writer_cls.call_args.args[0].__class__.__name__ == "ReportModel"
 
 
 def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:

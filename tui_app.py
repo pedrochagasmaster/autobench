@@ -51,6 +51,13 @@ try:
     from core.preset_workflow import PresetWorkflow
     from utils.logger import setup_logging
     from utils.config_manager import ConfigManager
+    from utils.config_overrides import (
+        ADVANCED_FIELD_MAP,
+        ConfigOverrideBuilder,
+        nested_get,
+        nested_set,
+        try_parse_number,
+    )
     from core.data_loader import ValidationIssue, ValidationSeverity
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
@@ -215,32 +222,7 @@ class BenchmarkApp(App):
         ("ctrl+e", "export_advanced", "Export Adv"),
     ]
 
-    ADVANCED_FIELD_MAP: List[Dict[str, Any]] = [
-        {"widget_id": "adv_lp_tolerance", "keys": ("optimization", "linear_programming", "tolerance"), "kind": "input"},
-        {"widget_id": "adv_lp_max_iterations", "keys": ("optimization", "linear_programming", "max_iterations"), "kind": "input"},
-        {"widget_id": "adv_lp_lambda_penalty", "keys": ("optimization", "linear_programming", "lambda_penalty"), "kind": "input"},
-        {"widget_id": "adv_lp_volume_weighting_exponent", "keys": ("optimization", "linear_programming", "volume_weighting_exponent"), "kind": "input"},
-        {"widget_id": "adv_lp_volume_weighted_penalties", "keys": ("optimization", "linear_programming", "volume_weighted_penalties"), "kind": "checkbox", "always_write": True},
-        {"widget_id": "adv_constraints_volume_preservation", "keys": ("optimization", "constraints", "volume_preservation"), "kind": "input"},
-        {"widget_id": "adv_bounds_min_weight", "keys": ("optimization", "bounds", "min_weight"), "kind": "input"},
-        {"widget_id": "adv_bounds_max_weight", "keys": ("optimization", "bounds", "max_weight"), "kind": "input"},
-        {"widget_id": "adv_subset_enabled", "keys": ("optimization", "subset_search", "enabled"), "kind": "checkbox", "always_write": True},
-        {"widget_id": "adv_subset_strategy", "keys": ("optimization", "subset_search", "strategy"), "kind": "input"},
-        {
-            "widget_id": "adv_subset_max_attempts",
-            "keys": ("optimization", "subset_search", "max_attempts"),
-            "kind": "input",
-            "read_keys": [("optimization", "subset_search", "max_tests")],
-        },
-        {"widget_id": "adv_subset_max_slack_threshold", "keys": ("optimization", "subset_search", "max_slack_threshold"), "kind": "input"},
-        {"widget_id": "adv_subset_trigger_on_slack", "keys": ("optimization", "subset_search", "trigger_on_slack"), "kind": "checkbox", "always_write": True},
-        {"widget_id": "adv_subset_prefer_slacks_first", "keys": ("optimization", "subset_search", "prefer_slacks_first"), "kind": "checkbox", "always_write": True},
-        {"widget_id": "adv_bayes_max_iterations", "keys": ("optimization", "bayesian", "max_iterations"), "kind": "input"},
-        {"widget_id": "adv_bayes_learning_rate", "keys": ("optimization", "bayesian", "learning_rate"), "kind": "input"},
-        {"widget_id": "adv_analysis_bic_percentile", "keys": ("analysis", "best_in_class_percentile"), "kind": "input"},
-        {"widget_id": "adv_output_debug_sheets", "keys": ("output", "include_debug_sheets"), "kind": "checkbox", "always_write": True},
-        {"widget_id": "adv_output_privacy_validation", "keys": ("output", "include_privacy_validation"), "kind": "checkbox", "always_write": True},
-    ]
+    ADVANCED_FIELD_MAP: List[Dict[str, Any]] = ADVANCED_FIELD_MAP
 
     CSS = """
     Screen {
@@ -807,28 +789,15 @@ class BenchmarkApp(App):
 
     @staticmethod
     def _nested_get(data: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
-        current: Any = data
-        for key in keys:
-            if not isinstance(current, dict) or key not in current:
-                return None
-            current = current[key]
-        return current
+        return nested_get(data, keys)
 
     @staticmethod
     def _nested_set(data: Dict[str, Any], keys: Tuple[str, ...], value: Any) -> None:
-        current = data
-        for key in keys[:-1]:
-            current = current.setdefault(key, {})
-        current[keys[-1]] = value
+        nested_set(data, keys, value)
 
     @staticmethod
     def _try_parse_number(value: str) -> Any:
-        if value == "":
-            return None
-        try:
-            return float(value) if "." in value else int(value)
-        except ValueError:
-            return value
+        return try_parse_number(value)
 
     def _warn_missing_widget(self, widget_id: str) -> None:
         logging.getLogger(__name__).warning("Advanced widget not found: %s", widget_id)
@@ -866,13 +835,11 @@ class BenchmarkApp(App):
             return False
 
     def _read_field_value_from_preset(self, data: Dict[str, Any], spec: Dict[str, Any]) -> Any:
-        value = self._nested_get(data, tuple(spec["keys"]))
-        if value is None:
-            for alt_keys in spec.get("read_keys", []):
-                value = self._nested_get(data, tuple(alt_keys))
-                if value is not None:
-                    break
-        return value
+        specs_by_widget = {field.widget_id: field for field in ConfigOverrideBuilder().specs}
+        field_spec = specs_by_widget.get(spec["widget_id"])
+        if field_spec is None:
+            return None
+        return ConfigOverrideBuilder().read_field(data, field_spec)
 
     def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
         if not hasattr(self, 'preset_workflow'):
@@ -914,19 +881,11 @@ class BenchmarkApp(App):
                 self._safe_set_checkbox(spec["widget_id"], value)
 
     def _collect_advanced_override_data(self) -> Dict[str, Any]:
-        yaml_data: Dict[str, Any] = {}
+        values: Dict[str, Any] = {}
         for spec in self.ADVANCED_FIELD_MAP:
             widget_id = spec["widget_id"]
-            keys = tuple(spec["keys"])
-            if spec["kind"] == "checkbox":
-                self._nested_set(yaml_data, keys, self._get_bool(widget_id))
-                continue
-            raw = self._get_input(widget_id)
-            if raw == "":
-                continue
-            parsed = self._try_parse_number(raw)
-            self._nested_set(yaml_data, keys, parsed if parsed is not None else raw)
-        return yaml_data
+            values[widget_id] = self._get_bool(widget_id) if spec["kind"] == "checkbox" else self._get_input(widget_id)
+        return ConfigOverrideBuilder().read_from_mapping(values)
 
     def apply_advanced_overrides(self) -> None:
         """Generate a temporary YAML config file from advanced inputs and set path for analysis."""

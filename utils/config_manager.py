@@ -111,6 +111,9 @@ class ResolvedConfig:
         output = config.get("output", {}) or {}
 
         max_attempts = subset.get("max_attempts", subset.get("max_tests", 200))
+        include_impact_summary = output.get("include_impact_summary")
+        if include_impact_summary is None:
+            include_impact_summary = output.get("include_distortion_summary", True)
 
         return cls(
             bounds=BoundsConfig(
@@ -157,12 +160,7 @@ class ResolvedConfig:
                 output_format=str(output.get("output_format", "analysis")),
                 include_debug_sheets=bool(output.get("include_debug_sheets", True)),
                 include_privacy_validation=bool(output.get("include_privacy_validation", True)),
-                include_impact_summary=bool(
-                    output.get(
-                        "include_impact_summary",
-                        output.get("include_distortion_summary", True),
-                    )
-                ),
+                include_impact_summary=bool(include_impact_summary),
                 include_preset_comparison=bool(output.get("include_preset_comparison", False)),
                 include_calculated_metrics=bool(output.get("include_calculated_metrics", False)),
                 include_audit_log=bool(output.get("include_audit_log", True)),

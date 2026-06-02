@@ -8,7 +8,15 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .contracts import AnalysisArtifacts, AnalysisRunRequest
+    from .report_models import ReportModel
     from utils.config_manager import ConfigManager
+
+
+class OutputArtifactWriter:
+    """Adapter boundary for report artifact writing."""
+
+    def __init__(self, report_model: "ReportModel") -> None:
+        self.report_model = report_model
 
 
 def write_outputs(
@@ -23,6 +31,10 @@ def write_outputs(
         logger = logging.getLogger(__name__)
 
     from core.excel_reports import generate_excel_report, generate_multi_rate_excel_report
+    from core.report_models import ReportModel
+
+    report_model = ReportModel.from_artifacts(artifacts)
+    OutputArtifactWriter(report_model)
 
     output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
     publication_file = artifacts.publication_output or output_file

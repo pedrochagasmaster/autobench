@@ -1,6 +1,7 @@
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
+from core.contracts import DataQualityResult
 from core.dimensional_analyzer import DimensionalAnalyzer
 
 
@@ -129,6 +130,17 @@ def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -
     assert summary["run_status"] == "compliant"
     assert summary["compliance_verdict"] == "fully_compliant"
     assert summary["strict_final_validation"]["total_violations"] == 0
+
+
+def test_strict_compliance_requires_publishable_data_quality() -> None:
+    summary = build_compliance_summary(
+        posture="strict",
+        data_quality=DataQualityResult(checked=False),
+    ).to_dict()
+
+    assert summary["compliance_verdict"] == "not_publishable_input"
+    assert summary["data_quality_checked"] is False
+    assert summary["data_quality_publishable"] is False
 
 
 def test_time_aware_privacy_validation_includes_time_total_rows() -> None:

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from .category_builder import CategoryBuilder
-from .contracts import WeightingResult, weighting_result_from_analyzer
+from .contracts import WeightingComplianceState, WeightingResult, weighting_result_from_analyzer
 from .solver_request_builder import build_heuristic_request, build_lp_request
 from .subset_search import search_largest_feasible_subset
 
@@ -46,6 +46,9 @@ class WeightingSolveState:
     converged: bool = False
     used_dimensions: List[str] = field(default_factory=list)
     removed_dimensions: List[str] = field(default_factory=list)
+    heuristic_converged: Optional[bool] = None
+    residual_cap_violation: bool = False
+    residual_additional_violation: bool = False
 
 
 class GlobalWeightOptimizer:
@@ -78,7 +81,7 @@ class GlobalWeightOptimizer:
             self.finalize_converged_weights(problem, state)
             self.post_validate_and_correct(problem, state)
 
-        return self.assemble_weighting_result()
+        return self.assemble_weighting_result(problem, state)
 
     def build_weighting_problem(
         self,
@@ -351,6 +354,11 @@ class GlobalWeightOptimizer:
         if heuristic_result:
             if not heuristic_result.success:
                 logger.warning("Heuristic global solver did not converge; using best-effort weights.")
+            state.heuristic_converged = bool(heuristic_result.stats.get("converged", heuristic_result.success))
+            state.residual_cap_violation = bool(heuristic_result.stats.get("residual_cap_violation", False))
+            state.residual_additional_violation = bool(
+                heuristic_result.stats.get("residual_additional_violation", False)
+            )
             state.weights = heuristic_result.weights
             state.converged = True
             state.used_dimensions = list(problem.dimensions)
@@ -679,5 +687,41 @@ class GlobalWeightOptimizer:
                     else:
                         logger.warning("  Per-dimension solving failed for '%s'", violation_dim)
 
-    def assemble_weighting_result(self) -> WeightingResult:
-        return weighting_result_from_analyzer(self.analyzer)
+    def assemble_weighting_result(
+        self,
+        problem: Optional[WeightingProblem] = None,
+        state: Optional[WeightingSolveState] = None,
+    ) -> WeightingResult:
+        analyzer = self.analyzer
+        result = weighting_result_from_analyzer(analyzer)
+        residual_violations = len(getattr(analyzer, "additional_constraint_violations", []) or [])
+        residual_cap_violation = bool(
+            state.residual_cap_violation
+            if state is not None
+            else result.last_lp_stats.get("residual_cap_violation", False)
+        )
+        residual_additional_violation = bool(
+            state.residual_additional_violation
+            if state is not None
+            else residual_violations
+        )
+        relaxation_used = bool(getattr(analyzer, "dynamic_constraints_enabled", False))
+        primary_passed = not residual_cap_violation
+        secondary_passed = residual_violations == 0 and not residual_additional_violation
+        if primary_passed and secondary_passed and not relaxation_used:
+            verdict = "strict_compliant"
+        elif primary_passed and secondary_passed:
+            verdict = "best_effort"
+        else:
+            verdict = "non_compliant"
+        result.compliance_state = WeightingComplianceState(
+            rule_name=(problem.rule_name if problem is not None else result.privacy_rule_name),
+            primary_cap_passed=primary_passed,
+            secondary_rule_passed=secondary_passed,
+            relaxation_used=relaxation_used,
+            heuristic_converged=state.heuristic_converged if state is not None else None,
+            residual_violations=int(residual_violations),
+            verdict=verdict,
+        )
+        analyzer.weighting_compliance_state = result.compliance_state
+        return result

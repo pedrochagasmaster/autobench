@@ -7,7 +7,12 @@ from core.contracts import SolverRequest
 
 @dataclass
 class SolverResult:
-    """Standardized result from a privacy solver."""
+    """Standardized result from a privacy solver.
+
+    ``stats`` uses stable keys consumed by orchestration:
+    ``converged``, ``residual_cap_violation``, and
+    ``residual_additional_violation``.
+    """
     weights: Dict[str, float]
     method: str
     stats: Dict[str, Any]

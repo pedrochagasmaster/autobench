@@ -27,6 +27,27 @@ class _FakeHeuristicSolver:
         return None
 
 
+class _FailingLpSolver:
+    def solve(self, *_args: Any, **_kwargs: Any) -> Optional[_SolverResult]:
+        return None
+
+
+class _NonConvergedHeuristicSolver:
+    def __init__(self, weights: Dict[str, float]) -> None:
+        self._weights = weights
+
+    def solve(self, *_args: Any, **_kwargs: Any) -> _SolverResult:
+        return _SolverResult(
+            success=False,
+            weights=dict(self._weights),
+            stats={
+                'converged': False,
+                'residual_cap_violation': False,
+                'residual_additional_violation': True,
+            },
+        )
+
+
 class _FakeAnalyzer:
     def __init__(
         self,
@@ -216,6 +237,30 @@ class TestGlobalWeightOptimizerFallbacks(unittest.TestCase):
         self.assertEqual(analyzer._build_categories_calls, [])
         self.assertIn('flag_domestic', analyzer.weight_methods)
         self.assertEqual(analyzer.weight_methods['flag_domestic'], 'Global-LP')
+
+    def test_weighting_result_records_heuristic_convergence_state(self) -> None:
+        all_categories = [
+            {'peer': 'P1', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 100.0},
+            {'peer': 'P2', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 80.0},
+        ]
+        analyzer = _FakeAnalyzer(
+            all_categories=all_categories,
+            peer_volumes={'P1': 100.0, 'P2': 80.0},
+            peers=['P1', 'P2'],
+            enforce_single_weight_set=True,
+        )
+        analyzer.lp_solver = _FailingLpSolver()
+        analyzer.heuristic_solver = _NonConvergedHeuristicSolver({'P1': 1.0, 'P2': 1.0})
+
+        result = GlobalWeightOptimizer(analyzer).calculate_global_privacy_weights(
+            df=pd.DataFrame({'year_month': [202501]}),
+            metric_col='metric',
+            dimensions=['flag_domestic'],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.compliance_state.heuristic_converged)
+        self.assertEqual(result.compliance_state.verdict, 'non_compliant')
 
 
 if __name__ == '__main__':

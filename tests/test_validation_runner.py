@@ -48,3 +48,25 @@ def test_warnings_only_do_not_abort(mock_benchmark_csv) -> None:
 
     assert issues is not None
     assert should_abort is False
+
+
+def test_disabled_input_validation_marks_data_quality_unchecked(mock_benchmark_csv) -> None:
+    df = pd.read_csv(mock_benchmark_csv)
+    config = ConfigManager()
+    config.config["input"]["validate_input"] = False
+    loader = DataLoader(config)
+
+    result = run_input_validation(
+        df=df,
+        config=config,
+        data_loader=loader,
+        analysis_type="share",
+        metric_col="txn_cnt",
+        entity_col="issuer_name",
+        dimensions=["card_type", "channel"],
+        target_entity="Target",
+    )
+
+    assert result.checked is False
+    assert result.publishable is False
+    assert tuple(result) == (None, False)
