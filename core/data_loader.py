@@ -32,6 +32,7 @@ class ValidationIssue:
     row_indices: Optional[List[int]] = None
     auto_fix_available: bool = False
     fix_description: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
     
     def __str__(self) -> str:
         return f"[{self.severity.value}] {self.category}: {self.message}"
@@ -47,6 +48,9 @@ VALIDATION_THRESHOLDS = {
     'max_null_percentage': 5.0,       # Max percentage of null values in critical columns
     'max_entity_concentration': 50.0, # Max single entity concentration (warning threshold)
 }
+
+RATE_COMPARISON_EPSILON = 1e-9
+
 
 class DataLoader:
     """
@@ -660,7 +664,42 @@ class DataLoader:
                 ))
 
         return issues
-    
+
+    def _build_issue_dimension_breakdown(
+        self,
+        df: pd.DataFrame,
+        mask: pd.Series,
+        dimensions: List[str],
+        *,
+        max_categories_per_dimension: int = 5,
+    ) -> Dict[str, Dict[str, int]]:
+        """Build a stable category-count payload for row-level validation issues."""
+        breakdowns: Dict[str, Dict[str, int]] = {}
+        issue_rows = df.loc[mask]
+        for dim in dimensions:
+            if dim not in issue_rows.columns:
+                continue
+            counts = (
+                issue_rows[dim]
+                .fillna("<missing>")
+                .astype(str)
+                .value_counts(dropna=False)
+                .head(max_categories_per_dimension)
+            )
+            if counts.empty:
+                continue
+            breakdowns[dim] = {str(category): int(count) for category, count in counts.items()}
+        return breakdowns
+
+    @staticmethod
+    def _format_dimension_breakdown(breakdown: Dict[str, Dict[str, int]]) -> str:
+        """Render a category-count payload for human-readable logs."""
+        rendered = []
+        for dim, counts in breakdown.items():
+            categories = ", ".join(f"{category}={count}" for category, count in counts.items())
+            rendered.append(f"{dim}: {categories}")
+        return "; ".join(rendered)
+
     def validate_share_input(
         self,
         df: pd.DataFrame,
@@ -907,7 +946,7 @@ class DataLoader:
         
         # 4. Check numerator <= denominator for each rate
         for rate_name, num_col in numerator_cols.items():
-            invalid_mask = df[num_col] > df[total_col]
+            invalid_mask = df[num_col] > (df[total_col] + RATE_COMPARISON_EPSILON)
             if invalid_mask.any():
                 invalid_count = invalid_mask.sum()
                 issues.append(ValidationIssue(
@@ -921,11 +960,23 @@ class DataLoader:
         low_denom_mask = (df[total_col] > 0) & (df[total_col] < t['min_denominator'])
         if low_denom_mask.any():
             low_count = low_denom_mask.sum()
+            affected_categories = self._build_issue_dimension_breakdown(df, low_denom_mask, dimensions)
+            breakdown = self._format_dimension_breakdown(affected_categories)
+            context = f" Affected categories: {breakdown}" if affected_categories else ""
             issues.append(ValidationIssue(
                 severity=ValidationSeverity.WARNING,
                 category="low_denominator",
-                message=f"{low_count} rows have denominator below {t['min_denominator']} - rates may be unstable",
-                row_indices=df[low_denom_mask].index.tolist()[:20]
+                message=(
+                    f"{low_count} rows have denominator below {t['min_denominator']} - "
+                    f"rates may be unstable.{context}"
+                ),
+                row_indices=df[low_denom_mask].index.tolist()[:20],
+                details={
+                    "column": total_col,
+                    "threshold": t['min_denominator'],
+                    "affected_rows": int(low_count),
+                    "affected_categories": affected_categories,
+                },
             ))
 
         # 6-7. Check entity count and target entity existence
@@ -944,7 +995,7 @@ class DataLoader:
             valid_rows = df[total_col] > 0
             if valid_rows.any():
                 rates = 100.0 * df.loc[valid_rows, num_col] / df.loc[valid_rows, total_col]
-                impossible_mask = rates > 100.0
+                impossible_mask = rates > (100.0 + RATE_COMPARISON_EPSILON)
                 if impossible_mask.any():
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.ERROR,
@@ -952,7 +1003,10 @@ class DataLoader:
                         message=f"Rate '{rate_name}' has {int(impossible_mask.sum())} values above 100%",
                         row_indices=rates[impossible_mask].index.tolist()[:50]
                     ))
-                outlier_mask = (rates < 0) | (rates > 100 + t['max_rate_deviation'])
+                outlier_mask = (
+                    (rates < -RATE_COMPARISON_EPSILON)
+                    | (rates > 100 + t['max_rate_deviation'] + RATE_COMPARISON_EPSILON)
+                )
                 outliers = rates[outlier_mask]
                 if len(outliers) > 0:
                     issues.append(ValidationIssue(

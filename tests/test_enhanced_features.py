@@ -358,6 +358,62 @@ class TestValidationEdgeCases:
             for issue in issues
         )
 
+    def test_rate_validation_accepts_exact_100_percent_with_decimal_floating_point(self, data_loader):
+        """Exact numerator=denominator rows should not fail due to floating-point noise."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [166.92, 1427.12, 42549.77, 687.81, 189.89, 1324.36],
+            'approved': [166.92, 1427.12, 42549.77, 687.81, 189.89, 1324.36],
+            'dimension': ['X', 'X', 'X', 'X', 'X', 'X'],
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        assert not any(
+            issue.category in {'invalid_rate', 'invalid_rates'}
+            for issue in issues
+        )
+
+    def test_rate_validation_low_denominator_warning_includes_dimension_breakdown(self, data_loader):
+        """Low-denominator warnings should explain where the affected rows are."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [10, 20, 150, 30, 200, 40],
+            'approved': [5, 10, 100, 15, 180, 20],
+            'dimension': ['Small', 'Small', 'Large', None, 'Large', None],
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        warning = next(issue for issue in issues if issue.category == 'low_denominator')
+
+        assert "Affected categories: dimension:" in warning.message
+        assert "<missing>=2" in warning.message
+        assert "Small=2" in warning.message
+        assert warning.details == {
+            "column": "total",
+            "threshold": 100,
+            "affected_rows": 4,
+            "affected_categories": {
+                "dimension": {
+                    "Small": 2,
+                    "<missing>": 2,
+                },
+            },
+        }
+
 
 class TestPresetComparison:
     """Test preset comparison edge cases."""

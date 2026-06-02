@@ -530,20 +530,18 @@ class ReportGenerator:
         ws['A3'] = f"Status: {status_text}"
         ws['A3'].font = Font(bold=True, size=12)
         ws['A3'].fill = PatternFill(start_color=status_color, end_color=status_color, fill_type="solid")
-        
-        if not validation_issues:
-            ws['A5'] = "No issues detected."
-            return
-        
+
         # Count by severity
         error_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'ERROR' in str(i.severity))
         warn_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'WARN' in str(i.severity))
         info_count = len(validation_issues) - error_count - warn_count
         
         ws['A5'] = f"Errors: {error_count} | Warnings: {warn_count} | Info: {info_count}"
+        if not validation_issues:
+            ws['A6'] = "No issues detected."
         
         # Column headers
-        headers = ['Severity', 'Category', 'Message']
+        headers = ['Severity', 'Category', 'Message', 'Details', 'Sample Rows']
         self._write_header_row(ws, 7, headers, Font, PatternFill, "DDDDDD")
         
         # Issue rows
@@ -551,10 +549,14 @@ class ReportGenerator:
             severity = str(getattr(issue, 'severity', 'UNKNOWN'))
             category = str(getattr(issue, 'category', ''))
             message = str(getattr(issue, 'message', str(issue)))
+            details = getattr(issue, 'details', None) or {}
+            sample_rows = getattr(issue, 'row_indices', None) or []
             
             ws.cell(row=row_idx, column=1, value=severity)
             ws.cell(row=row_idx, column=2, value=category)
             ws.cell(row=row_idx, column=3, value=message)
+            ws.cell(row=row_idx, column=4, value=json.dumps(details, default=str) if details else "")
+            ws.cell(row=row_idx, column=5, value=", ".join(str(row) for row in sample_rows))
             
             # Color by severity
             if 'ERROR' in severity:
@@ -564,13 +566,13 @@ class ReportGenerator:
             else:
                 color = "E6F3FF"
             
-            for col in range(1, 4):
+            for col in range(1, 6):
                 ws.cell(row=row_idx, column=col).fill = PatternFill(
                     start_color=color, end_color=color, fill_type="solid"
                 )
         
         # Adjust column widths
-        self._set_column_widths(ws, {'A': 12, 'B': 20, 'C': 60})
+        self._set_column_widths(ws, {'A': 12, 'B': 20, 'C': 80, 'D': 80, 'E': 30})
         
         logger.info("Added Data Quality sheet")
     
