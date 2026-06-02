@@ -59,6 +59,16 @@ After that, the most useful entrypoints are:
 See the upstream [README](https://github.com/mattpocock/skills) for the full
 catalog and rationale.
 
+## Additional skills (skills CLI)
+
+Installed via `npx skills add` and tracked in `skills-lock.json` at the repo root:
+
+- **thermo-nuclear-review** — `.agents/skills/thermo-nuclear-review/` (from
+  `cursor/plugins`). Comprehensive security/correctness audit of branch changes.
+  Invoke with `/thermo-nuclear-review` or ask for a thermo-nuclear review.
+
+Update with `npx skills update -y` from the repo root.
+
 ## Cloud-agent notes
 
 - Project skills committed under `.cursor/skills/` (or `.agents/skills/`,
