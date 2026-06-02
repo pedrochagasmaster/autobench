@@ -83,6 +83,8 @@ class OutputConfig:
     include_audit_log: bool = True
     fraud_in_bps: bool = True
     log_level: str = "INFO"
+    impact_thresholds: Dict[str, Any] = field(default_factory=dict)
+    distortion_thresholds: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -166,6 +168,8 @@ class ResolvedConfig:
                 include_audit_log=bool(output.get("include_audit_log", True)),
                 fraud_in_bps=bool(output.get("fraud_in_bps", True)),
                 log_level=str(output.get("log_level", "INFO")),
+                impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
+                distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
             ),
             compliance_posture=str(config.get("compliance_posture", "strict")),
         )

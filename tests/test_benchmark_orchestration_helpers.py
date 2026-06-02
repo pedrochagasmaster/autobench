@@ -244,8 +244,6 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
     def test_core_analysis_does_not_read_raw_optimization_config_values(self) -> None:
         offenders = []
         for path in Path("core").glob("*.py"):
-            if path.name in {"analysis_run.py"}:
-                continue
             text = path.read_text(encoding="utf-8")
             if ".get('optimization'" in text or '.get(\"optimization\"' in text:
                 offenders.append(str(path))
@@ -311,6 +309,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
     def test_build_common_run_metadata_includes_shared_analyzer_fields(self) -> None:
         config = ConfigManager()
+        resolved = config.resolve()
         analyzer = SimpleNamespace(
             rank_preservation_strength=0.75,
             privacy_rule_name='MC-3.2',
@@ -331,7 +330,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
         metadata = build_common_run_metadata(
             args,
-            config,
+            resolved,
             analyzer,
             resolved_entity='Target',
             entity_col='issuer_name',
@@ -360,6 +359,56 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(metadata['dynamic_constraints_stats'], {'applied': 4})
         self.assertEqual(metadata['structural_infeasibility_summary'], {'count': 1})
         self.assertEqual(metadata['dimension_names'], ['channel', 'product'])
+
+    def test_build_common_run_metadata_uses_resolved_config_snapshot(self) -> None:
+        config = ConfigManager()
+        config.config['optimization']['bounds']['max_weight'] = 4.0
+        config.config['output']['impact_thresholds'] = {'high_pp': 9.0}
+        resolved = config.resolve()
+        config.config['optimization']['bounds']['max_weight'] = 99.0
+        config.config['output']['impact_thresholds']['high_pp'] = 99.0
+        analyzer = SimpleNamespace(
+            rank_preservation_strength=0.75,
+            privacy_rule_name='MC-3.2',
+            enforce_additional_constraints=True,
+            additional_constraint_violations=[],
+            dynamic_constraints_enabled=False,
+            dynamic_constraint_stats={},
+            get_structural_infeasibility_summary=lambda: {},
+        )
+        args = SimpleNamespace(
+            preset=None,
+            csv='input.csv',
+            log_level='INFO',
+            dimensions=['channel'],
+            auto=False,
+            entity_col='issuer_name',
+        )
+
+        metadata = build_common_run_metadata(
+            args,
+            resolved,
+            analyzer,
+            resolved_entity=None,
+            entity_col='issuer_name',
+            total_records=100,
+            unique_entities=5,
+            dimensions_analyzed=1,
+            dimension_names=['channel'],
+            secondary_metrics=None,
+            debug_mode=False,
+            consistent_weights=True,
+            include_privacy_validation=True,
+            include_impact_summary=True,
+            include_preset_comparison=False,
+            include_calculated_metrics=False,
+            output_format='analysis',
+            consistency_mode='global',
+            enforce_single_weight_set=False,
+        )
+
+        self.assertEqual(metadata['max_weight'], 4.0)
+        self.assertEqual(metadata['impact_thresholds']['high_pp'], 9.0)
 
     def test_collect_run_diagnostics_builds_shared_artifacts(self) -> None:
         weights_df = pd.DataFrame({'peer': ['A'], 'weight': [0.5]})
