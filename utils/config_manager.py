@@ -593,7 +593,7 @@ class ConfigManager:
                     'enforce_single_weight_set': False,
                     'enforce_additional_constraints': True,
                     'dynamic_constraints': {
-                        'enabled': True,
+                        'enabled': False,
                         'min_peer_count': 4,
                         'min_effective_peer_count': 3.0,
                         'min_category_volume_share': 0.001,

@@ -110,7 +110,7 @@ def build_dimensional_analyzer(
         volume_weighting_exponent=resolved.linear_programming.volume_weighting_exponent,
         lambda_penalty=lambda_penalty,
         enforce_additional_constraints=resolved.constraints.enforce_additional_constraints,
-        dynamic_constraints_enabled=dyn_constraints.get('enabled', True),
+        dynamic_constraints_enabled=dyn_constraints.get('enabled', False),
         min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
         min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
         min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),

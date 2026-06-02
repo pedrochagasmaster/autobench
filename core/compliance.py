@@ -10,6 +10,82 @@ import pandas as pd
 VALID_COMPLIANCE_POSTURES = frozenset({"strict", "best_effort", "accuracy_first"})
 
 
+def _count_at_or_above(values: List[float], threshold: float) -> int:
+    return sum(1 for value in values if value >= threshold)
+
+
+def _evaluate_strict_secondary_rule(rule_name: str, shares: List[float]) -> bool:
+    """Evaluate canonical additional Control 3.2 rules without dynamic relaxation."""
+    if rule_name == "6/30":
+        return _count_at_or_above(shares, 7.0) >= 3
+    if rule_name == "7/35":
+        return _count_at_or_above(shares, 15.0) >= 2 and _count_at_or_above(shares, 8.0) >= 3
+    if rule_name == "10/40":
+        return _count_at_or_above(shares, 20.0) >= 2 and _count_at_or_above(shares, 10.0) >= 3
+    return True
+
+
+def build_strict_final_validation(privacy_validation_df: Optional[pd.DataFrame]) -> Dict[str, Any]:
+    """Independently validate final privacy rows against canonical rules.
+
+    This is intentionally stricter than the report row labels: relaxed dynamic
+    constraints are counted as violations even if the row-level ``Compliant``
+    label says "Yes".
+    """
+    result: Dict[str, Any] = {
+        "checked": False,
+        "rows": 0,
+        "primary_cap_fail_rows": 0,
+        "secondary_rule_fail_categories": 0,
+        "relaxed_rows": 0,
+        "total_violations": 0,
+    }
+    if privacy_validation_df is None or privacy_validation_df.empty:
+        return result
+
+    required = {"Dimension", "Category", "Rule_Name", "Balanced_Share_%", "Privacy_Cap_%"}
+    missing = sorted(required - set(privacy_validation_df.columns))
+    result["checked"] = True
+    result["rows"] = int(len(privacy_validation_df))
+    if missing:
+        if "Compliant" in privacy_validation_df.columns or "compliant" in privacy_validation_df.columns:
+            result["checked"] = False
+            result["skipped_reason"] = "strict validation columns unavailable"
+            result["missing_columns"] = missing
+            return result
+        result["missing_columns"] = missing
+        result["total_violations"] = 1
+        return result
+
+    df = privacy_validation_df.copy()
+    balanced = pd.to_numeric(df["Balanced_Share_%"], errors="coerce")
+    cap = pd.to_numeric(df["Privacy_Cap_%"], errors="coerce")
+    result["primary_cap_fail_rows"] = int(((balanced > cap) | balanced.isna() | cap.isna()).sum())
+
+    if "Additional_Constraints_Relaxed" in df.columns:
+        relaxed = df["Additional_Constraints_Relaxed"].astype(str).str.strip().str.lower()
+        result["relaxed_rows"] = int((relaxed == "yes").sum())
+
+    secondary_failures = 0
+    group_cols = ["Dimension", "Category"]
+    if "Time_Period" in df.columns:
+        group_cols.append("Time_Period")
+
+    for _, group in df.groupby(group_cols, dropna=False):
+        rule_name = str(group["Rule_Name"].iloc[0]).strip()
+        shares = pd.to_numeric(group["Balanced_Share_%"], errors="coerce").fillna(-1.0).tolist()
+        if not _evaluate_strict_secondary_rule(rule_name, shares):
+            secondary_failures += 1
+
+    result["secondary_rule_fail_categories"] = int(secondary_failures)
+    result["total_violations"] = int(
+        result["primary_cap_fail_rows"]
+        + result["secondary_rule_fail_categories"]
+        + result["relaxed_rows"]
+    )
+    return result
+
+
 @dataclass
 class ComplianceSummary:
     """Summarised compliance state for a run."""
@@ -96,6 +172,11 @@ def build_compliance_summary(
             violations = int((normalized != "yes").sum())
 
     details: Dict[str, Any] = {}
+    strict_final_validation = build_strict_final_validation(privacy_validation_df)
+    if strict_final_validation.get("checked"):
+        details["strict_final_validation"] = strict_final_validation
+        violations += int(strict_final_validation.get("total_violations", 0))
+
     if blocked_reason:
         details["blocked"] = True
         details["reason"] = blocked_reason

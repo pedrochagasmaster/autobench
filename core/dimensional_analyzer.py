@@ -78,7 +78,7 @@ class DimensionalAnalyzer:
         lambda_penalty: Optional[float] = None,
         enforce_additional_constraints: bool = True,
         # Dynamic constraint handling for sparse/low-representativeness buckets
-        dynamic_constraints_enabled: bool = True,
+        dynamic_constraints_enabled: bool = False,
         min_peer_count_for_constraints: int = 4,
         min_effective_peer_count: float = 3.0,
         min_category_volume_share: float = 0.001,

@@ -90,6 +90,42 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertFalse(settings['consistent_weights'])
         self.assertIn('dynamic_constraints_config', settings)
 
+    def test_build_dimensional_analyzer_defaults_to_strict_additional_constraints(self) -> None:
+        config = ConfigManager()
+        resolved = config.resolve()
+
+        analyzer, settings = _build_dimensional_analyzer(
+            target_entity='Target',
+            entity_col='issuer_name',
+            resolved=resolved,
+            time_col=None,
+            debug_mode=False,
+            bic_percentile=0.85,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertTrue(analyzer.enforce_additional_constraints)
+        self.assertFalse(analyzer.dynamic_constraints_enabled)
+        self.assertFalse(settings['dynamic_constraints_config']['enabled'])
+
+    def test_build_dimensional_analyzer_allows_explicit_dynamic_constraint_opt_in(self) -> None:
+        config = ConfigManager()
+        resolved = config.resolve()
+        resolved.constraints.dynamic_constraints['enabled'] = True
+
+        analyzer, settings = _build_dimensional_analyzer(
+            target_entity='Target',
+            entity_col='issuer_name',
+            resolved=resolved,
+            time_col=None,
+            debug_mode=False,
+            bic_percentile=0.85,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertTrue(analyzer.dynamic_constraints_enabled)
+        self.assertTrue(settings['dynamic_constraints_config']['enabled'])
+
     def test_resolve_target_entity_normalizes_case(self) -> None:
         df = pd.DataFrame({'issuer_name': ['Target', 'Peer1']})
 

@@ -136,7 +136,7 @@ optimization:
 
     # Dynamic constraints to handle sparse or unrepresentative buckets
     dynamic_constraints:
-      enabled: true
+      enabled: false
       # Minimum peer count in a category/time bucket to enforce additional constraints
       min_peer_count: 4
       # Minimum effective peer count (1/sum(share^2)) to enforce additional constraints
