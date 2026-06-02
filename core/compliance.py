@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -21,22 +21,9 @@ def _as_validation_dataframe(
     return privacy_validation
 
 
-def _count_at_or_above(values: List[float], threshold: float) -> int:
-    return sum(1 for value in values if value >= threshold)
-
-
-def _evaluate_strict_secondary_rule(rule_name: str, shares: List[float]) -> bool:
-    """Evaluate canonical additional Control 3.2 rules without dynamic relaxation."""
-    if rule_name == "6/30":
-        return _count_at_or_above(shares, 7.0) >= 3
-    if rule_name == "7/35":
-        return _count_at_or_above(shares, 15.0) >= 2 and _count_at_or_above(shares, 8.0) >= 3
-    if rule_name == "10/40":
-        return _count_at_or_above(shares, 20.0) >= 2 and _count_at_or_above(shares, 10.0) >= 3
-    return True
-
-
-def build_strict_final_validation(privacy_validation_df: Optional[pd.DataFrame]) -> Dict[str, Any]:
+def build_strict_final_validation(
+    privacy_validation_df: Optional[pd.DataFrame | PrivacyValidationResult],
+) -> Dict[str, Any]:
     """Independently validate final privacy rows against canonical rules.
 
     This is intentionally stricter than the report row labels: relaxed dynamic
@@ -51,6 +38,7 @@ def build_strict_final_validation(privacy_validation_df: Optional[pd.DataFrame])
         "relaxed_rows": 0,
         "total_violations": 0,
     }
+    privacy_validation_df = _as_validation_dataframe(privacy_validation_df)
     if privacy_validation_df is None or privacy_validation_df.empty:
         return result
 
@@ -82,13 +70,30 @@ def build_strict_final_validation(privacy_validation_df: Optional[pd.DataFrame])
     if "Time_Period" in df.columns:
         group_cols.append("Time_Period")
 
+    evaluations: list[PrivacyRuleEvaluation] = []
     for _, group in df.groupby(group_cols, dropna=False):
         rule_name = str(group["Rule_Name"].iloc[0]).strip()
         shares = pd.to_numeric(group["Balanced_Share_%"], errors="coerce").fillna(-1.0).tolist()
-        if not _evaluate_strict_secondary_rule(rule_name, shares):
+        evaluation = evaluate_rule(rule_name, shares)
+        evaluations.append(evaluation)
+        if not evaluation.secondary_rule_passed:
             secondary_failures += 1
 
     result["secondary_rule_fail_categories"] = int(secondary_failures)
+    result["rule_evaluations"] = [
+        {
+            "rule_name": evaluation.rule_name,
+            "primary_cap_passed": evaluation.primary_cap_passed,
+            "secondary_rule_passed": evaluation.secondary_rule_passed,
+            "relaxation_used": evaluation.relaxation_used,
+            "strict_passed": evaluation.strict_passed,
+            "primary_cap_failures": evaluation.primary_cap_failures,
+            "secondary_failures": list(evaluation.secondary_failures),
+            "max_share": evaluation.max_share,
+            "participant_count": evaluation.participant_count,
+        }
+        for evaluation in evaluations
+    ]
     result["total_violations"] = int(
         result["primary_cap_fail_rows"]
         + result["secondary_rule_fail_categories"]

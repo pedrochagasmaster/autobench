@@ -23,6 +23,7 @@ from core.analysis_run import (
     validate_analysis_input,
     write_audit_log,
 )
+from core.audit_log import build_audit_log_model
 from core.contracts import AnalysisRunRequest
 from core.data_loader import ValidationSeverity
 from utils.config_manager import ConfigManager
@@ -460,7 +461,10 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
         validation_issues = [SimpleNamespace(severity=ValidationSeverity.ERROR)]
 
-        with patch('core.analysis_run.ReportGenerator') as report_generator_cls:
+        with patch('core.analysis_run.ReportGenerator') as report_generator_cls, patch(
+            'core.analysis_run.build_audit_log_model',
+            wraps=build_audit_log_model,
+        ) as audit_model_builder:
             audit_log_file = write_audit_log(
                 config,
                 analysis_output_file='benchmark_share_target.xlsx',
@@ -473,6 +477,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
                 validation_issues=validation_issues,
             )
 
+        audit_model_builder.assert_called_once()
         report_generator_cls.assert_called_once_with(config)
         create_log = report_generator_cls.return_value.create_audit_log
         create_log.assert_called_once()

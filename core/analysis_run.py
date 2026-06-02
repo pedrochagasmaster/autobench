@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
+from core.audit_log import build_audit_log_model
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
 from core.contracts import (
     AnalysisArtifacts,
@@ -30,6 +31,7 @@ from core.observability import RunObservability
 from core.output_artifacts import write_outputs
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
 from core.report_generator import ReportGenerator
+from core.report_models import ReportModel
 from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager, ResolvedConfig
 
@@ -671,33 +673,20 @@ def write_audit_log(
     """Create the audit log for a completed analysis run."""
     audit_log_file = str(Path(analysis_output_file).with_name(f"{Path(analysis_output_file).stem}_audit.log"))
     Path(audit_log_file).parent.mkdir(parents=True, exist_ok=True)
-    impact_summary = metadata.get('impact_summary', {}) if isinstance(metadata, dict) else {}
-    results_summary = {
-        'dimensions_analyzed': dimensions_analyzed,
-        'categories_analyzed': len(impact_df) if impact_df is not None else None,
-        'impact_mean_abs_pp': impact_summary.get('mean_abs_impact_pp'),
-        'privacy_rule': metadata.get('privacy_rule'),
-        'additional_constraint_violations_count': metadata.get('additional_constraint_violations_count'),
-        'privacy_validation_rows': len(privacy_validation_df) if privacy_validation_df is not None else 0,
-        'outputs': report_paths,
-        'balanced_csv': csv_output,
-    }
-    results_summary.update(summarize_validation_issues(validation_issues))
-    audit_metadata: Dict[str, Any] = {}
-    for key, value in metadata.items():
-        if key == 'analyzer_ref':
-            continue
-        # Compact DataFrames + list-of-DataFrame-rows so the audit log stays a
-        # readable summary (§2.8). Without this, `preset_comparison_df`,
-        # `impact_df`, and other tabular metadata blow the audit log up to
-        # tens of MB of `repr(df)` text.
-        if hasattr(value, 'shape') and hasattr(value, 'columns'):
-            audit_metadata[key] = f"DataFrame rows={value.shape[0]} cols={value.shape[1]}"
-        elif isinstance(value, list) and value and isinstance(value[0], dict):
-            audit_metadata[key] = f"List[Dict] entries={len(value)} keys={sorted(value[0].keys())}"
-        else:
-            audit_metadata[key] = value
-    ReportGenerator(config).create_audit_log(audit_log_file, audit_metadata, results_summary)
+    audit_model = build_audit_log_model(
+        metadata=metadata,
+        report_paths=report_paths,
+        dimensions_analyzed=dimensions_analyzed,
+        csv_output=csv_output,
+        impact_df=impact_df,
+        privacy_validation_df=privacy_validation_df,
+        validation_summary=summarize_validation_issues(validation_issues),
+    )
+    ReportGenerator(config).create_audit_log(
+        audit_log_file,
+        audit_model["metadata"],
+        audit_model["results_summary"],
+    )
     return audit_log_file
 
 
@@ -1202,12 +1191,13 @@ def _execute_run(
 
     mode_spec.validate_request(request, df)
 
-    validation_issues, should_abort = validate_analysis_input(
+    data_quality = validate_analysis_input(
         df=df,
         config=config,
         data_loader=data_loader,
         **mode_spec.build_validation_kwargs(request, entity_col, time_col, request.dimensions),
     )
+    validation_issues, should_abort = data_quality
     if should_abort:
         raise RunAborted('Analysis aborted due to validation errors')
 
@@ -1327,12 +1317,30 @@ def _execute_run(
         acknowledgement_given=compliance_context['acknowledgement_given'],
         privacy_validation_df=diagnostics['compliance_privacy_validation_df'],
         structural_infeasibility=metadata.get('structural_infeasibility_summary', {}),
+        data_quality=data_quality,
     ).to_dict()
     metadata['compliance_summary'] = compliance_summary
     metadata['run_status'] = compliance_summary['run_status']
     metadata['compliance_verdict'] = compliance_summary['compliance_verdict']
     metadata['acknowledgement_state'] = compliance_summary['acknowledgement_state']
     metadata['posture_consistent'] = compliance_summary['posture_consistent']
+    plan = build_analysis_plan(
+        request,
+        resolved,
+        entity=resolved_entity,
+        entity_column=entity_col,
+        dimensions=dimensions,
+        output_settings=output_settings,
+    )
+    analysis_result = finalize_analysis_result(
+        plan=plan,
+        weighting_result=weighting_result,
+        privacy_validation=metadata.get('privacy_validation_result', diagnostics['compliance_privacy_validation_df']),
+        data_quality=data_quality,
+        results=results,
+        compliance_summary=compliance_summary,
+    )
+    metadata.update(analysis_result_to_metadata(analysis_result))
 
     preset_comparison_df = None
     if output_settings.include_preset_comparison:
@@ -1378,6 +1386,13 @@ def _execute_run(
         publication_output=str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}")),
         analyzer=analyzer,
         compliance_summary=compliance_summary,
+        report_model=ReportModel.from_analysis_result(
+            analysis_result,
+            privacy_validation_df=diagnostics['privacy_validation_df'],
+            weights_df=diagnostics['weights_df'],
+            method_breakdown_df=diagnostics['method_breakdown_df'],
+            impact_df=impact_df,
+        ),
     )
 
     artifacts = write_outputs(request, artifacts, config=config, logger=logger)

@@ -172,6 +172,7 @@ class AnalysisArtifacts:
     report_paths: Optional[List[str]] = None
     csv_output: Optional[str] = None
     publication_output: Optional[str] = None
+    report_model: Any = None
 
 
 @dataclass

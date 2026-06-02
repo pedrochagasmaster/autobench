@@ -6,6 +6,7 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import run_share_analysis
+from core.output_artifacts import OutputArtifactWriter
 
 
 def test_core_modules_import_without_benchmark() -> None:
@@ -80,7 +81,7 @@ def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> N
 def test_output_writer_receives_report_model(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
 
-    with patch("core.output_artifacts.OutputArtifactWriter") as writer_cls:
+    with patch("core.output_artifacts.OutputArtifactWriter", wraps=OutputArtifactWriter) as writer_cls:
         result = run_share_analysis(
             _share_args(output, _share_df(), output_format="analysis"),
             __import__("logging").getLogger("test_report_model_boundary"),
@@ -88,6 +89,22 @@ def test_output_writer_receives_report_model(tmp_path: Path) -> None:
 
     assert result == 0
     assert writer_cls.call_args.args[0].__class__.__name__ == "ReportModel"
+
+
+def test_no_validate_input_cannot_emit_fully_compliant_audit(tmp_path: Path) -> None:
+    output = tmp_path / "share.xlsx"
+
+    result = run_share_analysis(
+        _share_args(output, _share_df(), output_format="analysis"),
+        __import__("logging").getLogger("test_no_validate_verdict"),
+    )
+
+    assert result == 0
+    audit_log = tmp_path / "share_audit.log"
+    assert audit_log.exists()
+    audit_text = audit_log.read_text(encoding="utf-8")
+    assert "compliance_verdict: not_publishable_input" in audit_text
+    assert "data_quality_checked: False" in audit_text
 
 
 def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:

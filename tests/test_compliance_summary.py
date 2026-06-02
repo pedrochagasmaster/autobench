@@ -108,6 +108,9 @@ def test_compliance_summary_rechecks_strict_10_40_secondary_rule() -> None:
 
     assert summary["run_status"] == "non_compliant"
     assert summary["strict_final_validation"]["secondary_rule_fail_categories"] == 1
+    evaluation = summary["strict_final_validation"]["rule_evaluations"][0]
+    assert evaluation["rule_name"] == "10/40"
+    assert evaluation["secondary_rule_passed"] is False
 
 
 def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -> None:

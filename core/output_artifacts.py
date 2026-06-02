@@ -15,8 +15,39 @@ if TYPE_CHECKING:
 class OutputArtifactWriter:
     """Adapter boundary for report artifact writing."""
 
-    def __init__(self, report_model: "ReportModel") -> None:
+    def __init__(
+        self,
+        report_model: "ReportModel",
+        request: "AnalysisRunRequest",
+        artifacts: "AnalysisArtifacts",
+        config: Any = None,
+    ) -> None:
         self.report_model = report_model
+        self.request = request
+        self.artifacts = artifacts
+        self.config = config
+
+    @property
+    def output_file(self) -> str:
+        return self.artifacts.analysis_output_file or "benchmark_output.xlsx"
+
+    @property
+    def publication_file(self) -> str:
+        return self.artifacts.publication_output or self.output_file
+
+    @property
+    def output_format(self) -> str:
+        if self.config is None:
+            return self.request.output_format
+        return self.config.get("output", "output_format", default=self.request.output_format)
+
+    @property
+    def write_analysis(self) -> bool:
+        return self.output_format in {"analysis", "both"}
+
+    @property
+    def write_publication(self) -> bool:
+        return self.output_format in {"publication", "both"}
 
 
 def write_outputs(
@@ -33,19 +64,12 @@ def write_outputs(
     from core.excel_reports import generate_excel_report, generate_multi_rate_excel_report
     from core.report_models import ReportModel
 
-    report_model = ReportModel.from_artifacts(artifacts)
-    OutputArtifactWriter(report_model)
+    report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
+    writer = OutputArtifactWriter(report_model, request, artifacts, config)
 
-    output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
-    publication_file = artifacts.publication_output or output_file
+    output_file = writer.output_file
+    publication_file = writer.publication_file
     entity_name = request.entity or "PEER_ONLY"
-    output_format = (
-        config.get("output", "output_format", default=request.output_format)
-        if config is not None
-        else request.output_format
-    )
-    write_analysis = output_format in {"analysis", "both"}
-    write_publication = output_format in {"publication", "both"}
 
     def _write_report(path: str, *, publication: bool) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -133,10 +157,10 @@ def write_outputs(
             config=config,
         )
 
-    if write_analysis:
+    if writer.write_analysis:
         _write_report(output_file, publication=False)
         logger.info("Analysis report written to %s", output_file)
-    if write_publication:
+    if writer.write_publication:
         _write_report(publication_file, publication=True)
         artifacts.publication_output = publication_file
         logger.info("Publication report written to %s", publication_file)
