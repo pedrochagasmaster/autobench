@@ -15,14 +15,16 @@ npx skills update -y
 
 | Package | Skills |
 |---------|--------|
-| [`mattpocock/skills`](https://github.com/mattpocock/skills) | Engineering, productivity, and misc helpers (18 skills; excludes upstream `personal/`, `in-progress`, `deprecated`) |
+| [`mattpocock/skills`](https://github.com/mattpocock/skills) | 24 skills (full promoted catalog except writing/Obsidian — see below) |
 | [`cursor/plugins`](https://github.com/cursor/plugins) | `thermo-nuclear-review` |
 
-### Matt Pocock skills
+### Matt Pocock — engineering & workflow
 
-- **Engineering:** `diagnose`, `grill-with-docs`, `improve-codebase-architecture`, `prototype`, `setup-matt-pocock-skills`, `tdd`, `to-issues`, `to-prd`, `triage`, `zoom-out`
-- **Productivity:** `caveman`, `grill-me`, `handoff`, `write-a-skill`
-- **Misc:** `git-guardrails-claude-code`, `migrate-to-shoehorn`, `scaffold-exercises`, `setup-pre-commit`
+- **Engineering:** `diagnose`, `design-an-interface`, `grill-with-docs`, `improve-codebase-architecture`, `prototype`, `request-refactor-plan`, `review`, `setup-matt-pocock-skills`, `tdd`, `to-issues`, `to-prd`, `triage`, `ubiquitous-language`, `zoom-out`
+- **Productivity:** `caveman`, `grill-me`, `handoff`, `teach`, `write-a-skill`
+- **General:** `qa`, `git-guardrails-claude-code`, `migrate-to-shoehorn`, `scaffold-exercises`, `setup-pre-commit`
+
+**Not installed** (intentionally): `writing-beats`, `writing-fragments`, `writing-shape`, `edit-article`, `obsidian-vault`
 
 ### Cursor plugins
 
@@ -31,21 +33,16 @@ npx skills update -y
 ## Quickstart
 
 1. Run **`/setup-matt-pocock-skills`** once to scaffold `docs/agents/` (issue tracker, triage labels, domain docs). Commit what it creates so cloud agents inherit config.
-2. Common entrypoints: `/tdd`, `/diagnose`, `/grill-me`, `/grill-with-docs`, `/to-prd`, `/to-issues`, `/triage`, `/zoom-out`, `/improve-codebase-architecture`
+2. Common entrypoints: `/tdd`, `/diagnose`, `/review`, `/grill-me`, `/grill-with-docs`, `/ubiquitous-language`, `/to-prd`, `/to-issues`, `/triage`, `/qa`, `/zoom-out`, `/improve-codebase-architecture`
 
 See the [mattpocock/skills README](https://github.com/mattpocock/skills) for full catalog and rationale.
 
 ## Add or remove skills
 
 ```bash
-# Add one skill from a package
-npx skills add mattpocock/skills --agent cursor -y --skill qa
-
-# Add thermo-nuclear (if missing)
+npx skills add mattpocock/skills --agent cursor -y --skill <name>
 npx skills add cursor/plugins@thermo-nuclear-review --agent cursor -y
-
-# Reinstall everything from lock file
-npx skills experimental_install
+npx skills experimental_install   # restore from skills-lock.json
 ```
 
 ## Cloud-agent notes
