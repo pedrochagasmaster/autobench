@@ -25,7 +25,7 @@ from .impact_calculator import (
     calculate_rate_impact as _calculate_rate_impact,
     calculate_share_impact as _calculate_share_impact,
 )
-from .privacy_validation import build_privacy_validation_result as _build_privacy_validation_result
+from .privacy_validation import PrivacyValidationResult, build_privacy_validation_result as _build_privacy_validation_result
 from .privacy_validation_builder import build_privacy_validation_dataframe as _build_privacy_validation_dataframe
 from .solver_request_builder import build_heuristic_request, build_lp_request
 from .subset_search import search_largest_feasible_subset
