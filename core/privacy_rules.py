@@ -25,9 +25,11 @@ class PrivacyRuleEvaluation:
 
     rule_name: str
     primary_cap_passed: bool
+    participant_count_passed: bool
     secondary_rule_passed: bool
     relaxation_used: bool
     primary_cap_failures: int
+    participant_failures: List[str]
     secondary_failures: List[str]
     max_share: float
     participant_count: int
@@ -36,6 +38,7 @@ class PrivacyRuleEvaluation:
     def strict_passed(self) -> bool:
         return (
             self.primary_cap_passed
+            and self.participant_count_passed
             and self.secondary_rule_passed
             and not self.relaxation_used
         )
@@ -145,6 +148,11 @@ def evaluate_rule(
         if value > rule.max_concentration + COMPARISON_EPSILON
     )
     primary_passed = primary_failures == 0
+    participant_failures: List[str] = []
+    if rule.min_entities and participant_count < rule.min_entities:
+        participant_failures.append(
+            f"Rule {rule_name}: Need at least {rule.min_entities} participants, found {participant_count}"
+        )
 
     secondary_failures: List[str] = []
     requirements = (
@@ -162,9 +170,11 @@ def evaluate_rule(
     return PrivacyRuleEvaluation(
         rule_name=rule_name,
         primary_cap_passed=primary_passed,
+        participant_count_passed=not participant_failures,
         secondary_rule_passed=not secondary_failures,
         relaxation_used=bool(relaxation_used),
         primary_cap_failures=int(primary_failures),
+        participant_failures=participant_failures,
         secondary_failures=secondary_failures,
         max_share=float(max_share),
         participant_count=participant_count,
@@ -186,4 +196,7 @@ def additional_constraints_result(
         mode=mode,
         relaxation_used=relaxation_used,
     )
-    return evaluation.secondary_rule_passed, list(evaluation.secondary_failures)
+    return (
+        evaluation.participant_count_passed and evaluation.secondary_rule_passed,
+        list(evaluation.participant_failures) + list(evaluation.secondary_failures),
+    )

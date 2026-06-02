@@ -113,7 +113,7 @@ def test_compliance_summary_rechecks_strict_10_40_secondary_rule() -> None:
     assert evaluation["secondary_rule_passed"] is False
 
 
-def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -> None:
+def test_compliance_summary_rejects_strict_10_40_with_too_few_participants() -> None:
     privacy_validation_df = pd.DataFrame(
         {
             "Dimension": ["card_type"] * 4,
@@ -123,6 +123,31 @@ def test_compliance_summary_accepts_strict_10_40_primary_and_secondary_rules() -
             "Privacy_Cap_%": [40.0] * 4,
             "Additional_Constraints_Relaxed": ["No"] * 4,
             "Compliant": ["Yes"] * 4,
+        }
+    )
+
+    summary = build_compliance_summary(
+        posture="strict", privacy_validation_df=privacy_validation_df
+    ).to_dict()
+
+    assert summary["run_status"] == "non_compliant"
+    assert summary["compliance_verdict"] == "violations_detected"
+    assert summary["strict_final_validation"]["participant_count_fail_categories"] == 1
+    assert summary["strict_final_validation"]["total_violations"] == 1
+    evaluation = summary["strict_final_validation"]["rule_evaluations"][0]
+    assert evaluation["participant_count_passed"] is False
+
+
+def test_compliance_summary_accepts_strict_10_40_primary_secondary_and_participant_rules() -> None:
+    privacy_validation_df = pd.DataFrame(
+        {
+            "Dimension": ["card_type"] * 10,
+            "Category": ["Credit"] * 10,
+            "Rule_Name": ["10/40"] * 10,
+            "Balanced_Share_%": [40.0, 20.0, 10.0, 5.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0],
+            "Privacy_Cap_%": [40.0] * 10,
+            "Additional_Constraints_Relaxed": ["No"] * 10,
+            "Compliant": ["Yes"] * 10,
         }
     )
 

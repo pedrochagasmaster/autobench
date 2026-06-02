@@ -328,6 +328,10 @@ class GlobalWeightOptimizer:
         elif not state.converged:
             state.weights = lp_solution
             state.converged = True
+            state.residual_cap_violation = bool(analyzer.last_lp_stats.get("residual_cap_violation", False))
+            state.residual_additional_violation = bool(
+                analyzer.last_lp_stats.get("residual_additional_violation", False)
+            )
             for dim_name in state.used_dimensions:
                 analyzer.weight_methods[dim_name] = "Global-LP"
 
@@ -695,17 +699,19 @@ class GlobalWeightOptimizer:
         analyzer = self.analyzer
         result = weighting_result_from_analyzer(analyzer)
         residual_violations = len(getattr(analyzer, "additional_constraint_violations", []) or [])
+        last_lp_stats = result.last_lp_stats or {}
         residual_cap_violation = bool(
-            state.residual_cap_violation
+            (state.residual_cap_violation or last_lp_stats.get("residual_cap_violation", False))
             if state is not None
-            else result.last_lp_stats.get("residual_cap_violation", False)
+            else last_lp_stats.get("residual_cap_violation", False)
         )
         residual_additional_violation = bool(
-            state.residual_additional_violation
+            (state.residual_additional_violation or last_lp_stats.get("residual_additional_violation", False))
             if state is not None
             else residual_violations
         )
-        relaxation_used = bool(getattr(analyzer, "dynamic_constraints_enabled", False))
+        dynamic_stats = getattr(analyzer, "dynamic_constraint_stats", {}) or {}
+        relaxation_used = int(dynamic_stats.get("relaxed", 0) or 0) > 0
         primary_passed = not residual_cap_violation
         secondary_passed = residual_violations == 0 and not residual_additional_violation
         if primary_passed and secondary_passed and not relaxation_used:

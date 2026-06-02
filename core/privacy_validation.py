@@ -8,6 +8,19 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 
+def _parse_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"yes", "true", "1", "y", "pass", "passed"}:
+        return True
+    if normalized in {"no", "false", "0", "n", "fail", "failed", ""}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class PrivacyValidationRow:
     dimension: str
@@ -87,16 +100,23 @@ class PrivacyValidationResult:
     def from_dataframe(cls, df: pd.DataFrame) -> "PrivacyValidationResult":
         rows: List[PrivacyValidationRow] = []
         for record in df.to_dict("records"):
-            primary_cap = bool(
-                record.get("Primary_Cap_Passed", str(record.get("Compliant", "No")).lower() == "yes")
+            primary_cap = _parse_bool(
+                record.get("Primary_Cap_Passed"),
+                default=_parse_bool(record.get("Compliant"), default=False),
             )
-            secondary_passed = str(record.get("Additional_Constraints_Passed", "Yes")).strip().lower() == "yes"
-            relaxation_used = str(record.get("Additional_Constraints_Relaxed", "No")).strip().lower() == "yes"
+            secondary_passed = _parse_bool(
+                record.get("Additional_Constraints_Passed"),
+                default=_parse_bool(record.get("Secondary_Rule_Passed"), default=True),
+            )
+            relaxation_used = _parse_bool(
+                record.get("Additional_Constraints_Relaxed"),
+                default=_parse_bool(record.get("Relaxation_Used"), default=False),
+            )
             strict_compliant = (
-                bool(record.get("Strict_Compliant"))
+                _parse_bool(record.get("Strict_Compliant"), default=False)
                 if "Strict_Compliant" in record
                 else (
-                    str(record.get("Compliant", "No")).strip().lower() == "yes"
+                    _parse_bool(record.get("Compliant"), default=False)
                     and not relaxation_used
                     and primary_cap
                     and secondary_passed

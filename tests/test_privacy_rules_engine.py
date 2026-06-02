@@ -25,18 +25,39 @@ def test_7_35_requires_two_fifteen_and_one_additional_eight() -> None:
 
 
 def test_10_40_requires_primary_cap_and_secondary_counts() -> None:
+    result = evaluate_rule("10/40", [40.0, 20.0, 10.0, 5.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0])
+
+    assert result.primary_cap_passed is True
+    assert result.secondary_rule_passed is True
+    assert result.participant_count_passed is True
+    assert result.strict_passed is True
+
+
+def test_10_40_fails_when_minimum_participant_count_is_missing() -> None:
     result = evaluate_rule("10/40", [40.0, 20.0, 10.0, 5.0])
 
     assert result.primary_cap_passed is True
     assert result.secondary_rule_passed is True
-    assert result.strict_passed is True
+    assert result.participant_count_passed is False
+    assert result.strict_passed is False
+    assert result.participant_failures == ["Rule 10/40: Need at least 10 participants, found 4"]
+
+
+def test_5_25_fails_when_minimum_participant_count_is_missing() -> None:
+    result = evaluate_rule("5/25", [25.0, 25.0, 25.0, 25.0])
+
+    assert result.primary_cap_passed is True
+    assert result.secondary_rule_passed is True
+    assert result.participant_count_passed is False
+    assert result.strict_passed is False
 
 
 def test_10_40_fails_when_second_twenty_percent_participant_is_missing() -> None:
-    result = evaluate_rule("10/40", [40.0, 19.0, 11.0, 10.0])
+    result = evaluate_rule("10/40", [40.0, 19.0, 11.0, 10.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0])
 
     assert result.primary_cap_passed is True
     assert result.secondary_rule_passed is False
+    assert result.participant_count_passed is True
     assert result.strict_passed is False
 
 

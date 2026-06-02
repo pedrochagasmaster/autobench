@@ -34,6 +34,7 @@ def build_strict_final_validation(
         "checked": False,
         "rows": 0,
         "primary_cap_fail_rows": 0,
+        "participant_count_fail_categories": 0,
         "secondary_rule_fail_categories": 0,
         "relaxed_rows": 0,
         "total_violations": 0,
@@ -66,6 +67,7 @@ def build_strict_final_validation(
         result["relaxed_rows"] = int((relaxed == "yes").sum())
 
     secondary_failures = 0
+    participant_failures = 0
     group_cols = ["Dimension", "Category"]
     if "Time_Period" in df.columns:
         group_cols.append("Time_Period")
@@ -76,18 +78,23 @@ def build_strict_final_validation(
         shares = pd.to_numeric(group["Balanced_Share_%"], errors="coerce").fillna(-1.0).tolist()
         evaluation = evaluate_rule(rule_name, shares)
         evaluations.append(evaluation)
+        if not evaluation.participant_count_passed:
+            participant_failures += 1
         if not evaluation.secondary_rule_passed:
             secondary_failures += 1
 
+    result["participant_count_fail_categories"] = int(participant_failures)
     result["secondary_rule_fail_categories"] = int(secondary_failures)
     result["rule_evaluations"] = [
         {
             "rule_name": evaluation.rule_name,
             "primary_cap_passed": evaluation.primary_cap_passed,
+            "participant_count_passed": evaluation.participant_count_passed,
             "secondary_rule_passed": evaluation.secondary_rule_passed,
             "relaxation_used": evaluation.relaxation_used,
             "strict_passed": evaluation.strict_passed,
             "primary_cap_failures": evaluation.primary_cap_failures,
+            "participant_failures": list(evaluation.participant_failures),
             "secondary_failures": list(evaluation.secondary_failures),
             "max_share": evaluation.max_share,
             "participant_count": evaluation.participant_count,
@@ -96,6 +103,7 @@ def build_strict_final_validation(
     ]
     result["total_violations"] = int(
         result["primary_cap_fail_rows"]
+        + result["participant_count_fail_categories"]
         + result["secondary_rule_fail_categories"]
         + result["relaxed_rows"]
     )

@@ -29,3 +29,40 @@ def test_privacy_validation_result_renders_legacy_dataframe_columns() -> None:
     assert "Additional_Constraints_Relaxed" in df.columns
     assert df.loc[0, "Compliant"] == "Yes"
     assert result.strict_failures() == []
+
+
+def test_privacy_validation_result_parses_string_booleans() -> None:
+    source = PrivacyValidationResult(
+        rows=[
+            PrivacyValidationRow(
+                dimension="card_type",
+                category="Credit",
+                time_period=None,
+                peer="P1",
+                rule_name="10/40",
+                original_volume=100.0,
+                original_share_pct=50.0,
+                balanced_volume=50.0,
+                balanced_share_pct=50.0,
+                primary_cap_pct=40.0,
+                primary_cap_passed=False,
+                secondary_rule_passed=False,
+                relaxation_used=True,
+                strict_compliant=False,
+            )
+        ]
+    )
+    df = source.to_dataframe()
+    df["Primary_Cap_Passed"] = "No"
+    df["Secondary_Rule_Passed"] = "False"
+    df["Relaxation_Used"] = "Yes"
+    df["Strict_Compliant"] = "False"
+
+    parsed = PrivacyValidationResult.from_dataframe(df)
+
+    row = parsed.rows[0]
+    assert row.primary_cap_passed is False
+    assert row.secondary_rule_passed is False
+    assert row.relaxation_used is True
+    assert row.strict_compliant is False
+    assert parsed.strict_failures() == [row]

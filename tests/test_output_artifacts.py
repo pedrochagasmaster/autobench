@@ -1,11 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import run_share_analysis
+from core.analysis_run import write_outputs as analysis_write_outputs
 from core.output_artifacts import OutputArtifactWriter
 
 
@@ -80,8 +81,12 @@ def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> N
 
 def test_output_writer_receives_report_model(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
+    writer_cls = MagicMock(side_effect=OutputArtifactWriter)
 
-    with patch("core.output_artifacts.OutputArtifactWriter", wraps=OutputArtifactWriter) as writer_cls:
+    with patch.dict(
+        analysis_write_outputs.__globals__,
+        {"OutputArtifactWriter": writer_cls},
+    ):
         result = run_share_analysis(
             _share_args(output, _share_df(), output_format="analysis"),
             __import__("logging").getLogger("test_report_model_boundary"),
