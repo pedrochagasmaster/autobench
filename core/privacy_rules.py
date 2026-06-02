@@ -196,7 +196,12 @@ def additional_constraints_result(
         mode=mode,
         relaxation_used=relaxation_used,
     )
+    participant_passed = evaluation.participant_count_passed
+    participant_failures = list(evaluation.participant_failures)
+    if mode != RuleMode.STRICT:
+        participant_passed = True
+        participant_failures = []
     return (
-        evaluation.participant_count_passed and evaluation.secondary_rule_passed,
-        list(evaluation.participant_failures) + list(evaluation.secondary_failures),
+        participant_passed and evaluation.secondary_rule_passed,
+        participant_failures + list(evaluation.secondary_failures),
     )
