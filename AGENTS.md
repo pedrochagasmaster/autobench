@@ -808,6 +808,12 @@ The gate uses the tracked fixture `tests/fixtures/gate_demo.csv` and passes on c
 
 Input CSVs under `data/` remain gitignored. For ad-hoc runs, use `tests/fixtures/gate_demo.csv` (7 entities: 6 peers + 1 target).
 
+### Agent skills
+
+Skills live in `.agents/skills/` and are managed via `skills-lock.json` (see
+`.cursor/skills/README.md`). Update with `npx skills update -y` from the repo
+root. Run `/setup-matt-pocock-skills` once if `docs/agents/` is missing.
+
 ### No external services
 
 This is a pure Python CLI/TUI tool. No databases, Docker, or network services are required. All computation is local via scipy/pandas/openpyxl.

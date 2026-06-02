@@ -1,70 +1,51 @@
-# `.cursor/skills/`
+# Agent skills
 
-Project-scoped Cursor [Agent Skills](https://cursor.com/docs/skills) that are
-auto-discovered by both the Cursor IDE and Cursor Cloud Agents whenever the
-repo is checked out.
+Project skills are installed with the [skills CLI](https://skills.sh/) into
+`.agents/skills/` and tracked in `skills-lock.json` at the repo root. Cursor
+IDE and Cloud Agents discover them from `.agents/skills/` (also
+`.cursor/skills/` and `.claude/skills/` if present).
 
-## Source
-
-These skills are vendored from
-[`mattpocock/skills`](https://github.com/mattpocock/skills) at commit
-[`aaf2453`](https://github.com/mattpocock/skills/commit/aaf2453) (2026-06-02).
-Upstream is MIT-licensed; the original `LICENSE` file is preserved alongside
-this README.
-
-To update, re-clone upstream and copy the relevant buckets:
+## Update all skills
 
 ```bash
-git clone --depth 1 https://github.com/mattpocock/skills.git /tmp/mattpocock-skills
-rm -rf .cursor/skills/engineering .cursor/skills/productivity .cursor/skills/misc
-cp -r /tmp/mattpocock-skills/skills/engineering .cursor/skills/
-cp -r /tmp/mattpocock-skills/skills/productivity .cursor/skills/
-cp -r /tmp/mattpocock-skills/skills/misc          .cursor/skills/
-cp /tmp/mattpocock-skills/LICENSE .cursor/skills/LICENSE
+npx skills update -y
 ```
 
-The upstream `personal/`, `in-progress/`, and `deprecated/` buckets are
-intentionally excluded — per upstream `CLAUDE.md` they are not promoted.
+## Installed packages
 
-## Layout
+| Package | Skills |
+|---------|--------|
+| [`mattpocock/skills`](https://github.com/mattpocock/skills) | 24 skills (full promoted catalog except writing/Obsidian — see below) |
+| [`cursor/plugins`](https://github.com/cursor/plugins) | `thermo-nuclear-review` |
 
-Skills are kept in their upstream bucket layout. Cursor supports nested
-skill directories, so `engineering/tdd/SKILL.md` is discovered the same as
-`tdd/SKILL.md` would be.
+### Matt Pocock — engineering & workflow
 
-```
-.cursor/skills/
-├── engineering/   # daily code work (tdd, diagnose, grill-with-docs, ...)
-├── productivity/  # workflow tools (grill-me, caveman, write-a-skill)
-└── misc/          # rarely-used helpers (setup-pre-commit, ...)
-```
+- **Engineering:** `diagnose`, `design-an-interface`, `grill-with-docs`, `improve-codebase-architecture`, `prototype`, `request-refactor-plan`, `review`, `setup-matt-pocock-skills`, `tdd`, `to-issues`, `to-prd`, `triage`, `ubiquitous-language`, `zoom-out`
+- **Productivity:** `caveman`, `grill-me`, `handoff`, `teach`, `write-a-skill`
+- **General:** `qa`, `git-guardrails-claude-code`, `migrate-to-shoehorn`, `scaffold-exercises`, `setup-pre-commit`
+
+**Not installed** (intentionally): `writing-beats`, `writing-fragments`, `writing-shape`, `edit-article`, `obsidian-vault`
+
+### Cursor plugins
+
+- **`thermo-nuclear-review`** — deep security/correctness audit of branch changes (`/thermo-nuclear-review`)
 
 ## Quickstart
 
-Per upstream README, **run `/setup-matt-pocock-skills` once** to scaffold the
-per-repo config (issue tracker choice, triage label vocabulary, docs location)
-that the engineering skills consume. Commit any files it creates so cloud
-agents inherit the configured state.
+1. Run **`/setup-matt-pocock-skills`** once to scaffold `docs/agents/` (issue tracker, triage labels, domain docs). Commit what it creates so cloud agents inherit config.
+2. Common entrypoints: `/tdd`, `/diagnose`, `/review`, `/grill-me`, `/grill-with-docs`, `/ubiquitous-language`, `/to-prd`, `/to-issues`, `/triage`, `/qa`, `/zoom-out`, `/improve-codebase-architecture`
 
-After that, the most useful entrypoints are:
+See the [mattpocock/skills README](https://github.com/mattpocock/skills) for full catalog and rationale.
 
-- `/grill-me`, `/grill-with-docs` — interview the agent / get interviewed before
-  starting work.
-- `/tdd` — red-green-refactor loop for features and bug fixes.
-- `/diagnose` — disciplined diagnosis loop for hard bugs.
-- `/to-prd`, `/to-issues`, `/triage` — turn discussion into PRDs / issues /
-  triaged work.
-- `/zoom-out`, `/improve-codebase-architecture` — keep the codebase from rotting
-  into a ball of mud.
+## Add or remove skills
 
-See the upstream [README](https://github.com/mattpocock/skills) for the full
-catalog and rationale.
+```bash
+npx skills add mattpocock/skills --agent cursor -y --skill <name>
+npx skills add cursor/plugins@thermo-nuclear-review --agent cursor -y
+npx skills experimental_install   # restore from skills-lock.json
+```
 
 ## Cloud-agent notes
 
-- Project skills committed under `.cursor/skills/` (or `.agents/skills/`,
-  `.claude/skills/`) are picked up automatically by Cursor Cloud Agents because
-  the cloud VM clones this repo on each run.
-- User-scoped skills under `~/.cursor/skills/` on a developer's laptop are
-  **not** available to cloud agents. Vendor anything you want cloud agents to
-  use into this directory.
+- Commit `.agents/skills/` and `skills-lock.json` so cloud VMs get the same skill set.
+- User-scoped skills under `~/.cursor/skills/` are **not** available to cloud agents.
