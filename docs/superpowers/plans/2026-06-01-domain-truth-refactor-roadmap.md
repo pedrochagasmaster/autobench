@@ -611,6 +611,67 @@ validation_warnings: N
 - `--no-validate-input` can still run analysis, but output verdict cannot be `fully_compliant`.
 - Publication outputs warn or block when data quality is unchecked.
 
+### Case-02 Follow-Up: Minimum Publishable Cell Volume
+
+**Opportunity:** Distinguish Control 3.2 concentration compliance from minimum
+publishable cell-volume rules.
+
+**Trigger Case:**
+
+`cases/02/autobench.csv` and `cases/02/peer_benchmark.csv` contain five
+published rows where the balanced secondary metric `cnt_total` is below 10,000:
+
+```text
+fl_domestic_poi_pan / Cross-border - CP - CREDENTIAL ON FILE: 74.40
+fl_domestic_poi_pan / Cross-border - CP - ELECTRONIC COMMERCE: 1.04
+fl_domestic_poi_pan / Cross-border - CP - MAGNETIC STRIPE: 493.08
+fl_domestic_poi_pan / Domestic - CP - CREDENTIAL ON FILE: 249.35
+fl_domestic_poi_pan / Domestic - CP - MAGNETIC STRIPE: 1,867.53
+```
+
+The current validator only has `input.validation_thresholds.min_denominator=100`
+for rate stability on the primary denominator column, and current Control 3.2
+validation checks peer-count, concentration caps, and additional participant
+share requirements. It does not define or enforce a 10,000-count minimum for
+published output cells.
+
+**Why It Matters:**
+
+If the business privacy policy says no published benchmark cell may expose a
+peer aggregate with fewer than 10,000 transactions, then a workbook can be
+Control 3.2-compliant and still fail publication safety. This is a separate
+publication-suppression rule, not a secondary-metric compliance surface.
+
+**Implementation Steps:**
+
+- [ ] Confirm whether the 10,000 minimum is an official publication/privacy
+      threshold, which metric(s) it applies to (`cnt_total` only, all count
+      metrics, denominator metrics, or all cells), and whether it should be
+      evaluated before or after privacy weighting.
+- [ ] Add a typed `PublicationSafetyResult` or extend `DataQualityResult` with
+      output-cell checks that can be rendered in Summary, Data Quality, audit
+      logs, and gate assertions.
+- [ ] Add configuration for the policy, for example
+      `output.publication_min_count_threshold: 10000` and
+      `output.publication_min_count_metrics: ["cnt_total"]`, while keeping
+      Control 3.2 rule semantics unchanged.
+- [ ] Add a case-02-class fixture where strict Control 3.2 can pass but one
+      published count cell is below the publication threshold; assert the final
+      verdict is not `fully_compliant` for publication mode.
+- [ ] Decide rendering behavior: either suppress unsafe cells, roll them into an
+      `Other/Insufficient volume` bucket, or keep values visible but mark the
+      output `not_publishable_low_volume`.
+
+**Acceptance Criteria:**
+
+- Logs and workbook identify the exact dimension/category cells below the
+  configured minimum, not just a row count.
+- Control 3.2 verdicts remain based on the existing privacy rules.
+- Publication safety is reported as a separate, explicit condition in Summary,
+  Data Quality, and audit artifacts.
+- `cases/02` is covered by a smoke/regression check so this class of issue is
+  not silently labeled publishable.
+
 ---
 
 ## Phase 8: Analyzer Facade Size
