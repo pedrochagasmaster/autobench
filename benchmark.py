@@ -26,25 +26,14 @@ import pandas as pd
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.preset_comparison import run_preset_comparison as _run_shared_preset_comparison
 from core.analysis_run import (
-    build_common_run_metadata,
     build_dimensional_analyzer as _analysis_run_build_dimensional_analyzer,
-    build_report_paths,
-    build_run_config,
     build_run_request,
-    collect_run_diagnostics,
     execute_rate_run,
     execute_run,
     execute_share_run,
-    prepare_run_data,
     resolve_consistency_mode as _analysis_run_resolve_consistency_mode,
-    resolve_dimensions,
-    resolve_output_settings,
-    resolve_target_entity,
-    validate_analysis_input,
-    write_audit_log,
     RunBlocked,
 )
-from utils.config_manager import ConfigManager
 from utils.logger import setup_logging
 
 
@@ -132,6 +121,7 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Optimize each dimension independently (disables global weighting mode)',
     )
     parser.add_argument('--export-balanced-csv', action='store_true', help='Export balanced metrics to CSV')
+    parser.add_argument('--audit-package', action='store_true', default=None, help='Create an audit package zip with reports, CSV, audit log, and config snapshot')
     parser.add_argument(
         '--lean',
         action='store_true',

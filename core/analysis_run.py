@@ -14,6 +14,7 @@ import pandas as pd
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
 from core.control3_policy import CONTROL3_POLICY_KEYS, Control3PolicyInput, evaluate_control3_policy
 from core.audit_log import build_audit_log_model
+from core.audit_package import write_audit_package
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
 from core.contracts import (
     AnalysisArtifacts,
@@ -52,6 +53,7 @@ COMMON_CLI_OVERRIDES = (
     'compare_presets',
     'output_format',
     'include_calculated',
+    'audit_package',
     'lean',
     'compliance_posture',
 )
@@ -206,6 +208,7 @@ def resolve_output_settings_from_config(
         include_calculated_metrics=bool(resolved.output.include_calculated_metrics),
         include_privacy_validation=bool(resolved.output.include_privacy_validation),
         include_audit_log=bool(resolved.output.include_audit_log),
+        include_audit_package=bool(resolved.output.include_audit_package),
         output_format=str(resolved.output.output_format or request.output_format),
         fraud_in_bps=bool(resolved.output.fraud_in_bps),
     )
@@ -475,7 +478,7 @@ def validate_analysis_input(
     metric_col: Optional[str] = None,
     total_col: Optional[str] = None,
     numerator_cols: Optional[Dict[str, str]] = None,
-) -> Tuple[Optional[List[ValidationIssue]], bool]:
+) -> DataQualityResult:
     """Run validation using shared dimension-defaulting behavior."""
     validation_dimensions = dimensions if dimensions else data_loader.get_available_dimensions(df)
     return run_input_validation(
@@ -491,6 +494,35 @@ def validate_analysis_input(
         time_col=time_col,
         target_entity=target_entity,
     )
+
+
+def build_data_quality_from_validation_issues(
+    issues: Optional[List[ValidationIssue]],
+) -> DataQualityResult:
+    """Build a data-quality result from already-collected validation issues."""
+    issues_list = issues if issues is not None else []
+
+    def severity_value(issue: ValidationIssue) -> str:
+        severity = getattr(issue, "severity", "")
+        return str(getattr(severity, "value", severity)).upper()
+
+    errors = sum(1 for issue in issues_list if severity_value(issue) == "ERROR")
+    warnings = sum(1 for issue in issues_list if severity_value(issue) == "WARNING")
+    infos = sum(1 for issue in issues_list if severity_value(issue) == "INFO")
+    return DataQualityResult(
+        checked=True,
+        errors=errors,
+        warnings=warnings,
+        infos=infos,
+        issues=issues,
+        should_abort=errors > 0,
+    )
+
+
+def should_reuse_prepared_validation(request: AnalysisRunRequest, *, used_prepared: bool) -> bool:
+    """Return true when a prepared dataset already carries validation results."""
+    prepared = request.prepared_dataset
+    return bool(used_prepared and prepared is not None and prepared.validation_issues is not None)
 
 
 def resolve_dimensions(
@@ -1264,12 +1296,18 @@ def _execute_run(
 
     mode_spec.validate_request(request, df)
 
-    data_quality = validate_analysis_input(
-        df=df,
-        config=config,
-        data_loader=data_loader,
-        **mode_spec.build_validation_kwargs(request, entity_col, time_col, request.dimensions),
-    )
+    if should_reuse_prepared_validation(request, used_prepared=used_prepared):
+        logger.info("Reusing prepared input validation results")
+        data_quality = build_data_quality_from_validation_issues(
+            request.prepared_dataset.validation_issues if request.prepared_dataset else None
+        )
+    else:
+        data_quality = validate_analysis_input(
+            df=df,
+            config=config,
+            data_loader=data_loader,
+            **mode_spec.build_validation_kwargs(request, entity_col, time_col, request.dimensions),
+        )
     validation_issues, should_abort = data_quality
     if should_abort:
         raise RunAborted('Analysis aborted due to validation errors')
@@ -1482,7 +1520,7 @@ def _execute_run(
         artifacts.publication_output,
     )
     if output_settings.include_audit_log:
-        write_audit_log(
+        artifacts.audit_log_output = write_audit_log(
             config,
             analysis_output_file=analysis_output_file,
             metadata=metadata,
@@ -1492,6 +1530,15 @@ def _execute_run(
             impact_df=impact_df,
             privacy_validation_df=artifacts.privacy_validation_df,
             validation_issues=validation_issues,
+        )
+    if output_settings.include_audit_package:
+        artifacts.audit_package_output = write_audit_package(
+            analysis_output_file=analysis_output_file,
+            report_paths=artifacts.report_paths or [],
+            csv_output=artifacts.csv_output,
+            audit_log_output=artifacts.audit_log_output,
+            config_snapshot=config.config,
+            metadata=metadata,
         )
     return artifacts
 

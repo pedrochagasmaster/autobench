@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """
-CSV to Excel Rate Validation Script
+CSV to Excel Balanced Export Validation Script
 
 Validates that the balanced totals in the exported CSV file correctly produce
-the approval rates and fraud rates shown in the Excel benchmark report.
+the approval rates, fraud rates, or share percentages shown in the Excel
+benchmark report.
 
 Usage:
     python utils/csv_validator.py <excel_file> <csv_file> [--tolerance PERCENT]
@@ -36,7 +37,7 @@ def load_csv_data(csv_path: Path) -> pd.DataFrame:
 
 
 def is_share_export_csv(csv_df: pd.DataFrame) -> bool:
-    """Detect share balanced CSV exports, which this validator does not support."""
+    """Detect share balanced CSV exports."""
     if 'Balanced_Total' in csv_df.columns:
         return False
     if any(col.startswith('Balanced_') and col.endswith('_Share_%') for col in csv_df.columns):
@@ -49,6 +50,14 @@ def is_share_export_csv(csv_df: pd.DataFrame) -> bool:
         and 'Total' not in col
     ]
     return bool(share_metric_cols)
+
+
+def detect_share_column(csv_df: pd.DataFrame) -> Optional[str]:
+    """Return the share percentage column for a share balanced export."""
+    for col in csv_df.columns:
+        if col.startswith("Balanced_") and col.endswith("_Share_%"):
+            return col
+    return None
 
 
 def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
@@ -236,14 +245,21 @@ def extract_rate_from_excel(
     """
     # Find the rate column - try multiple patterns
     rate_cols = []
+
+    if rate_type == 'share':
+        explicit_share_cols = [
+            col for col in excel_df.columns
+            if str(col) == 'Balanced_Share_%'
+            or (str(col).startswith('Balanced_') and str(col).endswith('_Share_%'))
+        ]
+        if not explicit_share_cols:
+            return None
+        rate_cols = explicit_share_cols
     
     # Pattern 1: Multi-rate format "Approval_Balanced Peer Average (%)"
-    pattern1 = f"{rate_type.capitalize()}_Balanced Peer Average"
-    rate_cols = [col for col in excel_df.columns if pattern1 in str(col) and '%' in str(col)]
-    
-    if not rate_cols and rate_type == 'share':
-         if 'Balanced_Share_%' in excel_df.columns:
-             rate_cols = ['Balanced_Share_%']
+    if not rate_cols:
+        pattern1 = f"{rate_type.capitalize()}_Balanced Peer Average"
+        rate_cols = [col for col in excel_df.columns if pattern1 in str(col) and '%' in str(col)]
     
     if not rate_cols:
         # Pattern 2: Single rate format "Peer_Balanced_Approval_%"
@@ -420,7 +436,7 @@ def validate_dimension(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Validate CSV balanced totals against Excel rates',
+        description='Validate CSV balanced exports against Excel rates/shares',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES:
@@ -448,7 +464,7 @@ EXAMPLES:
     csv_path = Path(args.csv_file)
     
     print(f"{'='*80}")
-    print("CSV TO EXCEL RATE VALIDATION")
+    print("CSV TO EXCEL BALANCED EXPORT VALIDATION")
     print(f"{'='*80}")
     print(f"Excel File: {excel_path}")
     print(f"CSV File: {csv_path}")
@@ -460,13 +476,6 @@ EXAMPLES:
         print("Loading CSV data...")
         csv_df = load_csv_data(csv_path)
         print(f"  OK Loaded {len(csv_df)} rows")
-
-        if is_share_export_csv(csv_df):
-            print("ERROR Share exports are not supported by this validator yet.")
-            print("  This tool validates rate balanced totals only")
-            print("  (Balanced_Total, Balanced_Approval_Total, Balanced_Fraud_Total).")
-            print("  Use a rate analysis export with --export-balanced-csv instead.")
-            return 1
 
         print("Loading Excel data...")
         excel_data = load_excel_data(excel_path)
@@ -484,12 +493,8 @@ EXAMPLES:
     approval_col = None
     fraud_col = None
 
-    # Detect Share Analysis (Dynamic metric name) — rejected earlier by is_share_export_csv
-    share_col = None
-    for col in csv_df.columns:
-        if col.startswith("Balanced_") and col.endswith("_Share_%"):
-            share_col = col
-            break
+    # Detect Share Analysis (Dynamic metric name)
+    share_col = detect_share_column(csv_df)
             
     if 'Balanced_Total' in csv_df.columns:
         total_col = 'Balanced_Total'
@@ -500,8 +505,8 @@ EXAMPLES:
             fraud_col = 'Balanced_Fraud_Total'
             rate_types.append('fraud')
     elif share_col:
-        print("ERROR Share exports are not supported by this validator yet.")
-        return 1
+        total_col = share_col
+        rate_types.append('share')
     else:
         summary_total = summary_metadata.get('Total Column') or summary_metadata.get('Total Column (Shared Denominator)')
         summary_approval = summary_metadata.get('Approval Column')
@@ -535,11 +540,11 @@ EXAMPLES:
                         break
 
     if not total_col or not rate_types:
-        print("ERROR No rate columns found in CSV")
-        print("  Expected Balanced_* columns or summary-based metric columns.")
+        print("ERROR No rate/share columns found in CSV")
+        print("  Expected Balanced_* total/rate columns, share columns, or summary-based metric columns.")
         return 1
 
-    print(f"Rate Types: {', '.join(rate_types)}")
+    print(f"Value Types: {', '.join(rate_types)}")
 
     # Check for time column
     time_col = None
@@ -682,7 +687,7 @@ EXAMPLES:
     
     if total_failed == 0 and total_checks > 0:
         print("\nALL VALIDATIONS PASSED")
-        print(f"  CSV balanced totals correctly produce Excel rates within {args.tolerance*100:.4f}% tolerance")
+        print(f"  CSV balanced exports correctly produce Excel values within {args.tolerance*100:.4f}% tolerance")
         print(f"{'='*80}\n")
         return 0
     elif total_checks == 0:
@@ -692,7 +697,7 @@ EXAMPLES:
         return 1
     else:
         print("\nVALIDATION FAILED")
-        print(f"  {total_failed} rate calculations do not match within tolerance")
+        print(f"  {total_failed} calculations do not match within tolerance")
         print("  Review failures above or run with --verbose for details")
         print(f"{'='*80}\n")
         return 1

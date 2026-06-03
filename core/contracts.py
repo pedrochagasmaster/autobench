@@ -98,6 +98,7 @@ class AnalysisRunRequest:
     analyze_distortion: bool = False
     compare_presets: bool = False
     include_calculated: bool = False
+    audit_package: bool = False
     output_format: str = "analysis"
     metric: Optional[str] = None
     secondary_metrics: Optional[List[str]] = None
@@ -180,6 +181,8 @@ class AnalysisArtifacts:
     compliance_summary: Optional[Dict[str, Any]] = None
     report_paths: Optional[List[str]] = None
     csv_output: Optional[str] = None
+    audit_log_output: Optional[str] = None
+    audit_package_output: Optional[str] = None
     publication_output: Optional[str] = None
     report_model: Any = None
 
@@ -271,6 +274,7 @@ class OutputSettings:
     include_calculated_metrics: bool = False
     include_privacy_validation: bool = False
     include_audit_log: bool = True
+    include_audit_package: bool = False
     output_format: str = "analysis"
     fraud_in_bps: bool = True
 

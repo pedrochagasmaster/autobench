@@ -20,8 +20,10 @@ described in `SETUP.md`.
    ```powershell
    .\deploy_and_install.ps1
    ```
-2. Verify `offline_packages/` and `requirements.txt` are included in the bundle.
-3. Record checksums for the bundle zip and `requirements.txt`.
+2. Verify `offline_packages/`, `requirements.txt`, `SHA256SUMS`, and
+   `scripts/offline_bundle_checksums.py` are included in the bundle.
+3. Confirm `setup_remote_env.sh` reports successful checksum verification before
+   installing packages.
 
 ## Server smoke (after deploy)
 
@@ -38,6 +40,8 @@ cd /ads_storage/autobench
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
+  --export-balanced-csv \
+  --audit-package \
   --output /tmp/release_smoke.xlsx
 ```
 
@@ -45,6 +49,8 @@ Expected signals:
 
 - Help and preset list commands exit 0.
 - Smoke analysis exits 0 and writes `/tmp/release_smoke.xlsx`.
+- Smoke analysis writes `/tmp/release_smoke_balanced.csv`,
+  `/tmp/release_smoke_audit.log`, and `/tmp/release_smoke_audit_package.zip`.
 - Workbook contains `Summary`, dimension sheets, `Weight Methods`, and `Rank Changes`.
 - Workbook `Summary` shows `Input Validation: pass` and `Compliance Verdict: fully_compliant`.
 

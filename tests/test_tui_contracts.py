@@ -6,7 +6,12 @@ import threading
 import pandas as pd
 import pytest
 
-from core.analysis_run import apply_prepared_dataset, build_run_config
+from core.analysis_run import (
+    apply_prepared_dataset,
+    build_data_quality_from_validation_issues,
+    build_run_config,
+    should_reuse_prepared_validation,
+)
 from core.contracts import AnalysisRunRequest, PreparedDataset
 from tui_app import BenchmarkApp, LogHandler, write_log_message
 from utils.config_manager import ConfigManager, ResolvedConfig
@@ -89,6 +94,33 @@ def test_apply_prepared_dataset_skips_reload() -> None:
     assert out_df is df
     assert entity_col == "issuer_name"
     assert time_col == "year_month"
+
+
+def test_prepared_validation_issues_become_data_quality_result() -> None:
+    issues = [
+        SimpleNamespace(severity=SimpleNamespace(value="WARNING"), message="sample warning"),
+        SimpleNamespace(severity=SimpleNamespace(value="INFO"), message="sample info"),
+    ]
+
+    result = build_data_quality_from_validation_issues(issues)
+
+    assert result.checked is True
+    assert result.errors == 0
+    assert result.warnings == 1
+    assert result.infos == 1
+    assert result.issues is issues
+    assert result.should_abort is False
+
+
+def test_prepared_validation_can_be_reused_without_second_validation() -> None:
+    prepared = PreparedDataset(
+        df=pd.DataFrame({"issuer_name": ["Target"], "metric": [1]}),
+        entity_col="issuer_name",
+        validation_issues=[],
+    )
+    request = AnalysisRunRequest(mode="share", csv="data.csv", metric="metric", prepared_dataset=prepared)
+
+    assert should_reuse_prepared_validation(request, used_prepared=True) is True
 
 
 def test_benchmark_app_advanced_field_map_covers_load_and_save_keys() -> None:

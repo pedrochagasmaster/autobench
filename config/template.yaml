@@ -79,6 +79,9 @@ output:
   # Include audit log output
   include_audit_log: true
 
+  # Include audit package zip (workbook(s), optional CSV, audit log, config snapshot)
+  include_audit_package: false
+
   # Impact highlighting thresholds (percentage points)
   impact_thresholds:
     high_pp: 1.0

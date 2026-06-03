@@ -82,6 +82,7 @@ class OutputConfig:
     include_preset_comparison: bool = False
     include_calculated_metrics: bool = False
     include_audit_log: bool = True
+    include_audit_package: bool = False
     fraud_in_bps: bool = True
     log_level: str = "INFO"
     impact_thresholds: Dict[str, Any] = field(default_factory=dict)
@@ -169,6 +170,7 @@ class ResolvedConfig:
                 include_preset_comparison=bool(output.get("include_preset_comparison", False)),
                 include_calculated_metrics=bool(output.get("include_calculated_metrics", False)),
                 include_audit_log=bool(output.get("include_audit_log", True)),
+                include_audit_package=bool(output.get("include_audit_package", False)),
                 fraud_in_bps=bool(output.get("fraud_in_bps", True)),
                 log_level=str(output.get("log_level", "INFO")),
                 impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
@@ -573,6 +575,7 @@ class ConfigManager:
                 'include_preset_comparison': False,
                 'include_calculated_metrics': False,
                 'include_audit_log': True,
+                'include_audit_package': False,
                 'impact_thresholds': {
                     'high_pp': 1.0,
                     'low_pp': 0.25,
@@ -757,6 +760,7 @@ class ConfigManager:
             'analyze_distortion': ('output', 'include_impact_summary'),
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
+            'audit_package': ('output', 'include_audit_package'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
@@ -817,6 +821,7 @@ class ConfigManager:
         self._set_nested(self.config, ('output', 'include_preset_comparison'), False)
         self._set_nested(self.config, ('output', 'include_calculated_metrics'), False)
         self._set_nested(self.config, ('output', 'include_audit_log'), False)
+        self._set_nested(self.config, ('output', 'include_audit_package'), False)
         self._set_nested(self.config, ('output', 'output_format'), 'analysis')
         self._set_nested(self.config, ('analysis', 'auto_detect_dimensions'), False)
         self._set_nested(self.config, ('optimization', 'subset_search', 'enabled'), False)

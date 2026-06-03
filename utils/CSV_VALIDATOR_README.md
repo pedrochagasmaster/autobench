@@ -3,20 +3,19 @@
 ## Overview
 
 The `csv_validator.py` script validates **rate** balanced CSV exports against
-Excel benchmark reports. It confirms that exported balanced totals reproduce the
-approval and fraud rates shown in the workbook.
-
-Share balanced CSV exports (`Balanced_{metric}` columns) are **not** supported yet.
-The tool exits with an explicit error if a share export is detected.
+Excel benchmark reports. It also supports share exports when the workbook
+contains an explicit `Balanced_*_Share_%` column matching the CSV. Standard share
+workbooks expose peer-average percentages rather than CSV target-vs-peer share
+percentages, so gate checks keep those exports to schema validation.
 
 ## Purpose
 
 When using the `--export-balanced-csv` flag, the tool exports weighted balanced totals for each dimension-category-(time) combination. This validator ensures data integrity by:
 
-1. Loading the CSV balanced totals (Balanced_Total, Balanced_Approval_Total, Balanced_Fraud_Total)
-2. Loading the Excel rate values (Approval rates and Fraud rates)
-3. Calculating rates from CSV: `rate = balanced_numerator / balanced_total`
-4. Comparing calculated rates against Excel rates
+1. Loading the CSV balanced totals or share percentages.
+2. Loading the Excel rate/share values.
+3. Calculating rates from CSV: `rate = balanced_numerator / balanced_total`.
+4. Comparing calculated rates or explicit exported share percentages against Excel.
 5. Reporting any discrepancies beyond the specified tolerance
 
 ## Usage
@@ -59,7 +58,7 @@ Shows detailed information about each failed validation, including:
 
 ### CSV Structure
 
-The CSV file contains these columns:
+Rate CSV files contain these columns:
 - **Dimension**: The dimension name (e.g., fl_token, poi, flag_recurring)
 - **Category**: The category value within the dimension
 - **year_month**: Time period (optional, only if --time-col was used)
@@ -67,9 +66,19 @@ The CSV file contains these columns:
 - **Balanced_Approval_Total**: Weighted sum of approved transactions/amounts
 - **Balanced_Fraud_Total**: Weighted sum of fraud transactions/amounts
 
+Share CSV files contain these columns:
+- **Dimension**: The dimension name (e.g., card_type, channel)
+- **Category**: The category value within the dimension
+- **year_month**: Time period (optional, only if --time-col was used)
+- **Balanced_{metric}**: Weighted metric total
+- **Balanced_{metric}_Share_%**: Balanced peer share percentage
+
 ### Excel Structure
 
-For multi-rate analysis, Excel sheets contain columns like:
+For share analysis, validation requires an explicit `Balanced_*_Share_%` column.
+Standard report sheets instead include `Balanced Peer Average (%)`, which is a
+different business measure and is not used for CSV parity. For multi-rate
+analysis, Excel sheets contain columns like:
 - **Approval_Balanced Peer Average (%)**: Approval rate as percentage
 - **Fraud_Balanced Peer Average (%)**: Fraud rate as percentage
 - **Approval_year_month**: Time period for approval data
