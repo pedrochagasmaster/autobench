@@ -424,6 +424,32 @@ class ReportGenerator:
             for col_idx, value in enumerate(row, start=1):
                 ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
 
+    def _redact_publication_dataframe(self, value: Any, *, reason: str) -> Any:
+        """Keep publication evidence sheets without disclosing peer composition."""
+        if value is None or not hasattr(value, "empty") or value.empty:
+            return value
+
+        try:
+            import pandas as pd
+        except ImportError:
+            return value
+
+        row = {column: None for column in value.columns}
+        if not row:
+            return pd.DataFrame([{"Control": "Control 3.3", "Status": "Redacted", "Detail": reason}])
+
+        first_column = next(iter(row))
+        row[first_column] = f"WITHHELD - Control 3.3 - {reason}"
+        return pd.DataFrame([row], columns=list(value.columns))
+
+    def _publication_safe_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        safe = dict(metadata or {})
+        reason = "peer group composition is confidential"
+        for key in ("weights_df", "privacy_validation_df", "rank_changes_df"):
+            if key in safe:
+                safe[key] = self._redact_publication_dataframe(safe[key], reason=reason)
+        return safe
+
     def _excel_safe_value(self, value: Any) -> Any:
         if isinstance(value, (list, tuple, dict)):
             return json.dumps(value)
@@ -842,6 +868,8 @@ class ReportGenerator:
                         if isinstance(value, float):
                             cell.number_format = '0.00'
 
+        publication_metadata = self._publication_safe_metadata(metadata)
+
         # Publication-scope diagnostic sheets (Q9 allow-list).
         # Stakeholders need: Impact Summary, Peer Weights, Privacy Validation,
         # Rank Changes, Preset Comparison. Solver internals (Weight Methods,
@@ -854,7 +882,7 @@ class ReportGenerator:
             ("Rank Changes", "rank_changes_df"),
             ("Preset Comparison", "preset_comparison_df"),
         ]:
-            self._write_optional_dataframe_sheet(wb, sheet_name, metadata, metadata_key)
+            self._write_optional_dataframe_sheet(wb, sheet_name, publication_metadata, metadata_key)
 
         # Auto-adjust column widths (skip merged header cells safely)
         from openpyxl.utils import get_column_letter

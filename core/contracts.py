@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
+from core.control3_policy import CONTROL3_POLICY_KEYS
+
 
 @dataclass
 class SolverRequest:
@@ -110,14 +112,7 @@ class AnalysisRunRequest:
     fraud_in_bps: bool = True
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
-    privacy_basis: Optional[str] = None
-    contains_digital_wallet_metrics: bool = False
-    privacy_review_approved: bool = False
-    contains_top_merchant_output: bool = False
-    dual_entity_axis: bool = False
-    recurring_deliverable: bool = False
-    last_privacy_recheck_date: Optional[str] = None
-    peer_group_altered: bool = False
+    control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
 
     @property
@@ -157,6 +152,11 @@ class AnalysisRunRequest:
         for key in valid_keys:
             if hasattr(ns, key) and key != "mode":
                 kwargs[key] = getattr(ns, key)
+        kwargs["control3_overrides"] = {
+            key: getattr(ns, key)
+            for key in CONTROL3_POLICY_KEYS
+            if getattr(ns, key, None) is not None
+        }
         return cls(**kwargs)
 
 

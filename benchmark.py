@@ -173,10 +173,10 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Declare that the output contains digital wallet metrics and therefore requires Privacy review',
     )
     parser.add_argument(
-        '--privacy-review-approved',
+        '--digital-wallet-review-approved',
         action='store_true',
         default=None,
-        help='Declare that required Privacy review/approval has been obtained for this run',
+        help='Declare that required Privacy review/approval has been obtained for digital wallet metrics',
     )
     parser.add_argument(
         '--contains-top-merchant-output',
@@ -189,6 +189,12 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         action='store_true',
         default=None,
         help='Declare that the benchmark involves two protected entity axes and requires Privacy review',
+    )
+    parser.add_argument(
+        '--dual-entity-axis-review-approved',
+        action='store_true',
+        default=None,
+        help='Declare that required Privacy review/approval has been obtained for dual entity axis benchmarking',
     )
     parser.add_argument(
         '--recurring-deliverable',

@@ -88,12 +88,13 @@ control3:
 
   # Control 3.4: digital-wallet metrics require case-by-case Privacy review.
   contains_digital_wallet_metrics: false
-  privacy_review_approved: false
+  digital_wallet_review_approved: false
 
   # Control 3.2/3.3: top-merchant lists are blocked; dual entity axes require
   # manual Privacy review because both entity groups must be protected.
   contains_top_merchant_output: false
   dual_entity_axis: false
+  dual_entity_axis_review_approved: false
 
   # Recurring deliverables must be re-checked when the peer group changes and
   # at least annually even if unchanged.

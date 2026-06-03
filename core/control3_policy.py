@@ -2,28 +2,77 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, Optional
 
 
 CLEARING_SPEND_BASIS = "clearing_spend"
+CONTROL3_POLICY_KEYS = (
+    "privacy_basis",
+    "contains_digital_wallet_metrics",
+    "digital_wallet_review_approved",
+    "contains_top_merchant_output",
+    "dual_entity_axis",
+    "dual_entity_axis_review_approved",
+    "recurring_deliverable",
+    "last_privacy_recheck_date",
+    "peer_group_altered",
+)
 
 
 @dataclass(frozen=True)
-class Control3PolicyInput:
-    """Run-level Control 3 declarations used for pre-analysis gating."""
+class Control3PolicyEvidence:
+    """Merged run-level Control 3 declarations used for policy gating."""
 
-    analysis_mode: str = "share"
-    rate_types: Iterable[str] = field(default_factory=list)
     privacy_basis: Optional[str] = None
     contains_digital_wallet_metrics: bool = False
-    privacy_review_approved: bool = False
+    digital_wallet_review_approved: bool = False
     contains_top_merchant_output: bool = False
     dual_entity_axis: bool = False
+    dual_entity_axis_review_approved: bool = False
     recurring_deliverable: bool = False
     last_privacy_recheck_date: Optional[Any] = None
     peer_group_altered: bool = False
+
+    @classmethod
+    def from_mapping(cls, values: Dict[str, Any]) -> "Control3PolicyEvidence":
+        return cls(
+            privacy_basis=values.get("privacy_basis"),
+            contains_digital_wallet_metrics=bool(values.get("contains_digital_wallet_metrics", False)),
+            digital_wallet_review_approved=bool(values.get("digital_wallet_review_approved", False)),
+            contains_top_merchant_output=bool(values.get("contains_top_merchant_output", False)),
+            dual_entity_axis=bool(values.get("dual_entity_axis", False)),
+            dual_entity_axis_review_approved=bool(values.get("dual_entity_axis_review_approved", False)),
+            recurring_deliverable=bool(values.get("recurring_deliverable", False)),
+            last_privacy_recheck_date=values.get("last_privacy_recheck_date"),
+            peer_group_altered=bool(values.get("peer_group_altered", False)),
+        )
+
+    def to_metadata_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Control3PolicyInput(Control3PolicyEvidence):
+    """Control 3 evidence plus run mode facts for pre-analysis gating."""
+
+    analysis_mode: str = "share"
+    rate_types: Iterable[str] = field(default_factory=list)
+
+    @classmethod
+    def from_evidence(
+        cls,
+        evidence: Control3PolicyEvidence,
+        *,
+        analysis_mode: str,
+        rate_types: Iterable[str],
+    ) -> "Control3PolicyInput":
+        return cls(
+            **evidence.to_metadata_dict(),
+            analysis_mode=analysis_mode,
+            rate_types=rate_types,
+        )
 
 
 @dataclass(frozen=True)
@@ -88,7 +137,7 @@ def evaluate_control3_policy(
             )
         requirements["fraud_chargeback_privacy_basis"] = "enforced"
 
-    if policy_input.contains_digital_wallet_metrics and not policy_input.privacy_review_approved:
+    if policy_input.contains_digital_wallet_metrics and not policy_input.digital_wallet_review_approved:
         return Control3PolicyResult(
             allowed=False,
             blocked_reason="digital_wallet_metrics_require_privacy_review",
@@ -106,7 +155,7 @@ def evaluate_control3_policy(
         )
     requirements["top_merchant_outputs"] = "enforced"
 
-    if policy_input.dual_entity_axis and not policy_input.privacy_review_approved:
+    if policy_input.dual_entity_axis and not policy_input.dual_entity_axis_review_approved:
         return Control3PolicyResult(
             allowed=False,
             blocked_reason="dual_entity_axis_requires_privacy_review",

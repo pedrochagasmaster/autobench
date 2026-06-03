@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
-from core.control3_policy import Control3PolicyInput, evaluate_control3_policy
+from core.control3_policy import CONTROL3_POLICY_KEYS, Control3PolicyInput, evaluate_control3_policy
 from core.audit_log import build_audit_log_model
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
 from core.contracts import (
@@ -53,14 +53,6 @@ COMMON_CLI_OVERRIDES = (
     'output_format',
     'include_calculated',
     'compliance_posture',
-    'privacy_basis',
-    'contains_digital_wallet_metrics',
-    'privacy_review_approved',
-    'contains_top_merchant_output',
-    'dual_entity_axis',
-    'recurring_deliverable',
-    'last_privacy_recheck_date',
-    'peer_group_altered',
 )
 
 
@@ -177,6 +169,17 @@ def build_run_config(
     )
     if extra_overrides:
         cli_overrides.update(extra_overrides)
+    control3_overrides = getattr(args, 'control3_overrides', None)
+    if isinstance(control3_overrides, dict):
+        cli_overrides.update(control3_overrides)
+    else:
+        cli_overrides.update(
+            {
+                key: getattr(args, key)
+                for key in CONTROL3_POLICY_KEYS
+                if getattr(args, key, None) is not None
+            }
+        )
     cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
 
     return ConfigManager(
@@ -360,16 +363,7 @@ def build_common_run_metadata(
             'high_pp': high_impact_pp,
             'low_pp': low_impact_pp,
         },
-        'control3_policy_declarations': {
-            'privacy_basis': getattr(resolved.control3, 'privacy_basis', None),
-            'contains_digital_wallet_metrics': getattr(resolved.control3, 'contains_digital_wallet_metrics', False),
-            'privacy_review_approved': getattr(resolved.control3, 'privacy_review_approved', False),
-            'contains_top_merchant_output': getattr(resolved.control3, 'contains_top_merchant_output', False),
-            'dual_entity_axis': getattr(resolved.control3, 'dual_entity_axis', False),
-            'recurring_deliverable': getattr(resolved.control3, 'recurring_deliverable', False),
-            'last_privacy_recheck_date': getattr(resolved.control3, 'last_privacy_recheck_date', None),
-            'peer_group_altered': getattr(resolved.control3, 'peer_group_altered', False),
-        },
+        'control3_policy_declarations': resolved.control3.to_metadata_dict(),
     }
 
 
@@ -730,36 +724,10 @@ def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRun
             summary,
         )
     resolved = config.resolve() if hasattr(config, "resolve") else None
-    control3_cfg = getattr(resolved, "control3", None)
-    policy_input = Control3PolicyInput(
+    policy_input = Control3PolicyInput.from_evidence(
+        resolved.control3,
         analysis_mode=request.mode,
         rate_types=request.rate_types,
-        privacy_basis=request.privacy_basis or getattr(control3_cfg, "privacy_basis", None),
-        contains_digital_wallet_metrics=bool(
-            request.contains_digital_wallet_metrics
-            or getattr(control3_cfg, "contains_digital_wallet_metrics", False)
-        ),
-        privacy_review_approved=bool(
-            request.privacy_review_approved
-            or getattr(control3_cfg, "privacy_review_approved", False)
-        ),
-        contains_top_merchant_output=bool(
-            request.contains_top_merchant_output
-            or getattr(control3_cfg, "contains_top_merchant_output", False)
-        ),
-        dual_entity_axis=bool(request.dual_entity_axis or getattr(control3_cfg, "dual_entity_axis", False)),
-        recurring_deliverable=bool(
-            request.recurring_deliverable
-            or getattr(control3_cfg, "recurring_deliverable", False)
-        ),
-        last_privacy_recheck_date=(
-            request.last_privacy_recheck_date
-            or getattr(control3_cfg, "last_privacy_recheck_date", None)
-        ),
-        peer_group_altered=bool(
-            request.peer_group_altered
-            or getattr(control3_cfg, "peer_group_altered", False)
-        ),
     )
     control3_policy = evaluate_control3_policy(policy_input)
     if not control3_policy.allowed:

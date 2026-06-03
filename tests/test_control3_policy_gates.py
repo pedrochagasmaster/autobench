@@ -11,6 +11,8 @@ from openpyxl import load_workbook
 from benchmark import run_share_analysis
 from core.analysis_run import RunBlocked, build_run_request, enforce_compliance_preconditions
 from core.control3_policy import Control3PolicyInput, evaluate_control3_policy
+from utils.config_manager import ConfigManager
+from utils.validators import ConfigValidator
 
 
 def test_fraud_and_chargeback_metrics_require_clearing_spend_privacy_basis() -> None:
@@ -43,7 +45,7 @@ def test_digital_wallet_metrics_require_privacy_review_approval() -> None:
     policy = evaluate_control3_policy(
         Control3PolicyInput(
             contains_digital_wallet_metrics=True,
-            privacy_review_approved=False,
+            digital_wallet_review_approved=False,
         )
     )
 
@@ -55,7 +57,8 @@ def test_top_merchant_output_is_hard_blocked() -> None:
     policy = evaluate_control3_policy(
         Control3PolicyInput(
             contains_top_merchant_output=True,
-            privacy_review_approved=True,
+            digital_wallet_review_approved=True,
+            dual_entity_axis_review_approved=True,
         )
     )
 
@@ -67,12 +70,50 @@ def test_dual_entity_axis_requires_manual_privacy_review() -> None:
     policy = evaluate_control3_policy(
         Control3PolicyInput(
             dual_entity_axis=True,
-            privacy_review_approved=False,
+            dual_entity_axis_review_approved=False,
         )
     )
 
     assert not policy.allowed
     assert policy.blocked_reason == "dual_entity_axis_requires_privacy_review"
+
+
+def test_digital_wallet_review_does_not_approve_dual_entity_axis() -> None:
+    policy = evaluate_control3_policy(
+        Control3PolicyInput(
+            contains_digital_wallet_metrics=True,
+            digital_wallet_review_approved=True,
+            dual_entity_axis=True,
+            dual_entity_axis_review_approved=False,
+        )
+    )
+
+    assert not policy.allowed
+    assert policy.blocked_reason == "dual_entity_axis_requires_privacy_review"
+
+
+def test_control3_config_recheck_date_must_be_iso_date() -> None:
+    errors = ConfigValidator.validate(
+        {
+            "version": "3.0",
+            "compliance_posture": "strict",
+            "control3": {"last_privacy_recheck_date": "2026/06/03"},
+        }
+    )
+
+    assert "control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null" in errors
+
+
+def test_control3_config_rejects_overloaded_privacy_review_approval() -> None:
+    errors = ConfigValidator.validate(
+        {
+            "version": "3.0",
+            "compliance_posture": "strict",
+            "control3": {"privacy_review_approved": True},
+        }
+    )
+
+    assert "Unknown control3 fields: privacy_review_approved" in errors
 
 
 def test_recurring_deliverable_requires_recheck_when_peer_group_altered() -> None:
@@ -112,7 +153,6 @@ def test_compliance_preconditions_block_declared_sensitive_run() -> None:
             fraud_col="fraud",
             privacy_basis=None,
             contains_digital_wallet_metrics=False,
-            privacy_review_approved=False,
             contains_top_merchant_output=False,
             dual_entity_axis=False,
             recurring_deliverable=False,
@@ -120,7 +160,7 @@ def test_compliance_preconditions_block_declared_sensitive_run() -> None:
             peer_group_altered=False,
         ),
     )
-    config = SimpleNamespace(get=lambda *args, **kwargs: "strict" if args == ("compliance_posture",) else None)
+    config = ConfigManager()
 
     with pytest.raises(RunBlocked) as exc_info:
         enforce_compliance_preconditions(config, request)
@@ -167,7 +207,6 @@ def test_publication_peer_evidence_redacts_peer_composition(tmp_path: Path) -> N
         acknowledge_accuracy_first=False,
         privacy_basis=None,
         contains_digital_wallet_metrics=False,
-        privacy_review_approved=False,
         contains_top_merchant_output=False,
         dual_entity_axis=False,
         recurring_deliverable=False,

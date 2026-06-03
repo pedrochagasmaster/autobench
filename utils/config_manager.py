@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - validators already handle this path
     yaml = None
 
 from core.compliance import VALID_COMPLIANCE_POSTURES
+from core.control3_policy import Control3PolicyEvidence
 
 logger = logging.getLogger(__name__)
 
@@ -88,18 +89,6 @@ class OutputConfig:
 
 
 @dataclass
-class Control3PolicyConfig:
-    privacy_basis: Optional[str] = None
-    contains_digital_wallet_metrics: bool = False
-    privacy_review_approved: bool = False
-    contains_top_merchant_output: bool = False
-    dual_entity_axis: bool = False
-    recurring_deliverable: bool = False
-    last_privacy_recheck_date: Optional[str] = None
-    peer_group_altered: bool = False
-
-
-@dataclass
 class ResolvedConfig:
     """Typed view of merged configuration for analysis orchestration."""
 
@@ -110,7 +99,7 @@ class ResolvedConfig:
     bayesian: BayesianConfig = field(default_factory=BayesianConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
-    control3: Control3PolicyConfig = field(default_factory=Control3PolicyConfig)
+    control3: Control3PolicyEvidence = field(default_factory=Control3PolicyEvidence)
     compliance_posture: str = "strict"
 
     @classmethod
@@ -185,16 +174,7 @@ class ResolvedConfig:
                 impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
                 distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
             ),
-            control3=Control3PolicyConfig(
-                privacy_basis=control3.get("privacy_basis"),
-                contains_digital_wallet_metrics=bool(control3.get("contains_digital_wallet_metrics", False)),
-                privacy_review_approved=bool(control3.get("privacy_review_approved", False)),
-                contains_top_merchant_output=bool(control3.get("contains_top_merchant_output", False)),
-                dual_entity_axis=bool(control3.get("dual_entity_axis", False)),
-                recurring_deliverable=bool(control3.get("recurring_deliverable", False)),
-                last_privacy_recheck_date=control3.get("last_privacy_recheck_date"),
-                peer_group_altered=bool(control3.get("peer_group_altered", False)),
-            ),
+            control3=Control3PolicyEvidence.from_mapping(control3),
             compliance_posture=str(config.get("compliance_posture", "strict")),
         )
 
@@ -654,9 +634,10 @@ class ConfigManager:
             'control3': {
                 'privacy_basis': None,
                 'contains_digital_wallet_metrics': False,
-                'privacy_review_approved': False,
+                'digital_wallet_review_approved': False,
                 'contains_top_merchant_output': False,
                 'dual_entity_axis': False,
+                'dual_entity_axis_review_approved': False,
                 'recurring_deliverable': False,
                 'last_privacy_recheck_date': None,
                 'peer_group_altered': False,
@@ -771,9 +752,10 @@ class ConfigManager:
             'compliance_posture': ('compliance_posture',),
             'privacy_basis': ('control3', 'privacy_basis'),
             'contains_digital_wallet_metrics': ('control3', 'contains_digital_wallet_metrics'),
-            'privacy_review_approved': ('control3', 'privacy_review_approved'),
+            'digital_wallet_review_approved': ('control3', 'digital_wallet_review_approved'),
             'contains_top_merchant_output': ('control3', 'contains_top_merchant_output'),
             'dual_entity_axis': ('control3', 'dual_entity_axis'),
+            'dual_entity_axis_review_approved': ('control3', 'dual_entity_axis_review_approved'),
             'recurring_deliverable': ('control3', 'recurring_deliverable'),
             'last_privacy_recheck_date': ('control3', 'last_privacy_recheck_date'),
             'peer_group_altered': ('control3', 'peer_group_altered'),

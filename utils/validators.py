@@ -4,6 +4,7 @@ This module provides configuration file validation against the v3.0 schema.
 """
 
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from core.compliance import VALID_COMPLIANCE_POSTURES
@@ -91,6 +92,17 @@ class ConfigValidator:
         'learning_rate',
         'violation_penalty_weight',
     }
+    VALID_CONTROL3_KEYS = {
+        'privacy_basis',
+        'contains_digital_wallet_metrics',
+        'digital_wallet_review_approved',
+        'contains_top_merchant_output',
+        'dual_entity_axis',
+        'dual_entity_axis_review_approved',
+        'recurring_deliverable',
+        'last_privacy_recheck_date',
+        'peer_group_altered',
+    }
     
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
@@ -157,11 +169,16 @@ class ConfigValidator:
             errors.append("control3 must be a dictionary")
             return errors
 
+        unknown_fields = set(control3_config) - cls.VALID_CONTROL3_KEYS
+        if unknown_fields:
+            errors.append(f"Unknown control3 fields: {', '.join(sorted(unknown_fields))}")
+
         bool_fields = [
             'contains_digital_wallet_metrics',
-            'privacy_review_approved',
+            'digital_wallet_review_approved',
             'contains_top_merchant_output',
             'dual_entity_axis',
+            'dual_entity_axis_review_approved',
             'recurring_deliverable',
             'peer_group_altered',
         ]
@@ -182,6 +199,11 @@ class ConfigValidator:
             value = control3_config['last_privacy_recheck_date']
             if value is not None and not isinstance(value, str):
                 errors.append("control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null")
+            elif value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    errors.append("control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null")
 
         return errors
     
