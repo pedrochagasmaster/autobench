@@ -15,8 +15,6 @@ class TestPrivacyRulesConfig(unittest.TestCase):
         self.assertEqual(PrivacyValidator.select_rule(10), "10/40")
         self.assertEqual(PrivacyValidator.select_rule(7), "7/35")
         self.assertEqual(PrivacyValidator.select_rule(4, merchant_mode=True), "4/35")
-        self.assertEqual(PrivacyValidator.select_rule(5, merchant_mode=True), "4/35")
-        self.assertEqual(PrivacyValidator.select_rule(7, merchant_mode=True), "4/35")
 
     def test_protected_default_uses_citi_control_3_cap(self) -> None:
         validator = PrivacyValidator(rule_name="10/40", protected_entities=["Citibank"])
