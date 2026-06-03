@@ -1,5 +1,5 @@
 {
-  "csv": "/workspace/tests/fixtures/gate_demo.csv",
+  "csv": "tests/fixtures/gate_demo.csv",
   "entity_col": "issuer_name",
   "entity_value": "Target",
   "time_col": "year_month",

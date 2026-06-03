@@ -1,5 +1,6 @@
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -14,6 +15,28 @@ def test_gate_command_parser_preserves_quoted_entity_names() -> None:
 
     assert parsed[3] == "--entity"
     assert parsed[4] == "BANCO SANTANDER"
+
+
+def test_gate_generation_uses_portable_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_run(cmd, cwd, capture_output, text):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["capture_output"] = capture_output
+        captured["text"] = text
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("scripts.perform_gate_test.subprocess.run", fake_run)
+
+    runner = GateTestRunner(output_dir=str(tmp_path / "gate"))
+    runner.generate_cases()
+
+    cmd = captured["cmd"]
+    assert "--csv" in cmd
+    csv_path = Path(cmd[cmd.index("--csv") + 1])
+    assert csv_path.name == "gate_demo.csv"
+    assert csv_path.exists()
 
 
 def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ class GateTestRunner:
         self.script_dir = Path(__file__).parent
         self.root_dir = self.script_dir.parent
         self.generate_script = self.script_dir / "generate_cli_sweep.py"
+        self.fixture_csv = Path("tests") / "fixtures" / "gate_demo.csv"
 
     def generate_cases(self):
         """Run generate_cli_sweep.py in gate mode."""
@@ -145,8 +146,19 @@ class GateTestRunner:
             # Defined Checks
             # 0. Duplicates Check
             # Identify key columns for uniqueness check
-            key_candidates = ["Category", "Time", "Month", "Year", "Quarter", "Period", "ano_mes", "Date", "date"]
-            time_col = params.get("time_col")
+            key_candidates = [
+                "Category",
+                "Time",
+                "Month",
+                "Year",
+                "Quarter",
+                "Period",
+                "ano_mes",
+                "year_month",
+                "Date",
+                "date",
+            ]
+            time_col = params.get("time_col") if params else None
             if time_col and time_col not in key_candidates:
                 key_candidates.insert(1, time_col)
             keys = [c for c in df.columns if c in key_candidates]
