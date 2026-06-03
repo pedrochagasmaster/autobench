@@ -1,8 +1,10 @@
 import pandas as pd
+from unittest.mock import patch
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
 from core.contracts import DataQualityResult
 from core.dimensional_analyzer import DimensionalAnalyzer
+from core.privacy_validation import PrivacyValidationResult, PrivacyValidationRow
 
 
 def test_compliance_summary_counts_title_case_validation_column() -> None:
@@ -158,6 +160,45 @@ def test_compliance_summary_accepts_strict_10_40_primary_secondary_and_participa
     assert summary["run_status"] == "compliant"
     assert summary["compliance_verdict"] == "fully_compliant"
     assert summary["strict_final_validation"]["total_violations"] == 0
+
+
+def test_compliance_summary_accepts_typed_validation_without_dataframe_render() -> None:
+    privacy_validation = PrivacyValidationResult(
+        rows=[
+            PrivacyValidationRow(
+                dimension="card_type",
+                category="Credit",
+                time_period=None,
+                peer=f"P{idx}",
+                rule_name="5/25",
+                original_volume=100.0,
+                original_share_pct=20.0,
+                balanced_volume=100.0,
+                balanced_share_pct=20.0,
+                primary_cap_pct=25.0,
+                primary_cap_passed=True,
+                secondary_rule_passed=True,
+                relaxation_used=False,
+                strict_compliant=True,
+            )
+            for idx in range(1, 6)
+        ]
+    )
+
+    with patch.object(
+        PrivacyValidationResult,
+        "to_dataframe",
+        side_effect=AssertionError("typed validation should not be rendered for compliance summary"),
+    ):
+        summary = build_compliance_summary(
+            posture="strict",
+            privacy_validation_df=privacy_validation,
+            data_quality=DataQualityResult(checked=True),
+        ).to_dict()
+
+    assert summary["run_status"] == "compliant"
+    assert summary["strict_final_validation"]["checked"] is True
+    assert summary["strict_final_validation"]["rows"] == 5
 
 
 def test_strict_compliance_requires_publishable_data_quality() -> None:

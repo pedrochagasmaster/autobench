@@ -6,6 +6,7 @@ import unittest
 import os
 import pandas as pd
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 from tempfile import NamedTemporaryFile
 from core.data_loader import DataLoader
 
@@ -111,6 +112,7 @@ class TestColumnNormalizationCollisions(unittest.TestCase):
             ('input', 'max_csv_size_mb'): None,
             ('input', 'max_csv_rows'): 2,
             ('input', 'csv_chunk_size'): None,
+            ('input', 'project_csv_columns'): False,
         }.get(tuple(args), kwargs.get('default'))
         mock_config.get_column_mapping.return_value = {}
 
@@ -124,6 +126,140 @@ class TestColumnNormalizationCollisions(unittest.TestCase):
             self.assertEqual(len(df), 2)
         finally:
             os.unlink(temp_path)
+
+    def test_load_data_projects_explicit_analysis_columns(self):
+        """Explicit-dimension runs should not load irrelevant wide CSV columns."""
+        mock_config = MagicMock()
+        mock_config.get.side_effect = lambda *args, **kwargs: {
+            ('input', 'schema_detection_mode'): 'heuristic',
+            ('input', 'max_csv_size_mb'): None,
+            ('input', 'max_csv_rows'): None,
+            ('input', 'csv_chunk_size'): None,
+            ('input', 'project_csv_columns'): True,
+            ('input', 'time_col'): 'year_month',
+        }.get(tuple(args), kwargs.get('default'))
+        mock_config.get_column_mapping.return_value = {}
+
+        loader = DataLoader(mock_config)
+        with NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp:
+            temp.write(
+                "Issuer Name,Card Type,Year Month,Txn Cnt,TPV,Unused Blob\n"
+                "Target,Credit,2024-01,100,1000,large-unused-value\n"
+            )
+            temp_path = temp.name
+
+        args = SimpleNamespace(
+            csv=temp_path,
+            entity_col='issuer_name',
+            metric='txn_cnt',
+            dimensions=['card_type'],
+            secondary_metrics=['tpv'],
+            time_col='year_month',
+            auto=False,
+            nrows=None,
+        )
+        try:
+            df = loader.load_data(args)
+            self.assertEqual(
+                list(df.columns),
+                ['issuer_name', 'card_type', 'year_month', 'txn_cnt', 'tpv'],
+            )
+        finally:
+            os.unlink(temp_path)
+
+    def test_load_data_adaptively_batches_and_aggregates_large_explicit_run(self):
+        mock_config = MagicMock()
+        mock_config.get.side_effect = lambda *args, **kwargs: {
+            ('input', 'schema_detection_mode'): 'heuristic',
+            ('input', 'max_csv_size_mb'): None,
+            ('input', 'max_csv_rows'): None,
+            ('input', 'csv_chunk_size'): 2,
+            ('input', 'project_csv_columns'): True,
+            ('input', 'validate_input'): False,
+            ('input', 'adaptive_batching'): True,
+            ('input', 'batch_row_threshold'): 3,
+            ('input', 'batch_file_size_mb'): None,
+            ('input', 'batch_compaction_chunks'): 1,
+            ('input', 'time_col'): 'year_month',
+        }.get(tuple(args), kwargs.get('default'))
+        mock_config.get_column_mapping.return_value = {}
+
+        loader = DataLoader(mock_config)
+        with NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp:
+            temp.write(
+                "Issuer Name,Card Type,Year Month,Txn Cnt,TPV,Unused Blob\n"
+                "Target,Credit,2024-01,100,1000,x\n"
+                "Target,Credit,2024-01,50,500,y\n"
+                "Peer1,Credit,2024-01,80,800,z\n"
+                "Peer1,Debit,2024-01,20,200,w\n"
+            )
+            temp_path = temp.name
+
+        args = SimpleNamespace(
+            csv=temp_path,
+            entity_col='issuer_name',
+            metric='txn_cnt',
+            dimensions=['card_type'],
+            secondary_metrics=['tpv'],
+            time_col='year_month',
+            auto=False,
+            nrows=None,
+        )
+        try:
+            df = loader.load_data(args)
+        finally:
+            os.unlink(temp_path)
+
+        self.assertTrue(loader.last_workload_estimate.should_batch)
+        self.assertEqual(list(df.columns), ['issuer_name', 'card_type', 'year_month', 'txn_cnt', 'tpv'])
+        self.assertEqual(len(df), 3)
+        target = df[(df['issuer_name'] == 'Target') & (df['card_type'] == 'Credit')].iloc[0]
+        self.assertEqual(target['txn_cnt'], 150)
+        self.assertEqual(target['tpv'], 1500)
+
+    def test_load_data_skips_batching_below_adaptive_threshold(self):
+        mock_config = MagicMock()
+        mock_config.get.side_effect = lambda *args, **kwargs: {
+            ('input', 'schema_detection_mode'): 'heuristic',
+            ('input', 'max_csv_size_mb'): None,
+            ('input', 'max_csv_rows'): None,
+            ('input', 'csv_chunk_size'): 2,
+            ('input', 'project_csv_columns'): True,
+            ('input', 'validate_input'): False,
+            ('input', 'adaptive_batching'): True,
+            ('input', 'batch_row_threshold'): 100,
+            ('input', 'batch_file_size_mb'): None,
+            ('input', 'batch_compaction_chunks'): 1,
+            ('input', 'time_col'): None,
+        }.get(tuple(args), kwargs.get('default'))
+        mock_config.get_column_mapping.return_value = {}
+
+        loader = DataLoader(mock_config)
+        with NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp:
+            temp.write(
+                "issuer_name,card_type,txn_cnt\n"
+                "Target,Credit,100\n"
+                "Target,Credit,50\n"
+            )
+            temp_path = temp.name
+
+        args = SimpleNamespace(
+            csv=temp_path,
+            entity_col='issuer_name',
+            metric='txn_cnt',
+            dimensions=['card_type'],
+            secondary_metrics=None,
+            time_col=None,
+            auto=False,
+            nrows=None,
+        )
+        try:
+            df = loader.load_data(args)
+        finally:
+            os.unlink(temp_path)
+
+        self.assertFalse(loader.last_workload_estimate.should_batch)
+        self.assertEqual(len(df), 2)
 
 
 if __name__ == '__main__':

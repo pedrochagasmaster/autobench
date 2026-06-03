@@ -38,6 +38,18 @@ class ValidationIssue:
         return f"[{self.severity.value}] {self.category}: {self.message}"
 
 
+@dataclass(frozen=True)
+class CsvWorkloadEstimate:
+    """Lightweight CSV workload estimate used to select a safe loading strategy."""
+
+    file_size_mb: float = 0.0
+    estimated_rows: int = 0
+    projected_columns: int = 0
+    total_columns: int = 0
+    should_batch: bool = False
+    reason: str = ""
+
+
 # Default thresholds for data quality validation
 # These can be overridden via config file (input.validation_thresholds)
 VALIDATION_THRESHOLDS = {
@@ -86,6 +98,13 @@ class DataLoader:
         self.max_csv_size_mb: Optional[float] = None
         self.max_csv_rows: Optional[int] = None
         self.csv_chunk_size: Optional[int] = None
+        self.project_csv_columns: bool = True
+        self.adaptive_batching: bool = True
+        self.batch_row_threshold: int = 250_000
+        self.batch_file_size_mb: Optional[float] = 256.0
+        self.batch_compaction_chunks: int = 20
+        self.validate_input_enabled: bool = True
+        self.last_workload_estimate = CsvWorkloadEstimate()
         if config is not None:
             if hasattr(config, 'get'):
                 try:
@@ -109,6 +128,37 @@ class DataLoader:
                     self.csv_chunk_size = int(csv_chunk_size) if csv_chunk_size else None
                 except Exception:
                     self.csv_chunk_size = None
+                try:
+                    self.project_csv_columns = bool(
+                        config.get('input', 'project_csv_columns', default=True)
+                    )
+                except Exception:
+                    self.project_csv_columns = True
+                try:
+                    self.adaptive_batching = bool(
+                        config.get('input', 'adaptive_batching', default=True)
+                    )
+                except Exception:
+                    self.adaptive_batching = True
+                try:
+                    batch_row_threshold = config.get('input', 'batch_row_threshold', default=250_000)
+                    self.batch_row_threshold = int(batch_row_threshold) if batch_row_threshold else 250_000
+                except Exception:
+                    self.batch_row_threshold = 250_000
+                try:
+                    batch_file_size_mb = config.get('input', 'batch_file_size_mb', default=256.0)
+                    self.batch_file_size_mb = float(batch_file_size_mb) if batch_file_size_mb else None
+                except Exception:
+                    self.batch_file_size_mb = 256.0
+                try:
+                    batch_compaction_chunks = config.get('input', 'batch_compaction_chunks', default=20)
+                    self.batch_compaction_chunks = max(1, int(batch_compaction_chunks)) if batch_compaction_chunks else 20
+                except Exception:
+                    self.batch_compaction_chunks = 20
+                try:
+                    self.validate_input_enabled = bool(config.get('input', 'validate_input', default=True))
+                except Exception:
+                    self.validate_input_enabled = True
             if hasattr(config, 'get_column_mapping'):
                 try:
                     self.column_mapping = config.get_column_mapping() or {}
@@ -131,7 +181,13 @@ class DataLoader:
             Loaded and preprocessed data
         """
         if hasattr(args, 'csv') and args.csv:
-            return self.load_from_csv(args.csv, nrows=getattr(args, 'nrows', None))
+            requested_columns = self._requested_csv_columns(args)
+            return self.load_from_csv(
+                args.csv,
+                nrows=getattr(args, 'nrows', None),
+                requested_columns=requested_columns,
+                aggregation_columns=self._csv_aggregation_columns(args, requested_columns),
+            )
         elif hasattr(args, 'sql_query') and args.sql_query:
             return self.load_from_sql_query(args.sql_query)
         elif hasattr(args, 'sql_table') and args.sql_table:
@@ -139,7 +195,13 @@ class DataLoader:
         else:
             raise ValueError("No valid data source specified")
     
-    def load_from_csv(self, file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
+    def load_from_csv(
+        self,
+        file_path: str,
+        nrows: Optional[int] = None,
+        requested_columns: Optional[List[str]] = None,
+        aggregation_columns: Optional[Dict[str, List[str]]] = None,
+    ) -> pd.DataFrame:
         """
         Load data from CSV file.
         
@@ -169,11 +231,30 @@ class DataLoader:
 
         try:
             effective_nrows = nrows if nrows is not None else self.max_csv_rows
-            df = self._read_csv_with_limits(file_path, effective_nrows)
+            usecols = self._resolve_csv_usecols(file_path, requested_columns)
+            self.last_workload_estimate = self._estimate_csv_workload(
+                file_path,
+                nrows=effective_nrows,
+                usecols=usecols,
+                aggregation_columns=aggregation_columns,
+            )
+            if self.last_workload_estimate.should_batch and aggregation_columns:
+                logger.info(
+                    "Adaptive CSV batching enabled: %s (estimated_rows=%s, file_size=%.2f MB)",
+                    self.last_workload_estimate.reason,
+                    self.last_workload_estimate.estimated_rows,
+                    self.last_workload_estimate.file_size_mb,
+                )
+                df = self._read_csv_preaggregated(
+                    file_path,
+                    effective_nrows,
+                    usecols=usecols,
+                    aggregation_columns=aggregation_columns,
+                )
+            else:
+                df = self._read_csv_with_limits(file_path, effective_nrows, usecols=usecols)
+                df = self._normalize_columns(df)
             logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-            
-            # Normalize column names
-            df = self._normalize_columns(df)
             
             return df
             
@@ -181,14 +262,259 @@ class DataLoader:
             logger.error(f"Failed to load CSV: {str(e)}")
             raise
 
-    def _read_csv_with_limits(self, file_path: str, nrows: Optional[int]) -> pd.DataFrame:
+    def _requested_csv_columns(self, args: Any) -> Optional[List[str]]:
+        if not self.project_csv_columns:
+            return None
+
+        explicit_dimensions = list(getattr(args, 'dimensions', None) or [])
+        auto_flag = getattr(args, 'auto', None)
+        try:
+            auto_config = bool(self.config.get('analysis', 'auto_detect_dimensions', default=False))
+        except Exception:
+            auto_config = False
+        if not explicit_dimensions or bool(auto_flag) or auto_config:
+            return None
+
+        requested: List[str] = []
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add(item)
+                return
+            value_str = str(value).strip()
+            if value_str and value_str not in requested:
+                requested.append(value_str)
+
+        add(getattr(args, 'entity_col', None))
+        add(explicit_dimensions)
+        add(getattr(args, 'time_col', None) or self._configured_time_column())
+        add(getattr(args, 'metric', None))
+        add(getattr(args, 'secondary_metrics', None))
+        add(getattr(args, 'total_col', None))
+        add(getattr(args, 'approved_col', None))
+        add(getattr(args, 'fraud_col', None))
+        return requested or None
+
+    def _csv_aggregation_columns(
+        self,
+        args: Any,
+        requested_columns: Optional[List[str]],
+    ) -> Optional[Dict[str, List[str]]]:
+        if not requested_columns:
+            return None
+
+        dimensions = list(getattr(args, 'dimensions', None) or [])
+        auto_flag = getattr(args, 'auto', None)
+        if not dimensions or bool(auto_flag):
+            return None
+
+        group_columns: List[str] = []
+        value_columns: List[str] = []
+
+        def add_unique(target: List[str], value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add_unique(target, item)
+                return
+            normalized = self.normalize_column_name(str(value))
+            if normalized and normalized not in target:
+                target.append(normalized)
+
+        add_unique(group_columns, getattr(args, 'entity_col', None))
+        add_unique(group_columns, dimensions)
+        add_unique(group_columns, getattr(args, 'time_col', None) or self._configured_time_column())
+        add_unique(value_columns, getattr(args, 'metric', None))
+        add_unique(value_columns, getattr(args, 'secondary_metrics', None))
+        add_unique(value_columns, getattr(args, 'total_col', None))
+        add_unique(value_columns, getattr(args, 'approved_col', None))
+        add_unique(value_columns, getattr(args, 'fraud_col', None))
+
+        value_columns = [col for col in value_columns if col not in group_columns]
+        if not group_columns or not value_columns:
+            return None
+        return {"group_columns": group_columns, "value_columns": value_columns}
+
+    def _configured_time_column(self) -> Optional[str]:
+        try:
+            return self.config.get('input', 'time_col', default=None)
+        except Exception:
+            return None
+
+    def _resolve_csv_usecols(
+        self,
+        file_path: str,
+        requested_columns: Optional[List[str]],
+    ) -> Optional[List[str]]:
+        if not requested_columns:
+            return None
+
+        header = pd.read_csv(file_path, nrows=0).columns.tolist()
+        normalized = self._normalize_column_labels(header)
+        by_normalized = {normalized_name: original for original, normalized_name in zip(header, normalized)}
+        resolved: List[str] = []
+        missing: List[str] = []
+        for requested in requested_columns:
+            requested_normalized = self.normalize_column_name(requested)
+            original = by_normalized.get(requested_normalized)
+            if original is None:
+                missing.append(requested)
+                continue
+            if original not in resolved:
+                resolved.append(original)
+        if missing:
+            logger.warning(
+                "CSV column projection could not resolve requested columns %s; "
+                "loading available requested columns and downstream validation will report missing fields.",
+                missing,
+            )
+        return resolved or None
+
+    def _estimate_csv_workload(
+        self,
+        file_path: str,
+        *,
+        nrows: Optional[int],
+        usecols: Optional[List[str]],
+        aggregation_columns: Optional[Dict[str, List[str]]],
+    ) -> CsvWorkloadEstimate:
+        path = Path(file_path)
+        file_size_mb = path.stat().st_size / (1024.0 * 1024.0)
+        total_columns = len(pd.read_csv(file_path, nrows=0).columns)
+        projected_columns = len(usecols) if usecols else total_columns
+        estimated_rows = int(nrows) if nrows is not None else self._estimate_csv_row_count(path)
+
+        reasons: List[str] = []
+        if estimated_rows >= self.batch_row_threshold:
+            reasons.append(f"estimated rows {estimated_rows} >= threshold {self.batch_row_threshold}")
+        if self.batch_file_size_mb is not None and file_size_mb >= self.batch_file_size_mb:
+            reasons.append(f"file size {file_size_mb:.2f} MB >= threshold {self.batch_file_size_mb:.2f} MB")
+
+        can_batch = bool(
+            self.adaptive_batching
+            and aggregation_columns
+            and not self.validate_input_enabled
+            and reasons
+        )
+        if self.adaptive_batching and aggregation_columns and self.validate_input_enabled and reasons:
+            reasons.append("input validation enabled; preserving row-level validation")
+
+        return CsvWorkloadEstimate(
+            file_size_mb=file_size_mb,
+            estimated_rows=estimated_rows,
+            projected_columns=projected_columns,
+            total_columns=total_columns,
+            should_batch=can_batch,
+            reason="; ".join(reasons) if reasons else "below adaptive batching thresholds",
+        )
+
+    @staticmethod
+    def _estimate_csv_row_count(path: Path, sample_lines: int = 1000) -> int:
+        file_size = path.stat().st_size
+        if file_size == 0:
+            return 0
+
+        sampled_bytes = 0
+        sampled_rows = 0
+        with path.open("rb") as handle:
+            header = handle.readline()
+            header_bytes = len(header)
+            for _ in range(sample_lines):
+                line = handle.readline()
+                if not line:
+                    break
+                sampled_bytes += len(line)
+                sampled_rows += 1
+
+        if sampled_rows == 0 or sampled_bytes == 0:
+            return 0
+        avg_row_bytes = sampled_bytes / float(sampled_rows)
+        remaining_bytes = max(file_size - header_bytes, 0)
+        return max(0, int(round(remaining_bytes / avg_row_bytes)))
+
+    def _read_csv_preaggregated(
+        self,
+        file_path: str,
+        nrows: Optional[int],
+        *,
+        usecols: Optional[List[str]],
+        aggregation_columns: Dict[str, List[str]],
+    ) -> pd.DataFrame:
+        chunk_size = self.csv_chunk_size if self.csv_chunk_size and self.csv_chunk_size > 0 else 100_000
+        group_columns = list(aggregation_columns["group_columns"])
+        value_columns = list(aggregation_columns["value_columns"])
+        partials: List[pd.DataFrame] = []
+        rows_read = 0
+
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=usecols):
+            if nrows is not None:
+                remaining = nrows - rows_read
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk.iloc[:remaining]
+            rows_read += len(chunk)
+
+            chunk = self._normalize_columns(chunk)
+            present_groups = [col for col in group_columns if col in chunk.columns]
+            present_values = [col for col in value_columns if col in chunk.columns]
+            if not present_groups or not present_values:
+                partials.append(chunk[present_groups + present_values])
+            else:
+                numeric_values = [
+                    col
+                    for col in present_values
+                    if pd.api.types.is_numeric_dtype(chunk[col])
+                ]
+                for col in present_values:
+                    if col not in numeric_values:
+                        chunk[col] = pd.to_numeric(chunk[col], errors="coerce")
+                        numeric_values.append(col)
+                partials.append(
+                    chunk.groupby(present_groups, dropna=False, as_index=False)[numeric_values].sum(min_count=1)
+                )
+
+            if len(partials) >= self.batch_compaction_chunks:
+                partials = [self._compact_aggregated_partials(partials, group_columns, value_columns)]
+
+            if nrows is not None and rows_read >= nrows:
+                break
+
+        if not partials:
+            return pd.DataFrame(columns=group_columns + value_columns)
+        return self._compact_aggregated_partials(partials, group_columns, value_columns)
+
+    @staticmethod
+    def _compact_aggregated_partials(
+        partials: List[pd.DataFrame],
+        group_columns: List[str],
+        value_columns: List[str],
+    ) -> pd.DataFrame:
+        combined = pd.concat(partials, ignore_index=True)
+        present_groups = [col for col in group_columns if col in combined.columns]
+        present_values = [col for col in value_columns if col in combined.columns]
+        if not present_groups or not present_values:
+            return combined
+        return combined.groupby(present_groups, dropna=False, as_index=False)[present_values].sum(min_count=1)
+
+    def _read_csv_with_limits(
+        self,
+        file_path: str,
+        nrows: Optional[int],
+        *,
+        usecols: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
         chunk_size = self.csv_chunk_size if self.csv_chunk_size and self.csv_chunk_size > 0 else None
         if chunk_size is None:
-            return pd.read_csv(file_path, nrows=nrows)
+            return pd.read_csv(file_path, nrows=nrows, usecols=usecols)
 
         chunks: List[pd.DataFrame] = []
         rows_read = 0
-        for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=usecols):
             if nrows is None:
                 chunks.append(chunk)
                 continue
@@ -286,6 +612,34 @@ class DataLoader:
             raise ValueError(f"Unsafe SQL table name: {identifier!r}")
         return identifier
     
+    @staticmethod
+    def normalize_column_name(column_name: str) -> str:
+        normalized = str(column_name).lower().strip()
+        normalized = re.sub(r'[\s\-\.]+', '_', normalized)
+        normalized = re.sub(r'[^a-z0-9_]', '', normalized)
+        normalized = re.sub(r'_+', '_', normalized)
+        return normalized.strip('_')
+
+    @classmethod
+    def _normalize_column_labels(cls, columns: List[str]) -> List[str]:
+        normalized_columns = [cls.normalize_column_name(col) for col in columns]
+        seen: Dict[str, int] = {}
+        final_cols: List[str] = []
+        for i, col in enumerate(normalized_columns):
+            if col in seen:
+                original_a = columns[seen[col]]
+                original_b = columns[i]
+                logger.warning(
+                    f"Column name collision after normalization: "
+                    f"'{original_a}' and '{original_b}' both normalize to '{col}'. "
+                    f"Appending suffix '_{i}' to resolve."
+                )
+                final_cols.append(f"{col}_{i}")
+            else:
+                seen[col] = i
+                final_cols.append(col)
+        return final_cols
+
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Normalize column names to standard format with collision detection.
@@ -306,36 +660,7 @@ class DataLoader:
         "Rate (#)" both normalizing to "rate"), a warning is logged and 
         numeric suffixes are appended to resolve the collision.
         """
-        original_columns = df.columns.tolist()
-        
-        # Step 1: Lowercase and strip whitespace
-        new_cols = df.columns.str.lower().str.strip()
-        # Step 2: Replace common separators with underscores
-        new_cols = new_cols.str.replace(r'[\s\-\.]+', '_', regex=True)
-        # Step 3: Remove remaining special characters
-        new_cols = new_cols.str.replace(r'[^a-z0-9_]', '', regex=True)
-        # Step 4: Clean up consecutive/trailing underscores
-        new_cols = new_cols.str.replace(r'_+', '_', regex=True)
-        new_cols = new_cols.str.strip('_')
-        
-        # Step 4: Detect and resolve collisions
-        seen: Dict[str, int] = {}
-        final_cols = []
-        for i, col in enumerate(new_cols):
-            if col in seen:
-                original_a = original_columns[seen[col]]
-                original_b = original_columns[i]
-                logger.warning(
-                    f"Column name collision after normalization: "
-                    f"'{original_a}' and '{original_b}' both normalize to '{col}'. "
-                    f"Appending suffix '_{i}' to resolve."
-                )
-                final_cols.append(f"{col}_{i}")
-            else:
-                seen[col] = i
-                final_cols.append(col)
-        
-        df.columns = final_cols
+        df.columns = self._normalize_column_labels(df.columns.tolist())
         
         # Note: Column mappings removed - use actual column names from dataset
         # Users specify column names via CLI flags (--entity-col, --metric, etc.)

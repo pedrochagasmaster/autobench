@@ -132,6 +132,12 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Optimize each dimension independently (disables global weighting mode)',
     )
     parser.add_argument('--export-balanced-csv', action='store_true', help='Export balanced metrics to CSV')
+    parser.add_argument(
+        '--lean',
+        action='store_true',
+        default=None,
+        help='Minimize memory use for large CSVs by projecting columns and disabling optional heavy artifacts',
+    )
     parser.add_argument('--compare-presets', action='store_true', default=None, help='Compare all presets and report impact for each')
     parser.add_argument('--analyze-impact', action='store_true', default=None, help='Include impact details and summary sheets in output')
     parser.add_argument('--analyze-distortion', action='store_true', default=None, help='Alias for --analyze-impact (deprecated)')
