@@ -40,6 +40,14 @@ input:
   # This reduces memory use on very wide CSV files. Disable only if downstream
   # custom code needs unused columns in the in-memory DataFrame.
   project_csv_columns: true
+  # Adaptive batching estimates CSV size before loading. For heavy explicit-
+  # dimension runs with input validation disabled, it streams chunks and
+  # pre-aggregates duplicate entity/dimension/time rows to reduce memory and CPU
+  # before optimization/reporting. Privacy caps still run on final aggregates.
+  adaptive_batching: true
+  batch_row_threshold: 250000
+  batch_file_size_mb: 256.0
+  batch_compaction_chunks: 20
 
 # ============================================================================
 # RUNTIME RESOURCE PROFILE
@@ -48,7 +56,8 @@ runtime:
   # Lean mode is for memory-limited remote servers and massive CSVs. It keeps
   # privacy-cap enforcement intact while disabling optional heavy artifacts
   # (debug/privacy sheets, impact/preset comparison, audit log), disables subset
-  # search, forces analysis-only output, and requires explicit --dimensions.
+  # search, forces analysis-only output, sets csv_chunk_size, and requires
+  # explicit --dimensions so adaptive batching can safely pre-aggregate.
   lean_mode: false
 
 # ============================================================================
