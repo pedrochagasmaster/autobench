@@ -26,6 +26,7 @@ from core.analysis_run import (
 from core.audit_log import build_audit_log_model
 from core.contracts import AnalysisRunRequest
 from core.data_loader import ValidationSeverity
+from core.privacy_validation import PrivacyValidationResult, PrivacyValidationRow
 from utils.config_manager import ConfigManager
 
 
@@ -226,6 +227,23 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertTrue(config.get('output', 'include_preset_comparison'))
         self.assertFalse(config.get('output', 'fraud_in_bps'))
 
+    def test_build_run_config_applies_lean_resource_profile(self) -> None:
+        args = SimpleNamespace(config=None, preset=None, lean=True)
+
+        config = build_run_config(args)
+
+        self.assertTrue(config.get('runtime', 'lean_mode'))
+        self.assertFalse(config.get('input', 'validate_input'))
+        self.assertTrue(config.get('input', 'project_csv_columns'))
+        self.assertFalse(config.get('output', 'include_debug_sheets'))
+        self.assertFalse(config.get('output', 'include_privacy_validation'))
+        self.assertFalse(config.get('output', 'include_impact_summary'))
+        self.assertFalse(config.get('output', 'include_preset_comparison'))
+        self.assertFalse(config.get('output', 'include_audit_log'))
+        self.assertEqual(config.get('output', 'output_format'), 'analysis')
+        self.assertFalse(config.get('analysis', 'auto_detect_dimensions'))
+        self.assertFalse(config.get('optimization', 'subset_search', 'enabled'))
+
     def test_build_analysis_plan_contains_resolved_dimensions_and_output_settings(self) -> None:
         request = AnalysisRunRequest(
             mode="share",
@@ -258,7 +276,60 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         settings = resolve_output_settings(config)
 
         self.assertTrue(settings['include_impact_summary'])
-        self.assertEqual(settings.output_format, 'analysis')
+
+    def test_collect_run_diagnostics_defers_privacy_validation_dataframe_for_lean_outputs(self) -> None:
+        validation_result = PrivacyValidationResult(
+            rows=[
+                PrivacyValidationRow(
+                    dimension="card_type",
+                    category="Credit",
+                    time_period=None,
+                    peer="P1",
+                    rule_name="5/25",
+                    original_volume=100.0,
+                    original_share_pct=20.0,
+                    balanced_volume=100.0,
+                    balanced_share_pct=20.0,
+                    primary_cap_pct=25.0,
+                    primary_cap_passed=True,
+                    secondary_rule_passed=True,
+                    relaxation_used=False,
+                    strict_compliant=True,
+                )
+            ]
+        )
+
+        class _LeanAnalyzer:
+            global_weights = {"P1": {"multiplier": 1.0, "weight": 20.0}}
+            per_dimension_weights = {}
+            weight_methods = {"card_type": "Global-LP"}
+
+            def build_privacy_validation_result(self, *_args):
+                return validation_result
+
+            def get_weights_dataframe(self):
+                return pd.DataFrame()
+
+        with patch.object(
+            PrivacyValidationResult,
+            "to_dataframe",
+            side_effect=AssertionError("lean diagnostics should not render privacy rows"),
+        ):
+            diagnostics = collect_run_diagnostics(
+                analyzer=_LeanAnalyzer(),
+                df=pd.DataFrame({"issuer_name": ["P1"], "card_type": ["Credit"], "txn_cnt": [100]}),
+                validation_metric_col="txn_cnt",
+                dimensions=["card_type"],
+                debug_mode=False,
+                include_privacy_validation=False,
+                include_audit_log=False,
+                consistent_weights=True,
+                logger=logging.getLogger(__name__),
+            )
+
+        self.assertIsNone(diagnostics["privacy_validation_df"])
+        self.assertIs(diagnostics["compliance_privacy_validation_df"], validation_result)
+        self.assertIs(diagnostics["metadata_updates"]["privacy_validation_result"], validation_result)
 
     def test_prepare_run_data_uses_loader_and_resolves_entity_column(self) -> None:
         config = ConfigManager()

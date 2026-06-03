@@ -86,6 +86,7 @@ class DataLoader:
         self.max_csv_size_mb: Optional[float] = None
         self.max_csv_rows: Optional[int] = None
         self.csv_chunk_size: Optional[int] = None
+        self.project_csv_columns: bool = True
         if config is not None:
             if hasattr(config, 'get'):
                 try:
@@ -109,6 +110,12 @@ class DataLoader:
                     self.csv_chunk_size = int(csv_chunk_size) if csv_chunk_size else None
                 except Exception:
                     self.csv_chunk_size = None
+                try:
+                    self.project_csv_columns = bool(
+                        config.get('input', 'project_csv_columns', default=True)
+                    )
+                except Exception:
+                    self.project_csv_columns = True
             if hasattr(config, 'get_column_mapping'):
                 try:
                     self.column_mapping = config.get_column_mapping() or {}
@@ -131,7 +138,11 @@ class DataLoader:
             Loaded and preprocessed data
         """
         if hasattr(args, 'csv') and args.csv:
-            return self.load_from_csv(args.csv, nrows=getattr(args, 'nrows', None))
+            return self.load_from_csv(
+                args.csv,
+                nrows=getattr(args, 'nrows', None),
+                requested_columns=self._requested_csv_columns(args),
+            )
         elif hasattr(args, 'sql_query') and args.sql_query:
             return self.load_from_sql_query(args.sql_query)
         elif hasattr(args, 'sql_table') and args.sql_table:
@@ -139,7 +150,12 @@ class DataLoader:
         else:
             raise ValueError("No valid data source specified")
     
-    def load_from_csv(self, file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
+    def load_from_csv(
+        self,
+        file_path: str,
+        nrows: Optional[int] = None,
+        requested_columns: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
         """
         Load data from CSV file.
         
@@ -169,7 +185,8 @@ class DataLoader:
 
         try:
             effective_nrows = nrows if nrows is not None else self.max_csv_rows
-            df = self._read_csv_with_limits(file_path, effective_nrows)
+            usecols = self._resolve_csv_usecols(file_path, requested_columns)
+            df = self._read_csv_with_limits(file_path, effective_nrows, usecols=usecols)
             logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
             
             # Normalize column names
@@ -181,14 +198,91 @@ class DataLoader:
             logger.error(f"Failed to load CSV: {str(e)}")
             raise
 
-    def _read_csv_with_limits(self, file_path: str, nrows: Optional[int]) -> pd.DataFrame:
+    def _requested_csv_columns(self, args: Any) -> Optional[List[str]]:
+        if not self.project_csv_columns:
+            return None
+
+        explicit_dimensions = list(getattr(args, 'dimensions', None) or [])
+        auto_flag = getattr(args, 'auto', None)
+        try:
+            auto_config = bool(self.config.get('analysis', 'auto_detect_dimensions', default=False))
+        except Exception:
+            auto_config = False
+        if not explicit_dimensions or bool(auto_flag) or auto_config:
+            return None
+
+        requested: List[str] = []
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add(item)
+                return
+            value_str = str(value).strip()
+            if value_str and value_str not in requested:
+                requested.append(value_str)
+
+        add(getattr(args, 'entity_col', None))
+        add(explicit_dimensions)
+        add(getattr(args, 'time_col', None) or self._configured_time_column())
+        add(getattr(args, 'metric', None))
+        add(getattr(args, 'secondary_metrics', None))
+        add(getattr(args, 'total_col', None))
+        add(getattr(args, 'approved_col', None))
+        add(getattr(args, 'fraud_col', None))
+        return requested or None
+
+    def _configured_time_column(self) -> Optional[str]:
+        try:
+            return self.config.get('input', 'time_col', default=None)
+        except Exception:
+            return None
+
+    def _resolve_csv_usecols(
+        self,
+        file_path: str,
+        requested_columns: Optional[List[str]],
+    ) -> Optional[List[str]]:
+        if not requested_columns:
+            return None
+
+        header = pd.read_csv(file_path, nrows=0).columns.tolist()
+        normalized = self._normalize_column_labels(header)
+        by_normalized = {normalized_name: original for original, normalized_name in zip(header, normalized)}
+        resolved: List[str] = []
+        missing: List[str] = []
+        for requested in requested_columns:
+            requested_normalized = self.normalize_column_name(requested)
+            original = by_normalized.get(requested_normalized)
+            if original is None:
+                missing.append(requested)
+                continue
+            if original not in resolved:
+                resolved.append(original)
+        if missing:
+            logger.warning(
+                "CSV column projection could not resolve requested columns %s; "
+                "loading available requested columns and downstream validation will report missing fields.",
+                missing,
+            )
+        return resolved or None
+
+    def _read_csv_with_limits(
+        self,
+        file_path: str,
+        nrows: Optional[int],
+        *,
+        usecols: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
         chunk_size = self.csv_chunk_size if self.csv_chunk_size and self.csv_chunk_size > 0 else None
         if chunk_size is None:
-            return pd.read_csv(file_path, nrows=nrows)
+            return pd.read_csv(file_path, nrows=nrows, usecols=usecols)
 
         chunks: List[pd.DataFrame] = []
         rows_read = 0
-        for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=usecols):
             if nrows is None:
                 chunks.append(chunk)
                 continue
@@ -286,6 +380,34 @@ class DataLoader:
             raise ValueError(f"Unsafe SQL table name: {identifier!r}")
         return identifier
     
+    @staticmethod
+    def normalize_column_name(column_name: str) -> str:
+        normalized = str(column_name).lower().strip()
+        normalized = re.sub(r'[\s\-\.]+', '_', normalized)
+        normalized = re.sub(r'[^a-z0-9_]', '', normalized)
+        normalized = re.sub(r'_+', '_', normalized)
+        return normalized.strip('_')
+
+    @classmethod
+    def _normalize_column_labels(cls, columns: List[str]) -> List[str]:
+        normalized_columns = [cls.normalize_column_name(col) for col in columns]
+        seen: Dict[str, int] = {}
+        final_cols: List[str] = []
+        for i, col in enumerate(normalized_columns):
+            if col in seen:
+                original_a = columns[seen[col]]
+                original_b = columns[i]
+                logger.warning(
+                    f"Column name collision after normalization: "
+                    f"'{original_a}' and '{original_b}' both normalize to '{col}'. "
+                    f"Appending suffix '_{i}' to resolve."
+                )
+                final_cols.append(f"{col}_{i}")
+            else:
+                seen[col] = i
+                final_cols.append(col)
+        return final_cols
+
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Normalize column names to standard format with collision detection.
@@ -306,36 +428,7 @@ class DataLoader:
         "Rate (#)" both normalizing to "rate"), a warning is logged and 
         numeric suffixes are appended to resolve the collision.
         """
-        original_columns = df.columns.tolist()
-        
-        # Step 1: Lowercase and strip whitespace
-        new_cols = df.columns.str.lower().str.strip()
-        # Step 2: Replace common separators with underscores
-        new_cols = new_cols.str.replace(r'[\s\-\.]+', '_', regex=True)
-        # Step 3: Remove remaining special characters
-        new_cols = new_cols.str.replace(r'[^a-z0-9_]', '', regex=True)
-        # Step 4: Clean up consecutive/trailing underscores
-        new_cols = new_cols.str.replace(r'_+', '_', regex=True)
-        new_cols = new_cols.str.strip('_')
-        
-        # Step 4: Detect and resolve collisions
-        seen: Dict[str, int] = {}
-        final_cols = []
-        for i, col in enumerate(new_cols):
-            if col in seen:
-                original_a = original_columns[seen[col]]
-                original_b = original_columns[i]
-                logger.warning(
-                    f"Column name collision after normalization: "
-                    f"'{original_a}' and '{original_b}' both normalize to '{col}'. "
-                    f"Appending suffix '_{i}' to resolve."
-                )
-                final_cols.append(f"{col}_{i}")
-            else:
-                seen[col] = i
-                final_cols.append(col)
-        
-        df.columns = final_cols
+        df.columns = self._normalize_column_labels(df.columns.tolist())
         
         # Note: Column mappings removed - use actual column names from dataset
         # Users specify column names via CLI flags (--entity-col, --metric, etc.)

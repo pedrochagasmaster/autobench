@@ -52,6 +52,7 @@ COMMON_CLI_OVERRIDES = (
     'compare_presets',
     'output_format',
     'include_calculated',
+    'lean',
     'compliance_posture',
 )
 
@@ -531,10 +532,12 @@ def collect_run_diagnostics(
     consistent_weights: bool,
     logger: logging.Logger,
     weighting_result: Optional[WeightingResult] = None,
+    include_audit_log: bool = True,
 ) -> Dict[str, Any]:
     """Collect debug-oriented run artifacts shared by share and rate flows."""
     weights_df = None
     privacy_validation_df = None
+    compliance_privacy_validation = None
     output_privacy_validation_df = None
     method_breakdown_df = None
     metadata_updates: Dict[str, Any] = {}
@@ -555,16 +558,26 @@ def collect_run_diagnostics(
         if not weights_df.empty:
             logger.info(f"Captured weights data: {len(weights_df)} weight entries")
 
+    should_render_privacy_validation_df = include_privacy_validation or debug_mode or include_audit_log
     if hasattr(analyzer, "build_privacy_validation_result"):
         privacy_validation_result = analyzer.build_privacy_validation_result(df, validation_metric_col, dimensions)
-        privacy_validation_df = privacy_validation_result.to_dataframe()
+        compliance_privacy_validation = privacy_validation_result
         metadata_updates["privacy_validation_result"] = privacy_validation_result
+        if should_render_privacy_validation_df:
+            privacy_validation_df = privacy_validation_result.to_dataframe()
     else:
         privacy_validation_df = analyzer.build_privacy_validation_dataframe(df, validation_metric_col, dimensions)
+        compliance_privacy_validation = privacy_validation_df
     if include_privacy_validation or debug_mode:
         output_privacy_validation_df = privacy_validation_df
+    privacy_validation_count = (
+        len(getattr(compliance_privacy_validation, "rows", []))
+        if privacy_validation_df is None
+        else len(privacy_validation_df)
+    )
+    if privacy_validation_count:
+        logger.info(f"Built privacy validation data: {privacy_validation_count} validation entries")
     if privacy_validation_df is not None and not privacy_validation_df.empty:
-        logger.info(f"Built privacy validation data: {len(privacy_validation_df)} validation entries")
         if 'Structural_Infeasible_Category' in privacy_validation_df.columns:
             structural_rows = int((privacy_validation_df['Structural_Infeasible_Category'] == 'Yes').sum())
             structural_categories = int(
@@ -593,6 +606,8 @@ def collect_run_diagnostics(
         and 'Peer' in privacy_validation_df.columns
     ):
         peers.update(str(peer) for peer in privacy_validation_df['Peer'].dropna().unique())
+    if not peers and compliance_privacy_validation is not None and hasattr(compliance_privacy_validation, "rows"):
+        peers.update(str(row.peer) for row in compliance_privacy_validation.rows if row.peer)
     for dim_name in dims_all:
         if dim_name in weight_methods:
             method = weight_methods[dim_name]
@@ -636,7 +651,7 @@ def collect_run_diagnostics(
     return {
         'weights_df': weights_df,
         'privacy_validation_df': output_privacy_validation_df,
-        'compliance_privacy_validation_df': privacy_validation_df,
+        'compliance_privacy_validation_df': compliance_privacy_validation,
         'method_breakdown_df': method_breakdown_df,
         'metadata_updates': metadata_updates,
     }
@@ -1369,6 +1384,7 @@ def _execute_run(
         consistent_weights=consistent_weights,
         logger=logger,
         weighting_result=weighting_result,
+        include_audit_log=output_settings.include_audit_log,
     )
     metadata.update(diagnostics['metadata_updates'])
     compliance_summary = build_compliance_summary(

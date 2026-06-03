@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import defaultdict
+import math
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from core.privacy_rules import PrivacyRuleEvaluation, evaluate_rule
-from core.privacy_validation import PrivacyValidationResult
+from core.privacy_validation import PrivacyValidationResult, PrivacyValidationRow
 
 VALID_COMPLIANCE_POSTURES = frozenset({"strict", "best_effort", "accuracy_first"})
 
@@ -39,6 +41,9 @@ def build_strict_final_validation(
         "relaxed_rows": 0,
         "total_violations": 0,
     }
+    if isinstance(privacy_validation_df, PrivacyValidationResult):
+        return _build_strict_final_validation_from_rows(privacy_validation_df.rows)
+
     privacy_validation_df = _as_validation_dataframe(privacy_validation_df)
     if privacy_validation_df is None or privacy_validation_df.empty:
         return result
@@ -76,6 +81,80 @@ def build_strict_final_validation(
     for _, group in df.groupby(group_cols, dropna=False):
         rule_name = str(group["Rule_Name"].iloc[0]).strip()
         shares = pd.to_numeric(group["Balanced_Share_%"], errors="coerce").fillna(-1.0).tolist()
+        evaluation = evaluate_rule(rule_name, shares)
+        evaluations.append(evaluation)
+        if not evaluation.participant_count_passed:
+            participant_failures += 1
+        if not evaluation.secondary_rule_passed:
+            secondary_failures += 1
+
+    result["participant_count_fail_categories"] = int(participant_failures)
+    result["secondary_rule_fail_categories"] = int(secondary_failures)
+    result["rule_evaluations"] = [
+        {
+            "rule_name": evaluation.rule_name,
+            "primary_cap_passed": evaluation.primary_cap_passed,
+            "participant_count_passed": evaluation.participant_count_passed,
+            "secondary_rule_passed": evaluation.secondary_rule_passed,
+            "relaxation_used": evaluation.relaxation_used,
+            "strict_passed": evaluation.strict_passed,
+            "primary_cap_failures": evaluation.primary_cap_failures,
+            "participant_failures": list(evaluation.participant_failures),
+            "secondary_failures": list(evaluation.secondary_failures),
+            "max_share": evaluation.max_share,
+            "participant_count": evaluation.participant_count,
+        }
+        for evaluation in evaluations
+    ]
+    result["total_violations"] = int(
+        result["primary_cap_fail_rows"]
+        + result["participant_count_fail_categories"]
+        + result["secondary_rule_fail_categories"]
+        + result["relaxed_rows"]
+    )
+    return result
+
+
+def _build_strict_final_validation_from_rows(
+    rows: list[PrivacyValidationRow],
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "checked": False,
+        "rows": 0,
+        "primary_cap_fail_rows": 0,
+        "participant_count_fail_categories": 0,
+        "secondary_rule_fail_categories": 0,
+        "relaxed_rows": 0,
+        "total_violations": 0,
+    }
+    if not rows:
+        return result
+
+    result["checked"] = True
+    result["rows"] = int(len(rows))
+    result["primary_cap_fail_rows"] = int(
+        sum(
+            1
+            for row in rows
+            if (
+                math.isnan(float(row.balanced_share_pct))
+                or math.isnan(float(row.primary_cap_pct))
+                or float(row.balanced_share_pct) > float(row.primary_cap_pct)
+            )
+        )
+    )
+    result["relaxed_rows"] = int(sum(1 for row in rows if row.relaxation_used))
+
+    grouped: dict[tuple[str, str, Any], list[PrivacyValidationRow]] = defaultdict(list)
+    for row in rows:
+        grouped[(row.dimension, row.category, row.time_period)].append(row)
+
+    secondary_failures = 0
+    participant_failures = 0
+    evaluations: list[PrivacyRuleEvaluation] = []
+    for group_rows in grouped.values():
+        rule_name = str(group_rows[0].rule_name).strip()
+        shares = [float(row.balanced_share_pct) for row in group_rows]
         evaluation = evaluate_rule(rule_name, shares)
         evaluations.append(evaluation)
         if not evaluation.participant_count_passed:
@@ -190,9 +269,16 @@ def build_compliance_summary(
     as ``run_status="blocked"`` / ``compliance_verdict="blocked"`` instead of a
     misleading ``"completed_with_warnings"``.
     """
-    privacy_validation_df = _as_validation_dataframe(privacy_validation_df)
+    privacy_validation = privacy_validation_df
+    privacy_validation_df = (
+        None
+        if isinstance(privacy_validation, PrivacyValidationResult)
+        else _as_validation_dataframe(privacy_validation)
+    )
     violations = 0
-    if privacy_validation_df is not None and not privacy_validation_df.empty:
+    if isinstance(privacy_validation, PrivacyValidationResult):
+        violations = int(sum(1 for row in privacy_validation.rows if not row.strict_compliant))
+    elif privacy_validation_df is not None and not privacy_validation_df.empty:
         if "compliant" in privacy_validation_df.columns:
             violations = int((~privacy_validation_df["compliant"].astype(bool)).sum())
         elif "Compliant" in privacy_validation_df.columns:
@@ -200,7 +286,7 @@ def build_compliance_summary(
             violations = int((normalized != "yes").sum())
 
     details: Dict[str, Any] = {}
-    strict_final_validation = build_strict_final_validation(privacy_validation_df)
+    strict_final_validation = build_strict_final_validation(privacy_validation)
     if strict_final_validation.get("checked"):
         details["strict_final_validation"] = strict_final_validation
         violations += int(strict_final_validation.get("total_violations", 0))

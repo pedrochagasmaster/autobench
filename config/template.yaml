@@ -36,6 +36,20 @@ input:
   max_csv_size_mb: null
   max_csv_rows: null
   csv_chunk_size: null
+  # When dimensions are explicit, load only entity/time/metric/dimension columns.
+  # This reduces memory use on very wide CSV files. Disable only if downstream
+  # custom code needs unused columns in the in-memory DataFrame.
+  project_csv_columns: true
+
+# ============================================================================
+# RUNTIME RESOURCE PROFILE
+# ============================================================================
+runtime:
+  # Lean mode is for memory-limited remote servers and massive CSVs. It keeps
+  # privacy-cap enforcement intact while disabling optional heavy artifacts
+  # (debug/privacy sheets, impact/preset comparison, audit log), disables subset
+  # search, forces analysis-only output, and requires explicit --dimensions.
+  lean_mode: false
 
 # ============================================================================
 # OUTPUT SETTINGS
