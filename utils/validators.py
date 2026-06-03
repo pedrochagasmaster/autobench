@@ -41,6 +41,7 @@ class ConfigValidator:
         'optimization': dict,
         'analysis': dict,
         'control3': dict,
+        'runtime': dict,
         'column_mappings': dict,
         'advanced': dict,
     }
@@ -155,6 +156,9 @@ class ConfigValidator:
 
         if 'control3' in config:
             errors.extend(cls._validate_control3(config['control3']))
+
+        if 'runtime' in config:
+            errors.extend(cls._validate_runtime(config['runtime']))
         
         if 'column_mappings' in config:
             errors.extend(cls._validate_column_mappings(config['column_mappings']))
@@ -230,17 +234,42 @@ class ConfigValidator:
             if not isinstance(mode, str) or mode not in valid_modes:
                 errors.append(f"input.schema_detection_mode must be one of: {', '.join(valid_modes)}")
 
+        if 'project_csv_columns' in input_config and not isinstance(input_config['project_csv_columns'], bool):
+            errors.append("input.project_csv_columns must be a boolean")
+
+        if 'adaptive_batching' in input_config and not isinstance(input_config['adaptive_batching'], bool):
+            errors.append("input.adaptive_batching must be a boolean")
+
+        if 'batch_file_size_mb' in input_config:
+            value = input_config['batch_file_size_mb']
+            if value is not None and (not isinstance(value, (int, float)) or value <= 0):
+                errors.append("input.batch_file_size_mb must be a positive number or null")
+
         if 'max_csv_size_mb' in input_config:
             value = input_config['max_csv_size_mb']
             if value is not None and (not isinstance(value, (int, float)) or value <= 0):
                 errors.append("input.max_csv_size_mb must be a positive number or null")
 
-        for field in ['max_csv_rows', 'csv_chunk_size']:
+        for field in ['max_csv_rows', 'csv_chunk_size', 'batch_row_threshold', 'batch_compaction_chunks']:
             if field in input_config:
                 value = input_config[field]
                 if value is not None and (not isinstance(value, int) or value <= 0):
                     errors.append(f"input.{field} must be a positive integer or null")
         
+        return errors
+
+    @classmethod
+    def _validate_runtime(cls, runtime_config: Dict[str, Any]) -> List[str]:
+        """Validate runtime resource profile settings."""
+        errors: List[str] = []
+        if not isinstance(runtime_config, dict):
+            errors.append("runtime must be a dictionary")
+            return errors
+        unknown_fields = set(runtime_config) - {'lean_mode'}
+        if unknown_fields:
+            errors.append(f"Unknown runtime fields: {', '.join(sorted(unknown_fields))}")
+        if 'lean_mode' in runtime_config and not isinstance(runtime_config['lean_mode'], bool):
+            errors.append("runtime.lean_mode must be a boolean")
         return errors
     
     @classmethod

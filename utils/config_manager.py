@@ -303,6 +303,7 @@ class ConfigManager:
             self._cli_declared_posture = 'compliance_posture' in cli_overrides
             self._apply_cli_overrides(cli_overrides)
 
+        self._apply_runtime_profiles()
         self._validate_compliance_posture()
         
         logger.info("Initialized ConfigManager")
@@ -546,6 +547,11 @@ class ConfigManager:
                 'time_col': None,
                 'schema_detection_mode': 'heuristic',
                 'validate_input': True,
+                'project_csv_columns': True,
+                'adaptive_batching': True,
+                'batch_row_threshold': 250000,
+                'batch_file_size_mb': 256.0,
+                'batch_compaction_chunks': 20,
                 'max_csv_size_mb': None,
                 'max_csv_rows': None,
                 'csv_chunk_size': None,
@@ -641,6 +647,9 @@ class ConfigManager:
                 'recurring_deliverable': False,
                 'last_privacy_recheck_date': None,
                 'peer_group_altered': False,
+            },
+            'runtime': {
+                'lean_mode': False,
             },
         }
     
@@ -749,6 +758,7 @@ class ConfigManager:
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
+            'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
             'privacy_basis': ('control3', 'privacy_basis'),
             'contains_digital_wallet_metrics': ('control3', 'contains_digital_wallet_metrics'),
@@ -783,6 +793,39 @@ class ConfigManager:
                 else:
                     self._set_nested(self.config, config_path, overrides[cli_key])
                 logger.debug(f"CLI override: {cli_key} = {overrides[cli_key]}")
+
+        self._apply_runtime_profiles()
+
+    def _apply_runtime_profiles(self) -> None:
+        runtime_cfg = self.config.get('runtime', {})
+        if not isinstance(runtime_cfg, dict) or not runtime_cfg.get('lean_mode', False):
+            return
+
+        self._set_nested(self.config, ('input', 'validate_input'), False)
+        self._set_nested(self.config, ('input', 'project_csv_columns'), True)
+        self._set_nested(self.config, ('input', 'adaptive_batching'), True)
+        self._set_nested(self.config, ('input', 'csv_chunk_size'), 100000)
+        current_row_threshold = self.config.get('input', {}).get('batch_row_threshold', 250000)
+        try:
+            row_threshold = min(int(current_row_threshold), 250000)
+        except Exception:
+            row_threshold = 250000
+        self._set_nested(self.config, ('input', 'batch_row_threshold'), row_threshold)
+        self._set_nested(self.config, ('output', 'include_debug_sheets'), False)
+        self._set_nested(self.config, ('output', 'include_privacy_validation'), False)
+        self._set_nested(self.config, ('output', 'include_impact_summary'), False)
+        self._set_nested(self.config, ('output', 'include_preset_comparison'), False)
+        self._set_nested(self.config, ('output', 'include_calculated_metrics'), False)
+        self._set_nested(self.config, ('output', 'include_audit_log'), False)
+        self._set_nested(self.config, ('output', 'output_format'), 'analysis')
+        self._set_nested(self.config, ('analysis', 'auto_detect_dimensions'), False)
+        self._set_nested(self.config, ('optimization', 'subset_search', 'enabled'), False)
+        current_max_attempts = self.config.get('optimization', {}).get('subset_search', {}).get('max_attempts', 200)
+        try:
+            max_attempts = min(int(current_max_attempts), 20)
+        except Exception:
+            max_attempts = 20
+        self._set_nested(self.config, ('optimization', 'subset_search', 'max_attempts'), max_attempts)
 
     def _file_declares_posture(self, config_file: str) -> bool:
         path = Path(config_file)

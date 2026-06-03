@@ -18,6 +18,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
 - [TUI Workflow](#tui-workflow)
 - [CLI Cookbook](#cli-cookbook)
+- [Large Dataset / Low-Memory Runs](#large-dataset--low-memory-runs)
 - [Presets](#presets)
 - [Outputs](#outputs)
 - [Excel Sheet Guide](#excel-sheet-guide)
@@ -204,6 +205,12 @@ Publication output format:
 py benchmark.py rate --csv FILE --total-col TOTAL --approved-col APPROVED --output-format publication
 ```
 
+Low-memory server run:
+
+```powershell
+py benchmark.py share --csv FILE --entity NAME --metric COLUMN --dimensions DIM1 DIM2 --lean
+```
+
 Config/preset management:
 
 ```powershell
@@ -212,6 +219,39 @@ py benchmark.py config show balanced_default
 py benchmark.py config validate my_config.yaml
 py benchmark.py config generate my_config.yaml
 ```
+
+## Large Dataset / Low-Memory Runs
+
+Use `--lean` for memory-limited remote servers or very large CSV files:
+
+```bash
+py benchmark.py share \
+  --csv large_input.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --lean \
+  --output lean_share.xlsx
+```
+
+Lean mode keeps privacy-cap enforcement intact while reducing memory and CPU
+pressure:
+
+- loads only the columns needed for explicit-dimension runs;
+- estimates CSV workload before full load;
+- streams heavy CSVs in chunks when safe;
+- pre-aggregates duplicate entity/dimension/time rows by summing metric columns;
+- disables optional heavy artifacts such as debug sheets, impact summaries,
+  preset comparisons, audit logs, and dual workbooks;
+- disables subset search to avoid repeated LP attempts.
+
+Adaptive batching only pre-aggregates when input validation is disabled, because
+row-level validation details can be lost after aggregation. Validate a smaller
+sample first, then use `--lean` for the full trusted input.
+
+See `docs/RESOURCE_MANAGEMENT.md` for trigger thresholds, config tuning, and
+operational caveats.
 
 ## Presets
 
@@ -328,6 +368,7 @@ Share balanced CSV exports are not supported by the validator yet.
 ## Additional Documentation
 
 - `AGENTS.md` - full business rules and contributor constraints
+- `docs/RESOURCE_MANAGEMENT.md` - lean mode, adaptive batching, and low-memory run guidance
 - `SETUP.md` - deployment/setup notes
 - `docs/CORE_TECHNICAL_DOC.md` - core engine technical reference
 - `utils/CSV_VALIDATOR_README.md` - CSV validator details

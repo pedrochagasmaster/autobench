@@ -105,6 +105,7 @@ class AnalysisRunRequest:
     dimensions: Optional[List[str]] = None
     debug: bool = False
     export_balanced_csv: bool = False
+    lean: bool = False
     per_dimension_weights: bool = False
     total_col: Optional[str] = None
     approved_col: Optional[str] = None
