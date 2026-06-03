@@ -35,6 +35,8 @@ You get:
 - Peer-weighted benchmarks with privacy constraints.
 - Share and rate analysis modes.
 - Excel outputs for analysis/audit/publication and optional balanced CSV export.
+- Optional audit package zip (`--audit-package`) bundling workbook(s), balanced
+  CSV, audit log, config snapshot, and validation/compliance summary.
 - CLI and TUI entry points using the same core engine.
 
 ## Quick Start
@@ -356,14 +358,16 @@ py -m pytest tests/ -v
 GitHub Actions runs the same lint, unit, and gate checks on pull requests
 (see `.github/workflows/ci.yml`).
 
-Optional **rate-only** CSV-vs-Excel cross-check (use a rate export with
+Optional CSV-vs-Excel cross-check (use a share or rate export with
 `--export-balanced-csv`):
 
 ```bash
 py utils/csv_validator.py gate_demo_rate.xlsx gate_demo_rate_balanced.csv --verbose
 ```
 
-Share balanced CSV exports are not supported by the validator yet.
+For release evidence, add `--audit-package` to bundle the generated workbook(s),
+balanced CSV (when exported), audit log, config snapshot, and validation summary
+into `<output>_audit_package.zip`.
 
 ## Additional Documentation
 

@@ -17,6 +17,7 @@ $RemotePath = "/ads_storage/autobench"
 $ZipName = "autobench_deploy.zip"
 $SetupScript = "setup_remote_env.sh"
 $OfflineDir = "offline_packages"
+$ChecksumManifest = "SHA256SUMS"
 $PythonRemote = "/sys_apps_01/python/python310/bin/python3.10"
 
 # --- Step 1: Create Offline Bundle ---
@@ -73,6 +74,13 @@ if ((Get-ChildItem $OfflineDir).Count -eq 0) {
     exit 1
 }
 
+Write-Host "Writing SHA-256 checksum manifest..."
+py scripts/offline_bundle_checksums.py write $OfflineDir requirements.txt --output $ChecksumManifest
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Checksum manifest generation failed."
+    exit 1
+}
+
 # --- Step 2: Compress Artifacts ---
 Write-Host "`n=== Step 2: Compressing Artifacts (Python) ===" -ForegroundColor Cyan
 if (Test-Path $ZipName) { Remove-Item $ZipName -Force }
@@ -83,7 +91,7 @@ $PyScript = @"
 import zipfile, os, sys
 
 zip_name = '$ZipName'
-items = ['offline_packages', 'requirements.txt']
+items = ['offline_packages', 'requirements.txt', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
 
 print(f'Creating {zip_name}...')
 with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:

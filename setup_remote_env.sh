@@ -6,6 +6,7 @@
 PYTHON_BIN="/sys_apps_01/python/python310/bin/python3.10"
 VENV_DIR=".venv"
 OFFLINE_DIR="./offline_packages"
+CHECKSUM_MANIFEST="SHA256SUMS"
 
 # 1. Create Virtual Environment
 if [ -d "$VENV_DIR" ]; then
@@ -28,6 +29,18 @@ source $VENV_DIR/bin/activate
 # 3. Upgrade pip (optional but recommended, tries to find it in offline packages)
 echo "Attempting to upgrade pip..."
 pip install --no-index --find-links=$OFFLINE_DIR pip || echo "Pip upgrade skipped (not found in offline bundle)."
+
+# 3b. Verify offline bundle checksums before installing dependencies.
+if [ -f "$CHECKSUM_MANIFEST" ] && [ -f "scripts/offline_bundle_checksums.py" ]; then
+    echo "Verifying offline package checksums..."
+    "$PYTHON_BIN" scripts/offline_bundle_checksums.py verify --manifest "$CHECKSUM_MANIFEST"
+    if [ $? -ne 0 ]; then
+        echo "Checksum verification failed."
+        exit 1
+    fi
+else
+    echo "Checksum manifest not found; skipping checksum verification."
+fi
 
 # 4. Install Packages
 if [ -d "$OFFLINE_DIR" ]; then

@@ -20,6 +20,8 @@ This workflow is for **installing dependencies** (Python packages). You only nee
 3.  Follow the prompts:
     *   **Remote User:** Defaults to `e176097` (press Enter to accept).
     *   **Host Suffix:** Enter the numeric suffix of your server (e.g., `04` for `hde2stl020004.mastercard.int`).
+4.  The deployment bundle includes `SHA256SUMS`; the remote setup script verifies
+    package checksums before installing dependencies.
 
 ## Keeping the Code Up-to-Date
 
@@ -56,12 +58,16 @@ cd /ads_storage/autobench
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
+  --export-balanced-csv \
+  --audit-package \
   --output /tmp/setup_smoke.xlsx
 ```
 
 The smoke workbook should show `Input Validation: pass` and a publishable
-compliance verdict. Use `--no-validate-input` only for diagnostic runs where the
-result is not intended for publication.
+compliance verdict. It should also produce `/tmp/setup_smoke_balanced.csv`,
+`/tmp/setup_smoke_audit.log`, and `/tmp/setup_smoke_audit_package.zip`. Use
+`--no-validate-input` only for diagnostic runs where the result is not intended
+for publication.
 
 For release packaging, rollback, and bundle checksums, see
 `docs/RELEASE_PROCESS.md`.
@@ -72,7 +78,12 @@ If the automated `deploy_and_install.ps1` script fails, you can perform the step
 
 1.  **Download & Bundle (Local):**
     *   Review `deploy_and_install.ps1` to see how dependencies are downloaded (some as binaries, some as source).
-    *   Zip the resulting `offline_packages/` folder and `requirements.txt`.
+    *   Run:
+        ```bash
+        py scripts/offline_bundle_checksums.py write offline_packages requirements.txt --output SHA256SUMS
+        ```
+    *   Zip the resulting `offline_packages/` folder, `requirements.txt`,
+        `SHA256SUMS`, and `scripts/offline_bundle_checksums.py`.
 2.  **Transfer:** Use `scp` (port 2222) to send the zip to `/ads_storage/autobench`.
 3.  **Install (Remote):**
     *   SSH into the server.

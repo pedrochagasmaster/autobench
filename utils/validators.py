@@ -294,6 +294,7 @@ class ConfigValidator:
             'include_preset_comparison',
             'include_calculated_metrics',
             'include_audit_log',
+            'include_audit_package',
         ]:
             if bool_field in output_config and not isinstance(output_config[bool_field], bool):
                 errors.append(f"output.{bool_field} must be a boolean")

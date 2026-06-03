@@ -463,17 +463,6 @@ class GateTestRunner:
             elif exp == "balanced_csv":
                 if not csv_file.exists():
                     failures.append(f"Balanced CSV missing: {csv_file}")
-                elif analysis_type == "share":
-                    try:
-                        df_csv = pd.read_csv(csv_file)
-                        required = {"Dimension", "Category"}
-                        if not required.issubset(df_csv.columns):
-                            failures.append(f"Share CSV missing required columns: {required - set(df_csv.columns)}")
-                        balanced_cols = [c for c in df_csv.columns if c.startswith("Balanced_")]
-                        if not balanced_cols:
-                            failures.append("Share CSV missing Balanced_* columns")
-                    except Exception as e:
-                        failures.append(f"Failed to read share CSV: {e}")
                 elif analysis_file.exists():
                     validator_script = self.root_dir / "utils" / "csv_validator.py"
                     cmd = [sys.executable, str(validator_script), str(analysis_file), str(csv_file)]
