@@ -31,8 +31,8 @@ from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import write_outputs
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
+from core.report_artifact_builder import build_analysis_artifacts
 from core.report_generator import ReportGenerator
-from core.report_models import ReportModel
 from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager, ResolvedConfig
 
@@ -1391,37 +1391,18 @@ def _execute_run(
     metadata.update(impact_metadata)
 
     analysis_output_file = mode_spec.resolve_output_filename(request, resolved_entity, results)
-    output_path = Path(analysis_output_file)
-    artifacts = AnalysisArtifacts(
-        results=results,
+    artifacts = build_analysis_artifacts(
+        analysis_result=analysis_result,
         metadata=metadata,
-        weights_df=diagnostics['weights_df'],
-        method_breakdown_df=diagnostics['method_breakdown_df'],
-        privacy_validation_df=diagnostics['privacy_validation_df'],
+        diagnostics=diagnostics,
         secondary_results_df=secondary_results_df,
         preset_comparison_df=preset_comparison_df,
         impact_df=impact_df,
         impact_summary_df=impact_summary_df,
         validation_issues=validation_issues,
-        analysis_output_file=str(output_path),
-        publication_output=str(output_path.with_name(f"{output_path.stem}_publication{output_path.suffix}")),
+        analysis_output_file=analysis_output_file,
         analyzer=analyzer,
         compliance_summary=compliance_summary,
-        report_model=ReportModel.from_analysis_result(
-            analysis_result,
-            privacy_validation_df=diagnostics['privacy_validation_df'],
-            weights_df=diagnostics['weights_df'],
-            method_breakdown_df=diagnostics['method_breakdown_df'],
-            secondary_results_df=secondary_results_df,
-            preset_comparison_df=preset_comparison_df,
-            impact_df=impact_df,
-            impact_summary_df=impact_summary_df,
-            structural_summary_df=metadata.get("structural_summary_df"),
-            structural_detail_df=metadata.get("structural_detail_df"),
-            rank_changes_df=metadata.get("rank_changes_df"),
-            subset_search_df=metadata.get("subset_search_df"),
-            validation_issues=validation_issues,
-        ),
     )
 
     artifacts = write_outputs(request, artifacts, config=config, logger=logger)
