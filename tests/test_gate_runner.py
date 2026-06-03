@@ -1,5 +1,6 @@
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -14,6 +15,28 @@ def test_gate_command_parser_preserves_quoted_entity_names() -> None:
 
     assert parsed[3] == "--entity"
     assert parsed[4] == "BANCO SANTANDER"
+
+
+def test_gate_generation_uses_portable_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_run(cmd, cwd, capture_output, text):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["capture_output"] = capture_output
+        captured["text"] = text
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("scripts.perform_gate_test.subprocess.run", fake_run)
+
+    runner = GateTestRunner(output_dir=str(tmp_path / "gate"))
+    runner.generate_cases()
+
+    cmd = captured["cmd"]
+    assert "--csv" in cmd
+    csv_path = Path(cmd[cmd.index("--csv") + 1])
+    assert csv_path.name == "gate_demo.csv"
+    assert csv_path.exists()
 
 
 def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> None:
@@ -32,8 +55,6 @@ def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> 
     wb.save(workbook_path)
 
     runner = GateTestRunner(output_dir=str(tmp_path / "gate"))
-    loaded = wb.__class__()
-    loaded = None
     from openpyxl import load_workbook
 
     workbook = load_workbook(workbook_path, read_only=True, data_only=False)
@@ -43,6 +64,35 @@ def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> 
         workbook.close()
 
     assert any("Contains Excel errors" in failure for failure in failures)
+
+
+def test_verify_workbook_content_allows_time_split_categories(tmp_path: Path) -> None:
+    pytest.importorskip("openpyxl")
+    from openpyxl import Workbook, load_workbook
+
+    workbook_path = tmp_path / "time_split.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "card_type"
+    ws["A3"] = "Category"
+    ws["B3"] = "year_month"
+    ws["C3"] = "Balanced Peer Average (%)"
+    ws["A4"] = "CREDIT"
+    ws["B4"] = "2024-01"
+    ws["C4"] = 45.0
+    ws["A5"] = "CREDIT"
+    ws["B5"] = "2024-02"
+    ws["C5"] = 47.0
+    wb.save(workbook_path)
+
+    runner = GateTestRunner(output_dir=str(tmp_path / "gate"))
+    workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+    try:
+        failures = runner.verify_workbook_content(workbook, "share_gate_time", "share")
+    finally:
+        workbook.close()
+
+    assert not any("Contains duplicate rows" in failure for failure in failures)
 
 
 def test_verify_case_requires_bps_headers_for_fraud_publication(tmp_path: Path) -> None:

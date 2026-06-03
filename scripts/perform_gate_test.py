@@ -21,6 +21,7 @@ class GateTestRunner:
         self.script_dir = Path(__file__).parent
         self.root_dir = self.script_dir.parent
         self.generate_script = self.script_dir / "generate_cli_sweep.py"
+        self.fixture_csv = Path("tests") / "fixtures" / "gate_demo.csv"
 
     def generate_cases(self):
         """Run generate_cli_sweep.py in gate mode."""
@@ -29,6 +30,7 @@ class GateTestRunner:
             sys.executable,
             str(self.generate_script),
             "--mode", "gate",
+            "--csv", str(self.fixture_csv),
             "--out-dir", str(self.output_dir)
         ]
         result = subprocess.run(cmd, cwd=self.root_dir, capture_output=True, text=True)
@@ -91,7 +93,8 @@ class GateTestRunner:
             data_rows = []
             for row in ws.iter_rows(min_row=header_row_idx+1, values_only=True):
                 # Check if row is empty
-                if not any(row): continue
+                if not any(row):
+                    continue
                 # Map to headers (truncate row to len headers)
                 # Ensure we handle cases where row is shorter than headers or vice versa
                 row_vals = row[:len(headers)]
@@ -107,7 +110,18 @@ class GateTestRunner:
             # Defined Checks
             # 0. Duplicates Check
             # Identify key columns for uniqueness check
-            key_candidates = ["Category", "Time", "Month", "Year", "Quarter", "Period", "ano_mes", "Date", "date"]
+            key_candidates = [
+                "Category",
+                "Time",
+                "Month",
+                "Year",
+                "Quarter",
+                "Period",
+                "ano_mes",
+                "year_month",
+                "Date",
+                "date",
+            ]
             keys = [c for c in df.columns if c in key_candidates]
             if keys:
                 # If we have keys, check for duplicates
@@ -131,7 +145,8 @@ class GateTestRunner:
                 # Skip text columns (like Category if it happens to have %)
                 try:
                     vals = pd.to_numeric(df[col], errors='coerce').dropna()
-                    if vals.empty: continue
+                    if vals.empty:
+                        continue
                     
                     min_val, max_val = vals.min(), vals.max()
                     if min_val < -0.1 or max_val > 100.1: # Small epsilon
@@ -288,7 +303,7 @@ class GateTestRunner:
                 else:
                     # Fallback or warn if not found, but only if sheet is not empty
                     if dq_ws.max_row > 1:
-                        logger.warning(f"Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
+                        logger.warning("Data Quality sheet found but could not identify header row (checked first 10 rows for 'Severity' or 'Issue')")
 
                 for item in dq_data:
                     # Assuming columns like "Severity", "Message"
