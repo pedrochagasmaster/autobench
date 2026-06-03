@@ -31,7 +31,7 @@ def _write_minimal_share_workbook(path: Path) -> None:
     ws = wb.active
     ws.title = "card_type"
     ws["A3"] = "Category"
-    ws["B3"] = "Balanced Peer Average (%)"
+    ws["B3"] = "Balanced_txn_cnt_Share_%"
     ws["C3"] = "Target Share (%)"
     ws["A4"] = "CREDIT"
     ws["B4"] = 12.5

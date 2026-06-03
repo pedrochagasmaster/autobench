@@ -245,14 +245,21 @@ def extract_rate_from_excel(
     """
     # Find the rate column - try multiple patterns
     rate_cols = []
+
+    if rate_type == 'share':
+        explicit_share_cols = [
+            col for col in excel_df.columns
+            if str(col) == 'Balanced_Share_%'
+            or (str(col).startswith('Balanced_') and str(col).endswith('_Share_%'))
+        ]
+        if not explicit_share_cols:
+            return None
+        rate_cols = explicit_share_cols
     
     # Pattern 1: Multi-rate format "Approval_Balanced Peer Average (%)"
-    pattern1 = f"{rate_type.capitalize()}_Balanced Peer Average"
-    rate_cols = [col for col in excel_df.columns if pattern1 in str(col) and '%' in str(col)]
-    
-    if not rate_cols and rate_type == 'share':
-         if 'Balanced_Share_%' in excel_df.columns:
-             rate_cols = ['Balanced_Share_%']
+    if not rate_cols:
+        pattern1 = f"{rate_type.capitalize()}_Balanced Peer Average"
+        rate_cols = [col for col in excel_df.columns if pattern1 in str(col) and '%' in str(col)]
     
     if not rate_cols:
         # Pattern 2: Single rate format "Peer_Balanced_Approval_%"

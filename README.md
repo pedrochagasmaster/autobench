@@ -358,8 +358,9 @@ py -m pytest tests/ -v
 GitHub Actions runs the same lint, unit, and gate checks on pull requests
 (see `.github/workflows/ci.yml`).
 
-Optional CSV-vs-Excel cross-check (use a share or rate export with
-`--export-balanced-csv`):
+Optional CSV-vs-Excel cross-check (use a rate export with
+`--export-balanced-csv`; share exports are schema-checked by the gate unless a
+workbook exposes explicit `Balanced_*_Share_%` columns):
 
 ```bash
 py utils/csv_validator.py gate_demo_rate.xlsx gate_demo_rate_balanced.csv --verbose

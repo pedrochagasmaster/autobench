@@ -2,10 +2,11 @@
 
 ## Overview
 
-The `csv_validator.py` script validates **share and rate** balanced CSV exports
-against Excel benchmark reports. It confirms that exported balanced totals
-reproduce approval/fraud rates and that exported share percentages match the
-workbook.
+The `csv_validator.py` script validates **rate** balanced CSV exports against
+Excel benchmark reports. It also supports share exports when the workbook
+contains an explicit `Balanced_*_Share_%` column matching the CSV. Standard share
+workbooks expose peer-average percentages rather than CSV target-vs-peer share
+percentages, so gate checks keep those exports to schema validation.
 
 ## Purpose
 
@@ -14,7 +15,7 @@ When using the `--export-balanced-csv` flag, the tool exports weighted balanced 
 1. Loading the CSV balanced totals or share percentages.
 2. Loading the Excel rate/share values.
 3. Calculating rates from CSV: `rate = balanced_numerator / balanced_total`.
-4. Comparing calculated rates or exported share percentages against Excel.
+4. Comparing calculated rates or explicit exported share percentages against Excel.
 5. Reporting any discrepancies beyond the specified tolerance
 
 ## Usage
@@ -74,8 +75,10 @@ Share CSV files contain these columns:
 
 ### Excel Structure
 
-For share analysis, Excel sheets include `Balanced Peer Average (%)`. For
-multi-rate analysis, Excel sheets contain columns like:
+For share analysis, validation requires an explicit `Balanced_*_Share_%` column.
+Standard report sheets instead include `Balanced Peer Average (%)`, which is a
+different business measure and is not used for CSV parity. For multi-rate
+analysis, Excel sheets contain columns like:
 - **Approval_Balanced Peer Average (%)**: Approval rate as percentage
 - **Fraud_Balanced Peer Average (%)**: Fraud rate as percentage
 - **Approval_year_month**: Time period for approval data
