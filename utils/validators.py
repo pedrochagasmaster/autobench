@@ -291,8 +291,8 @@ class ConfigValidator:
                 
                 # Check that min < max
                 if 'min_weight' in bounds and 'max_weight' in bounds:
-                    if bounds['min_weight'] >= bounds['max_weight']:
-                        errors.append("optimization.bounds.min_weight must be < max_weight")
+                    if bounds['min_weight'] > bounds['max_weight']:
+                        errors.append("optimization.bounds.min_weight must be <= max_weight")
         
         # Validate constraints
         if 'constraints' in opt_config:
@@ -375,8 +375,13 @@ class ConfigValidator:
                 
                 max_attempts = ss.get('max_attempts', ss.get('max_tests'))
                 if max_attempts is not None:
-                    if not isinstance(max_attempts, int) or max_attempts <= 0:
-                        errors.append("optimization.subset_search.max_attempts must be a positive integer")
+                    subset_search_enabled = ss.get('enabled', True)
+                    if not isinstance(max_attempts, int):
+                        errors.append("optimization.subset_search.max_attempts must be an integer")
+                    elif subset_search_enabled and max_attempts <= 0:
+                        errors.append("optimization.subset_search.max_attempts must be a positive integer when subset search is enabled")
+                    elif not subset_search_enabled and max_attempts < 0:
+                        errors.append("optimization.subset_search.max_attempts must be non-negative when subset search is disabled")
                 
                 if 'max_slack_threshold' in ss:
                     if not isinstance(ss['max_slack_threshold'], (int, float)) or ss['max_slack_threshold'] < 0:

@@ -735,10 +735,11 @@ class ReportGenerator:
             df = df.copy(deep=True)
             if analysis_type == 'rate':
                 convert_all_rates = self._resolve_convert_all_rates(metadata)
+                convert_sheet_rates = convert_all_rates or rate_prefix == "fraud"
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    if fraud_in_bps and self._should_convert_rate_column(col, convert_all_rates):
+                    if fraud_in_bps and self._should_convert_rate_column(col, convert_sheet_rates):
                         df[col] = df[col] * 100
                 if fraud_in_bps:
                     df.columns = [

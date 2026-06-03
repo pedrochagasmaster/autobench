@@ -291,7 +291,7 @@ class PrivacyValidator:
         """
         rules = cls.get_rules()
 
-        if merchant_mode and '4/35' in rules and peer_count == int(rules['4/35'].get('min_entities', 4)):
+        if merchant_mode and '4/35' in rules and peer_count >= int(rules['4/35'].get('min_entities', 4)):
             return '4/35'
 
         ordered_rules = sorted(

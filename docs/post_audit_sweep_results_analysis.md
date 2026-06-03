@@ -31,7 +31,7 @@ After the command run finished, I re-verified the saved outputs against the late
 
 ## Input / Inferred Sweep Metadata
 
-Source: `test_sweeps/post_audit_full_sweep/meta.json`
+Source: locally generated `test_sweeps/post_audit_full_sweep/meta.json` from the sweep run. Generated sweep artifacts are intentionally not committed.
 
 - CSV: `data/readme_demo.csv`
 - Entity column: `issuer_name`
@@ -48,9 +48,9 @@ Source: `test_sweeps/post_audit_full_sweep/meta.json`
   - `research_exploratory`
   - `strategic_consistency`
 
-## Saved Outputs
+## Generated Outputs
 
-The sweep outputs were saved under:
+During the sweep run, generated outputs were saved under `test_sweeps/post_audit_full_sweep/`. These files are regenerated on demand and are intentionally excluded from the PR:
 
 - Case definitions: `test_sweeps/post_audit_full_sweep/`
 - Generated reports / CSVs / audit logs: `test_sweeps/post_audit_full_sweep/outputs/`

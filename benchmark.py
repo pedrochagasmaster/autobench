@@ -490,7 +490,8 @@ def run_preset_comparison(
     analysis_type: str,
     logger: logging.Logger,
     total_col: Optional[str] = None,
-    numerator_cols: Optional[Dict[str, str]] = None
+    numerator_cols: Optional[Dict[str, str]] = None,
+    acknowledge_accuracy_first: bool = False,
 ) -> pd.DataFrame:
     """Compatibility wrapper over the shared preset-comparison seam."""
     return _run_shared_preset_comparison(
@@ -505,6 +506,7 @@ def run_preset_comparison(
         analyzer_factory=_build_dimensional_analyzer,
         total_col=total_col,
         numerator_cols=numerator_cols,
+        acknowledge_accuracy_first=acknowledge_accuracy_first,
     )
 
 

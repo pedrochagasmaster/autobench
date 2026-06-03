@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import numpy as np
+from openpyxl import load_workbook
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -246,6 +247,17 @@ class TestValidationAndOutputs(unittest.TestCase):
             self.assertTrue(os.path.exists(output_path))
             pub_path = output_path.replace(".xlsx", "_publication.xlsx")
             self.assertTrue(os.path.exists(pub_path))
+            workbook = load_workbook(pub_path, read_only=True, data_only=True)
+            try:
+                fraud_sheet = workbook["fraud_card_type"]
+                rows = list(fraud_sheet.iter_rows(values_only=True))
+                header = list(rows[2])
+                fraud_rate_col = header.index("Fraud Rate (bps)")
+                fraud_row = next(row for row in rows[3:] if row[0] == "A")
+                fraud_rate_bps = float(fraud_row[fraud_rate_col])
+                self.assertGreater(fraud_rate_bps, 10.0)
+            finally:
+                workbook.close()
 
     def test_preset_comparison_exhaustive(self) -> None:
         df = pd.DataFrame({
@@ -271,6 +283,13 @@ class TestValidationAndOutputs(unittest.TestCase):
             expected.add(preset)
             expected.add(f"{preset}+perdim")
         self.assertTrue(expected.issubset(set(comparison_df['Preset'].tolist())))
+        blocked = comparison_df[
+            comparison_df['Preset'].isin(
+                ['low_distortion', 'low_distortion+perdim', 'minimal_distortion', 'minimal_distortion+perdim']
+            )
+        ]
+        self.assertFalse(blocked.empty)
+        self.assertTrue(all(str(status).startswith("blocked:") for status in blocked['Status']))
 
 
 class TestValidationEdgeCases:

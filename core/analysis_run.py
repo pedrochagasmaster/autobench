@@ -785,6 +785,7 @@ def execute_share_run(request: AnalysisRunRequest, logger: logging.Logger) -> An
             analysis_type='share',
             logger=logger,
             analyzer_factory=build_dimensional_analyzer,
+            acknowledge_accuracy_first=request.acknowledge_accuracy_first,
         )
         if preset_comparison_df is not None and not preset_comparison_df.empty:
             metadata['preset_comparison'] = preset_comparison_df.to_dict('records')
@@ -1058,6 +1059,7 @@ def execute_rate_run(request: AnalysisRunRequest, logger: logging.Logger) -> Ana
             analyzer_factory=build_dimensional_analyzer,
             total_col=total_col,
             numerator_cols=request.numerator_cols,
+            acknowledge_accuracy_first=request.acknowledge_accuracy_first,
         )
         if preset_comparison_df is not None and not preset_comparison_df.empty:
             metadata['preset_comparison'] = preset_comparison_df.to_dict('records')

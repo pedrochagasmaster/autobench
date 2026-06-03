@@ -94,6 +94,16 @@ def _run_single_preset_variant(
     }
 
 
+def _blocked_preset_variant(variant_name: str, consistent_weights: bool) -> Dict[str, Any]:
+    return {
+        "Preset": variant_name,
+        "Mode": "global" if consistent_weights else "per_dimension",
+        "Mean_Impact_PP": None,
+        "Max_Impact_PP": None,
+        "Status": "blocked: accuracy_first acknowledgement required",
+    }
+
+
 def run_preset_comparison(
     df: pd.DataFrame,
     metric_col: str,
@@ -124,12 +134,18 @@ def run_preset_comparison(
         analysis_type = str(kwargs.get("analysis_type", "share"))
         total_col = kwargs.get("total_col")
         numerator_cols = kwargs.get("numerator_cols")
+        acknowledge_accuracy_first = bool(kwargs.get("acknowledge_accuracy_first", False))
         rows: List[Dict[str, Any]] = []
         for preset_name in presets:
+            preset_data = pm.get_preset(preset_name) or {}
+            preset_posture = str(preset_data.get("compliance_posture", "strict"))
             for variant_name, consistent_weights in [
                 (preset_name, True),
                 (f"{preset_name}+perdim", False),
             ]:
+                if preset_posture == "accuracy_first" and not acknowledge_accuracy_first:
+                    rows.append(_blocked_preset_variant(variant_name, consistent_weights))
+                    continue
                 try:
                     rows.append(
                         _run_single_preset_variant(
