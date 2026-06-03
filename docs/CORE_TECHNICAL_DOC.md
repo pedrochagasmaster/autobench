@@ -183,6 +183,14 @@ Performance considerations:
 - LP constraint count grows with (categories * peers).
 - Rank constraints can be O(P^2); neighbor mode reduces cost.
 - Time-aware consistency multiplies constraints across time periods.
+- Large CSVs can be loaded in a resource-saving path before the core pipeline:
+  DataLoader projects explicit run columns, estimates row/file size, and (when
+  validation is disabled) streams chunks into entity/dimension/time aggregates.
+  This reduces memory and repeated CPU work without changing privacy-cap
+  enforcement on the final additive totals.
+- `--lean` / `runtime.lean_mode` disables optional heavy artifacts and subset
+  search, sets a CSV chunk size, requires explicit dimensions, and enables the
+  adaptive batching settings described in `docs/RESOURCE_MANAGEMENT.md`.
 
 Determinism:
 - Greedy subset search is deterministic.
@@ -209,6 +217,10 @@ Included files:
 
 1) Load and normalize data
 - DataLoader reads CSV or SQL sources and normalizes column names.
+- For CSV runs with explicit dimensions, DataLoader can project only required
+  columns. On heavy validation-disabled runs, adaptive batching streams chunks
+  and pre-aggregates duplicate entity/dimension/time rows before returning the
+  DataFrame used by the existing analyzer.
 
 2) Validate input (optional)
 - ValidationRunner calls DataLoader validators for share or rate analysis, logs issues, and decides whether to abort on errors.
@@ -333,6 +345,24 @@ Below are the primary config paths (typically set via presets) and how they tran
 
 - input.schema_detection_mode
   - Controls DataLoader schema detection: heuristic, mapped (column_mappings only), or hybrid (mappings then heuristic).
+
+- input.project_csv_columns
+  - When dimensions are explicit, DataLoader reads only entity, metric,
+    numerator, dimension, and time columns from CSV.
+  - Avoids materializing unused wide CSV columns.
+
+- input.adaptive_batching / batch_row_threshold / batch_file_size_mb / batch_compaction_chunks
+  - DataLoader estimates CSV row count and file size before full load.
+  - For heavy explicit-dimension runs with input validation disabled, chunks are
+    grouped by entity + dimensions + optional time and metric/numerator columns
+    are summed before analysis.
+  - Batching is skipped when validation is enabled so row-level validation
+    details are not lost.
+
+- runtime.lean_mode
+  - Applies a conservative low-memory profile through ConfigManager.
+  - Keeps privacy enforcement intact, but disables optional debug/audit/impact
+    artifacts and subset-search retries.
 
 - output.include_debug_sheets, include_privacy_validation, include_impact_summary
   - Controls which outputs are produced; enforced in Excel report generation via metadata.
