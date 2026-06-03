@@ -50,6 +50,36 @@ class OutputArtifactWriter:
         return self.output_format in {"publication", "both"}
 
 
+def _redact_publication_dataframe(value: Any, *, reason: str) -> Any:
+    """Keep publication evidence sheets without disclosing peer composition."""
+    if value is None or not hasattr(value, "empty") or value.empty:
+        return value
+
+    try:
+        import pandas as pd
+    except ImportError:
+        return value
+
+    row = {}
+    for column in value.columns:
+        row[column] = None
+    if len(row) == 0:
+        return pd.DataFrame([{"Control": "Control 3.3", "Status": "Redacted", "Detail": reason}])
+
+    first_column = next(iter(row))
+    row[first_column] = f"WITHHELD - Control 3.3 - {reason}"
+    return pd.DataFrame([row], columns=list(value.columns))
+
+
+def _publication_safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe = dict(metadata)
+    reason = "peer group composition is confidential"
+    for key in ("weights_df", "privacy_validation_df", "rank_changes_df"):
+        if key in safe:
+            safe[key] = _redact_publication_dataframe(safe[key], reason=reason)
+    return safe
+
+
 def write_outputs(
     request: "AnalysisRunRequest",
     artifacts: "AnalysisArtifacts",
@@ -111,7 +141,7 @@ def write_outputs(
                 publication_results,
                 path,
                 analysis_type="share" if request.is_share else "rate",
-                metadata=publication_metadata,
+                metadata=_publication_safe_metadata(publication_metadata),
                 fraud_in_bps=fraud_in_bps,
             )
             return

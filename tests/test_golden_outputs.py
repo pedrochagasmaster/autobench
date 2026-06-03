@@ -68,7 +68,21 @@ def _assert_core_workbook_invariants(path: Path) -> None:
     "mode,extra_args,csv_suffix",
     [
         ("share", ["share", "--metric", "txn_cnt"], ""),
-        ("rate", ["rate", "--total-col", "total", "--approved-col", "approved", "--fraud-col", "fraud"], "_balanced.csv"),
+        (
+            "rate",
+            [
+                "rate",
+                "--total-col",
+                "total",
+                "--approved-col",
+                "approved",
+                "--fraud-col",
+                "fraud",
+                "--privacy-basis",
+                "clearing_spend",
+            ],
+            "_balanced.csv",
+        ),
     ],
 )
 def test_golden_cli_outputs(tmp_path: Path, mode: str, extra_args: list[str], csv_suffix: str) -> None:

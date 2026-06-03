@@ -110,6 +110,14 @@ class AnalysisRunRequest:
     fraud_in_bps: bool = True
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
+    privacy_basis: Optional[str] = None
+    contains_digital_wallet_metrics: bool = False
+    privacy_review_approved: bool = False
+    contains_top_merchant_output: bool = False
+    dual_entity_axis: bool = False
+    recurring_deliverable: bool = False
+    last_privacy_recheck_date: Optional[str] = None
+    peer_group_altered: bool = False
     prepared_dataset: Optional["PreparedDataset"] = None
 
     @property

@@ -39,9 +39,11 @@ class ConfigValidator:
         'output': dict,
         'optimization': dict,
         'analysis': dict,
+        'control3': dict,
         'column_mappings': dict,
         'advanced': dict,
     }
+    VALID_PRIVACY_BASES = ['clearing_spend', 'transaction_count', 'transaction_amount']
     
     VALID_ALGORITHMS = ['linear_programming', 'bayesian', 'hybrid']
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
@@ -138,10 +140,49 @@ class ConfigValidator:
         
         if 'analysis' in config:
             errors.extend(cls._validate_analysis(config['analysis']))
+
+        if 'control3' in config:
+            errors.extend(cls._validate_control3(config['control3']))
         
         if 'column_mappings' in config:
             errors.extend(cls._validate_column_mappings(config['column_mappings']))
         
+        return errors
+
+    @classmethod
+    def _validate_control3(cls, control3_config: Dict[str, Any]) -> List[str]:
+        """Validate Control 3 policy evidence settings."""
+        errors: List[str] = []
+        if not isinstance(control3_config, dict):
+            errors.append("control3 must be a dictionary")
+            return errors
+
+        bool_fields = [
+            'contains_digital_wallet_metrics',
+            'privacy_review_approved',
+            'contains_top_merchant_output',
+            'dual_entity_axis',
+            'recurring_deliverable',
+            'peer_group_altered',
+        ]
+        for field in bool_fields:
+            if field in control3_config and not isinstance(control3_config[field], bool):
+                errors.append(f"control3.{field} must be a boolean")
+
+        if 'privacy_basis' in control3_config:
+            basis = control3_config['privacy_basis']
+            if basis is not None and basis not in cls.VALID_PRIVACY_BASES:
+                errors.append(
+                    "control3.privacy_basis must be one of: "
+                    + ", ".join(cls.VALID_PRIVACY_BASES)
+                    + ", or null"
+                )
+
+        if 'last_privacy_recheck_date' in control3_config:
+            value = control3_config['last_privacy_recheck_date']
+            if value is not None and not isinstance(value, str):
+                errors.append("control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null")
+
         return errors
     
     @classmethod

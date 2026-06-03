@@ -97,6 +97,7 @@ class PrivacyValidator:
     RULES_ENV_VAR = "PBT_PRIVACY_RULES_FILE"
     DEFAULT_RULES_FILE = Path(__file__).resolve().parent.parent / "config" / "privacy_rules.yaml"
     COMPARISON_EPSILON = SHARED_COMPARISON_EPSILON
+    PROTECTED_ENTITY_DEFAULT_MAX_CONCENTRATION = 25.0
     _RULES_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
 
     @classmethod
@@ -401,7 +402,11 @@ class PrivacyValidator:
         self.protected_max_concentration = (
             float(protected_max_concentration)
             if protected_max_concentration is not None
-            else float(self.max_concentration)
+            else (
+                self.PROTECTED_ENTITY_DEFAULT_MAX_CONCENTRATION
+                if self.protected_entities
+                else float(self.max_concentration)
+            )
         )
         
         logger.info(f"Initialized PrivacyValidator with rule: {self.rule_name}")

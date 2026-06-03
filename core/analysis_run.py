@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
+from core.control3_policy import Control3PolicyInput, evaluate_control3_policy
 from core.audit_log import build_audit_log_model
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
 from core.contracts import (
@@ -52,6 +53,14 @@ COMMON_CLI_OVERRIDES = (
     'output_format',
     'include_calculated',
     'compliance_posture',
+    'privacy_basis',
+    'contains_digital_wallet_metrics',
+    'privacy_review_approved',
+    'contains_top_merchant_output',
+    'dual_entity_axis',
+    'recurring_deliverable',
+    'last_privacy_recheck_date',
+    'peer_group_altered',
 )
 
 
@@ -350,6 +359,16 @@ def build_common_run_metadata(
         'impact_thresholds': {
             'high_pp': high_impact_pp,
             'low_pp': low_impact_pp,
+        },
+        'control3_policy_declarations': {
+            'privacy_basis': getattr(resolved.control3, 'privacy_basis', None),
+            'contains_digital_wallet_metrics': getattr(resolved.control3, 'contains_digital_wallet_metrics', False),
+            'privacy_review_approved': getattr(resolved.control3, 'privacy_review_approved', False),
+            'contains_top_merchant_output': getattr(resolved.control3, 'contains_top_merchant_output', False),
+            'dual_entity_axis': getattr(resolved.control3, 'dual_entity_axis', False),
+            'recurring_deliverable': getattr(resolved.control3, 'recurring_deliverable', False),
+            'last_privacy_recheck_date': getattr(resolved.control3, 'last_privacy_recheck_date', None),
+            'peer_group_altered': getattr(resolved.control3, 'peer_group_altered', False),
         },
     }
 
@@ -710,9 +729,61 @@ def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRun
             "accuracy_first compliance_posture requires explicit acknowledgement before execution",
             summary,
         )
+    resolved = config.resolve() if hasattr(config, "resolve") else None
+    control3_cfg = getattr(resolved, "control3", None)
+    policy_input = Control3PolicyInput(
+        analysis_mode=request.mode,
+        rate_types=request.rate_types,
+        privacy_basis=request.privacy_basis or getattr(control3_cfg, "privacy_basis", None),
+        contains_digital_wallet_metrics=bool(
+            request.contains_digital_wallet_metrics
+            or getattr(control3_cfg, "contains_digital_wallet_metrics", False)
+        ),
+        privacy_review_approved=bool(
+            request.privacy_review_approved
+            or getattr(control3_cfg, "privacy_review_approved", False)
+        ),
+        contains_top_merchant_output=bool(
+            request.contains_top_merchant_output
+            or getattr(control3_cfg, "contains_top_merchant_output", False)
+        ),
+        dual_entity_axis=bool(request.dual_entity_axis or getattr(control3_cfg, "dual_entity_axis", False)),
+        recurring_deliverable=bool(
+            request.recurring_deliverable
+            or getattr(control3_cfg, "recurring_deliverable", False)
+        ),
+        last_privacy_recheck_date=(
+            request.last_privacy_recheck_date
+            or getattr(control3_cfg, "last_privacy_recheck_date", None)
+        ),
+        peer_group_altered=bool(
+            request.peer_group_altered
+            or getattr(control3_cfg, "peer_group_altered", False)
+        ),
+    )
+    control3_policy = evaluate_control3_policy(policy_input)
+    if not control3_policy.allowed:
+        summary = build_blocked_compliance_summary(
+            posture,
+            acknowledgement_given,
+            reason=control3_policy.blocked_reason or "control3_policy_blocked",
+            extra_details={
+                "control3_policy": {
+                    "requirements": control3_policy.requirements,
+                    "details": control3_policy.details,
+                }
+            },
+        ).to_dict()
+        raise RunBlocked(control3_policy.blocked_reason or "Control 3 policy blocked this run", summary)
     return {
         'compliance_posture': posture,
         'acknowledgement_given': acknowledgement_given,
+        'control3_policy': {
+            'allowed': control3_policy.allowed,
+            'blocked_reason': control3_policy.blocked_reason,
+            'requirements': control3_policy.requirements,
+            'details': control3_policy.details,
+        },
     }
 
 
@@ -1340,6 +1411,7 @@ def _execute_run(
         data_quality=data_quality,
     ).to_dict()
     metadata['compliance_summary'] = compliance_summary
+    metadata['control3_policy'] = compliance_context.get('control3_policy')
     metadata['run_status'] = compliance_summary['run_status']
     metadata['compliance_verdict'] = compliance_summary['compliance_verdict']
     metadata['acknowledgement_state'] = compliance_summary['acknowledgement_state']

@@ -16,10 +16,10 @@ class TestPrivacyRulesConfig(unittest.TestCase):
         self.assertEqual(PrivacyValidator.select_rule(7), "7/35")
         self.assertEqual(PrivacyValidator.select_rule(4, merchant_mode=True), "4/35")
 
-    def test_protected_default_uses_rule_cap(self) -> None:
-        validator = PrivacyValidator(rule_name="10/40", protected_entities=["A"])
+    def test_protected_default_uses_citi_control_3_cap(self) -> None:
+        validator = PrivacyValidator(rule_name="10/40", protected_entities=["Citibank"])
         self.assertEqual(float(validator.max_concentration), 40.0)
-        self.assertEqual(float(validator.protected_max_concentration), 40.0)
+        self.assertEqual(float(validator.protected_max_concentration), 25.0)
 
 
 if __name__ == "__main__":

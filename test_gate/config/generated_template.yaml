@@ -77,6 +77,30 @@ output:
 #
 # No configuration needed - the tool automatically applies the correct rule.
 
+# Run-level Control 3 policy declarations. These do not change the optimizer;
+# they provide explicit evidence for policy gates that cannot be inferred from
+# the data safely.
+control3:
+  # For fraud/chargeback issuer benchmarking concentration checks, use
+  # clearing_spend. Other values are only valid for non-fraud/non-chargeback
+  # runs where the canonical document does not require clearing spend.
+  privacy_basis: null
+
+  # Control 3.4: digital-wallet metrics require case-by-case Privacy review.
+  contains_digital_wallet_metrics: false
+  privacy_review_approved: false
+
+  # Control 3.2/3.3: top-merchant lists are blocked; dual entity axes require
+  # manual Privacy review because both entity groups must be protected.
+  contains_top_merchant_output: false
+  dual_entity_axis: false
+
+  # Recurring deliverables must be re-checked when the peer group changes and
+  # at least annually even if unchanged.
+  recurring_deliverable: false
+  last_privacy_recheck_date: null  # YYYY-MM-DD
+  peer_group_altered: false
+
 # ============================================================================
 # OPTIMIZATION SETTINGS
 # ============================================================================

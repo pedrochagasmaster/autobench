@@ -436,8 +436,21 @@ def generate_gate_cases(
     if analysis_type == "rate" and fraud_col:
         make_gate_case(
             "fraud_bps",
-            {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
+            {
+                "fraud_col": fraud_col,
+                "fraud_in_bps": True,
+                "output_format": "publication",
+                "privacy_basis": "clearing_spend",
+            },
+            [
+                "--fraud-col",
+                fraud_col,
+                "--privacy-basis",
+                "clearing_spend",
+                "--fraud-in-bps",
+                "--output-format",
+                "publication",
+            ],
         )
 
     return cases, commands

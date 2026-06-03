@@ -88,6 +88,18 @@ class OutputConfig:
 
 
 @dataclass
+class Control3PolicyConfig:
+    privacy_basis: Optional[str] = None
+    contains_digital_wallet_metrics: bool = False
+    privacy_review_approved: bool = False
+    contains_top_merchant_output: bool = False
+    dual_entity_axis: bool = False
+    recurring_deliverable: bool = False
+    last_privacy_recheck_date: Optional[str] = None
+    peer_group_altered: bool = False
+
+
+@dataclass
 class ResolvedConfig:
     """Typed view of merged configuration for analysis orchestration."""
 
@@ -98,6 +110,7 @@ class ResolvedConfig:
     bayesian: BayesianConfig = field(default_factory=BayesianConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    control3: Control3PolicyConfig = field(default_factory=Control3PolicyConfig)
     compliance_posture: str = "strict"
 
     @classmethod
@@ -111,6 +124,7 @@ class ResolvedConfig:
         bayesian = opt.get("bayesian", {}) or {}
         analysis = config.get("analysis", {}) or {}
         output = config.get("output", {}) or {}
+        control3 = config.get("control3", {}) or {}
 
         max_attempts = subset.get("max_attempts", subset.get("max_tests", 200))
         include_impact_summary = output.get("include_impact_summary")
@@ -170,6 +184,16 @@ class ResolvedConfig:
                 log_level=str(output.get("log_level", "INFO")),
                 impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
                 distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
+            ),
+            control3=Control3PolicyConfig(
+                privacy_basis=control3.get("privacy_basis"),
+                contains_digital_wallet_metrics=bool(control3.get("contains_digital_wallet_metrics", False)),
+                privacy_review_approved=bool(control3.get("privacy_review_approved", False)),
+                contains_top_merchant_output=bool(control3.get("contains_top_merchant_output", False)),
+                dual_entity_axis=bool(control3.get("dual_entity_axis", False)),
+                recurring_deliverable=bool(control3.get("recurring_deliverable", False)),
+                last_privacy_recheck_date=control3.get("last_privacy_recheck_date"),
+                peer_group_altered=bool(control3.get("peer_group_altered", False)),
             ),
             compliance_posture=str(config.get("compliance_posture", "strict")),
         )
@@ -627,6 +651,16 @@ class ConfigManager:
                 'auto_detect_dimensions': False,
                 'merchant_mode': False,
             },
+            'control3': {
+                'privacy_basis': None,
+                'contains_digital_wallet_metrics': False,
+                'privacy_review_approved': False,
+                'contains_top_merchant_output': False,
+                'dual_entity_axis': False,
+                'recurring_deliverable': False,
+                'last_privacy_recheck_date': None,
+                'peer_group_altered': False,
+            },
         }
     
     def _load_preset(self, preset_name: str) -> None:
@@ -735,6 +769,14 @@ class ConfigManager:
             'include_calculated': ('output', 'include_calculated_metrics'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'compliance_posture': ('compliance_posture',),
+            'privacy_basis': ('control3', 'privacy_basis'),
+            'contains_digital_wallet_metrics': ('control3', 'contains_digital_wallet_metrics'),
+            'privacy_review_approved': ('control3', 'privacy_review_approved'),
+            'contains_top_merchant_output': ('control3', 'contains_top_merchant_output'),
+            'dual_entity_axis': ('control3', 'dual_entity_axis'),
+            'recurring_deliverable': ('control3', 'recurring_deliverable'),
+            'last_privacy_recheck_date': ('control3', 'last_privacy_recheck_date'),
+            'peer_group_altered': ('control3', 'peer_group_altered'),
         }
         material_cli_keys = {
             'per_dimension_weights',

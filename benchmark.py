@@ -161,6 +161,51 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
     parser.add_argument('--subset-search-max-tests', type=int, help='Maximum attempts during subset search')
     parser.add_argument('--trigger-subset-on-slack', action='store_true', default=None, help='Trigger subset search if LP uses slack')
     parser.add_argument('--max-cap-slack', type=float, help='Slack sum threshold to trigger subset search')
+    parser.add_argument(
+        '--privacy-basis',
+        choices=['clearing_spend', 'transaction_count', 'transaction_amount'],
+        help='Basis used for Control 3 concentration checks; fraud/chargeback issuer benchmarking requires clearing_spend',
+    )
+    parser.add_argument(
+        '--contains-digital-wallet-metrics',
+        action='store_true',
+        default=None,
+        help='Declare that the output contains digital wallet metrics and therefore requires Privacy review',
+    )
+    parser.add_argument(
+        '--privacy-review-approved',
+        action='store_true',
+        default=None,
+        help='Declare that required Privacy review/approval has been obtained for this run',
+    )
+    parser.add_argument(
+        '--contains-top-merchant-output',
+        action='store_true',
+        default=None,
+        help='Declare that the output would include a top-merchant list; Control 3 blocks this deliverable',
+    )
+    parser.add_argument(
+        '--dual-entity-axis',
+        action='store_true',
+        default=None,
+        help='Declare that the benchmark involves two protected entity axes and requires Privacy review',
+    )
+    parser.add_argument(
+        '--recurring-deliverable',
+        action='store_true',
+        default=None,
+        help='Declare that this is a recurring deliverable requiring re-check evidence',
+    )
+    parser.add_argument(
+        '--last-privacy-recheck-date',
+        help='Date of the latest privacy compliance re-check in YYYY-MM-DD format',
+    )
+    parser.add_argument(
+        '--peer-group-altered',
+        action='store_true',
+        default=None,
+        help='Declare that the peer group changed since the last recurring deliverable',
+    )
 
 
 def create_parser() -> argparse.ArgumentParser:

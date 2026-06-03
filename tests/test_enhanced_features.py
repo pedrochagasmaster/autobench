@@ -190,6 +190,14 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                privacy_basis='clearing_spend',
+                contains_digital_wallet_metrics=False,
+                privacy_review_approved=False,
+                contains_top_merchant_output=False,
+                dual_entity_axis=False,
+                recurring_deliverable=False,
+                last_privacy_recheck_date=None,
+                peer_group_altered=False,
             )
             import logging
             logger = logging.getLogger("test_publication")
@@ -238,6 +246,14 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                privacy_basis='clearing_spend',
+                contains_digital_wallet_metrics=False,
+                privacy_review_approved=False,
+                contains_top_merchant_output=False,
+                dual_entity_axis=False,
+                recurring_deliverable=False,
+                last_privacy_recheck_date=None,
+                peer_group_altered=False,
             )
             import logging
             logger = logging.getLogger("test_publication_rate")
