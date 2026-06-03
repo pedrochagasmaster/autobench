@@ -237,12 +237,20 @@ class ConfigValidator:
         if 'project_csv_columns' in input_config and not isinstance(input_config['project_csv_columns'], bool):
             errors.append("input.project_csv_columns must be a boolean")
 
+        if 'adaptive_batching' in input_config and not isinstance(input_config['adaptive_batching'], bool):
+            errors.append("input.adaptive_batching must be a boolean")
+
+        if 'batch_file_size_mb' in input_config:
+            value = input_config['batch_file_size_mb']
+            if value is not None and (not isinstance(value, (int, float)) or value <= 0):
+                errors.append("input.batch_file_size_mb must be a positive number or null")
+
         if 'max_csv_size_mb' in input_config:
             value = input_config['max_csv_size_mb']
             if value is not None and (not isinstance(value, (int, float)) or value <= 0):
                 errors.append("input.max_csv_size_mb must be a positive number or null")
 
-        for field in ['max_csv_rows', 'csv_chunk_size']:
+        for field in ['max_csv_rows', 'csv_chunk_size', 'batch_row_threshold', 'batch_compaction_chunks']:
             if field in input_config:
                 value = input_config[field]
                 if value is not None and (not isinstance(value, int) or value <= 0):

@@ -235,6 +235,8 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertTrue(config.get('runtime', 'lean_mode'))
         self.assertFalse(config.get('input', 'validate_input'))
         self.assertTrue(config.get('input', 'project_csv_columns'))
+        self.assertTrue(config.get('input', 'adaptive_batching'))
+        self.assertEqual(config.get('input', 'csv_chunk_size'), 100000)
         self.assertFalse(config.get('output', 'include_debug_sheets'))
         self.assertFalse(config.get('output', 'include_privacy_validation'))
         self.assertFalse(config.get('output', 'include_impact_summary'))

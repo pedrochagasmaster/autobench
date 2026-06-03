@@ -548,6 +548,10 @@ class ConfigManager:
                 'schema_detection_mode': 'heuristic',
                 'validate_input': True,
                 'project_csv_columns': True,
+                'adaptive_batching': True,
+                'batch_row_threshold': 250000,
+                'batch_file_size_mb': 256.0,
+                'batch_compaction_chunks': 20,
                 'max_csv_size_mb': None,
                 'max_csv_rows': None,
                 'csv_chunk_size': None,
@@ -799,6 +803,14 @@ class ConfigManager:
 
         self._set_nested(self.config, ('input', 'validate_input'), False)
         self._set_nested(self.config, ('input', 'project_csv_columns'), True)
+        self._set_nested(self.config, ('input', 'adaptive_batching'), True)
+        self._set_nested(self.config, ('input', 'csv_chunk_size'), 100000)
+        current_row_threshold = self.config.get('input', {}).get('batch_row_threshold', 250000)
+        try:
+            row_threshold = min(int(current_row_threshold), 250000)
+        except Exception:
+            row_threshold = 250000
+        self._set_nested(self.config, ('input', 'batch_row_threshold'), row_threshold)
         self._set_nested(self.config, ('output', 'include_debug_sheets'), False)
         self._set_nested(self.config, ('output', 'include_privacy_validation'), False)
         self._set_nested(self.config, ('output', 'include_impact_summary'), False)
