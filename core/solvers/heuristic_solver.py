@@ -27,52 +27,15 @@ class HeuristicSolver(PrivacySolver):
     # Defaults from DimensionalAnalyzer
     VIOLATION_PENALTY_WEIGHT = DEFAULT_HEURISTIC_VIOLATION_PENALTY_WEIGHT
     
-    def solve(
-        self,
-        request: Optional[SolverRequest] = None,
-        *,
-        peers: Optional[List[str]] = None,
-        categories: Optional[List[Dict[str, Any]]] = None,
-        max_concentration: Optional[float] = None,
-        peer_volumes: Optional[Dict[str, float]] = None,
-        **kwargs: Any
-    ) -> Optional[SolverResult]:
+    def solve(self, request: SolverRequest) -> Optional[SolverResult]:
         """
         Solve optimization problem using heuristics.
-        
-        Expected kwargs:
-        - target_weights: Dict[str, float] (optional)
-        - min_weight: float
-        - max_weight: float
-        - tolerance: float
-        - max_iterations: int
-        - learning_rate: float (finite-difference step size for optimizer)
-        - enforce_additional_constraints: bool
-        - dynamic_constraints_enabled: bool
-        - time_column: str (optional)
-        - rule_name: str (optional)
-        
-        # Dynamic constraint params
-        - min_peer_count_for_constraints: int
-        - min_effective_peer_count: float
-        - min_category_volume_share: float
-        - min_overall_volume_share: float
-        - min_representativeness: float
-        - dynamic_threshold_scale_floor: float
-        - dynamic_count_scale_floor: float
         """
         if not _SCIPY_AVAILABLE:
             logger.info("SciPy not available, skipping heuristic solver.")
             return None
 
-        solver_request = self.coerce_request(
-            request,
-            peers=peers,
-            categories=categories,
-            max_concentration=max_concentration,
-            peer_volumes=peer_volumes,
-            **kwargs,
-        )
+        solver_request = request
         peers = solver_request.peers
         categories = solver_request.categories
         max_concentration = solver_request.max_concentration
@@ -301,6 +264,7 @@ class HeuristicSolver(PrivacySolver):
         # Stats are minimal for heuristic
         stats = {
             'success': success,
+            'converged': success,
             'message': result.message,
             'residual_cap_violation': residual_cap_violation,
             'residual_additional_violation': residual_additional_violation,

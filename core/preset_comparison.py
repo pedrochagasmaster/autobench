@@ -44,36 +44,20 @@ def _run_single_preset_variant(
     from utils.config_manager import ConfigManager
 
     preset_config = ConfigManager(preset=preset_name)
-    opt_config = preset_config.config["optimization"]
-    analysis_config = preset_config.config["analysis"]
+    resolved = preset_config.resolve()
     analyzer, _ = build_dimensional_analyzer(
         target_entity=target_entity,
         entity_col=entity_col,
-        analysis_config=analysis_config,
-        opt_config=opt_config,
+        resolved=resolved,
         time_col=time_col,
         debug_mode=False,
-        bic_percentile=analysis_config.get("best_in_class_percentile", 0.85),
+        bic_percentile=resolved.analysis.best_in_class_percentile,
         logger=logging.getLogger(__name__),
         consistent_weights=consistent_weights,
     )
 
-    if consistent_weights:
-        validation_metric = total_col or metric_col
-        analyzer.calculate_global_privacy_weights(df, validation_metric, dimensions)
-    else:
-        validation_metric = total_col or metric_col
-        _, _, peers = analyzer._build_categories(df, validation_metric, dimensions)
-        rule_name, max_concentration = analyzer._get_privacy_rule(len(peers))
-        analyzer._solve_per_dimension_weights(
-            df,
-            validation_metric,
-            dimensions,
-            peers,
-            max_concentration,
-            None,
-            rule_name,
-        )
+    validation_metric = total_col or metric_col
+    analyzer.fit_privacy_weights(df, validation_metric, dimensions)
 
     if analysis_type == "rate":
         if not total_col or not numerator_cols:

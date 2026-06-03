@@ -31,6 +31,7 @@ from typing import List, Tuple, Optional, Dict, Any, cast
 import pandas as pd
 
 from .constants import COMPARISON_EPSILON as SHARED_COMPARISON_EPSILON
+from .privacy_rules import additional_constraints_result, evaluate_rule
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ class PrivacyValidator:
     RULES_ENV_VAR = "PBT_PRIVACY_RULES_FILE"
     DEFAULT_RULES_FILE = Path(__file__).resolve().parent.parent / "config" / "privacy_rules.yaml"
     COMPARISON_EPSILON = SHARED_COMPARISON_EPSILON
+    PROTECTED_ENTITY_DEFAULT_MAX_CONCENTRATION = 25.0
     _RULES_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
 
     @classmethod
@@ -291,7 +293,7 @@ class PrivacyValidator:
         """
         rules = cls.get_rules()
 
-        if merchant_mode and '4/35' in rules and peer_count >= int(rules['4/35'].get('min_entities', 4)):
+        if merchant_mode and '4/35' in rules and peer_count == int(rules['4/35'].get('min_entities', 4)):
             return '4/35'
 
         ordered_rules = sorted(
@@ -334,69 +336,7 @@ class PrivacyValidator:
         Tuple[bool, List[str]]
             (passed, details). details contains human-readable failures.
         """
-        rule = cls.get_rules().get(rule_name)
-        if not rule:
-            # No additional constraints for unknown or insufficient rule
-            return True, []
-
-        details: List[str] = []
-        passed = True
-
-        min_entities = int(rule.get('min_entities', 0))
-        if len(shares) < min_entities:
-            passed = False
-            details.append(f"Need at least {min_entities} participants, found {len(shares)}")
-            # Even if participant count is insufficient, return now.
-            return passed, details
-
-        shares_sorted = sorted([float(s) for s in shares], reverse=True)
-        additional = rule.get('additional', {})
-
-        # 6/30: at least 3 participants >= 7%
-        if 'min_count_above_threshold' in additional:
-            min_count, threshold = additional['min_count_above_threshold']
-            count_above = cls._count_at_or_above(shares_sorted, threshold)
-            if count_above < min_count:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count} participants >= {threshold}%, found {count_above}"
-                )
-
-        # 7/35: at least 2 >= 15% and 1 additional >= 8%
-        if 'min_count_15' in additional:
-            min_count_15 = additional.get('min_count_15', 0)
-            min_count_8 = additional.get('min_count_8', 0)
-            count_15 = cls._count_at_or_above(shares_sorted, 15.0)
-            count_8 = cls._count_at_or_above(shares_sorted, 8.0)
-            if count_15 < min_count_15:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_15} participants >= 15%, found {count_15}"
-                )
-            if count_8 < (min_count_15 + min_count_8):
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_8} additional participants >= 8%, found {max(count_8 - min_count_15, 0)}"
-                )
-
-        # 10/40: at least 2 >= 20% and 1 additional >= 10%
-        if 'min_count_20' in additional:
-            min_count_20 = additional.get('min_count_20', 0)
-            min_count_10 = additional.get('min_count_10', 0)
-            count_20 = cls._count_at_or_above(shares_sorted, 20.0)
-            count_10 = cls._count_at_or_above(shares_sorted, 10.0)
-            if count_20 < min_count_20:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_20} participants >= 20%, found {count_20}"
-                )
-            if count_10 < (min_count_20 + min_count_10):
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_10} additional participants >= 10%, found {max(count_10 - min_count_20, 0)}"
-                )
-
-        return passed, details
+        return additional_constraints_result(shares, rule_name)
 
     @classmethod
     def evaluate_additional_constraints_with_thresholds(
@@ -414,76 +354,12 @@ class PrivacyValidator:
         if thresholds is None:
             return cls.evaluate_additional_constraints(shares, rule_name)
 
-        shares_sorted = sorted([float(s) for s in shares], reverse=True)
-        details: List[str] = []
-        passed = True
-        use_tiers = any(key.startswith('tier_') for key in thresholds.keys())
-
-        if rule_name == '6/30':
-            if use_tiers:
-                min_count, threshold = thresholds.get('tier_1', (3, 7.0))
-            else:
-                min_count, threshold = thresholds.get('min_count_above_threshold', (3, 7.0))
-            idx = int(min_count) - 1
-            observed = shares_sorted[idx] if idx < len(shares_sorted) else 0.0
-            if observed + cls.COMPARISON_EPSILON < threshold:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count} participants >= {threshold:.2f}%, "
-                    f"found {cls._count_at_or_above(shares_sorted, threshold)}"
-                )
-        elif rule_name == '7/35':
-            if use_tiers:
-                min_count_15, threshold_15 = thresholds.get('tier_1', (2, 15.0))
-                min_count_8, threshold_8 = thresholds.get('tier_2', (1, 8.0))
-            else:
-                min_count_15 = int(thresholds.get('min_count_15', 2))
-                min_count_8 = int(thresholds.get('min_count_8', 1))
-                threshold_15 = float(thresholds.get('threshold_15', 15.0))
-                threshold_8 = float(thresholds.get('threshold_8', 8.0))
-            idx_15 = min_count_15 - 1
-            idx_8 = min_count_15 + min_count_8 - 1
-            observed_15 = shares_sorted[idx_15] if idx_15 < len(shares_sorted) else 0.0
-            observed_8 = shares_sorted[idx_8] if idx_8 < len(shares_sorted) else 0.0
-            if observed_15 + cls.COMPARISON_EPSILON < threshold_15:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_15} participants >= {threshold_15:.2f}%, "
-                    f"found {cls._count_at_or_above(shares_sorted, threshold_15)}"
-                )
-            if observed_8 + cls.COMPARISON_EPSILON < threshold_8:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_8} additional participants >= {threshold_8:.2f}%, "
-                    f"found {max(cls._count_at_or_above(shares_sorted, threshold_8) - min_count_15, 0)}"
-                )
-        elif rule_name == '10/40':
-            if use_tiers:
-                min_count_20, threshold_20 = thresholds.get('tier_1', (2, 20.0))
-                min_count_10, threshold_10 = thresholds.get('tier_2', (1, 10.0))
-            else:
-                min_count_20 = int(thresholds.get('min_count_20', 2))
-                min_count_10 = int(thresholds.get('min_count_10', 1))
-                threshold_20 = float(thresholds.get('threshold_20', 20.0))
-                threshold_10 = float(thresholds.get('threshold_10', 10.0))
-            idx_20 = min_count_20 - 1
-            idx_10 = min_count_20 + min_count_10 - 1
-            observed_20 = shares_sorted[idx_20] if idx_20 < len(shares_sorted) else 0.0
-            observed_10 = shares_sorted[idx_10] if idx_10 < len(shares_sorted) else 0.0
-            if observed_20 + cls.COMPARISON_EPSILON < threshold_20:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_20} participants >= {threshold_20:.2f}%, "
-                    f"found {cls._count_at_or_above(shares_sorted, threshold_20)}"
-                )
-            if observed_10 + cls.COMPARISON_EPSILON < threshold_10:
-                passed = False
-                details.append(
-                    f"Rule {rule_name}: Need {min_count_10} additional participants >= {threshold_10:.2f}%, "
-                    f"found {max(cls._count_at_or_above(shares_sorted, threshold_10) - min_count_20, 0)}"
-                )
-
-        return passed, details
+        return additional_constraints_result(
+            shares,
+            rule_name,
+            thresholds=thresholds,
+            relaxation_used=True,
+        )
     
     def __init__(
         self,
@@ -526,7 +402,11 @@ class PrivacyValidator:
         self.protected_max_concentration = (
             float(protected_max_concentration)
             if protected_max_concentration is not None
-            else float(self.max_concentration)
+            else (
+                self.PROTECTED_ENTITY_DEFAULT_MAX_CONCENTRATION
+                if self.protected_entities
+                else float(self.max_concentration)
+            )
         )
         
         logger.info(f"Initialized PrivacyValidator with rule: {self.rule_name}")
@@ -617,55 +497,8 @@ class PrivacyValidator:
         Tuple[bool, List[str]]
             (constraint_met, warnings)
         """
-        warnings = []
-        constraints_met = True
-        
-        # Rule 6/30: At least 3 entities >= 7%
-        if 'min_count_above_threshold' in self.additional_constraints:
-            min_count, threshold = self.additional_constraints['min_count_above_threshold']
-            count_above = self._count_at_or_above(peer_group['concentration'].tolist(), threshold)
-            
-            if count_above < min_count:
-                warnings.append(
-                    f"Rule 6/30: Need {min_count} entities >= {threshold}%, found {count_above}"
-                )
-                constraints_met = False
-        
-        # Rule 7/35: At least 2 entities >= 15% AND 1 entity >= 8%
-        if 'min_count_15' in self.additional_constraints:
-            count_15 = self._count_at_or_above(peer_group['concentration'].tolist(), 15.0)
-            count_8 = self._count_at_or_above(peer_group['concentration'].tolist(), 8.0)
-            
-            if count_15 < self.additional_constraints['min_count_15']:
-                warnings.append(
-                    f"Rule 7/35: Need {self.additional_constraints['min_count_15']} "
-                    f"entities >= 15%, found {count_15}"
-                )
-                constraints_met = False
-            
-            if count_8 < (self.additional_constraints['min_count_15'] + 
-                         self.additional_constraints.get('min_count_8', 0)):
-                warnings.append("Rule 7/35: Additional entity >= 8% requirement not met")
-                constraints_met = False
-        
-        # Rule 10/40: At least 2 entities >= 20% AND 1 entity >= 10%
-        if 'min_count_20' in self.additional_constraints:
-            count_20 = self._count_at_or_above(peer_group['concentration'].tolist(), 20.0)
-            count_10 = self._count_at_or_above(peer_group['concentration'].tolist(), 10.0)
-            
-            if count_20 < self.additional_constraints['min_count_20']:
-                warnings.append(
-                    f"Rule 10/40: Need {self.additional_constraints['min_count_20']} "
-                    f"entities >= 20%, found {count_20}"
-                )
-                constraints_met = False
-            
-            if count_10 < (self.additional_constraints['min_count_20'] + 
-                          self.additional_constraints.get('min_count_10', 0)):
-                warnings.append("Rule 10/40: Additional entity >= 10% requirement not met")
-                constraints_met = False
-        
-        return constraints_met, warnings
+        evaluation = evaluate_rule(self.rule_name, peer_group['concentration'].tolist())
+        return evaluation.secondary_rule_passed, list(evaluation.secondary_failures)
     
     def calculate_concentration(
         self,

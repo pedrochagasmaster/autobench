@@ -11,10 +11,15 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 PREFERRED_ENTITY_COLS = [
@@ -73,7 +78,8 @@ def quote_arg(value: str) -> str:
         return ""
     value = str(value)
     if any(ch in value for ch in [" ", "\t", "\""]):
-        return f'"{value.replace("\"", "\\\"")}"'
+        escaped = value.replace('"', '\\"')
+        return f'"{escaped}"'
     return value
 
 
@@ -102,6 +108,9 @@ def _read_columns(csv_path: Path) -> List[str]:
 
 
 def find_default_csv() -> Path:
+    fixture = Path("tests/fixtures/gate_demo.csv")
+    if fixture.exists():
+        return fixture
     data_candidates = sorted(Path("data").glob("*.csv"))
     candidates = [c for c in data_candidates if not c.name.endswith("_balanced.csv")]
     if not candidates:
@@ -251,6 +260,10 @@ def make_case(case_id: str, command: str, params: Dict, expectations: List[str])
     }
 
 
+def _path_str(path: Path) -> str:
+    return path.as_posix()
+
+
 def expectations_for_case(params: Dict, analysis_type: str, output_path: Optional[Path]) -> List[str]:
     expectations: List[str] = []
 
@@ -300,9 +313,11 @@ def expectations_for_case(params: Dict, analysis_type: str, output_path: Optiona
     if output_path is None:
         expectations.append("output_filename_auto_generated")
     else:
-        expectations.append(f"output_base={output_path}")
+        expectations.append(f"output_base={_path_str(output_path)}")
         expectations.append(f"audit_log={output_path.with_suffix('').name}_audit.log")
 
+    from scripts.gate_expectations import validate_emitted_tokens
+    validate_emitted_tokens(expectations)
     return expectations
 
 
@@ -348,18 +363,19 @@ def generate_gate_cases(
         
         # Base params (defaults)
         params = {
-            "csv": str(csv_path),
+            "csv": _path_str(csv_path),
             "entity": entity,
             "entity_col": entity_col,
             "dimensions": dimensions,
+            "time_col": time_col,
             "output_format": "analysis",
             "validate_input": True,
-            "output": str(output_path),
+            "output": _path_str(output_path),
             **extra_params
         }
         
         # Base flags
-        flags = ["--csv", str(csv_path), "--entity-col", entity_col]
+        flags = ["--csv", _path_str(csv_path), "--entity-col", entity_col]
         
         # Handle Entity (allow override in extra_params, else default to entity if present)
         if "entity" in extra_params:
@@ -380,7 +396,7 @@ def generate_gate_cases(
         if time_col:
             flags.extend(["--time-col", time_col])
             
-        flags.extend(["--output", str(output_path)])
+        flags.extend(["--output", _path_str(output_path)])
         flags.extend(extra_flags)
         
         cmd = build_command(base_args, flags)
@@ -412,16 +428,29 @@ def generate_gate_cases(
     if config_path:
         make_gate_case(
             "config_csv",
-            {"config": str(config_path), "export_balanced_csv": True, "include_calculated": True},
-            ["--config", str(config_path), "--export-balanced-csv", "--include-calculated"]
+            {"config": _path_str(config_path), "export_balanced_csv": True, "include_calculated": True},
+            ["--config", _path_str(config_path), "--export-balanced-csv", "--include-calculated"]
         )
         
     # Case 5: Rate Specific - Fraud (if applicable)
     if analysis_type == "rate" and fraud_col:
         make_gate_case(
             "fraud_bps",
-            {"fraud_col": fraud_col, "fraud_in_bps": True, "output_format": "publication"},
-            ["--fraud-col", fraud_col, "--fraud-in-bps", "--output-format", "publication"]
+            {
+                "fraud_col": fraud_col,
+                "fraud_in_bps": True,
+                "output_format": "publication",
+                "privacy_basis": "clearing_spend",
+            },
+            [
+                "--fraud-col",
+                fraud_col,
+                "--privacy-basis",
+                "clearing_spend",
+                "--fraud-in-bps",
+                "--output-format",
+                "publication",
+            ],
         )
 
     return cases, commands
@@ -456,9 +485,9 @@ def generate_core_cases(
     for preset in presets:
         preset_modes.append((f"preset_{preset}", {"preset": preset}))
     if config_path:
-        preset_modes.append(("config", {"config": str(config_path)}))
+        preset_modes.append(("config", {"config": _path_str(config_path)}))
         for preset in presets:
-            preset_modes.append((f"config_preset_{preset}", {"config": str(config_path), "preset": preset}))
+            preset_modes.append((f"config_preset_{preset}", {"config": _path_str(config_path), "preset": preset}))
 
     output_formats = [
         ("analysis", {"output_format": "analysis"}),
@@ -482,10 +511,10 @@ def generate_core_cases(
         output_path = output_dir / f"{case_id}.xlsx"
 
         params: Dict = {
-            "csv": str(csv_path),
+            "csv": _path_str(csv_path),
             "entity": entity_params.get("entity"),
             "entity_col": entity_col,
-            "output": str(output_path),
+            "output": _path_str(output_path),
             **dim_params,
             **preset_params,
             **fmt_params,
@@ -515,7 +544,7 @@ def generate_core_cases(
             add_flag(flags, "--validate-input", True)
         if params.get("validate_input") is False:
             add_flag(flags, "--no-validate-input", True)
-        add_flag(flags, "--output", str(output_path))
+        add_flag(flags, "--output", _path_str(output_path))
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)
@@ -547,7 +576,7 @@ def generate_feature_cases(
     baseline_output = output_dir / f"{baseline_id}.xlsx"
 
     baseline_params: Dict = {
-        "csv": str(csv_path),
+        "csv": _path_str(csv_path),
         "entity": entity,
         "entity_col": entity_col,
         "dimensions": dimensions,
@@ -559,14 +588,14 @@ def generate_feature_cases(
 
     def build_base_flags(output_path: Path) -> List[str]:
         flags: List[str] = []
-        add_flag(flags, "--csv", str(csv_path))
+        add_flag(flags, "--csv", _path_str(csv_path))
         if entity:
             add_flag(flags, "--entity", entity)
         add_flag(flags, "--entity-col", entity_col)
         add_flag(flags, "--dimensions", dimensions)
         if time_col:
             add_flag(flags, "--time-col", time_col)
-        add_flag(flags, "--output", str(output_path))
+        add_flag(flags, "--output", _path_str(output_path))
         add_flag(flags, "--output-format", "analysis")
         add_flag(flags, "--validate-input", True)
         return flags
@@ -613,10 +642,10 @@ def generate_feature_cases(
             preset_params["acknowledge_accuracy_first"] = True
         feature_defs.append(("preset_only", preset_params, preset_flags))
     if config_path:
-        feature_defs.append(("config_only", {"config": str(config_path)}, ["--config", str(config_path)]))
+        feature_defs.append(("config_only", {"config": _path_str(config_path)}, ["--config", _path_str(config_path)]))
         if presets:
-            config_preset_flags = ["--config", str(config_path), "--preset", presets[0]]
-            config_preset_params = {"config": str(config_path), "preset": presets[0]}
+            config_preset_flags = ["--config", _path_str(config_path), "--preset", presets[0]]
+            config_preset_params = {"config": _path_str(config_path), "preset": presets[0]}
             if preset_requires_acknowledgement(presets[0]):
                 config_preset_flags.append("--acknowledge-accuracy-first")
                 config_preset_params["acknowledge_accuracy_first"] = True
@@ -637,7 +666,7 @@ def generate_feature_cases(
         output_path = output_dir / f"{case_id}.xlsx"
         flags = build_base_flags(output_path)
         flags.extend(extra_flags)
-        params = {**baseline_params, **param_updates, "output": str(output_path)}
+        params = {**baseline_params, **param_updates, "output": _path_str(output_path)}
 
         command = build_command(base_args, flags)
         expectations = expectations_for_case(params, analysis_type, output_path)
@@ -675,13 +704,13 @@ def generate_config_cases(out_dir: Path, presets: List[str]) -> Tuple[List[Dict]
 
     template_path = Path("config") / "template.yaml"
     if template_path.exists():
-        cmd = f"py benchmark.py config validate {quote_arg(str(template_path))}"
-        cases.append(make_case("config_validate_template", cmd, {"config": str(template_path)}, ["validate_template_ok"]))
+        cmd = f"py benchmark.py config validate {quote_arg(_path_str(template_path))}"
+        cases.append(make_case("config_validate_template", cmd, {"config": _path_str(template_path)}, ["validate_template_ok"]))
         commands.append(cmd)
 
         output_template = out_dir / "generated_template.yaml"
-        cmd = f"py benchmark.py config generate {quote_arg(str(output_template))}"
-        cases.append(make_case("config_generate_template", cmd, {"output": str(output_template)}, ["template_created"]))
+        cmd = f"py benchmark.py config generate {quote_arg(_path_str(output_template))}"
+        cases.append(make_case("config_generate_template", cmd, {"output": _path_str(output_template)}, ["template_created"]))
         commands.append(cmd)
 
     return cases, commands
@@ -749,7 +778,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = {
-        "csv": str(csv_path),
+        "csv": _path_str(csv_path),
         "entity_col": entity_col,
         "entity_value": entity_value,
         "time_col": time_col,
@@ -760,7 +789,7 @@ def main() -> int:
         "dimensions": dimensions,
         "secondary_metrics": secondary_metrics,
         "presets": presets,
-        "config_template": str(config_path) if config_path else None,
+        "config_template": _path_str(config_path) if config_path else None,
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

@@ -6,6 +6,7 @@ Handles configuration loading, column mappings, and preset management.
 
 import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -15,8 +16,167 @@ except ImportError:  # pragma: no cover - validators already handle this path
     yaml = None
 
 from core.compliance import VALID_COMPLIANCE_POSTURES
+from core.control3_policy import Control3PolicyEvidence
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BoundsConfig:
+    max_weight: float = 10.0
+    min_weight: float = 0.01
+
+
+@dataclass
+class LinearProgrammingConfig:
+    max_iterations: int = 1000
+    tolerance: float = 1.0
+    rank_penalty_weight: float = 1.0
+    rank_constraints: Dict[str, Any] = field(default_factory=lambda: {"mode": "all", "neighbor_k": 1})
+    volume_weighted_penalties: bool = False
+    volume_weighting_exponent: float = 1.0
+    lambda_penalty: Optional[float] = None
+
+
+@dataclass
+class SubsetSearchConfig:
+    enabled: bool = True
+    strategy: str = "greedy"
+    max_attempts: int = 200
+    trigger_on_slack: bool = True
+    max_slack_threshold: float = 0.0
+    prefer_slacks_first: bool = False
+
+
+@dataclass
+class ConstraintsConfig:
+    volume_preservation: float = 0.5
+    consistency_mode: str = "global"
+    enforce_single_weight_set: bool = False
+    enforce_additional_constraints: bool = True
+    dynamic_constraints: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class BayesianConfig:
+    max_iterations: int = 500
+    learning_rate: float = 0.01
+    violation_penalty_weight: float = 1000.0
+
+
+@dataclass
+class AnalysisConfig:
+    best_in_class_percentile: float = 0.85
+    fraud_percentile: float = 0.15
+    auto_detect_dimensions: bool = False
+    merchant_mode: bool = False
+
+
+@dataclass
+class OutputConfig:
+    format: str = "xlsx"
+    output_format: str = "analysis"
+    include_debug_sheets: bool = True
+    include_privacy_validation: bool = True
+    include_impact_summary: bool = True
+    include_preset_comparison: bool = False
+    include_calculated_metrics: bool = False
+    include_audit_log: bool = True
+    fraud_in_bps: bool = True
+    log_level: str = "INFO"
+    impact_thresholds: Dict[str, Any] = field(default_factory=dict)
+    distortion_thresholds: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResolvedConfig:
+    """Typed view of merged configuration for analysis orchestration."""
+
+    bounds: BoundsConfig = field(default_factory=BoundsConfig)
+    linear_programming: LinearProgrammingConfig = field(default_factory=LinearProgrammingConfig)
+    subset_search: SubsetSearchConfig = field(default_factory=SubsetSearchConfig)
+    constraints: ConstraintsConfig = field(default_factory=ConstraintsConfig)
+    bayesian: BayesianConfig = field(default_factory=BayesianConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
+    control3: Control3PolicyEvidence = field(default_factory=Control3PolicyEvidence)
+    compliance_posture: str = "strict"
+
+    @classmethod
+    def from_merged_config(cls, config: Dict[str, Any]) -> "ResolvedConfig":
+        """Build a typed config object from a merged ConfigManager dict."""
+        opt = config.get("optimization", {}) or {}
+        lp = opt.get("linear_programming", {}) or {}
+        bounds = opt.get("bounds", {}) or {}
+        subset = opt.get("subset_search", {}) or {}
+        constraints = opt.get("constraints", {}) or {}
+        bayesian = opt.get("bayesian", {}) or {}
+        analysis = config.get("analysis", {}) or {}
+        output = config.get("output", {}) or {}
+        control3 = config.get("control3", {}) or {}
+
+        max_attempts = subset.get("max_attempts", subset.get("max_tests", 200))
+        include_impact_summary = output.get("include_impact_summary")
+        if include_impact_summary is None:
+            include_impact_summary = output.get("include_distortion_summary", True)
+
+        return cls(
+            bounds=BoundsConfig(
+                max_weight=float(bounds.get("max_weight", 10.0)),
+                min_weight=float(bounds.get("min_weight", 0.01)),
+            ),
+            linear_programming=LinearProgrammingConfig(
+                max_iterations=int(lp.get("max_iterations", 1000)),
+                tolerance=float(lp.get("tolerance", 1.0)),
+                rank_penalty_weight=float(lp.get("rank_penalty_weight", 1.0)),
+                rank_constraints=dict(lp.get("rank_constraints", {"mode": "all", "neighbor_k": 1})),
+                volume_weighted_penalties=bool(lp.get("volume_weighted_penalties", False)),
+                volume_weighting_exponent=float(lp.get("volume_weighting_exponent", 1.0)),
+                lambda_penalty=lp.get("lambda_penalty"),
+            ),
+            subset_search=SubsetSearchConfig(
+                enabled=bool(subset.get("enabled", True)),
+                strategy=str(subset.get("strategy", "greedy")),
+                max_attempts=int(max_attempts),
+                trigger_on_slack=bool(subset.get("trigger_on_slack", True)),
+                max_slack_threshold=float(subset.get("max_slack_threshold", 0.0)),
+                prefer_slacks_first=bool(subset.get("prefer_slacks_first", False)),
+            ),
+            constraints=ConstraintsConfig(
+                volume_preservation=float(constraints.get("volume_preservation", 0.5)),
+                consistency_mode=str(constraints.get("consistency_mode", "global")),
+                enforce_single_weight_set=bool(constraints.get("enforce_single_weight_set", False)),
+                enforce_additional_constraints=bool(constraints.get("enforce_additional_constraints", True)),
+                dynamic_constraints=dict(constraints.get("dynamic_constraints", {}) or {}),
+            ),
+            bayesian=BayesianConfig(
+                max_iterations=int(bayesian.get("max_iterations", 500)),
+                learning_rate=float(bayesian.get("learning_rate", 0.01)),
+                violation_penalty_weight=float(bayesian.get("violation_penalty_weight", 1000.0)),
+            ),
+            analysis=AnalysisConfig(
+                best_in_class_percentile=float(analysis.get("best_in_class_percentile", 0.85)),
+                fraud_percentile=float(analysis.get("fraud_percentile", 0.15)),
+                auto_detect_dimensions=bool(analysis.get("auto_detect_dimensions", False)),
+                merchant_mode=bool(analysis.get("merchant_mode", False)),
+            ),
+            output=OutputConfig(
+                format=str(output.get("format", "xlsx")),
+                output_format=str(output.get("output_format", "analysis")),
+                include_debug_sheets=bool(output.get("include_debug_sheets", True)),
+                include_privacy_validation=bool(output.get("include_privacy_validation", True)),
+                include_impact_summary=bool(include_impact_summary),
+                include_preset_comparison=bool(output.get("include_preset_comparison", False)),
+                include_calculated_metrics=bool(output.get("include_calculated_metrics", False)),
+                include_audit_log=bool(output.get("include_audit_log", True)),
+                fraud_in_bps=bool(output.get("fraud_in_bps", True)),
+                log_level=str(output.get("log_level", "INFO")),
+                impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
+                distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
+            ),
+            control3=Control3PolicyEvidence.from_mapping(control3),
+            compliance_posture=str(config.get("compliance_posture", "strict")),
+        )
 
 
 class ConfigManager:
@@ -439,7 +599,7 @@ class ConfigManager:
                     'enforce_single_weight_set': False,
                     'enforce_additional_constraints': True,
                     'dynamic_constraints': {
-                        'enabled': True,
+                        'enabled': False,
                         'min_peer_count': 4,
                         'min_effective_peer_count': 3.0,
                         'min_category_volume_share': 0.001,
@@ -470,6 +630,17 @@ class ConfigManager:
                 'fraud_percentile': 0.15,
                 'auto_detect_dimensions': False,
                 'merchant_mode': False,
+            },
+            'control3': {
+                'privacy_basis': None,
+                'contains_digital_wallet_metrics': False,
+                'digital_wallet_review_approved': False,
+                'contains_top_merchant_output': False,
+                'dual_entity_axis': False,
+                'dual_entity_axis_review_approved': False,
+                'recurring_deliverable': False,
+                'last_privacy_recheck_date': None,
+                'peer_group_altered': False,
             },
         }
     
@@ -579,6 +750,15 @@ class ConfigManager:
             'include_calculated': ('output', 'include_calculated_metrics'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'compliance_posture': ('compliance_posture',),
+            'privacy_basis': ('control3', 'privacy_basis'),
+            'contains_digital_wallet_metrics': ('control3', 'contains_digital_wallet_metrics'),
+            'digital_wallet_review_approved': ('control3', 'digital_wallet_review_approved'),
+            'contains_top_merchant_output': ('control3', 'contains_top_merchant_output'),
+            'dual_entity_axis': ('control3', 'dual_entity_axis'),
+            'dual_entity_axis_review_approved': ('control3', 'dual_entity_axis_review_approved'),
+            'recurring_deliverable': ('control3', 'recurring_deliverable'),
+            'last_privacy_recheck_date': ('control3', 'last_privacy_recheck_date'),
+            'peer_group_altered': ('control3', 'peer_group_altered'),
         }
         material_cli_keys = {
             'per_dimension_weights',
@@ -683,4 +863,8 @@ class ConfigManager:
             else:
                 return default
         return value
-    
+
+    def resolve(self) -> ResolvedConfig:
+        """Return a typed view of the merged configuration."""
+        return ResolvedConfig.from_merged_config(self.config)
+

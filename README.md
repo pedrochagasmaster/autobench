@@ -62,35 +62,61 @@ py benchmark.py rate --help
 
 ## First Successful Run (Copy/Paste)
 
-If you want a deterministic smoke test with your own tiny CSV, create one:
+Use the tracked fixture `tests/fixtures/gate_demo.csv` (1 target + 6 peers). On
+Linux/macOS:
 
-```powershell
-@'
-issuer_name,card_type,channel,txn_cnt,amt_total,amt_approved,amt_fraud
-BANCO SANTANDER,CREDIT,POS,125000,15000000,14100000,42000
-BANCO SANTANDER,DEBIT,POS,200000,8000000,7600000,16000
-ITAU UNIBANCO,CREDIT,POS,180000,22000000,20500000,51000
-ITAU UNIBANCO,DEBIT,POS,160000,9000000,8500000,18000
-BRADESCO,CREDIT,POS,140000,17000000,15900000,47000
-BRADESCO,DEBIT,POS,150000,8200000,7700000,17000
-CAIXA,CREDIT,POS,130000,14000000,13100000,39000
-CAIXA,DEBIT,POS,170000,7800000,7300000,15000
-NUBANK,CREDIT,POS,110000,13000000,12200000,36000
-NUBANK,DEBIT,POS,120000,7000000,6600000,14000
-'@ | Set-Content data\readme_demo.csv
+```bash
+py benchmark.py share \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --output gate_demo_share.xlsx
 ```
 
-Run share analysis:
-
-```powershell
-py benchmark.py share --csv data\readme_demo.csv --entity "BANCO SANTANDER" --metric txn_cnt --dimensions card_type channel --preset balanced_default
+```bash
+py benchmark.py rate \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --total-col total \
+  --approved-col approved \
+  --fraud-col fraud \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --export-balanced-csv \
+  --output gate_demo_rate.xlsx
 ```
 
-Run rate analysis:
+Launch the TUI:
 
-```powershell
-py benchmark.py rate --csv data\readme_demo.csv --entity "BANCO SANTANDER" --total-col amt_total --approved-col amt_approved --fraud-col amt_fraud --dimensions card_type channel --preset balanced_default
+```bash
+py tui_app.py
 ```
+
+TUI workflow:
+
+1. Enter `tests/fixtures/gate_demo.csv` in **CSV File Path** (Browse is optional).
+2. Press Enter or tab away to load column headers.
+3. Set **Entity ID Column** to `issuer_name`, **Target Entity** to `Target`.
+4. On the Share tab, choose metric `txn_cnt`, time column `year_month`, and
+   dimensions `card_type` + `channel`.
+5. Click **Run Analysis** and confirm the log shows `Analysis completed successfully`.
+
+Success signals:
+
+- CLI commands exit 0 and write `gate_demo_*.xlsx`.
+- Rate run also writes `gate_demo_rate_balanced.csv`.
+- The workbook `Summary` shows `Input Validation: pass` and `Compliance Verdict: fully_compliant`.
+- TUI completes without a thread/logging crash and shows a saved report path.
+
+Generated `.xlsx`, `.csv`, and `benchmark_log_*.txt` files are gitignored local
+artifacts; they are safe to delete after inspection.
+
+Windows PowerShell equivalents use backslashes, for example
+`--csv tests\fixtures\gate_demo.csv`.
 
 ## Input Data Requirements
 
@@ -131,11 +157,12 @@ You do not manually configure these caps during normal runs.
 
 The TUI (`tui_app.py`) is best for first-time users:
 
-1. Select CSV (searches current directory and `data/`).
-2. Choose entity column and target entity (or run peer-only).
-3. Pick a preset.
-4. Configure Share or Rate tab.
-5. Click Run Analysis and watch logs.
+1. Enter a CSV path or use Browse (searches current directory and `data/`).
+2. Press Enter or tab away from the path field to load headers.
+3. Choose entity column and target entity (or run peer-only).
+4. Pick a preset.
+5. Configure Share or Rate tab.
+6. Click Run Analysis and watch logs.
 
 Keyboard shortcuts:
 
@@ -225,6 +252,11 @@ Common sheets:
 
 Balanced CSV is useful for BI ingestion (Power BI, Tableau, pipelines).
 
+Secondary metrics requested with `--secondary-metrics` are exported as
+supplemental weighted context using the final peer weights. They are not
+independent privacy-compliance surfaces; the compliance verdict is based on the
+primary share metric or rate denominator/numerator contract for the run.
+
 ## Excel Sheet Guide
 
 The report includes a consistent core set of sheets, plus optional diagnostics.
@@ -276,16 +308,22 @@ Optional diagnostic sheets (appear when enabled or triggered):
 
 For contributors, run both after changes:
 
-```powershell
+```bash
 py scripts/perform_gate_test.py
-py -m pytest
+py -m pytest tests/ -v
 ```
 
-Optional CSV-vs-Excel cross-check:
+GitHub Actions runs the same lint, unit, and gate checks on pull requests
+(see `.github/workflows/ci.yml`).
 
-```powershell
-py utils\csv_validator.py report.xlsx report_balanced.csv --verbose
+Optional **rate-only** CSV-vs-Excel cross-check (use a rate export with
+`--export-balanced-csv`):
+
+```bash
+py utils/csv_validator.py gate_demo_rate.xlsx gate_demo_rate_balanced.csv --verbose
 ```
+
+Share balanced CSV exports are not supported by the validator yet.
 
 ## Additional Documentation
 

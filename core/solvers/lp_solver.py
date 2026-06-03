@@ -20,41 +20,21 @@ class LPSolver(PrivacySolver):
     Strictly enforces per-category share caps while minimizing deviation from 1.0.
     """
     
-    def solve(
-        self,
-        request: Optional[SolverRequest] = None,
-        *,
-        peers: Optional[List[str]] = None,
-        categories: Optional[List[Dict[str, Any]]] = None,
-        max_concentration: Optional[float] = None,
-        peer_volumes: Optional[Dict[str, float]] = None,
-        **kwargs: Any
-    ) -> Optional[SolverResult]:
+    def solve(self, request: SolverRequest) -> Optional[SolverResult]:
         """
         Solve global weights optimization problem.
         
-        Expected kwargs:
-        - rank_preservation_strength: float (default 0.1)
-        - tolerance: float (default 0.1)
-        - volume_weighted_penalties: bool (default False)
-        - volume_weighting_exponent: float (default 1.0)
-        - min_weight: float (default 0.5)
-        - max_weight: float (default 3.0)
-        - lambda_penalty: float (optional override for cap slack penalty)
-        - max_iterations: int (optional LP iteration cap)
+        SolverRequest fields used:
+        - rank_preservation_strength, tolerance, volume_weighted_penalties
+        - volume_weighting_exponent, min_weight, max_weight
+        - lambda_penalty, max_iterations
         """
         if not _SCIPY_AVAILABLE:
-            logger.info("SciPy not available, skipping LP solver.")
-            return None
+            raise RuntimeError(
+                "SciPy is required for LP privacy-cap optimization. Install scipy>=1.8.0."
+            )
 
-        solver_request = self.coerce_request(
-            request,
-            peers=peers,
-            categories=categories,
-            max_concentration=max_concentration,
-            peer_volumes=peer_volumes,
-            **kwargs,
-        )
+        solver_request = request
         peers = solver_request.peers
         categories = solver_request.categories
         max_concentration = solver_request.max_concentration
@@ -262,6 +242,9 @@ class LPSolver(PrivacySolver):
 
         stats = {
             'method': solved_method or 'highs',
+            'converged': True,
+            'residual_cap_violation': max_slack_abs > 0,
+            'residual_additional_violation': False,
             'max_slack': max_slack_pct,
             'sum_slack': sum_slack_pct,
             'max_slack_abs': max_slack_abs,

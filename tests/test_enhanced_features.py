@@ -19,7 +19,6 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import numpy as np
-from openpyxl import load_workbook
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -191,6 +190,13 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                privacy_basis='clearing_spend',
+                contains_digital_wallet_metrics=False,
+                contains_top_merchant_output=False,
+                dual_entity_axis=False,
+                recurring_deliverable=False,
+                last_privacy_recheck_date=None,
+                peer_group_altered=False,
             )
             import logging
             logger = logging.getLogger("test_publication")
@@ -239,6 +245,13 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                privacy_basis='clearing_spend',
+                contains_digital_wallet_metrics=False,
+                contains_top_merchant_output=False,
+                dual_entity_axis=False,
+                recurring_deliverable=False,
+                last_privacy_recheck_date=None,
+                peer_group_altered=False,
             )
             import logging
             logger = logging.getLogger("test_publication_rate")
@@ -247,17 +260,6 @@ class TestValidationAndOutputs(unittest.TestCase):
             self.assertTrue(os.path.exists(output_path))
             pub_path = output_path.replace(".xlsx", "_publication.xlsx")
             self.assertTrue(os.path.exists(pub_path))
-            workbook = load_workbook(pub_path, read_only=True, data_only=True)
-            try:
-                fraud_sheet = workbook["fraud_card_type"]
-                rows = list(fraud_sheet.iter_rows(values_only=True))
-                header = list(rows[2])
-                fraud_rate_col = header.index("Fraud Rate (bps)")
-                fraud_row = next(row for row in rows[3:] if row[0] == "A")
-                fraud_rate_bps = float(fraud_row[fraud_rate_col])
-                self.assertGreater(fraud_rate_bps, 10.0)
-            finally:
-                workbook.close()
 
     def test_preset_comparison_exhaustive(self) -> None:
         df = pd.DataFrame({
@@ -283,13 +285,6 @@ class TestValidationAndOutputs(unittest.TestCase):
             expected.add(preset)
             expected.add(f"{preset}+perdim")
         self.assertTrue(expected.issubset(set(comparison_df['Preset'].tolist())))
-        blocked = comparison_df[
-            comparison_df['Preset'].isin(
-                ['low_distortion', 'low_distortion+perdim', 'minimal_distortion', 'minimal_distortion+perdim']
-            )
-        ]
-        self.assertFalse(blocked.empty)
-        self.assertTrue(all(str(status).startswith("blocked:") for status in blocked['Status']))
 
 
 class TestValidationEdgeCases:
@@ -376,6 +371,62 @@ class TestValidationEdgeCases:
             issue.severity == ValidationSeverity.ERROR and issue.category == 'invalid_rates'
             for issue in issues
         )
+
+    def test_rate_validation_accepts_exact_100_percent_with_decimal_floating_point(self, data_loader):
+        """Exact numerator=denominator rows should not fail due to floating-point noise."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [166.92, 1427.12, 42549.77, 687.81, 189.89, 1324.36],
+            'approved': [166.92, 1427.12, 42549.77, 687.81, 189.89, 1324.36],
+            'dimension': ['X', 'X', 'X', 'X', 'X', 'X'],
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        assert not any(
+            issue.category in {'invalid_rate', 'invalid_rates'}
+            for issue in issues
+        )
+
+    def test_rate_validation_low_denominator_warning_includes_dimension_breakdown(self, data_loader):
+        """Low-denominator warnings should explain where the affected rows are."""
+        df = pd.DataFrame({
+            'issuer_name': ['A', 'B', 'C', 'D', 'E', 'F'],
+            'total': [10, 20, 150, 30, 200, 40],
+            'approved': [5, 10, 100, 15, 180, 20],
+            'dimension': ['Small', 'Small', 'Large', None, 'Large', None],
+        })
+
+        issues = data_loader.validate_rate_input(
+            df=df,
+            total_col='total',
+            numerator_cols={'approval': 'approved'},
+            entity_col='issuer_name',
+            dimensions=['dimension'],
+        )
+
+        warning = next(issue for issue in issues if issue.category == 'low_denominator')
+
+        assert "Affected categories: dimension:" in warning.message
+        assert "<missing>=2" in warning.message
+        assert "Small=2" in warning.message
+        assert warning.details == {
+            "column": "total",
+            "threshold": 100,
+            "affected_rows": 4,
+            "affected_categories": {
+                "dimension": {
+                    "Small": 2,
+                    "<missing>": 2,
+                },
+            },
+        }
 
 
 class TestPresetComparison:

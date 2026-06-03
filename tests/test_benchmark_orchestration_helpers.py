@@ -1,5 +1,6 @@
 import logging
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ import pandas as pd
 
 from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
+    build_analysis_plan,
     build_common_run_metadata,
     build_report_paths,
     build_run_config,
@@ -21,6 +23,8 @@ from core.analysis_run import (
     validate_analysis_input,
     write_audit_log,
 )
+from core.audit_log import build_audit_log_model
+from core.contracts import AnalysisRunRequest
 from core.data_loader import ValidationSeverity
 from utils.config_manager import ConfigManager
 
@@ -38,17 +42,12 @@ class _StubLoader:
 
 class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
     def test_resolve_consistency_mode_defaults_to_global_on_unknown_value(self) -> None:
-        opt_config = ConfigManager().config['optimization']
-        opt_config = {
-            **opt_config,
-            'constraints': {
-                **opt_config['constraints'],
-                'consistency_mode': 'mystery-mode',
-            },
-        }
+        config = ConfigManager()
+        resolved = config.resolve()
+        resolved.constraints.consistency_mode = 'mystery-mode'
 
         with self.assertLogs(level='WARNING') as captured:
-            consistent_weights, consistency_mode = _resolve_consistency_mode(opt_config, logging.getLogger(__name__))
+            consistent_weights, consistency_mode = _resolve_consistency_mode(resolved, logging.getLogger(__name__))
 
         self.assertTrue(consistent_weights)
         self.assertEqual(consistency_mode, 'mystery-mode')
@@ -56,21 +55,13 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
     def test_build_dimensional_analyzer_uses_configured_consistency_mode(self) -> None:
         config = ConfigManager()
-        opt_config = config.config['optimization']
-        analysis_config = config.config['analysis']
-        opt_config = {
-            **opt_config,
-            'constraints': {
-                **opt_config['constraints'],
-                'consistency_mode': 'per_dimension',
-            },
-        }
+        resolved = config.resolve()
+        resolved.constraints.consistency_mode = 'per_dimension'
 
         analyzer, settings = _build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
-            analysis_config=analysis_config,
-            opt_config=opt_config,
+            resolved=resolved,
             time_col=None,
             debug_mode=False,
             bic_percentile=0.85,
@@ -83,14 +74,12 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
     def test_build_dimensional_analyzer_respects_explicit_consistency_override(self) -> None:
         config = ConfigManager()
-        opt_config = config.config['optimization']
-        analysis_config = config.config['analysis']
+        resolved = config.resolve()
 
         analyzer, settings = _build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
-            analysis_config=analysis_config,
-            opt_config=opt_config,
+            resolved=resolved,
             time_col='year_month',
             debug_mode=True,
             bic_percentile=0.9,
@@ -104,6 +93,42 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(analyzer.bic_percentile, 0.9)
         self.assertFalse(settings['consistent_weights'])
         self.assertIn('dynamic_constraints_config', settings)
+
+    def test_build_dimensional_analyzer_defaults_to_strict_additional_constraints(self) -> None:
+        config = ConfigManager()
+        resolved = config.resolve()
+
+        analyzer, settings = _build_dimensional_analyzer(
+            target_entity='Target',
+            entity_col='issuer_name',
+            resolved=resolved,
+            time_col=None,
+            debug_mode=False,
+            bic_percentile=0.85,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertTrue(analyzer.enforce_additional_constraints)
+        self.assertFalse(analyzer.dynamic_constraints_enabled)
+        self.assertFalse(settings['dynamic_constraints_config']['enabled'])
+
+    def test_build_dimensional_analyzer_allows_explicit_dynamic_constraint_opt_in(self) -> None:
+        config = ConfigManager()
+        resolved = config.resolve()
+        resolved.constraints.dynamic_constraints['enabled'] = True
+
+        analyzer, settings = _build_dimensional_analyzer(
+            target_entity='Target',
+            entity_col='issuer_name',
+            resolved=resolved,
+            time_col=None,
+            debug_mode=False,
+            bic_percentile=0.85,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertTrue(analyzer.dynamic_constraints_enabled)
+        self.assertTrue(settings['dynamic_constraints_config']['enabled'])
 
     def test_resolve_target_entity_normalizes_case(self) -> None:
         df = pd.DataFrame({'issuer_name': ['Target', 'Peer1']})
@@ -201,6 +226,30 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertTrue(config.get('output', 'include_preset_comparison'))
         self.assertFalse(config.get('output', 'fraud_in_bps'))
 
+    def test_build_analysis_plan_contains_resolved_dimensions_and_output_settings(self) -> None:
+        request = AnalysisRunRequest(
+            mode="share",
+            csv="tests/fixtures/gate_demo.csv",
+            entity="Target",
+            metric="txn_cnt",
+            dimensions=["card_type"],
+        )
+
+        plan = build_analysis_plan(request, ConfigManager().resolve())
+
+        self.assertEqual(plan.dimensions, ["card_type"])
+        self.assertEqual(plan.output_settings.output_format, "analysis")
+        self.assertEqual(plan.metric_columns["metric"], "txn_cnt")
+
+    def test_core_analysis_does_not_read_raw_optimization_config_values(self) -> None:
+        offenders = []
+        for path in Path("core").glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if ".get('optimization'" in text or '.get(\"optimization\"' in text:
+                offenders.append(str(path))
+
+        self.assertEqual(offenders, [])
+
     def test_resolve_output_settings_supports_legacy_distortion_flag(self) -> None:
         config = ConfigManager()
         config.config['output']['include_impact_summary'] = None
@@ -209,7 +258,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         settings = resolve_output_settings(config)
 
         self.assertTrue(settings['include_impact_summary'])
-        self.assertIn('output_format', settings)
+        self.assertEqual(settings.output_format, 'analysis')
 
     def test_prepare_run_data_uses_loader_and_resolves_entity_column(self) -> None:
         config = ConfigManager()
@@ -260,6 +309,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
     def test_build_common_run_metadata_includes_shared_analyzer_fields(self) -> None:
         config = ConfigManager()
+        resolved = config.resolve()
         analyzer = SimpleNamespace(
             rank_preservation_strength=0.75,
             privacy_rule_name='MC-3.2',
@@ -280,7 +330,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
         metadata = build_common_run_metadata(
             args,
-            config,
+            resolved,
             analyzer,
             resolved_entity='Target',
             entity_col='issuer_name',
@@ -310,6 +360,56 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(metadata['structural_infeasibility_summary'], {'count': 1})
         self.assertEqual(metadata['dimension_names'], ['channel', 'product'])
 
+    def test_build_common_run_metadata_uses_resolved_config_snapshot(self) -> None:
+        config = ConfigManager()
+        config.config['optimization']['bounds']['max_weight'] = 4.0
+        config.config['output']['impact_thresholds'] = {'high_pp': 9.0}
+        resolved = config.resolve()
+        config.config['optimization']['bounds']['max_weight'] = 99.0
+        config.config['output']['impact_thresholds']['high_pp'] = 99.0
+        analyzer = SimpleNamespace(
+            rank_preservation_strength=0.75,
+            privacy_rule_name='MC-3.2',
+            enforce_additional_constraints=True,
+            additional_constraint_violations=[],
+            dynamic_constraints_enabled=False,
+            dynamic_constraint_stats={},
+            get_structural_infeasibility_summary=lambda: {},
+        )
+        args = SimpleNamespace(
+            preset=None,
+            csv='input.csv',
+            log_level='INFO',
+            dimensions=['channel'],
+            auto=False,
+            entity_col='issuer_name',
+        )
+
+        metadata = build_common_run_metadata(
+            args,
+            resolved,
+            analyzer,
+            resolved_entity=None,
+            entity_col='issuer_name',
+            total_records=100,
+            unique_entities=5,
+            dimensions_analyzed=1,
+            dimension_names=['channel'],
+            secondary_metrics=None,
+            debug_mode=False,
+            consistent_weights=True,
+            include_privacy_validation=True,
+            include_impact_summary=True,
+            include_preset_comparison=False,
+            include_calculated_metrics=False,
+            output_format='analysis',
+            consistency_mode='global',
+            enforce_single_weight_set=False,
+        )
+
+        self.assertEqual(metadata['max_weight'], 4.0)
+        self.assertEqual(metadata['impact_thresholds']['high_pp'], 9.0)
+
     def test_collect_run_diagnostics_builds_shared_artifacts(self) -> None:
         weights_df = pd.DataFrame({'peer': ['A'], 'weight': [0.5]})
         privacy_df = pd.DataFrame({
@@ -335,7 +435,6 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             dimensions=['channel', 'merchant', 'product'],
             debug_mode=True,
             include_privacy_validation=True,
-            export_csv=False,
             consistent_weights=True,
             logger=logging.getLogger(__name__),
         )
@@ -346,6 +445,39 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         self.assertEqual(diagnostics['metadata_updates']['structural_infeasible_validation_categories'], 1)
         self.assertFalse(diagnostics['method_breakdown_df'].empty)
         self.assertIn('Method', diagnostics['method_breakdown_df'].columns)
+
+    def test_collect_run_diagnostics_keeps_compliance_privacy_when_sheet_disabled(self) -> None:
+        build_called = {'count': 0}
+
+        def _build_privacy(_df, _metric_col, _dimensions):
+            build_called['count'] += 1
+            return pd.DataFrame({'Compliant': ['No'], 'Peer': ['PeerA']})
+
+        analyzer = SimpleNamespace(
+            get_weights_dataframe=lambda: pd.DataFrame(),
+            build_privacy_validation_dataframe=_build_privacy,
+            global_dimensions_used=['channel'],
+            removed_dimensions=[],
+            per_dimension_weights={},
+            weight_methods={'channel': 'Global-LP'},
+            global_weights={'PeerA': {'multiplier': 1.0, 'weight': 100.0}},
+        )
+
+        diagnostics = collect_run_diagnostics(
+            analyzer=analyzer,
+            df=pd.DataFrame({'metric': [1]}),
+            validation_metric_col='metric',
+            dimensions=['channel'],
+            debug_mode=False,
+            include_privacy_validation=False,
+            consistent_weights=True,
+            logger=logging.getLogger(__name__),
+        )
+
+        self.assertEqual(build_called['count'], 1)
+        self.assertIsNone(diagnostics['privacy_validation_df'])
+        self.assertEqual(diagnostics['compliance_privacy_validation_df']['Compliant'].tolist(), ['No'])
+        self.assertFalse(diagnostics['method_breakdown_df'].empty)
 
     def test_build_report_paths_respects_output_mode(self) -> None:
         report_paths = build_report_paths('both', 'analysis.xlsx', 'publication.xlsx')
@@ -378,7 +510,10 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         privacy_validation_df = pd.DataFrame({'rule': ['ok'], 'status': ['pass']})
         validation_issues = [SimpleNamespace(severity=ValidationSeverity.ERROR)]
 
-        with patch('core.analysis_run.ReportGenerator') as report_generator_cls:
+        with patch('core.analysis_run.ReportGenerator') as report_generator_cls, patch(
+            'core.analysis_run.build_audit_log_model',
+            wraps=build_audit_log_model,
+        ) as audit_model_builder:
             audit_log_file = write_audit_log(
                 config,
                 analysis_output_file='benchmark_share_target.xlsx',
@@ -391,6 +526,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
                 validation_issues=validation_issues,
             )
 
+        audit_model_builder.assert_called_once()
         report_generator_cls.assert_called_once_with(config)
         create_log = report_generator_cls.return_value.create_audit_log
         create_log.assert_called_once()

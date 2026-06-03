@@ -11,6 +11,14 @@ from datetime import datetime
 import json
 import logging
 
+from core.report_content import (
+    apply_rate_display_conversion,
+    resolve_convert_all_rates,
+    should_convert_rate_column,
+)
+from core.contracts import AnalysisArtifacts
+from core.report_models import ReportModel
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,43 +67,11 @@ class ReportGenerator:
 
     @staticmethod
     def _resolve_convert_all_rates(metadata: Optional[Dict[str, Any]]) -> bool:
-        if not metadata:
-            return False
-        analysis_label = str(metadata.get('analysis_type', '')).lower()
-        rate_types = [str(rt).lower() for rt in metadata.get('rate_types', [])]
-        if rate_types and all(rt == 'fraud' for rt in rate_types):
-            return True
-        return 'fraud_rate' in analysis_label and not rate_types
+        return resolve_convert_all_rates(metadata)
 
     @staticmethod
     def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
-        col_lower = str(column_name).lower().strip()
-        non_rate_markers = (
-            'impact',
-            'effect',
-            'distortion',
-            'weight',
-            'multiplier',
-            'total',
-            'volume',
-            'count',
-            'numerator',
-            'denominator',
-        )
-        if any(marker in col_lower for marker in non_rate_markers):
-            return False
-
-        rate_patterns = (
-            col_lower.endswith('_raw_%'),
-            col_lower.endswith('_balanced_%'),
-            col_lower in {'target rate (%)', 'balanced peer average (%)', 'bic (%)'},
-            'rate' in col_lower,
-        )
-        if not any(rate_patterns):
-            return False
-        if convert_all_rates:
-            return True
-        return 'fraud' in col_lower
+        return should_convert_rate_column(column_name, convert_all_rates)
 
     @staticmethod
     def _build_unique_sheet_name(raw_name: str, existing_names: List[str]) -> str:
@@ -151,6 +127,26 @@ class ReportGenerator:
             raise ValueError(f"Unsupported format: {format}")
         
         logger.info(f"Report saved to: {output_file}")
+
+    def generate_report_model(
+        self,
+        report_model: ReportModel,
+        output_file: str,
+        *,
+        analysis_type: str = 'rate',
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Generate an Excel workbook from a typed report model."""
+        logger.info("Generating excel report from ReportModel: %s", output_file)
+        self._ensure_excel_support()
+        self._generate_excel_report(
+            report_model.results,
+            output_file,
+            analysis_type,
+            report_model.to_metadata(metadata),
+            report_model=report_model,
+        )
+        logger.info("Report saved to: %s", output_file)
     
     def _ensure_excel_support(self) -> None:
         """
@@ -175,7 +171,8 @@ class ReportGenerator:
         results: Dict[str, Any],
         output_file: str,
         analysis_type: str,
-        metadata: Optional[Dict[str, Any]]
+        metadata: Optional[Dict[str, Any]],
+        report_model: Optional[ReportModel] = None,
     ) -> None:
         """Generate Excel workbook report."""
         try:
@@ -191,6 +188,19 @@ class ReportGenerator:
         self._fill_class = PatternFill
         self._align_class = Alignment
         
+        metadata = dict(metadata or {})
+        model = report_model or (ReportModel.from_artifacts(
+            AnalysisArtifacts(
+                results=results,
+                metadata=metadata,
+                weights_df=metadata.get("weights_df"),
+                method_breakdown_df=metadata.get("method_breakdown_df"),
+                privacy_validation_df=metadata.get("privacy_validation_df"),
+                impact_df=metadata.get("impact_df"),
+                compliance_summary=metadata.get("compliance_summary"),
+            )
+        ) if metadata.get("compliance_summary") else None)
+
         wb = Workbook()
         
         # Remove default sheet
@@ -199,12 +209,16 @@ class ReportGenerator:
         
         # Create Summary sheet
         ws_summary = wb.create_sheet("Summary")
-        self._write_summary_sheet(ws_summary, results, analysis_type, metadata)
+        self._write_summary_sheet(ws_summary, results, analysis_type, metadata, report_model=model)
         
-        # Create sheets for each result
-        for i, (metric_name, result_data) in enumerate(results.items()):
-            base_name = f"Metric_{i+1}_{metric_name[:20]}"
-            sheet_name = self._build_unique_sheet_name(base_name, wb.sheetnames)
+        # Create sheets for each result. Use the plain metric/dimension name so
+        # the workbook is consistent with pre-refactor archives, the CSV
+        # validator's Dimension column, and OPERATIONAL_GAINS audit deliverables.
+        # `_build_unique_sheet_name` adds a numeric suffix only on collisions
+        # (e.g. when the same dimension is used for the primary and a secondary
+        # metric).
+        for metric_name, result_data in results.items():
+            sheet_name = self._build_unique_sheet_name(str(metric_name), wb.sheetnames)
             ws = wb.create_sheet(sheet_name)
             self._write_metric_sheet(ws, metric_name, result_data, analysis_type)
 
@@ -238,7 +252,8 @@ class ReportGenerator:
         worksheet: Any,
         results: Dict[str, Any],
         analysis_type: str,
-        metadata: Optional[Dict[str, Any]]
+        metadata: Optional[Dict[str, Any]],
+        report_model: Optional[ReportModel] = None,
     ) -> None:
         """Write summary information to worksheet."""
         # Header
@@ -270,7 +285,11 @@ class ReportGenerator:
             worksheet[f'B{row}'] = f"{metadata.get('participants', 'N/A')} participants, " \
                                    f"{metadata.get('max_concentration', 'N/A')}% max"
             row += 2
-            compliance_summary = metadata.get('compliance_summary', {})
+            compliance_summary = (
+                report_model.compliance_summary
+                if report_model is not None
+                else metadata.get('compliance_summary', {})
+            )
             for label, key in [
                 ("Compliance Posture:", "compliance_posture"),
                 ("Compliance Verdict:", "compliance_verdict"),
@@ -279,6 +298,32 @@ class ReportGenerator:
             ]:
                 worksheet[f'A{row}'] = label
                 worksheet[f'B{row}'] = metadata.get(key, compliance_summary.get(key, 'N/A'))
+                row += 1
+            strict_final = compliance_summary.get("strict_final_validation", {})
+            for label, value in [
+                ("Primary Cap:", "pass" if strict_final.get("primary_cap_fail_rows", 0) == 0 else "fail"),
+                (
+                    "Secondary/Additional Rule:",
+                    "pass" if strict_final.get("secondary_rule_fail_categories", 0) == 0 else "fail",
+                ),
+                ("Relaxation Used:", "yes" if strict_final.get("relaxed_rows", 0) else "no"),
+                (
+                    "Strict Final Validation:",
+                    "pass" if strict_final.get("total_violations", 0) == 0 else "fail",
+                ),
+                (
+                    "Input Validation:",
+                    "pass"
+                    if compliance_summary.get("data_quality_publishable") is True
+                    else (
+                        "disabled"
+                        if compliance_summary.get("data_quality_checked") is False
+                        else "warn/error"
+                    ),
+                ),
+            ]:
+                worksheet[f'A{row}'] = label
+                worksheet[f'B{row}'] = value
                 row += 1
             row += 1
         
@@ -359,13 +404,56 @@ class ReportGenerator:
         if df is None or not hasattr(df, "empty") or df.empty:
             return
 
+        # Resolve the bold-font class lazily so this helper can be used from
+        # both the analysis workbook (`_generate_excel_report`) and the
+        # publication workbook (`generate_publication_workbook`) without
+        # depending on caller-side initialisation order.
+        font_cls = getattr(self, "_font_class", None)
+        if font_cls is None:
+            try:
+                from openpyxl.styles import Font as font_cls  # type: ignore
+            except ImportError:
+                font_cls = None
+
         ws = workbook.create_sheet(self._build_unique_sheet_name(sheet_name, workbook.sheetnames))
         for col_idx, column in enumerate(df.columns, start=1):
             ws.cell(row=1, column=col_idx, value=str(column))
-            ws.cell(row=1, column=col_idx).font = self._font_class(bold=True)
+            if font_cls is not None:
+                ws.cell(row=1, column=col_idx).font = font_cls(bold=True)
         for row_idx, row in enumerate(df.itertuples(index=False), start=2):
             for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
+
+    def _redact_publication_dataframe(self, value: Any, *, reason: str) -> Any:
+        """Keep publication evidence sheets without disclosing peer composition."""
+        if value is None or not hasattr(value, "empty") or value.empty:
+            return value
+
+        try:
+            import pandas as pd
+        except ImportError:
+            return value
+
+        row = {column: None for column in value.columns}
+        if not row:
+            return pd.DataFrame([{"Control": "Control 3.3", "Status": "Redacted", "Detail": reason}])
+
+        first_column = next(iter(row))
+        row[first_column] = f"WITHHELD - Control 3.3 - {reason}"
+        return pd.DataFrame([row], columns=list(value.columns))
+
+    def _publication_safe_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        safe = dict(metadata or {})
+        reason = "peer group composition is confidential"
+        for key in ("weights_df", "privacy_validation_df", "rank_changes_df"):
+            if key in safe:
+                safe[key] = self._redact_publication_dataframe(safe[key], reason=reason)
+        return safe
+
+    def _excel_safe_value(self, value: Any) -> Any:
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value)
+        return value
     
     def add_preset_comparison_sheet(
         self,
@@ -489,20 +577,18 @@ class ReportGenerator:
         ws['A3'] = f"Status: {status_text}"
         ws['A3'].font = Font(bold=True, size=12)
         ws['A3'].fill = PatternFill(start_color=status_color, end_color=status_color, fill_type="solid")
-        
-        if not validation_issues:
-            ws['A5'] = "No issues detected."
-            return
-        
+
         # Count by severity
         error_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'ERROR' in str(i.severity))
         warn_count = sum(1 for i in validation_issues if getattr(i, 'severity', None) and 'WARN' in str(i.severity))
         info_count = len(validation_issues) - error_count - warn_count
         
         ws['A5'] = f"Errors: {error_count} | Warnings: {warn_count} | Info: {info_count}"
+        if not validation_issues:
+            ws['A6'] = "No issues detected."
         
         # Column headers
-        headers = ['Severity', 'Category', 'Message']
+        headers = ['Severity', 'Category', 'Message', 'Details', 'Sample Rows']
         self._write_header_row(ws, 7, headers, Font, PatternFill, "DDDDDD")
         
         # Issue rows
@@ -510,10 +596,14 @@ class ReportGenerator:
             severity = str(getattr(issue, 'severity', 'UNKNOWN'))
             category = str(getattr(issue, 'category', ''))
             message = str(getattr(issue, 'message', str(issue)))
+            details = getattr(issue, 'details', None) or {}
+            sample_rows = getattr(issue, 'row_indices', None) or []
             
             ws.cell(row=row_idx, column=1, value=severity)
             ws.cell(row=row_idx, column=2, value=category)
             ws.cell(row=row_idx, column=3, value=message)
+            ws.cell(row=row_idx, column=4, value=json.dumps(details, default=str) if details else "")
+            ws.cell(row=row_idx, column=5, value=", ".join(str(row) for row in sample_rows))
             
             # Color by severity
             if 'ERROR' in severity:
@@ -523,13 +613,13 @@ class ReportGenerator:
             else:
                 color = "E6F3FF"
             
-            for col in range(1, 4):
+            for col in range(1, 6):
                 ws.cell(row=row_idx, column=col).fill = PatternFill(
                     start_color=color, end_color=color, fill_type="solid"
                 )
         
         # Adjust column widths
-        self._set_column_widths(ws, {'A': 12, 'B': 20, 'C': 60})
+        self._set_column_widths(ws, {'A': 12, 'B': 20, 'C': 80, 'D': 80, 'E': 30})
         
         logger.info("Added Data Quality sheet")
     
@@ -735,11 +825,10 @@ class ReportGenerator:
             df = df.copy(deep=True)
             if analysis_type == 'rate':
                 convert_all_rates = self._resolve_convert_all_rates(metadata)
-                convert_sheet_rates = convert_all_rates or rate_prefix == "fraud"
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    if fraud_in_bps and self._should_convert_rate_column(col, convert_sheet_rates):
+                    if fraud_in_bps and self._should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
                 if fraud_in_bps:
                     df.columns = [
@@ -778,7 +867,23 @@ class ReportGenerator:
                         # Format numbers
                         if isinstance(value, float):
                             cell.number_format = '0.00'
-        
+
+        publication_metadata = self._publication_safe_metadata(metadata)
+
+        # Publication-scope diagnostic sheets (Q9 allow-list).
+        # Stakeholders need: Impact Summary, Peer Weights, Privacy Validation,
+        # Rank Changes, Preset Comparison. Solver internals (Weight Methods,
+        # Subset Search, Structural Diagnostics) and Data Quality / Metadata
+        # stay analysis-only.
+        for sheet_name, metadata_key in [
+            ("Impact Summary", "impact_summary_df"),
+            ("Peer Weights", "weights_df"),
+            ("Privacy Validation", "privacy_validation_df"),
+            ("Rank Changes", "rank_changes_df"),
+            ("Preset Comparison", "preset_comparison_df"),
+        ]:
+            self._write_optional_dataframe_sheet(wb, sheet_name, publication_metadata, metadata_key)
+
         # Auto-adjust column widths (skip merged header cells safely)
         from openpyxl.utils import get_column_letter
         for ws in wb.worksheets:

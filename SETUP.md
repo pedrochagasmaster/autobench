@@ -48,7 +48,23 @@ Once installed, verify the tool works by running (on the server):
 ```bash
 cd /ads_storage/autobench
 ./run_tool.sh share --help
+./run_tool.sh config list
+./run_tool.sh share \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --output /tmp/setup_smoke.xlsx
 ```
+
+The smoke workbook should show `Input Validation: pass` and a publishable
+compliance verdict. Use `--no-validate-input` only for diagnostic runs where the
+result is not intended for publication.
+
+For release packaging, rollback, and bundle checksums, see
+`docs/RELEASE_PROCESS.md`.
 
 ## Manual Alternative (Dependencies)
 
