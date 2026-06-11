@@ -660,6 +660,15 @@ class ReportGenerator:
                     df_output = output_path.with_name(f"{output_path.stem}_{metric_name}.csv")
                     df.to_csv(df_output, index=False)
     
+    def _json_safe_metadata(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        safe: Dict[str, Any] = {}
+        for key, value in (metadata or {}).items():
+            if isinstance(value, pd.DataFrame):
+                safe[key] = value.to_dict(orient='records')
+            else:
+                safe[key] = value
+        return safe
+
     def _generate_json_report(
         self,
         results: Dict[str, Any],
@@ -668,9 +677,15 @@ class ReportGenerator:
         metadata: Optional[Dict[str, Any]]
     ) -> None:
         """Generate JSON report."""
+        safe_metadata = self._json_safe_metadata(metadata)
         output_data = {
+            'schema_version': 1,
             'analysis_type': analysis_type,
-            'metadata': metadata or {},
+            'generated_by': 'autobench',
+            'publication_safe': False,
+            'run_status': (metadata or {}).get('run_status'),
+            'compliance_verdict': (metadata or {}).get('compliance_verdict'),
+            'metadata': safe_metadata,
             'results': {}
         }
         
