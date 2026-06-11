@@ -111,6 +111,7 @@ def test_share_export_neutralizes_malicious_entity_name(tmp_path: Path) -> None:
     args = _share_args(output, csv_path)
     args.entity = "=2+5TARGET"
     args.output_format = "both"
+    args.compliance_posture = "best_effort"
 
     result = run_share_analysis(args, logging.getLogger("test_export_sanitization_entity"))
 
