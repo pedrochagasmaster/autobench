@@ -56,6 +56,7 @@ def build_validation_summary(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "validation_errors": metadata.get("validation_errors", 0),
         "validation_warnings": metadata.get("validation_warnings", 0),
         "compliance_summary": metadata.get("compliance_summary", {}),
+        "export_validation": metadata.get("export_validation"),
     }
 
 

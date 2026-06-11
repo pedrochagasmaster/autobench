@@ -95,6 +95,7 @@ class AnalysisRunRequest:
     time_col: Optional[str] = None
     log_level: str = "INFO"
     validate_input: bool = True
+    validate_export: Optional[bool] = None
     analyze_distortion: bool = False
     compare_presets: bool = False
     include_calculated: bool = False

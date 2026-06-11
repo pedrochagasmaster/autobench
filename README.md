@@ -406,6 +406,12 @@ py -m pytest tests/ -v
 GitHub Actions runs the same lint, unit, and gate checks on pull requests
 (see `.github/workflows/ci.yml`).
 
+Balanced CSV exports are now cross-validated automatically when
+`output.validate_export` is enabled (the default). Rate exports run the full
+workbook-vs-CSV check; share exports receive a schema check mirroring the gate
+test. Results appear in run metadata and audit packages. The manual command
+below remains available for ad-hoc verification.
+
 Optional CSV-vs-Excel cross-check (use a rate export with
 `--export-balanced-csv`; share exports are schema-checked by the gate unless a
 workbook exposes explicit `Balanced_*_Share_%` columns):
