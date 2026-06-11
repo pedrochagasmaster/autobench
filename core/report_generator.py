@@ -12,7 +12,6 @@ import json
 import logging
 
 from core.report_content import (
-    apply_rate_display_conversion,
     resolve_convert_all_rates,
     should_convert_rate_column,
 )
@@ -179,7 +178,6 @@ class ReportGenerator:
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.utils.dataframe import dataframe_to_rows
         except ImportError:
             logger.error("openpyxl not installed. Install with: pip install openpyxl")
             raise
@@ -475,7 +473,7 @@ class ReportGenerator:
             'share' or 'rate'
         """
         from openpyxl.utils.dataframe import dataframe_to_rows
-        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.styles import Font, PatternFill
         
         ws = workbook.create_sheet("Preset Comparison")
         

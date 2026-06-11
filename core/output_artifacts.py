@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .contracts import AnalysisArtifacts, AnalysisRunRequest
     from .report_models import ReportModel
-    from utils.config_manager import ConfigManager
 
 
 class OutputArtifactWriter:

@@ -6,7 +6,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-import pytest
 from textual.widgets import Select, SelectionList
 
 from tui_app import BenchmarkApp, LogHandler

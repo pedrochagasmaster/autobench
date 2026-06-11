@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import run_share_analysis

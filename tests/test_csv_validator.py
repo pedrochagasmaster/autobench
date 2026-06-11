@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 from openpyxl import Workbook
 
 from utils import csv_validator
