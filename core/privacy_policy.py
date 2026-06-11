@@ -18,7 +18,8 @@ class PrivacyPolicySettings:
     enforce_additional_constraints: bool = False
     dynamic_constraints_enabled: bool = False
     min_peer_count_for_constraints: int = 6
-    min_effective_peer_count: int = 3
+    # Effective peer count is a weighted (fractional) measure, hence float.
+    min_effective_peer_count: float = 3.0
     min_category_volume_share: float = 0.01
     min_overall_volume_share: float = 0.01
     min_representativeness: float = 0.5
