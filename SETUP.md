@@ -4,7 +4,7 @@ Since the remote server (`/ads_storage/autobench`) has **no internet access**, y
 
 ## Prerequisites
 
-1.  **Local Machine (Windows):** Internet access, PowerShell, and Python installed.
+1.  **Local Machine (Windows):** Internet access, PowerShell, and Python 3.10+ installed.
 2.  **Remote Server (Linux):** Python 3.10 installed at `/sys_apps_01/python/python310/bin/python3.10`.
 3.  **Repository:** Cloned on *both* your local machine and the remote server.
 
