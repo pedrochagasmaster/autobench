@@ -6,14 +6,15 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from benchmark import _build_dimensional_analyzer, _resolve_consistency_mode
 from core.analysis_run import (
     build_analysis_plan,
     build_common_run_metadata,
+    build_dimensional_analyzer,
     build_report_paths,
     build_run_config,
     collect_run_diagnostics,
     prepare_run_data,
+    resolve_consistency_mode,
     resolve_dimensions,
     resolve_entity_column,
     resolve_input_dataframe,
@@ -48,7 +49,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         resolved.constraints.consistency_mode = 'mystery-mode'
 
         with self.assertLogs(level='WARNING') as captured:
-            consistent_weights, consistency_mode = _resolve_consistency_mode(resolved, logging.getLogger(__name__))
+            consistent_weights, consistency_mode = resolve_consistency_mode(resolved, logging.getLogger(__name__))
 
         self.assertTrue(consistent_weights)
         self.assertEqual(consistency_mode, 'mystery-mode')
@@ -59,7 +60,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         resolved = config.resolve()
         resolved.constraints.consistency_mode = 'per_dimension'
 
-        analyzer, settings = _build_dimensional_analyzer(
+        analyzer, settings = build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
             resolved=resolved,
@@ -77,7 +78,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         config = ConfigManager()
         resolved = config.resolve()
 
-        analyzer, settings = _build_dimensional_analyzer(
+        analyzer, settings = build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
             resolved=resolved,
@@ -99,7 +100,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         config = ConfigManager()
         resolved = config.resolve()
 
-        analyzer, settings = _build_dimensional_analyzer(
+        analyzer, settings = build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
             resolved=resolved,
@@ -118,7 +119,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
         resolved = config.resolve()
         resolved.constraints.dynamic_constraints['enabled'] = True
 
-        analyzer, settings = _build_dimensional_analyzer(
+        analyzer, settings = build_dimensional_analyzer(
             target_entity='Target',
             entity_col='issuer_name',
             resolved=resolved,
