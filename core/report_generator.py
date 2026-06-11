@@ -17,6 +17,7 @@ from core.report_content import (
     should_convert_rate_column,
 )
 from core.contracts import AnalysisArtifacts
+from core.export_sanitizer import sanitize_cell
 from core.report_models import ReportModel
 
 logger = logging.getLogger(__name__)
@@ -269,7 +270,7 @@ class ReportGenerator:
         
         if metadata:
             worksheet[f'A{row}'] = "Entity:"
-            worksheet[f'B{row}'] = metadata.get('entity', 'N/A')
+            worksheet[f'B{row}'] = self._excel_safe_value(metadata.get('entity', 'N/A'))
             row += 1
             
             worksheet[f'A{row}'] = "Timestamp:"
@@ -278,7 +279,7 @@ class ReportGenerator:
             
             if 'dimensions' in metadata:
                 worksheet[f'A{row}'] = "Dimensions:"
-                worksheet[f'B{row}'] = ', '.join(metadata['dimensions'])
+                worksheet[f'B{row}'] = self._excel_safe_value(', '.join(metadata['dimensions']))
                 row += 1
             
             worksheet[f'A{row}'] = "Privacy Rule:"
@@ -297,7 +298,7 @@ class ReportGenerator:
                 ("Run Status:", "run_status"),
             ]:
                 worksheet[f'A{row}'] = label
-                worksheet[f'B{row}'] = metadata.get(key, compliance_summary.get(key, 'N/A'))
+                worksheet[f'B{row}'] = self._excel_safe_value(metadata.get(key, compliance_summary.get(key, 'N/A')))
                 row += 1
             strict_final = compliance_summary.get("strict_final_validation", {})
             for label, value in [
@@ -354,7 +355,7 @@ class ReportGenerator:
             # Write dictionary results as key-value pairs
             for key, value in result_data.items():
                 worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
-                worksheet[f'B{row}'] = value
+                worksheet[f'B{row}'] = self._excel_safe_value(value)
                 row += 1
         elif isinstance(result_data, pd.DataFrame):
             # Write dataframe with headers
@@ -365,7 +366,7 @@ class ReportGenerator:
             row += 1
             for r_idx, row_data in enumerate(result_data.itertuples(index=False), start=row):
                 for c_idx, value in enumerate(row_data, start=1):
-                    worksheet.cell(row=r_idx, column=c_idx, value=value)
+                    worksheet.cell(row=r_idx, column=c_idx, value=self._excel_safe_value(value))
     
     def _write_metadata_sheet(
         self,
@@ -387,7 +388,7 @@ class ReportGenerator:
             elif isinstance(value, (list, dict)):
                 worksheet[f'B{row}'] = json.dumps(value, indent=2)
             else:
-                worksheet[f'B{row}'] = str(value)
+                worksheet[f'B{row}'] = self._excel_safe_value(str(value))
 
             row += 1
 
@@ -453,7 +454,7 @@ class ReportGenerator:
     def _excel_safe_value(self, value: Any) -> Any:
         if isinstance(value, (list, tuple, dict)):
             return json.dumps(value)
-        return value
+        return sanitize_cell(value)
     
     def add_preset_comparison_sheet(
         self,
@@ -490,7 +491,7 @@ class ReportGenerator:
         # Data rows
         for row_idx, row_data in enumerate(dataframe_to_rows(comparison_df, index=False, header=False), 4):
             for col_idx, value in enumerate(row_data, 1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell = ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
                 # Highlight best row
                 if len(row_data) > 4 and row_data[4] == '*':
                     cell.fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
@@ -538,7 +539,7 @@ class ReportGenerator:
         # Data rows
         for row_idx, row_data in enumerate(dataframe_to_rows(summary_df, index=False, header=False), 5):
             for col_idx, value in enumerate(row_data, 1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
         
         # Adjust column widths
         self._set_column_widths(ws, {'A': 20, 'B': 12, 'C': 12, 'D': 12, 'E': 12})
@@ -791,7 +792,7 @@ class ReportGenerator:
                 if key in metadata:
                     ws_summary[f'A{row}'] = key.replace('_', ' ').title()
                     ws_summary[f'A{row}'].font = Font(bold=True)
-                    ws_summary[f'B{row}'] = str(metadata[key])
+                    ws_summary[f'B{row}'] = self._excel_safe_value(str(metadata[key]))
                     row += 1
         
         def _publication_sheet_name(metric_name: str) -> str:
@@ -806,7 +807,7 @@ class ReportGenerator:
             ws = wb.create_sheet(sheet_name)
             
             # Sheet header
-            ws['A1'] = f"{metric_name} Analysis"
+            ws['A1'] = self._excel_safe_value(f"{metric_name} Analysis")
             ws['A1'].font = header_font
             ws.merge_cells('A1:F1')
             
@@ -856,7 +857,7 @@ class ReportGenerator:
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):
                 for col_idx, value in enumerate(row, 1):
-                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell = ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
                     cell.border = thin_border
                     
                     if row_idx == 3:  # Header row

@@ -9,6 +9,7 @@ import pandas as pd
 
 from core.contracts import WeightLookup
 from core.dimensional_analyzer import DimensionalAnalyzer
+from core.export_sanitizer import sanitize_cell
 
 
 def get_balanced_metrics_df(
@@ -394,6 +395,8 @@ def export_balanced_csv(
         sort_cols.append('Category')
         
         export_df = export_df.sort_values(sort_cols)
+        for col in export_df.select_dtypes(include="object").columns:
+            export_df[col] = export_df[col].map(sanitize_cell)
         export_df.to_csv(csv_output, index=False)
         logger.info(f"Balanced rate data CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")
@@ -543,6 +546,8 @@ def export_balanced_csv(
         sort_cols.append('Category')
         
         export_df = export_df.sort_values(sort_cols)
+        for col in export_df.select_dtypes(include="object").columns:
+            export_df[col] = export_df[col].map(sanitize_cell)
         export_df.to_csv(csv_output, index=False)
         logger.info(f"Balanced share metrics CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")
