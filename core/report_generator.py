@@ -17,6 +17,7 @@ from core.report_content import (
     should_convert_rate_column,
 )
 from core.contracts import AnalysisArtifacts
+from core.export_sanitizer import sanitize_cell
 from core.report_models import ReportModel
 
 logger = logging.getLogger(__name__)
@@ -354,7 +355,7 @@ class ReportGenerator:
             # Write dictionary results as key-value pairs
             for key, value in result_data.items():
                 worksheet[f'A{row}'] = str(key).replace('_', ' ').title()
-                worksheet[f'B{row}'] = value
+                worksheet[f'B{row}'] = self._excel_safe_value(value)
                 row += 1
         elif isinstance(result_data, pd.DataFrame):
             # Write dataframe with headers
@@ -365,7 +366,7 @@ class ReportGenerator:
             row += 1
             for r_idx, row_data in enumerate(result_data.itertuples(index=False), start=row):
                 for c_idx, value in enumerate(row_data, start=1):
-                    worksheet.cell(row=r_idx, column=c_idx, value=value)
+                    worksheet.cell(row=r_idx, column=c_idx, value=self._excel_safe_value(value))
     
     def _write_metadata_sheet(
         self,
@@ -387,7 +388,7 @@ class ReportGenerator:
             elif isinstance(value, (list, dict)):
                 worksheet[f'B{row}'] = json.dumps(value, indent=2)
             else:
-                worksheet[f'B{row}'] = str(value)
+                worksheet[f'B{row}'] = self._excel_safe_value(str(value))
 
             row += 1
 
@@ -453,7 +454,7 @@ class ReportGenerator:
     def _excel_safe_value(self, value: Any) -> Any:
         if isinstance(value, (list, tuple, dict)):
             return json.dumps(value)
-        return value
+        return sanitize_cell(value)
     
     def add_preset_comparison_sheet(
         self,
@@ -856,7 +857,7 @@ class ReportGenerator:
             # Write data with formatting
             for row_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 3):
                 for col_idx, value in enumerate(row, 1):
-                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell = ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
                     cell.border = thin_border
                     
                     if row_idx == 3:  # Header row
