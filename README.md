@@ -330,7 +330,7 @@ Quick selection guide:
 
 ## Outputs
 
-Main output is Excel (`.xlsx`), optionally with balanced CSV.
+Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
 
 Common sheets:
 

@@ -256,7 +256,7 @@ analysis:
   best_in_class_percentile: 0.85  # 0.0-1.0
 
 output:
-  format: "xlsx"                  # "xlsx" | "csv" | "json"
+  format: "xlsx"                  # xlsx (default) | json (adds .json beside analysis workbook; not publication-redacted) — csv not yet supported
   include_debug_sheets: false
   include_privacy_validation: false
   log_level: "INFO"               # DEBUG|INFO|WARNING|ERROR
