@@ -61,6 +61,15 @@ def write_outputs(
     if logger is None:
         logger = logging.getLogger(__name__)
 
+    posture = (artifacts.compliance_summary or {}).get("posture")
+    violations = int((artifacts.compliance_summary or {}).get("violations", 0) or 0)
+    block_publication = posture == "strict" and violations > 0
+
+    if block_publication:
+        if artifacts.metadata is None:
+            artifacts.metadata = {}
+        artifacts.metadata["publication_withheld_reason"] = "strict_posture_violations"
+
     from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
     from core.report_models import ReportModel
 
@@ -145,7 +154,15 @@ def write_outputs(
         _write_report(output_file, publication=False)
         logger.info("Analysis report written to %s", output_file)
     if writer.write_publication:
-        _write_report(publication_file, publication=True)
-        artifacts.publication_output = publication_file
-        logger.info("Publication report written to %s", publication_file)
+        if block_publication:
+            artifacts.publication_output = None
+            logger.error(
+                "Strict posture: publication output withheld (violations=%d). "
+                "Analysis workbook written for debugging only.",
+                violations,
+            )
+        else:
+            _write_report(publication_file, publication=True)
+            artifacts.publication_output = publication_file
+            logger.info("Publication report written to %s", publication_file)
     return artifacts
