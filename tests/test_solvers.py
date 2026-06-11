@@ -196,6 +196,37 @@ class TestHeuristicSolver(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.method, "heuristic")
 
+    def test_heuristic_reports_failure_on_residual_violation_with_positive_tolerance(self) -> None:
+        peers = ["P1", "P2", "P3", "P4", "P5", "P6"]
+        cat1_volumes = {"P1": 95.0, "P2": 1.0, "P3": 1.0, "P4": 1.0, "P5": 1.0, "P6": 1.0}
+        cat2_volumes = {"P1": 1.0, "P2": 95.0, "P3": 1.0, "P4": 1.0, "P5": 1.0, "P6": 1.0}
+        categories = _build_categories("dim1", "cat1", cat1_volumes) + _build_categories(
+            "dim1", "cat2", cat2_volumes
+        )
+        peer_volumes = {peer: cat1_volumes[peer] + cat2_volumes[peer] for peer in peers}
+
+        solver = HeuristicSolver()
+        result = solver.solve(
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=25.0,
+                peer_volumes=peer_volumes,
+                min_weight=0.1,
+                max_weight=10.0,
+                tolerance=5.0,
+                enforce_additional_constraints=False,
+                dynamic_constraints_enabled=False,
+                rule_name="5/25",
+            )
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result.success)
+        self.assertTrue(result.stats["residual_cap_violation"])
+        self.assertEqual(result.method, "heuristic")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
