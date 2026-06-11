@@ -43,6 +43,8 @@ You get:
 
 > In this repo, use `py` for Python commands.
 
+Requires Python 3.10+.
+
 Install dependencies:
 
 ```powershell

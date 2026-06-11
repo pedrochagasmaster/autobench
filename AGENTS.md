@@ -759,7 +759,7 @@ python-dateutil>=2.8.0
 
 | Aspect | Standard |
 |--------|----------|
-| Python | 3.8+ |
+| Python | 3.10+ |
 | Type hints | Required on public methods |
 | Docstrings | NumPy style |
 | Logging | `logger = logging.getLogger(__name__)` |
