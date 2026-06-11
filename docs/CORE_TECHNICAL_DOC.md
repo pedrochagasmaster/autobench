@@ -244,6 +244,24 @@ Included files:
 
 This section explains how the core modules interact with each other and with configuration/presets to deliver results. While this document focuses on `core/`, the orchestration points (CLI/TUI and config management) are critical to understanding real-world usage.
 
+### Programmatic Python API (stable contract)
+
+CLI and TUI both delegate to `core/analysis_run.py`. The supported in-process
+entry points for external callers are:
+
+- `core.contracts.AnalysisRunRequest` — unified request dataclass (share or rate)
+- `core.analysis_run.execute_share_run(request, logger)` → `AnalysisArtifacts`
+- `core.analysis_run.execute_rate_run(request, logger)` → `AnalysisArtifacts`
+
+`execute_run` in the same module is an internal mode-dispatch helper used by
+the TUI; it is not part of the public contract.
+
+These four symbols are re-exported from `core/__init__.py` for stable imports.
+All other `core/` modules are implementation details and may change without
+notice. Runnable example: `examples/run_from_python.py`. Enforcement:
+`tests/test_public_api.py` (imports, function signatures, and minimum field
+presence on `AnalysisRunRequest` / `AnalysisArtifacts`).
+
 ### High-level interaction graph
 
 1) CLI/TUI provides inputs
