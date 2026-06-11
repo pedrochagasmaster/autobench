@@ -13,10 +13,38 @@ from core.analysis_run import (
     should_reuse_prepared_validation,
 )
 from core.contracts import AnalysisRunRequest, PreparedDataset
-from tui_app import BenchmarkApp, LogHandler, write_log_message
+from tui_app import BenchmarkApp, LogHandler, TUI_REQUEST_FIELDS, TUI_UNSUPPORTED_FIELDS, write_log_message
 from utils.config_manager import ConfigManager, ResolvedConfig
 from utils.config_overrides import ADVANCED_FIELD_SPECS, ConfigOverrideBuilder
 from textual.widgets import Log
+from dataclasses import fields
+
+
+def test_from_widget_values_matches_direct_construction() -> None:
+    values = {
+        "csv": "data.csv",
+        "entity": "Target",
+        "entity_col": "issuer_name",
+        "metric": "transaction_count",
+        "validate_input": False,
+    }
+
+    expected = AnalysisRunRequest(mode="share", **values)
+    actual = AnalysisRunRequest.from_widget_values("share", values)
+
+    assert actual == expected
+
+
+def test_from_widget_values_rejects_unknown_keys() -> None:
+    with pytest.raises(ValueError, match="Unknown request fields from TUI"):
+        AnalysisRunRequest.from_widget_values("share", {"csv": "data.csv", "bogus_flag": True})
+
+
+def test_tui_request_fields_cover_all_analysis_run_request_fields() -> None:
+    all_fields = {f.name for f in fields(AnalysisRunRequest)}
+    classified = TUI_REQUEST_FIELDS | TUI_UNSUPPORTED_FIELDS | {"mode"}
+    unclassified = all_fields - classified
+    assert not unclassified, f"Unclassified AnalysisRunRequest fields: {sorted(unclassified)}"
 
 
 def test_analysis_run_request_preserves_preloaded_dataframe() -> None:
