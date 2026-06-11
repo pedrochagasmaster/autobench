@@ -60,12 +60,13 @@ config.json
 # Keep these patterns
 !presets.json
 !config.template.json
-!requirements-dev.txt
-!constraints.txt
 
 *.txt
 *.xlsx
 *.csv
+# Negations must follow the blanket patterns (last match wins)
+!requirements-dev.txt
+!constraints.txt
 !tests/fixtures/*.csv
 *.csv.gz
 /offline_packages/*
