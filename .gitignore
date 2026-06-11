@@ -61,6 +61,7 @@ config.json
 !presets.json
 !config.template.json
 !requirements-dev.txt
+!constraints.txt
 
 *.txt
 *.xlsx
