@@ -1032,7 +1032,6 @@ def _build_share_mode_metadata(
         'auto_subset_search': resolved.subset_search.enabled,
         'trigger_subset_on_slack': resolved.subset_search.trigger_on_slack,
         'max_cap_slack': resolved.subset_search.max_slack_threshold,
-        'analyzer_ref': analyzer,
         'last_lp_stats': (
             weighting_result.last_lp_stats
             if weighting_result is not None
