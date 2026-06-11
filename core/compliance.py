@@ -276,7 +276,12 @@ def build_compliance_summary(
         else _as_validation_dataframe(privacy_validation)
     )
     violations = 0
-    if isinstance(privacy_validation, PrivacyValidationResult):
+    details: Dict[str, Any] = {}
+    strict_final_validation = build_strict_final_validation(privacy_validation)
+    if strict_final_validation.get("checked"):
+        details["strict_final_validation"] = strict_final_validation
+        violations = int(strict_final_validation.get("total_violations", 0))
+    elif isinstance(privacy_validation, PrivacyValidationResult):
         violations = int(sum(1 for row in privacy_validation.rows if not row.strict_compliant))
     elif privacy_validation_df is not None and not privacy_validation_df.empty:
         if "compliant" in privacy_validation_df.columns:
@@ -284,12 +289,6 @@ def build_compliance_summary(
         elif "Compliant" in privacy_validation_df.columns:
             normalized = privacy_validation_df["Compliant"].astype(str).str.strip().str.lower()
             violations = int((normalized != "yes").sum())
-
-    details: Dict[str, Any] = {}
-    strict_final_validation = build_strict_final_validation(privacy_validation)
-    if strict_final_validation.get("checked"):
-        details["strict_final_validation"] = strict_final_validation
-        violations += int(strict_final_validation.get("total_violations", 0))
 
     if data_quality is not None:
         details.update(
