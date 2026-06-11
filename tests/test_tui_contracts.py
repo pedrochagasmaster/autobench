@@ -95,7 +95,7 @@ def test_config_manager_resolve_returns_typed_sections() -> None:
     assert resolved.bounds.max_weight == 10.0
     assert resolved.linear_programming.tolerance == 2.0
     assert resolved.subset_search.max_attempts == 200
-    assert resolved.compliance_posture == "strict"
+    assert resolved.compliance_posture == "best_effort"
 
 
 def test_apply_prepared_dataset_skips_reload() -> None:

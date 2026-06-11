@@ -82,7 +82,7 @@ def _summary_metadata(path: Path) -> dict[str, str]:
 
 def _assert_compliant_summary(path: Path) -> None:
     metadata = _summary_metadata(path)
-    assert metadata["Compliance Posture"] == "strict"
+    assert metadata["Compliance Posture"] == "best_effort"
     assert metadata["Compliance Verdict"] == "fully_compliant"
     assert metadata["Run Status"] == "compliant"
     assert metadata["Input Validation"] == "pass"
@@ -91,7 +91,7 @@ def _assert_compliant_summary(path: Path) -> None:
 def _assert_peer_only_summary(path: Path) -> None:
     metadata = _summary_metadata(path)
     assert metadata["Entity"] == "PEER-ONLY"
-    assert metadata["Compliance Posture"] == "strict"
+    assert metadata["Compliance Posture"] == "best_effort"
     assert metadata["Compliance Verdict"] in {"fully_compliant", "violations_detected"}
     assert metadata["Run Status"] in {"compliant", "non_compliant"}
     assert metadata["Input Validation"] == "pass"

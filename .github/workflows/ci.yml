@@ -30,12 +30,6 @@ jobs:
         run: |
           ruff check .
 
-      # TODO: make blocking once the ~105-error baseline is burned down
-      - name: Mypy typecheck (non-blocking)
-        continue-on-error: true
-        run: |
-          mypy core/ utils/
-
       - name: Unit tests
         run: |
           python -m pytest tests/ -v

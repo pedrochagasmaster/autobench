@@ -411,8 +411,8 @@ For a fast inner-loop smoke (not a substitute for the full gate before PR):
 py scripts/perform_gate_test.py --only share_gate_baseline
 ```
 
-GitHub Actions runs ruff, non-blocking mypy, unit tests, and the full gate on
-pull requests (see `.github/workflows/ci.yml`).
+GitHub Actions runs ruff, unit tests, and the full gate on pull requests
+(see `.github/workflows/ci.yml`). Mypy is a local-only check.
 
 Balanced CSV exports are now cross-validated automatically when
 `output.validate_export` is enabled (the default). Rate exports run the full

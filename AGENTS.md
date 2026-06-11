@@ -661,7 +661,7 @@ After **any** code change, you must run the gate test suite. This performs a ful
 # 1. Lint (config in pyproject.toml)
 py -m ruff check .
 
-# 2. Typecheck (CI runs mypy non-blocking until baseline burn-down)
+# 2. Typecheck (local-only; not run in CI)
 py -m mypy core/ utils/
 
 # 3. Run Gate Test (System Integration — full 18 cases before PR)
@@ -818,13 +818,13 @@ Cloud startup runs `bash scripts/cloud_install.sh` (see `.cursor/environment.jso
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 py -m ruff check .              # Lint (pyproject.toml)
-py -m mypy core/ utils/         # Typecheck (CI: non-blocking until baseline burn-down)
+py -m mypy core/ utils/         # Typecheck (local-only; not run in CI)
 py -m pytest tests/ -v          # Unit tests: 100+ passed
 py scripts/perform_gate_test.py # Gate test: 18 pass (portable fixture, no data/ required)
 # Fast smoke: py scripts/perform_gate_test.py --only share_gate_baseline
 ```
 
-Pull requests must pass `.github/workflows/ci.yml` (ruff, non-blocking mypy, unit tests, gate on Python 3.10 and 3.12).
+Pull requests must pass `.github/workflows/ci.yml` (ruff, unit tests, gate on Python 3.10 and 3.12). Mypy is a local-only check.
 
 ### Gate test
 
