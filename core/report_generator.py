@@ -433,7 +433,7 @@ class ReportGenerator:
         except ImportError:
             return value
 
-        row = {column: None for column in value.columns}
+        row: Dict[Any, Optional[str]] = {column: None for column in value.columns}
         if not row:
             return pd.DataFrame([{"Control": "Control 3.3", "Status": "Redacted", "Detail": reason}])
 
@@ -676,7 +676,8 @@ class ReportGenerator:
     ) -> None:
         """Generate JSON report."""
         safe_metadata = self._json_safe_metadata(metadata)
-        output_data = {
+        results_payload: Dict[str, Any] = {}
+        output_data: Dict[str, Any] = {
             'schema_version': 1,
             'analysis_type': analysis_type,
             'generated_by': 'autobench',
@@ -684,14 +685,14 @@ class ReportGenerator:
             'run_status': (metadata or {}).get('run_status'),
             'compliance_verdict': (metadata or {}).get('compliance_verdict'),
             'metadata': safe_metadata,
-            'results': {}
+            'results': results_payload
         }
         
         for metric_name, result_data in results.items():
             if isinstance(result_data, dict):
-                output_data['results'][metric_name] = result_data
+                results_payload[metric_name] = result_data
             elif isinstance(result_data, pd.DataFrame):
-                output_data['results'][metric_name] = result_data.to_dict(orient='records')
+                results_payload[metric_name] = result_data.to_dict(orient='records')
         
         with open(output_file, 'w') as f:
             json.dump(output_data, f, indent=2, default=str)

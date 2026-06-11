@@ -63,7 +63,7 @@ class PrivacyValidator:
     - 4/35: 4 minimum entities, 35% max concentration (merchant benchmarking only)
     """
     
-    DEFAULT_RULES = {
+    DEFAULT_RULES: Dict[str, Dict[str, Any]] = {
         # 5/25: No participant may exceed 25%
         '5/25': {
             'min_entities': 5, 
@@ -148,8 +148,9 @@ class PrivacyValidator:
     def reload_rules(cls) -> Dict[str, Dict[str, Any]]:
         """Reload rules from disk or fall back to built-in defaults."""
         loaded_rules = cls._load_rules_from_file()
-        cls._RULES_CACHE = loaded_rules or cls.DEFAULT_RULES.copy()
-        return cls._RULES_CACHE
+        rules: Dict[str, Dict[str, Any]] = loaded_rules or dict(cls.DEFAULT_RULES)
+        cls._RULES_CACHE = rules
+        return rules
 
     @classmethod
     def get_rules(cls) -> Dict[str, Dict[str, Any]]:

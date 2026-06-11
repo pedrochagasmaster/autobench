@@ -1028,7 +1028,7 @@ class DataLoader:
     def validate_share_input(
         self,
         df: pd.DataFrame,
-        metric_col: str,
+        metric_col: Optional[str],
         entity_col: str,
         dimensions: List[str],
         time_col: Optional[str] = None,
@@ -1074,7 +1074,7 @@ class DataLoader:
         t = {**VALIDATION_THRESHOLDS, **(thresholds or {})}
         
         # 1. Check required columns exist
-        required_cols = [metric_col, entity_col] + dimensions
+        required_cols: List[Optional[str]] = [metric_col, entity_col, *dimensions]
         if time_col:
             required_cols.append(time_col)
             
@@ -1165,7 +1165,7 @@ class DataLoader:
     def validate_rate_input(
         self,
         df: pd.DataFrame,
-        total_col: str,
+        total_col: Optional[str],
         numerator_cols: Dict[str, str],
         entity_col: str,
         dimensions: List[str],
@@ -1222,7 +1222,7 @@ class DataLoader:
                 message="No numerator columns provided for rate analysis."
             ))
             return issues
-        required_cols = [total_col, entity_col] + all_num_cols + dimensions
+        required_cols: List[Optional[str]] = [total_col, entity_col, *all_num_cols, *dimensions]
         if time_col:
             required_cols.append(time_col)
             
@@ -1239,7 +1239,7 @@ class DataLoader:
             return issues
         
         # 2. Check for null values in critical columns
-        for col in [total_col] + all_num_cols:
+        for col in [total_col, *all_num_cols]:
             null_count = df[col].isnull().sum()
             null_pct = 100.0 * null_count / len(df) if len(df) > 0 else 0
             

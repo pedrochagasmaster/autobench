@@ -108,7 +108,7 @@ class HeuristicSolver(PrivacySolver):
             shortfall_penalty = float(shortfall * shortfall * 100.0)
 
         # Pre-calculate constraint data
-        constraint_data = {}
+        constraint_data: Dict[Any, Dict[str, Any]] = {}
         for key, cat_indices in constraint_map.items():
             dim, _, _ = key
             matching_cats = [categories[i] for i in cat_indices]

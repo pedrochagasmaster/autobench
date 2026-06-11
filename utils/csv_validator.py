@@ -16,7 +16,7 @@ Example:
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import pandas as pd
 from openpyxl import load_workbook
 
@@ -354,13 +354,13 @@ def validate_dimension(
     approval_col: Optional[str],
     fraud_col: Optional[str],
     rate_excel_dfs: Optional[Dict[str, pd.DataFrame]] = None,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Validate all categories in a dimension.
     
     Returns:
         Dictionary with validation results
     """
-    results = {
+    results: Dict[str, Any] = {
         'dimension': dimension,
         'total_checks': 0,
         'passed': 0,

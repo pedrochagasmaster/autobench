@@ -19,7 +19,7 @@ class ConfigFieldSpec:
     read_paths: Tuple[Tuple[str, ...], ...] = ()
 
     def as_legacy_dict(self) -> Dict[str, Any]:
-        data = {
+        data: Dict[str, Any] = {
             "widget_id": self.widget_id,
             "keys": self.path,
             "kind": self.kind,

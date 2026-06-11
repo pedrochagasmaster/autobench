@@ -284,7 +284,7 @@ class ConfigManager:
         self.config = self._get_default_config()
         self.column_mapping = self.DEFAULT_COLUMN_MAPPING.copy()
         self.comparison_metrics = self.DEFAULT_COMPARISON_METRICS.copy()
-        self.sql_config = {}
+        self.sql_config: Dict[str, Any] = {}
         self._preset_name = preset
         self._preset_declared_posture = None
         self._config_declared_posture = False
