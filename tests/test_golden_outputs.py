@@ -93,7 +93,9 @@ def _assert_peer_only_summary(path: Path) -> None:
     assert metadata["Entity"] == "PEER-ONLY"
     assert metadata["Compliance Posture"] == "best_effort"
     assert metadata["Compliance Verdict"] in {"fully_compliant", "violations_detected"}
-    assert metadata["Run Status"] in {"compliant", "non_compliant"}
+    # best_effort posture reports violations as completed_with_warnings;
+    # "non_compliant" only exists under the strict posture.
+    assert metadata["Run Status"] in {"compliant", "completed_with_warnings"}
     assert metadata["Input Validation"] == "pass"
 
 
