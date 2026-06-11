@@ -1161,9 +1161,11 @@ class BenchmarkApp(App):
             return None
         return csv_path
 
-    def _try_load_csv_from_path_input(self) -> None:
+    def _try_load_csv_from_path_input(self, raw_path: Optional[str] = None) -> None:
         """Load headers when the user submits or leaves the CSV path field."""
-        csv_path = self._resolve_csv_path(self.query_one("#csv_path").value)
+        if raw_path is None:
+            raw_path = self.query_one("#csv_path", Input).value
+        csv_path = self._resolve_csv_path(raw_path)
         if csv_path:
             self.load_csv_headers(csv_path)
 
@@ -1265,12 +1267,18 @@ class BenchmarkApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter in text inputs."""
         if event.input.id == "csv_path":
-            self._try_load_csv_from_path_input()
+            self._try_load_csv_from_path_input(event.input.value)
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
         """Handle focus leaving text inputs."""
         if event.input.id == "csv_path":
-            self._try_load_csv_from_path_input()
+            try:
+                self._try_load_csv_from_path_input(event.input.value)
+            except NoMatches:
+                # Blur fires for the focused input while the app is tearing
+                # down (e.g. on exit); the rest of the form may already be
+                # unmounted, so there is nothing left to populate.
+                pass
 
     # ──────────────────────────────────────────────────────────────────
     # Presets / advanced overrides
