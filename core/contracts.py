@@ -161,6 +161,19 @@ class AnalysisRunRequest:
         }
         return cls(**kwargs)
 
+    @classmethod
+    def from_widget_values(cls, mode: str, values: Dict[str, Any]) -> "AnalysisRunRequest":
+        """Build a request from a flat dict of TUI widget values.
+
+        Keys mirror the dataclass field names. Missing keys take dataclass
+        defaults, keeping TUI behavior aligned with CLI defaults.
+        """
+        field_names = {f.name for f in fields(cls)}
+        unknown = set(values) - field_names
+        if unknown:
+            raise ValueError(f"Unknown request fields from TUI: {sorted(unknown)}")
+        return cls(mode=mode, **{k: v for k, v in values.items() if k in field_names and k != "mode"})
+
 
 @dataclass
 class AnalysisArtifacts:
