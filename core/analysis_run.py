@@ -54,6 +54,7 @@ COMMON_CLI_OVERRIDES = (
     'validate_input',
     'compare_presets',
     'output_format',
+    'report_format',
     'include_calculated',
     'audit_package',
     'validate_export',

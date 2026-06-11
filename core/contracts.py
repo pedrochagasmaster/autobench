@@ -101,6 +101,7 @@ class AnalysisRunRequest:
     include_calculated: bool = False
     audit_package: bool = False
     output_format: str = "analysis"
+    report_format: Optional[str] = None
     metric: Optional[str] = None
     secondary_metrics: Optional[List[str]] = None
     auto: bool = False
