@@ -95,7 +95,7 @@ def search_largest_feasible_subset(
                 }
             )
             if success and sol is not None:
-                score = (len(trial_dims), sum_slack)
+                score = (len(trial_dims), sum_slack if sum_slack is not None else 0.0)
                 if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
                     best_score = score
                     best_dims = list(trial_dims)
@@ -112,13 +112,17 @@ def search_largest_feasible_subset(
     else:
         import itertools
 
+        # Seeded RNG: the "random" strategy is about exploration order, not
+        # true randomness. Identical inputs must yield identical reports so
+        # runs are reproducible for audit purposes.
+        rng = random.Random(0)
         tested = 0
         n = len(dimensions)
         for subset_size in range(n - 1, 0, -1):
             if tested >= max_tests:
                 break
             all_combinations = list(itertools.combinations(dimensions, subset_size))
-            random.shuffle(all_combinations)
+            rng.shuffle(all_combinations)
             for combo in all_combinations:
                 if tested >= max_tests:
                     break
@@ -177,7 +181,7 @@ def search_largest_feasible_subset(
                     }
                 )
                 if success and sol is not None:
-                    score = (len(trial_dims), sum_slack)
+                    score = (len(trial_dims), sum_slack if sum_slack is not None else 0.0)
                     if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] < best_score[1]):
                         best_score = score
                         best_dims = list(trial_dims)
