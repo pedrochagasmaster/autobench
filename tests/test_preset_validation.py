@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pytest
 
 from utils.preset_manager import PresetManager
 from utils.validators import load_config

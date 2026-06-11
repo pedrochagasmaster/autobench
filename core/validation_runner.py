@@ -3,7 +3,7 @@ Validation orchestration for both share and rate analysis.
 Extracted to eliminate code duplication between run_share_analysis() and run_rate_analysis().
 """
 import logging
-from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
 
 import pandas as pd
 

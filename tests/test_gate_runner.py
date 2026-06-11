@@ -2,7 +2,6 @@ import shlex
 from pathlib import Path
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 from scripts.perform_gate_test import GateTestRunner
@@ -55,8 +54,6 @@ def test_verify_workbook_content_detects_excel_error_strings(tmp_path: Path) -> 
     wb.save(workbook_path)
 
     runner = GateTestRunner(output_dir=str(tmp_path / "gate"))
-    loaded = wb.__class__()
-    loaded = None
     from openpyxl import load_workbook
 
     workbook = load_workbook(workbook_path, read_only=True, data_only=False)

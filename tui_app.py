@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import (
     Header,
     Footer,
@@ -21,16 +21,13 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
     Log,
-    Static,
     ListView,
     ListItem,
     SelectionList,
     Markdown,
     Collapsible
 )
-from textual.worker import Worker, WorkerState
 from textual import work
-from textual.logging import TextualHandler
 from datetime import datetime
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen

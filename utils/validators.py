@@ -5,7 +5,7 @@ This module provides configuration file validation against the v3.0 schema.
 
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from pathlib import Path
 from core.compliance import VALID_COMPLIANCE_POSTURES
 
