@@ -200,6 +200,7 @@ class AnalysisArtifacts:
     audit_package_output: Optional[str] = None
     publication_output: Optional[str] = None
     report_model: Any = None
+    json_output: Optional[str] = None
 
 
 @dataclass

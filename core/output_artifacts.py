@@ -153,6 +153,32 @@ def write_outputs(
     if writer.write_analysis:
         _write_report(output_file, publication=False)
         logger.info("Analysis report written to %s", output_file)
+
+        report_format = (
+            config.get("output", "format", default="xlsx") if config is not None else "xlsx"
+        )
+        if report_format == "json":
+            json_path = str(Path(output_file).with_suffix(".json"))
+            from core.report_generator import ReportGenerator
+
+            json_results = artifacts.results
+            if request.is_rate and isinstance(artifacts.results, dict) and all(
+                isinstance(v, dict) for v in artifacts.results.values()
+            ):
+                json_results = {
+                    f"{rate_type}_{dimension}": value
+                    for rate_type, rate_results in artifacts.results.items()
+                    for dimension, value in rate_results.items()
+                }
+            ReportGenerator(config).generate_report(
+                json_results,
+                json_path,
+                format="json",
+                analysis_type="share" if request.is_share else "rate",
+                metadata=artifacts.metadata,
+            )
+            artifacts.json_output = json_path
+            logger.info("JSON report written to %s", json_path)
     if writer.write_publication:
         if block_publication:
             artifacts.publication_output = None
