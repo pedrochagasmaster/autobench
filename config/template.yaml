@@ -64,7 +64,7 @@ runtime:
 # OUTPUT SETTINGS
 # ============================================================================
 output:
-  # Output format (currently only xlsx supported)
+  # xlsx (default) | json (adds a machine-readable .json beside the analysis workbook; not publication-redacted) — csv not yet supported
   format: "xlsx"
   
   # Include debug sheets with unweighted metrics

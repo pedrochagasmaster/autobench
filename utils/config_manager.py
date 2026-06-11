@@ -759,6 +759,7 @@ class ConfigManager:
             'validate_input': ('input', 'validate_input'),
             'compare_presets': ('output', 'include_preset_comparison'),
             'analyze_distortion': ('output', 'include_impact_summary'),
+            'report_format': ('output', 'format'),
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
             'audit_package': ('output', 'include_audit_package'),

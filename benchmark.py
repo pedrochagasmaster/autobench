@@ -119,6 +119,12 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Disable balanced CSV cross-validation on export',
     )
     parser.add_argument(
+        '--report-format',
+        choices=['xlsx', 'json'],
+        default=None,
+        help='xlsx (default) or json — json additionally writes a machine-readable <output>.json next to the workbook',
+    )
+    parser.add_argument(
         '--output-format',
         choices=['analysis', 'publication', 'both'],
         default=None,
