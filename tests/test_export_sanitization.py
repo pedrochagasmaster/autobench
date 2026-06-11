@@ -29,9 +29,9 @@ def test_sanitize_cell_safe_values_unchanged() -> None:
     assert sanitize_cell(-3) == -3
 
 
-def _malicious_gate_demo_csv(tmp_path: Path) -> Path:
+def _malicious_gate_demo_csv(tmp_path: Path, old: str = "Online", new: str = "=2+5") -> Path:
     source = Path("tests/fixtures/gate_demo.csv").read_text(encoding="utf-8")
-    malicious = source.replace("Online", "=2+5")
+    malicious = source.replace(old, new)
     csv_path = tmp_path / "gate_demo_malicious.csv"
     csv_path.write_text(malicious, encoding="utf-8")
     return csv_path
@@ -102,3 +102,22 @@ def test_share_export_neutralizes_malicious_category(tmp_path: Path) -> None:
     csv_text = balanced_csv.read_text(encoding="utf-8")
     assert "'=2+5" in csv_text
     assert not re.search(r"(?:^|,)=2\+5(?:,|$)", csv_text)
+
+
+def test_share_export_neutralizes_malicious_entity_name(tmp_path: Path) -> None:
+    output = tmp_path / "share.xlsx"
+    csv_path = _malicious_gate_demo_csv(tmp_path, old="Target", new="=2+5TARGET")
+
+    args = _share_args(output, csv_path)
+    args.entity = "=2+5TARGET"
+    args.output_format = "both"
+
+    result = run_share_analysis(args, logging.getLogger("test_export_sanitization_entity"))
+
+    assert result == 0
+    assert output.exists()
+    assert not _workbook_has_raw_formula_string(output)
+
+    publication = tmp_path / "share_publication.xlsx"
+    assert publication.exists()
+    assert not _workbook_has_raw_formula_string(publication)
