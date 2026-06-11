@@ -246,6 +246,7 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
     "prepared_dataset",
     "lean",
     "audit_package",
+    "validate_export",
     "control3_overrides",
 })
 

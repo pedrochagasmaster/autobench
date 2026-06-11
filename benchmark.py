@@ -106,6 +106,19 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
     )
     parser.add_argument('--no-validate-input', action='store_false', dest='validate_input', help='Disable input data validation')
     parser.add_argument(
+        '--validate-export',
+        action='store_true',
+        default=None,
+        dest='validate_export',
+        help='Cross-validate balanced CSV against the workbook on export (default: enabled)',
+    )
+    parser.add_argument(
+        '--no-validate-export',
+        action='store_false',
+        dest='validate_export',
+        help='Disable balanced CSV cross-validation on export',
+    )
+    parser.add_argument(
         '--output-format',
         choices=['analysis', 'publication', 'both'],
         default=None,
