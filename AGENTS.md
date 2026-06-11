@@ -133,8 +133,20 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── AGENTS.md                 # This file
 ├── 📁 docs/                  # Project documentation
 │   ├── CORE_TECHNICAL_DOC.md    # Canonical technical reference
-│   ├── OPERATIONAL_GAINS.md     # Operational notes
-│   └── archive/                 # Historical docs (not authoritative)
+│   ├── OPERATIONAL_GAINS.md     # Operational notes and executive summary
+│   ├── RELEASE_PROCESS.md       # Production release checklist
+│   ├── RESOURCE_MANAGEMENT.md   # Large-run memory/CPU guidance
+│   ├── control-3-customer-merchant-performance-v5-20260603.md # Canonical Control 3 source
+│   ├── control3_gap_matrix.md   # Control 3 policy coverage matrix
+│   ├── control3_implementation_summary.md # Control 3 enforcement summary
+│   ├── DE_SLOP_AUDIT.md         # Maintenance audit (refactoring opportunities)
+│   ├── PRODUCTION_READINESS_IMPLEMENTATION_PLAN.md # Production readiness plan
+│   ├── post_audit_sweep_results_analysis.md # Post-audit CLI sweep analysis
+│   ├── autobench_master_context*.md # Generated bundles (gitignored; py scripts/build_master_context.py)
+│   ├── *.docx                   # Source Word exports (Control 3, Operational Gains)
+│   ├── 📁 archive/              # Historical docs (not authoritative)
+│   ├── 📁 control-3-media/      # Embedded images for Control 3 markdown
+│   └── 📁 superpowers/plans/    # Agent implementation plans (de-slop, domain truth)
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
 │   ├── analysis_run.py          # Shared CLI/TUI orchestration
@@ -180,12 +192,12 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── 📁 scripts/               # Gate test, sweep generator/runner
 ├── 📁 tests/                 # Unit tests + fixtures/
 │   └── fixtures/                # Portable test data (gate_demo.csv, etc.)
-├── 📁 test_gate/             # Committed gate case definitions (portable)
+├── 📁 test_gate/             # Gate fixtures; cases.jsonl regenerated each run (see policy below)
 ├── 📁 data/                  # Input data (gitignored)
 └── 📁 outputs/               # Generated reports (gitignored)
 ```
 
-**Generated-artifact policy:** product code and portable fixtures under `tests/fixtures/` and `test_gate/` are tracked. Generated `test_sweeps/`, gate run outputs, and investigation scratch under `outputs/` are gitignored and regenerated on demand.
+**Generated-artifact policy:** portable fixtures under `tests/fixtures/` are tracked. The gate runner regenerates `test_gate/*/cases.jsonl` from `generate_cli_sweep.py --mode gate` on every `perform_gate_test.py` run — commit `test_gate/` diffs only when generator logic changes intentionally. Generated `test_sweeps/`, gate run outputs, investigation scratch under `outputs/`, and `docs/autobench_master_context*.md` bundles are gitignored and regenerated on demand.
 
 ---
 
@@ -639,7 +651,7 @@ fl_token,Non-tokenized,2024-01,203796570874.8,151927893365.16,185177975.02
 ### 🛡️ Mandatory Verification
 
 After **any** code change, you must run the gate test suite. This performs a full system check:
-1. Generates 17+ representative scenarios (Share/Rate, Peer-Only/Target, etc.)
+1. Generates 18 representative scenarios (Share/Rate, Peer-Only/Target, etc.)
 2. Executes them to verify runtime stability.
 3. **Deeply verifies** outputs: checks Excel sheet structure, value ranges (0-100%), and cross-validates CSV exports against Excel reports (Control 3.2 compliance).
 
