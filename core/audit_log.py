@@ -19,7 +19,6 @@ def compact_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: _compact_audit_value(value)
         for key, value in metadata.items()
-        if key != "analyzer_ref"
     }
 
 
