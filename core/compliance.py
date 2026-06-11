@@ -214,8 +214,9 @@ class ComplianceSummary:
             }
 
         has_violations = self.violations > 0
-        has_structural = bool(self.structural_infeasibility) and bool(
-            self.structural_infeasibility.get("has_structural_infeasibility")
+        has_structural = bool(
+            self.structural_infeasibility
+            and self.structural_infeasibility.get("has_structural_infeasibility")
         )
 
         if self.posture == "strict":
