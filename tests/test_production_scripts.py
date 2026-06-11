@@ -73,3 +73,43 @@ def test_offline_bundle_checksum_manifest_round_trips(tmp_path: Path) -> None:
     )
     assert tampered_result.returncode == 1
     assert "checksum mismatch" in tampered_result.stdout.lower()
+
+
+def test_master_context_split_types_generates_docs_and_code_outputs(tmp_path: Path) -> None:
+    script = ROOT / "scripts" / "build_master_context.py"
+    output = tmp_path / "master.md"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--output",
+            str(output),
+            "--split-types",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    docs_output = tmp_path / "master_docs.md"
+    code_output = tmp_path / "master_code.md"
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert not output.exists()
+    assert docs_output.exists()
+    assert code_output.exists()
+
+    docs_text = docs_output.read_text(encoding="utf-8")
+    code_text = code_output.read_text(encoding="utf-8")
+
+    assert "| Current Documentation | `README.md` |" in docs_text
+    assert "| Configuration | `config/template.yaml` |" in docs_text
+    assert "| Entrypoints | `benchmark.py` |" not in docs_text
+    assert "| Verification Surface | `scripts/build_master_context.py` |" not in docs_text
+
+    assert "| Entrypoints | `benchmark.py` |" in code_text
+    assert "| Relevant Source | `core/privacy_validator.py` |" in code_text
+    assert "| Verification Surface | `scripts/build_master_context.py` |" in code_text
+    assert "| Current Documentation | `README.md` |" not in code_text
