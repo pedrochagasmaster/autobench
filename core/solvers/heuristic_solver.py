@@ -258,7 +258,7 @@ class HeuristicSolver(PrivacySolver):
                         residual_additional_violation = True
 
         success = bool(result.success)
-        if tolerance <= 0.0 and (residual_cap_violation or residual_additional_violation):
+        if residual_cap_violation or residual_additional_violation:
             success = False
 
         # Stats are minimal for heuristic

@@ -82,7 +82,7 @@ def _summary_metadata(path: Path) -> dict[str, str]:
 
 def _assert_compliant_summary(path: Path) -> None:
     metadata = _summary_metadata(path)
-    assert metadata["Compliance Posture"] == "strict"
+    assert metadata["Compliance Posture"] == "best_effort"
     assert metadata["Compliance Verdict"] == "fully_compliant"
     assert metadata["Run Status"] == "compliant"
     assert metadata["Input Validation"] == "pass"
@@ -91,7 +91,7 @@ def _assert_compliant_summary(path: Path) -> None:
 def _assert_peer_only_summary(path: Path) -> None:
     metadata = _summary_metadata(path)
     assert metadata["Entity"] == "PEER-ONLY"
-    assert metadata["Compliance Posture"] == "strict"
+    assert metadata["Compliance Posture"] == "best_effort"
     assert metadata["Compliance Verdict"] in {"fully_compliant", "violations_detected"}
     assert metadata["Run Status"] in {"compliant", "non_compliant"}
     assert metadata["Input Validation"] == "pass"
@@ -127,7 +127,6 @@ def test_golden_cli_outputs(tmp_path: Path, mode: str, extra_args: list[str], cs
     _assert_compliant_summary(output_xlsx)
 
     if csv_suffix:
-        csv_path = tmp_path / f"golden_{mode}{csv_suffix}"
         export_cmd = [
             PY,
             str(ROOT / "benchmark.py"),
@@ -149,7 +148,7 @@ def test_golden_cli_outputs(tmp_path: Path, mode: str, extra_args: list[str], cs
         ]
         export_result = subprocess.run(export_cmd, cwd=tmp_path, capture_output=True, text=True, check=False)
         assert export_result.returncode == 0, export_result.stderr or export_result.stdout
-        exported = list(tmp_path.glob(f"*_balanced.csv"))
+        exported = list(tmp_path.glob("*_balanced.csv"))
         assert exported, "expected balanced CSV export"
         csv_df = pd.read_csv(exported[0])
         assert {"Dimension", "Category"}.issubset(csv_df.columns)

@@ -162,6 +162,90 @@ def test_compliance_summary_accepts_strict_10_40_primary_secondary_and_participa
     assert summary["strict_final_validation"]["total_violations"] == 0
 
 
+def test_compliance_summary_counts_single_primary_cap_violation_once() -> None:
+    """One strict_compliant=False row must not inflate violations via strict recount."""
+    compliant_rows = [
+        PrivacyValidationRow(
+            dimension="card_type",
+            category="Credit",
+            time_period=None,
+            peer=f"P{idx}",
+            rule_name="5/25",
+            original_volume=100.0,
+            original_share_pct=share,
+            balanced_volume=100.0,
+            balanced_share_pct=share,
+            primary_cap_pct=25.0,
+            primary_cap_passed=True,
+            secondary_rule_passed=True,
+            relaxation_used=False,
+            strict_compliant=True,
+        )
+        for idx, share in enumerate([20.0, 20.0, 20.0, 10.0], start=1)
+    ]
+    violating_row = PrivacyValidationRow(
+        dimension="card_type",
+        category="Credit",
+        time_period=None,
+        peer="P5",
+        rule_name="5/25",
+        original_volume=100.0,
+        original_share_pct=30.0,
+        balanced_volume=100.0,
+        balanced_share_pct=30.0,
+        primary_cap_pct=25.0,
+        primary_cap_passed=False,
+        secondary_rule_passed=True,
+        relaxation_used=False,
+        strict_compliant=False,
+    )
+    privacy_validation = PrivacyValidationResult(rows=[*compliant_rows, violating_row])
+
+    summary = build_compliance_summary(
+        posture="strict",
+        privacy_validation_df=privacy_validation,
+    )
+
+    assert summary.violations == 1
+
+
+def test_compliance_summary_counts_cap_and_secondary_failures_distinctly() -> None:
+    """Primary-cap row failures and category secondary failures each count once."""
+    # 10/40: one row at 41% (primary cap fail); only one peer >= 20% (secondary fail).
+    remaining = (100.0 - 41.0) / 9.0
+    shares = [41.0] + [remaining] * 9
+    rows = [
+        PrivacyValidationRow(
+            dimension="card_type",
+            category="Credit",
+            time_period=None,
+            peer=f"P{idx}",
+            rule_name="10/40",
+            original_volume=100.0,
+            original_share_pct=share,
+            balanced_volume=100.0,
+            balanced_share_pct=share,
+            primary_cap_pct=40.0,
+            primary_cap_passed=share <= 40.0,
+            secondary_rule_passed=False,
+            relaxation_used=False,
+            strict_compliant=share <= 40.0,
+        )
+        for idx, share in enumerate(shares, start=1)
+    ]
+    privacy_validation = PrivacyValidationResult(rows=rows)
+
+    summary = build_compliance_summary(
+        posture="strict",
+        privacy_validation_df=privacy_validation,
+    )
+
+    assert summary.violations == 2
+    strict = summary.details["strict_final_validation"]
+    assert strict["primary_cap_fail_rows"] == 1
+    assert strict["secondary_rule_fail_categories"] == 1
+
+
 def test_compliance_summary_accepts_typed_validation_without_dataframe_render() -> None:
     privacy_validation = PrivacyValidationResult(
         rows=[

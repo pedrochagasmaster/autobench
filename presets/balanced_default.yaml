@@ -1,11 +1,13 @@
 version: "3.0"
 preset_name: "balanced_default"
-compliance_posture: "strict"
+compliance_posture: "best_effort"
 description: "Standard Analysis - Balance of compliance and consistency (formerly standard)"
 
 # Intent: "I want the best of both worlds."
 # Priority: Good balance of compliance and consistency.
 # Trade-off: Allows very small violations (2%) before dropping dimensions.
+# Posture: best_effort -- day-to-day runs report violations without withholding
+# outputs. Use compliance_strict for fail-closed regulatory runs.
 
 optimization:
   bounds:

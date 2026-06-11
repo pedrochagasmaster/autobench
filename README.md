@@ -18,6 +18,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
 - [TUI Workflow](#tui-workflow)
 - [CLI Cookbook](#cli-cookbook)
+- [Programmatic use (Python API)](#programmatic-use-python-api)
 - [Large Dataset / Low-Memory Runs](#large-dataset--low-memory-runs)
 - [Presets](#presets)
 - [Outputs](#outputs)
@@ -42,6 +43,8 @@ You get:
 ## Quick Start
 
 > In this repo, use `py` for Python commands.
+
+Requires Python 3.10+.
 
 Install dependencies:
 
@@ -222,6 +225,51 @@ py benchmark.py config validate my_config.yaml
 py benchmark.py config generate my_config.yaml
 ```
 
+## Programmatic use (Python API)
+
+For scheduled pipelines or notebook integration, call the same in-process backend
+the CLI and TUI use instead of shelling out to `benchmark.py`.
+
+**Stable public surface** (kept compatible across releases; everything else in
+`core/` is internal and may change without notice):
+
+| Symbol | Role |
+|--------|------|
+| `core.contracts.AnalysisRunRequest` | Input contract for share or rate runs |
+| `core.analysis_run.execute_share_run` | Run share analysis |
+| `core.analysis_run.execute_rate_run` | Run rate analysis |
+| `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+
+A complete runnable example lives at `examples/run_from_python.py`. Minimal
+share run:
+
+```python
+import logging
+from core.analysis_run import execute_share_run
+from core.contracts import AnalysisRunRequest
+
+request = AnalysisRunRequest(
+    csv="tests/fixtures/gate_demo.csv",
+    entity="Target",
+    metric="txn_cnt",
+    dimensions=["card_type", "channel"],
+    time_col="year_month",
+    preset="balanced_default",
+    compliance_posture="strict",
+    output="report.xlsx",
+)
+artifacts = execute_share_run(request, logging.getLogger("pipeline"))
+print(artifacts.analysis_output_file)
+```
+
+When a preset is set, pass `compliance_posture` explicitly (matches TUI/CLI
+behavior). For rate runs, set `mode="rate"` plus `total_col` and numerator
+columns. Advanced: pass a pre-loaded DataFrame via `request.df` to skip CSV
+reload after validation.
+
+Contract tests in `tests/test_public_api.py` pin imports, signatures, and field
+names; breaking changes require updating the README, example, and consumers.
+
 ## Large Dataset / Low-Memory Runs
 
 Use `--lean` for memory-limited remote servers or very large CSV files:
@@ -282,7 +330,7 @@ Quick selection guide:
 
 ## Outputs
 
-Main output is Excel (`.xlsx`), optionally with balanced CSV.
+Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
 
 Common sheets:
 
@@ -348,15 +396,29 @@ Optional diagnostic sheets (appear when enabled or triggered):
 
 ## Validation and Testing
 
-For contributors, run both after changes:
+For contributors, run after changes:
 
 ```bash
+py -m ruff check .
+py -m mypy core/ utils/
 py scripts/perform_gate_test.py
 py -m pytest tests/ -v
 ```
 
-GitHub Actions runs the same lint, unit, and gate checks on pull requests
-(see `.github/workflows/ci.yml`).
+For a fast inner-loop smoke (not a substitute for the full gate before PR):
+
+```bash
+py scripts/perform_gate_test.py --only share_gate_baseline
+```
+
+GitHub Actions runs ruff, unit tests, and the full gate on pull requests
+(see `.github/workflows/ci.yml`). Mypy is a local-only check.
+
+Balanced CSV exports are now cross-validated automatically when
+`output.validate_export` is enabled (the default). Rate exports run the full
+workbook-vs-CSV check; share exports receive a schema check mirroring the gate
+test. Results appear in run metadata and audit packages. The manual command
+below remains available for ad-hoc verification.
 
 Optional CSV-vs-Excel cross-check (use a rate export with
 `--export-balanced-csv`; share exports are schema-checked by the gate unless a

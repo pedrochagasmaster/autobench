@@ -76,12 +76,10 @@ def calculate_share_impact(
                     raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
 
                     peer_cat_df = cat_df[cat_df[analyzer.entity_column] != entity]
-                    total_balanced_vol = entity_vol
-                    for _, row in peer_cat_df.iterrows():
-                        peer = row[analyzer.entity_column]
-                        peer_vol = float(row[metric_col])
-                        peer_weight = dim_weights.get(peer, 1.0)
-                        total_balanced_vol += peer_vol * peer_weight
+                    peer_weights = peer_cat_df[analyzer.entity_column].map(dim_weights).fillna(1.0)
+                    total_balanced_vol = entity_vol + float(
+                        (peer_cat_df[metric_col] * peer_weights).sum()
+                    )
 
                     balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
                     impact_pp = balanced_share - raw_share
@@ -108,12 +106,10 @@ def calculate_share_impact(
                 raw_share = (entity_vol / total_raw_vol * 100.0) if total_raw_vol > 0 else 0.0
 
                 peer_cat_df = cat_df[cat_df[analyzer.entity_column] != entity]
-                total_balanced_vol = entity_vol
-                for _, row in peer_cat_df.iterrows():
-                    peer = row[analyzer.entity_column]
-                    peer_vol = float(row[metric_col])
-                    peer_weight = dim_weights.get(peer, 1.0)
-                    total_balanced_vol += peer_vol * peer_weight
+                peer_weights = peer_cat_df[analyzer.entity_column].map(dim_weights).fillna(1.0)
+                total_balanced_vol = entity_vol + float(
+                    (peer_cat_df[metric_col] * peer_weights).sum()
+                )
 
                 balanced_share = (entity_vol / total_balanced_vol * 100.0) if total_balanced_vol > 0 else 0.0
                 impact_pp = balanced_share - raw_share
@@ -181,13 +177,9 @@ def calculate_rate_impact(
                         total_denom = float(peer_cat_df[total_col].sum())
                         raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
 
-                        balanced_num = 0.0
-                        balanced_denom = 0.0
-                        for _, prow in peer_cat_df.iterrows():
-                            peer = prow[analyzer.entity_column]
-                            w = dim_weights.get(peer, 1.0)
-                            balanced_num += float(prow[num_col]) * w
-                            balanced_denom += float(prow[total_col]) * w
+                        peer_weights = peer_cat_df[analyzer.entity_column].map(dim_weights).fillna(1.0)
+                        balanced_num = float((peer_cat_df[num_col] * peer_weights).sum())
+                        balanced_denom = float((peer_cat_df[total_col] * peer_weights).sum())
 
                         balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
                         impact_pp = balanced_rate - raw_rate
@@ -221,13 +213,9 @@ def calculate_rate_impact(
                     total_denom = float(peer_cat_df[total_col].sum())
                     raw_rate = (total_num / total_denom * 100.0) if total_denom > 0 else 0.0
 
-                    balanced_num = 0.0
-                    balanced_denom = 0.0
-                    for _, prow in peer_cat_df.iterrows():
-                        peer = prow[analyzer.entity_column]
-                        w = dim_weights.get(peer, 1.0)
-                        balanced_num += float(prow[num_col]) * w
-                        balanced_denom += float(prow[total_col]) * w
+                    peer_weights = peer_cat_df[analyzer.entity_column].map(dim_weights).fillna(1.0)
+                    balanced_num = float((peer_cat_df[num_col] * peer_weights).sum())
+                    balanced_denom = float((peer_cat_df[total_col] * peer_weights).sum())
 
                     balanced_rate = (balanced_num / balanced_denom * 100.0) if balanced_denom > 0 else 0.0
                     impact_pp = balanced_rate - raw_rate

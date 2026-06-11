@@ -61,6 +61,22 @@ class _NonConvergedHeuristicSolver:
         )
 
 
+class _FailedHeuristicNoResidualSolver:
+    def __init__(self, weights: Dict[str, float]) -> None:
+        self._weights = weights
+
+    def solve(self, *_args: Any, **_kwargs: Any) -> _SolverResult:
+        return _SolverResult(
+            success=False,
+            weights=dict(self._weights),
+            stats={
+                'converged': False,
+                'residual_cap_violation': False,
+                'residual_additional_violation': False,
+            },
+        )
+
+
 class _FakeAnalyzer:
     def __init__(
         self,
@@ -250,6 +266,55 @@ class TestGlobalWeightOptimizerFallbacks(unittest.TestCase):
         self.assertEqual(analyzer._build_categories_calls, [])
         self.assertIn('flag_domestic', analyzer.weight_methods)
         self.assertEqual(analyzer.weight_methods['flag_domestic'], 'Global-LP')
+
+    def test_total_solver_failure_raises_with_optimization_failed_reason(self) -> None:
+        all_categories = [
+            {'peer': 'P1', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 100.0},
+            {'peer': 'P2', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 80.0},
+        ]
+        analyzer = _FakeAnalyzer(
+            all_categories=all_categories,
+            peer_volumes={'P1': 100.0, 'P2': 80.0},
+            peers=['P1', 'P2'],
+            enforce_single_weight_set=True,
+        )
+        analyzer.lp_solver = _FailingLpSolver()
+        analyzer.heuristic_solver = _FakeHeuristicSolver()
+
+        with self.assertRaises(ValueError):
+            GlobalWeightOptimizer(analyzer).calculate_global_privacy_weights(
+                df=pd.DataFrame({'year_month': [202501]}),
+                metric_col='metric',
+                dimensions=['flag_domestic'],
+            )
+
+        self.assertEqual(analyzer.compliance_blocked_reason, 'optimization_failed')
+
+    def test_failed_heuristic_without_residual_violations_yields_best_effort_verdict(self) -> None:
+        all_categories = [
+            {'peer': 'P1', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 100.0},
+            {'peer': 'P2', 'dimension': 'flag_domestic_year_month', 'category': 'Domestic', 'time_period': 202501, 'category_volume': 80.0},
+        ]
+        analyzer = _FakeAnalyzer(
+            all_categories=all_categories,
+            peer_volumes={'P1': 100.0, 'P2': 80.0},
+            peers=['P1', 'P2'],
+            enforce_single_weight_set=True,
+        )
+        analyzer.lp_solver = _FailingLpSolver()
+        analyzer.heuristic_solver = _FailedHeuristicNoResidualSolver({'P1': 1.0, 'P2': 1.0})
+
+        result = GlobalWeightOptimizer(analyzer).calculate_global_privacy_weights(
+            df=pd.DataFrame({'year_month': [202501]}),
+            metric_col='metric',
+            dimensions=['flag_domestic'],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.compliance_state.heuristic_converged)
+        self.assertTrue(result.compliance_state.primary_cap_passed)
+        self.assertTrue(result.compliance_state.secondary_rule_passed)
+        self.assertEqual(result.compliance_state.verdict, 'best_effort')
 
     def test_weighting_result_records_heuristic_convergence_state(self) -> None:
         all_categories = [

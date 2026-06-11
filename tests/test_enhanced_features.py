@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-import numpy as np
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -190,6 +189,7 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                compliance_posture='best_effort',
                 privacy_basis='clearing_spend',
                 contains_digital_wallet_metrics=False,
                 contains_top_merchant_output=False,
@@ -245,6 +245,7 @@ class TestValidationAndOutputs(unittest.TestCase):
                 subset_search_max_tests=None,
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
+                compliance_posture='best_effort',
                 privacy_basis='clearing_spend',
                 contains_digital_wallet_metrics=False,
                 contains_top_merchant_output=False,

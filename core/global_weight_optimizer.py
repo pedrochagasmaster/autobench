@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -372,7 +372,15 @@ class GlobalWeightOptimizer:
             analyzer.global_dimensions_used = state.used_dimensions
             analyzer.removed_dimensions = state.removed_dimensions
         else:
-            logger.warning("Heuristic global optimization failed; proceeding without global weights.")
+            analyzer.compliance_blocked_reason = "optimization_failed"
+            logger.error(
+                "Global LP, subset search, and heuristic optimization all failed; "
+                "aborting analysis to avoid emitting unvalidated identity weights."
+            )
+            raise ValueError(
+                "Weight optimization failed: no solver produced a feasible weight set. "
+                "See Structural Diagnostics for infeasibility causes."
+            )
 
     def finalize_converged_weights(self, problem: WeightingProblem, state: WeightingSolveState) -> None:
         analyzer = self.analyzer
@@ -714,7 +722,8 @@ class GlobalWeightOptimizer:
         relaxation_used = int(dynamic_stats.get("relaxed", 0) or 0) > 0
         primary_passed = not residual_cap_violation
         secondary_passed = residual_violations == 0 and not residual_additional_violation
-        if primary_passed and secondary_passed and not relaxation_used:
+        heuristic_failed = state is not None and state.heuristic_converged is False
+        if primary_passed and secondary_passed and not relaxation_used and not heuristic_failed:
             verdict = "strict_compliant"
         elif primary_passed and secondary_passed:
             verdict = "best_effort"

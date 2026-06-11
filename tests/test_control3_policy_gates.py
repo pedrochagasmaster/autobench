@@ -203,7 +203,7 @@ def test_publication_peer_evidence_redacts_peer_composition(tmp_path: Path) -> N
         subset_search_max_tests=None,
         trigger_subset_on_slack=None,
         max_cap_slack=None,
-        compliance_posture=None,
+        compliance_posture="best_effort",
         acknowledge_accuracy_first=False,
         privacy_basis=None,
         contains_digital_wallet_metrics=False,

@@ -9,6 +9,7 @@ import pandas as pd
 
 from core.contracts import WeightLookup
 from core.dimensional_analyzer import DimensionalAnalyzer
+from core.export_sanitizer import sanitize_cell
 
 
 def get_balanced_metrics_df(
@@ -56,6 +57,7 @@ def get_balanced_metrics_df(
     
     # Process each dimension
     for dimension in dimensions:
+        weight_map = weights.map_for_dimension(dimension)
         # Aggregate data by entity, dimension category, and optionally time
         group_cols = [entity_col, dimension]
         # Only add time_col if it's different from the current dimension
@@ -108,11 +110,8 @@ def get_balanced_metrics_df(
                     if metric not in cat_df.columns:
                         continue
                         
-                    balanced_metric = 0.0
-                    for _, row in cat_df.iterrows():
-                        peer = row[entity_col]
-                        weight = weights.multiplier(peer, dimension)
-                        balanced_metric += row[metric] * weight
+                    peer_weights = cat_df[entity_col].map(weight_map).fillna(1.0)
+                    balanced_metric = float((cat_df[metric] * peer_weights).sum())
                     
                     # Column name based on metric type
                     if metric_type == 'Primary':
@@ -206,6 +205,7 @@ def export_balanced_csv(
         
         # Process each dimension
         for dimension in dimensions:
+            weight_map = weights.map_for_dimension(dimension)
             # Aggregate data by entity, dimension category, and optionally time
             group_cols = [entity_col, dimension]
             # Only add time_col if it's different from the current dimension
@@ -254,80 +254,57 @@ def export_balanced_csv(
                     if cat_df.empty:
                         continue
                     
-                    # Calculate weighted totals
-                    balanced_total = 0.0
+                    if analyzer.target_entity is not None:
+                        peer_df = cat_df[cat_df[entity_col] != analyzer.target_entity]
+                    else:
+                        peer_df = cat_df
+
+                    peer_weights = peer_df[entity_col].map(weight_map).fillna(1.0)
+
+                    balanced_total = float((peer_df[total_col] * peer_weights).sum())
+                    balanced_peer_total = balanced_total
+
+                    approval_col = numerator_cols.get('approval') if numerator_cols else None
+                    fraud_col = numerator_cols.get('fraud') if numerator_cols else None
+
                     balanced_approval = 0.0
+                    balanced_peer_approval = 0.0
+                    if approval_col and approval_col in peer_df.columns:
+                        balanced_approval = float((peer_df[approval_col] * peer_weights).sum())
+                        balanced_peer_approval = balanced_approval
+
                     balanced_fraud = 0.0
-                    secondary_balanced = {}
-                    
-                    # Calculate raw totals if requested
+                    balanced_peer_fraud = 0.0
+                    if fraud_col and fraud_col in peer_df.columns:
+                        balanced_fraud = float((peer_df[fraud_col] * peer_weights).sum())
+                        balanced_peer_fraud = balanced_fraud
+
+                    secondary_balanced: Dict[str, float] = {}
+                    secondary_raw: Dict[str, float] = {}
+                    if secondary_metrics_list:
+                        for sec_metric in secondary_metrics_list:
+                            if sec_metric in peer_df.columns:
+                                secondary_balanced[sec_metric] = float(
+                                    (peer_df[sec_metric] * peer_weights).sum()
+                                )
+                                if include_calculated:
+                                    secondary_raw[sec_metric] = float(peer_df[sec_metric].sum())
+
                     raw_total = 0.0
                     raw_approval = 0.0
                     raw_fraud = 0.0
-                    secondary_raw = {}
-
-                    # Peer-only totals for weight-effect calculations
                     raw_peer_total = 0.0
                     raw_peer_approval = 0.0
                     raw_peer_fraud = 0.0
-                    balanced_peer_total = 0.0
-                    balanced_peer_approval = 0.0
-                    balanced_peer_fraud = 0.0
-                    
-                    # Initialize secondary metrics dict
-                    if secondary_metrics_list:
-                        for sec_metric in secondary_metrics_list:
-                            if sec_metric in cat_df.columns:
-                                secondary_balanced[sec_metric] = 0.0
-                                if include_calculated:
-                                    secondary_raw[sec_metric] = 0.0
-                    
-                    for _, row in cat_df.iterrows():
-                        peer = row[entity_col]
-                        weight = weights.multiplier(peer, dimension)
-                        is_target = analyzer.target_entity is not None and peer == analyzer.target_entity
-
-                        # Balanced totals should always be peer-only
-                        if not is_target:
-                            # Weighted total (denominator)
-                            balanced_total += row[total_col] * weight
-                            balanced_peer_total += row[total_col] * weight
-
-                            # Weighted approval numerator
-                            if approval_col := numerator_cols.get('approval'):
-                                if approval_col in row.index:
-                                    balanced_approval += row[approval_col] * weight
-                                    balanced_peer_approval += row[approval_col] * weight
-
-                            # Weighted fraud numerator
-                            if fraud_col := numerator_cols.get('fraud'):
-                                if fraud_col in row.index:
-                                    balanced_fraud += row[fraud_col] * weight
-                                    balanced_peer_fraud += row[fraud_col] * weight
-
-                            # Weighted secondary metrics
-                            for sec_metric in secondary_balanced.keys():
-                                if sec_metric in row.index:
-                                    secondary_balanced[sec_metric] += row[sec_metric] * weight
-
-                        # Raw totals if requested (peer-only)
-                        if include_calculated and not is_target:
-                            raw_total += row[total_col]
-                            raw_peer_total += row[total_col]
-
-                            if approval_col := numerator_cols.get('approval'):
-                                if approval_col in row.index:
-                                    raw_approval += row[approval_col]
-                                    raw_peer_approval += row[approval_col]
-
-                            if fraud_col := numerator_cols.get('fraud'):
-                                if fraud_col in row.index:
-                                    raw_fraud += row[fraud_col]
-                                    raw_peer_fraud += row[fraud_col]
-
-                            for sec_metric in secondary_raw.keys():
-                                if sec_metric in row.index:
-                                    secondary_raw[sec_metric] += row[sec_metric]
+                    if include_calculated:
+                        raw_total = float(peer_df[total_col].sum())
+                        raw_peer_total = raw_total
+                        if approval_col and approval_col in peer_df.columns:
+                            raw_approval = float(peer_df[approval_col].sum())
+                            raw_peer_approval = raw_approval
+                        if fraud_col and fraud_col in peer_df.columns:
+                            raw_fraud = float(peer_df[fraud_col].sum())
+                            raw_peer_fraud = raw_fraud
                     
                     # Add row to export
                     row_data = {
@@ -394,6 +371,8 @@ def export_balanced_csv(
         sort_cols.append('Category')
         
         export_df = export_df.sort_values(sort_cols)
+        for col in export_df.select_dtypes(include="object").columns:
+            export_df[col] = export_df[col].map(sanitize_cell)
         export_df.to_csv(csv_output, index=False)
         logger.info(f"Balanced rate data CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")
@@ -425,6 +404,7 @@ def export_balanced_csv(
 
         # Process each dimension
         for dimension in dimensions:
+            weight_map = weights.map_for_dimension(dimension)
             # Aggregate data by entity, dimension category, and optionally time
             group_cols = [entity_col, dimension]
             # Only add time_col if it's different from the current dimension
@@ -462,28 +442,26 @@ def export_balanced_csv(
                     if cat_df.empty:
                         continue
 
-                    # Calculate metrics
-                    balanced_metric_values = {}
-                    raw_metric_values = {}
+                    if analyzer.target_entity is not None:
+                        peer_df = cat_df[cat_df[entity_col] != analyzer.target_entity]
+                    else:
+                        peer_df = cat_df
 
-                    # Initialize values
+                    peer_weights = peer_df[entity_col].map(weight_map).fillna(1.0)
+
+                    balanced_metric_values: Dict[str, float] = {}
+                    raw_metric_values: Dict[str, float] = {}
                     for m_type, m_col in metrics_to_calculate:
-                        balanced_metric_values[m_col] = 0.0
-                        if include_calculated:
-                            raw_metric_values[m_col] = 0.0
-
-                    for _, row in cat_df.iterrows():
-                        peer = row[entity_col]
-                        if analyzer.target_entity is not None and peer == analyzer.target_entity:
-                            continue
-                        weight = weights.multiplier(peer, dimension)
-
-                        for m_type, m_col in metrics_to_calculate:
-                            if m_col in row:
-                                val = row[m_col]
-                                balanced_metric_values[m_col] += val * weight
-                                if include_calculated:
-                                    raw_metric_values[m_col] += val
+                        if m_col in peer_df.columns:
+                            balanced_metric_values[m_col] = float(
+                                (peer_df[m_col] * peer_weights).sum()
+                            )
+                            if include_calculated:
+                                raw_metric_values[m_col] = float(peer_df[m_col].sum())
+                        else:
+                            balanced_metric_values[m_col] = 0.0
+                            if include_calculated:
+                                raw_metric_values[m_col] = 0.0
 
                     # Add row to export
                     row_data = {
@@ -506,11 +484,11 @@ def export_balanced_csv(
                                 peer_rows = cat_df[cat_df[entity_col] != target_entity]
                                 target_val = float(target_rows[m_col].sum()) if not target_rows.empty else 0.0
                                 raw_peer_total = float(peer_rows[m_col].sum()) if not peer_rows.empty else 0.0
-                                balanced_peer_total = 0.0
-                                for _, prow in peer_rows.iterrows():
-                                    peer = prow[entity_col]
-                                    weight = weights.multiplier(peer, dimension)
-                                    balanced_peer_total += float(prow[m_col]) * weight
+                                if not peer_rows.empty and m_col in peer_rows.columns:
+                                    peer_w = peer_rows[entity_col].map(weight_map).fillna(1.0)
+                                    balanced_peer_total = float((peer_rows[m_col] * peer_w).sum())
+                                else:
+                                    balanced_peer_total = 0.0
                                 raw_denom = target_val + raw_peer_total
                                 bal_denom = target_val + balanced_peer_total
                                 raw_share = (target_val / raw_denom * 100.0) if raw_denom > 0 else 0.0
@@ -543,6 +521,8 @@ def export_balanced_csv(
         sort_cols.append('Category')
         
         export_df = export_df.sort_values(sort_cols)
+        for col in export_df.select_dtypes(include="object").columns:
+            export_df[col] = export_df[col].map(sanitize_cell)
         export_df.to_csv(csv_output, index=False)
         logger.info(f"Balanced share metrics CSV exported to: {csv_output}")
         print(f"Balanced CSV: {csv_output}")

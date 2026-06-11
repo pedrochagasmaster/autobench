@@ -16,7 +16,7 @@ Example:
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 import pandas as pd
 from openpyxl import load_workbook
 

@@ -1,3 +1,4 @@
+import argparse
 import sys
 import json
 import subprocess
@@ -24,8 +25,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class GateTestRunner:
-    def __init__(self, output_dir: str = "test_gate"):
+    def __init__(self, output_dir: str = "test_gate", only_case_ids: Optional[List[str]] = None):
         self.output_dir = Path(output_dir)
+        self.only_case_ids = only_case_ids
         self.script_dir = Path(__file__).parent
         self.root_dir = self.script_dir.parent
         self.generate_script = self.script_dir / "generate_cli_sweep.py"
@@ -692,6 +694,26 @@ class GateTestRunner:
         
         # 3. Load
         cases = self.load_cases()
+        total_loaded = len(cases)
+        if self.only_case_ids:
+            requested = set(self.only_case_ids)
+            available = {case["id"] for case in cases}
+            missing = requested - available
+            if missing:
+                logger.error("Unknown case id(s): %s", ", ".join(sorted(missing)))
+                sys.exit(1)
+            cases = [case for case in cases if case["id"] in requested]
+            logger.warning("=" * 60)
+            logger.warning(
+                "SMOKE RUN: --only filter active; this is NOT the mandatory full gate."
+            )
+            logger.warning(
+                "Running %d of %d cases: %s",
+                len(cases),
+                total_loaded,
+                ", ".join(case["id"] for case in cases),
+            )
+            logger.warning("=" * 60)
         logger.info(f"Loaded {len(cases)} cases.")
         
         # 4. Execute and Verify
@@ -756,5 +778,14 @@ class GateTestRunner:
             sys.exit(0)
 
 if __name__ == "__main__":
-    runner = GateTestRunner()
+    parser = argparse.ArgumentParser(description="Run gate integration tests")
+    parser.add_argument(
+        "--only",
+        action="append",
+        dest="only_cases",
+        metavar="CASE_ID",
+        help="Run only the named case id(s); smoke subset, not the full gate",
+    )
+    args = parser.parse_args()
+    runner = GateTestRunner(only_case_ids=args.only_cases)
     runner.run()

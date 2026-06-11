@@ -31,42 +31,19 @@ if (!(Test-Path -Path $OfflineDir)) {
 # Clean previous packages to ensure fresh download
 Remove-Item -Path "$OfflineDir\*" -Force -Recurse -ErrorAction SilentlyContinue
 
-Write-Host "Preparing requirements for Linux..."
-# Filter out pypyodbc which doesn't have a wheel and fails with --only-binary
-if (Test-Path requirements.txt) {
-    $AllReqs = Get-Content requirements.txt
-    # We look for lines starting with pypyodbc (case insensitive)
-    $PypyodbcReqs = $AllReqs | Where-Object { $_ -match "^pypyodbc" }
-    $BinaryReqs = $AllReqs | Where-Object { $_ -notmatch "^pypyodbc" }
-    
-    $BinaryReqs | Set-Content requirements_linux.txt
-} else {
+if (!(Test-Path requirements.txt)) {
     Write-Error "requirements.txt not found!"
     exit 1
 }
 
 Write-Host "Downloading binary packages for Linux (Python 3.10)..."
-py -m pip download -r requirements_linux.txt --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
+py -m pip download -r requirements.txt -c constraints.txt --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Download failed."
-    Write-Host "Hint: If this failed, another package in requirements.txt might not have a Linux binary wheel." -ForegroundColor Yellow
-    Write-Host "You may need to treat it like pypyodbc and download it separately." -ForegroundColor Yellow
+    Write-Host "Hint: If this failed, a package in requirements.txt might not have a Linux binary wheel." -ForegroundColor Yellow
     exit 1
 }
-
-if ($PypyodbcReqs) {
-    Write-Host "Downloading source packages for: $PypyodbcReqs"
-    # Download the specific version requested in requirements.txt
-    foreach ($req in $PypyodbcReqs) {
-        py -m pip download $req --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --no-deps
-    }
-} else {
-    Write-Host "No pypyodbc requirement found, skipping source download."
-}
-
-# Cleanup temp requirement file
-if (Test-Path requirements_linux.txt) { Remove-Item requirements_linux.txt }
 
 # Verify files exist
 if ((Get-ChildItem $OfflineDir).Count -eq 0) {
@@ -91,7 +68,7 @@ $PyScript = @"
 import zipfile, os, sys
 
 zip_name = '$ZipName'
-items = ['offline_packages', 'requirements.txt', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
+items = ['offline_packages', 'requirements.txt', 'constraints.txt', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
 
 print(f'Creating {zip_name}...')
 with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:

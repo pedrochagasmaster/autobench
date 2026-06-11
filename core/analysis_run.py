@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +25,6 @@ from core.contracts import (
     AnalysisRunRequest,
     DataQualityResult,
     OutputSettings,
-    PreparedDataset,
     RunSummary,
     WeightLookup,
     WeightingResult,
@@ -52,8 +53,10 @@ COMMON_CLI_OVERRIDES = (
     'validate_input',
     'compare_presets',
     'output_format',
+    'report_format',
     'include_calculated',
     'audit_package',
+    'validate_export',
     'lean',
     'compliance_posture',
 )
@@ -102,45 +105,16 @@ def build_dimensional_analyzer(
     violation_penalty_weight = resolved.bayesian.violation_penalty_weight
     enforce_single_weight_set = resolved.constraints.enforce_single_weight_set
 
-    analyzer = DimensionalAnalyzer(
+    analyzer = DimensionalAnalyzer.from_resolved(
+        resolved,
         target_entity=target_entity,
         entity_column=entity_col,
-        bic_percentile=bic_percentile,
-        debug_mode=debug_mode,
-        consistent_weights=consistent_weights,
-        merchant_mode=resolved.analysis.merchant_mode,
-        rank_constraint_mode=resolved.linear_programming.rank_constraints.get('mode', 'all'),
-        rank_constraint_k=resolved.linear_programming.rank_constraints.get('neighbor_k', 1),
-        max_iterations=resolved.linear_programming.max_iterations,
-        tolerance=resolved.linear_programming.tolerance,
-        max_weight=resolved.bounds.max_weight,
-        min_weight=resolved.bounds.min_weight,
-        volume_preservation_strength=rank_preservation_strength,
-        prefer_slacks_first=resolved.subset_search.prefer_slacks_first,
-        auto_subset_search=resolved.subset_search.enabled,
-        subset_search_max_tests=resolved.subset_search.max_attempts,
-        greedy_subset_search=(resolved.subset_search.strategy == 'greedy'),
-        trigger_subset_on_slack=resolved.subset_search.trigger_on_slack,
-        max_cap_slack=resolved.subset_search.max_slack_threshold,
         time_column=time_col,
-        volume_weighted_penalties=resolved.linear_programming.volume_weighted_penalties,
-        volume_weighting_exponent=resolved.linear_programming.volume_weighting_exponent,
+        debug_mode=debug_mode,
+        bic_percentile=bic_percentile,
+        consistent_weights=consistent_weights,
+        rank_preservation_strength=rank_preservation_strength,
         lambda_penalty=lambda_penalty,
-        enforce_additional_constraints=resolved.constraints.enforce_additional_constraints,
-        dynamic_constraints_enabled=dyn_constraints.get('enabled', False),
-        min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
-        min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
-        min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
-        min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
-        min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
-        dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
-        dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
-        representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
-        representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
-        bayesian_max_iterations=bayesian_max_iterations,
-        bayesian_learning_rate=bayesian_learning_rate,
-        violation_penalty_weight=violation_penalty_weight,
-        enforce_single_weight_set=enforce_single_weight_set,
     )
     return analyzer, {
         'consistent_weights': consistent_weights,
@@ -861,6 +835,72 @@ def _handle_optimization_failure(
     raise RunBlocked(str(exc), blocked_summary) from exc
 
 
+def _validate_balanced_export(
+    *,
+    analysis_output_file: str,
+    csv_output: str,
+    is_rate: bool,
+    compliance_posture: str,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """Validate balanced CSV export against the analysis workbook."""
+    try:
+        workbook_path = Path(analysis_output_file)
+        csv_path = Path(csv_output)
+        if not workbook_path.exists() or not csv_path.exists():
+            logger.warning("Export validation skipped: missing workbook or CSV")
+            return {'checked': False}
+
+        if is_rate:
+            validator_script = Path(__file__).resolve().parents[1] / 'utils' / 'csv_validator.py'
+            cmd = [sys.executable, str(validator_script), str(workbook_path), str(csv_path)]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            result: Dict[str, Any] = {'checked': True, 'passed': proc.returncode == 0, 'mode': 'full'}
+            if proc.returncode == 0:
+                logger.info(
+                    "Export validation passed (mode=%s): balanced CSV is consistent with the workbook",
+                    'full',
+                )
+            else:
+                stdout_tail = (proc.stdout or '')[-2000:]
+                stderr_tail = (proc.stderr or '')[-2000:]
+                logger.error(
+                    "Export validation FAILED (mode=full):\nstdout: %s\nstderr: %s",
+                    stdout_tail,
+                    stderr_tail,
+                )
+                if compliance_posture == 'strict':
+                    raise RuntimeError("Balanced CSV failed cross-validation against the workbook")
+            return result
+
+        df_csv = pd.read_csv(csv_path)
+        required = {'Dimension', 'Category'}
+        missing = required - set(df_csv.columns)
+        balanced_cols = [column for column in df_csv.columns if column.startswith('Balanced_')]
+        passed = not missing and bool(balanced_cols)
+        result = {'checked': True, 'passed': passed, 'mode': 'schema'}
+        if passed:
+            logger.info(
+                "Export validation passed (mode=%s): balanced CSV is consistent with the workbook",
+                'schema',
+            )
+        else:
+            details: List[str] = []
+            if missing:
+                details.append(f"missing columns: {sorted(missing)}")
+            if not balanced_cols:
+                details.append('missing Balanced_* columns')
+            logger.error("Export validation FAILED (mode=schema): %s", '; '.join(details))
+            if compliance_posture == 'strict':
+                raise RuntimeError("Balanced CSV failed cross-validation against the workbook")
+        return result
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logger.warning("Export validation could not run: %s", exc)
+        return {'checked': False}
+
+
 def _compute_share_impact(
     *,
     request: AnalysisRunRequest,
@@ -1032,7 +1072,6 @@ def _build_share_mode_metadata(
         'auto_subset_search': resolved.subset_search.enabled,
         'trigger_subset_on_slack': resolved.subset_search.trigger_on_slack,
         'max_cap_slack': resolved.subset_search.max_slack_threshold,
-        'analyzer_ref': analyzer,
         'last_lp_stats': (
             weighting_result.last_lp_stats
             if weighting_result is not None
@@ -1514,6 +1553,15 @@ def _execute_run(
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
+        if config.get('output', 'validate_export', default=True):
+            metadata['export_validation'] = _validate_balanced_export(
+                analysis_output_file=analysis_output_file,
+                csv_output=artifacts.csv_output,
+                is_rate=request.is_rate,
+                compliance_posture=compliance_context['compliance_posture'],
+                logger=logger,
+            )
+
     artifacts.report_paths = build_report_paths(
         output_settings.output_format,
         analysis_output_file,
@@ -1534,7 +1582,10 @@ def _execute_run(
     if output_settings.include_audit_package:
         artifacts.audit_package_output = write_audit_package(
             analysis_output_file=analysis_output_file,
-            report_paths=artifacts.report_paths or [],
+            report_paths=[
+                *(artifacts.report_paths or []),
+                *([artifacts.json_output] if artifacts.json_output else []),
+            ],
             csv_output=artifacts.csv_output,
             audit_log_output=artifacts.audit_log_output,
             config_snapshot=config.config,

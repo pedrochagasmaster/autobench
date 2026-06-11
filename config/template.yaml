@@ -64,7 +64,7 @@ runtime:
 # OUTPUT SETTINGS
 # ============================================================================
 output:
-  # Output format (currently only xlsx supported)
+  # xlsx (default) | json (adds a machine-readable .json beside the analysis workbook; not publication-redacted) — csv not yet supported
   format: "xlsx"
   
   # Include debug sheets with unweighted metrics
@@ -81,6 +81,9 @@ output:
 
   # Include audit package zip (workbook(s), optional CSV, audit log, config snapshot)
   include_audit_package: false
+
+  # Cross-validate balanced CSV against the analysis workbook on export
+  validate_export: true
 
   # Impact highlighting thresholds (percentage points)
   impact_thresholds:

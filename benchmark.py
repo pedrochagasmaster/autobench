@@ -18,55 +18,20 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict
 
 import pandas as pd
 
 # Import core modules
-from core.dimensional_analyzer import DimensionalAnalyzer
 from core.preset_comparison import run_preset_comparison as _run_shared_preset_comparison
 from core.analysis_run import (
-    build_dimensional_analyzer as _analysis_run_build_dimensional_analyzer,
+    build_dimensional_analyzer,
     build_run_request,
     execute_rate_run,
-    execute_run,
     execute_share_run,
-    resolve_consistency_mode as _analysis_run_resolve_consistency_mode,
     RunBlocked,
 )
 from utils.logger import setup_logging
-
-
-def _resolve_consistency_mode(
-    resolved: Any,
-    logger: logging.Logger,
-) -> Tuple[bool, str]:
-    """Compatibility wrapper for the shared analysis-run helper."""
-    return _analysis_run_resolve_consistency_mode(resolved, logger)
-
-
-def _build_dimensional_analyzer(
-    *,
-    target_entity: Optional[str],
-    entity_col: str,
-    resolved: Any,
-    time_col: Optional[str],
-    debug_mode: bool,
-    bic_percentile: float,
-    logger: logging.Logger,
-    consistent_weights: Optional[bool] = None,
-) -> Tuple[DimensionalAnalyzer, Dict[str, Any]]:
-    """Compatibility wrapper for the shared analysis-run helper."""
-    return _analysis_run_build_dimensional_analyzer(
-        target_entity=target_entity,
-        entity_col=entity_col,
-        resolved=resolved,
-        time_col=time_col,
-        debug_mode=debug_mode,
-        bic_percentile=bic_percentile,
-        logger=logger,
-        consistent_weights=consistent_weights,
-    )
 
 
 def get_presets_help() -> str:
@@ -139,6 +104,25 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Enable input data validation before analysis (default: enabled)',
     )
     parser.add_argument('--no-validate-input', action='store_false', dest='validate_input', help='Disable input data validation')
+    parser.add_argument(
+        '--validate-export',
+        action='store_true',
+        default=None,
+        dest='validate_export',
+        help='Cross-validate balanced CSV against the workbook on export (default: enabled)',
+    )
+    parser.add_argument(
+        '--no-validate-export',
+        action='store_false',
+        dest='validate_export',
+        help='Disable balanced CSV cross-validation on export',
+    )
+    parser.add_argument(
+        '--report-format',
+        choices=['xlsx', 'json'],
+        default=None,
+        help='xlsx (default) or json — json additionally writes a machine-readable <output>.json next to the workbook',
+    )
     parser.add_argument(
         '--output-format',
         choices=['analysis', 'publication', 'both'],
@@ -437,7 +421,7 @@ def run_preset_comparison(
         time_col=time_col,
         analysis_type=analysis_type,
         logger=logger,
-        analyzer_factory=_build_dimensional_analyzer,
+        analyzer_factory=build_dimensional_analyzer,
         total_col=total_col,
         numerator_cols=numerator_cols,
     )

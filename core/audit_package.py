@@ -10,6 +10,21 @@ from typing import Any, Dict, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
+_REDACTED = "***REDACTED***"
+_SECRET_KEYS = {"connection_string", "pwd", "password", "uid", "user", "token", "secret", "api_key"}
+
+
+def _redact_secrets(obj: Any) -> Any:
+    """Recursively mask secret-bearing keys before snapshot serialization."""
+    if isinstance(obj, dict):
+        return {
+            key: (_REDACTED if str(key).lower() in _SECRET_KEYS else _redact_secrets(value))
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_secrets(item) for item in obj]
+    return obj
+
 
 def _json_default(value: Any) -> str:
     return str(value)
@@ -41,6 +56,7 @@ def build_validation_summary(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "validation_errors": metadata.get("validation_errors", 0),
         "validation_warnings": metadata.get("validation_warnings", 0),
         "compliance_summary": metadata.get("compliance_summary", {}),
+        "export_validation": metadata.get("export_validation"),
     }
 
 
@@ -67,7 +83,7 @@ def write_audit_package(
         _add_existing_file(zf, audit_log_output, added=added)
         zf.writestr(
             "config_snapshot.json",
-            json.dumps(config_snapshot, indent=2, sort_keys=True, default=_json_default),
+            json.dumps(_redact_secrets(config_snapshot), indent=2, sort_keys=True, default=_json_default),
         )
         zf.writestr(
             "validation_summary.json",

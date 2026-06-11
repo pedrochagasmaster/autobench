@@ -95,11 +95,13 @@ class AnalysisRunRequest:
     time_col: Optional[str] = None
     log_level: str = "INFO"
     validate_input: bool = True
+    validate_export: Optional[bool] = None
     analyze_distortion: bool = False
     compare_presets: bool = False
     include_calculated: bool = False
     audit_package: bool = False
     output_format: str = "analysis"
+    report_format: Optional[str] = None
     metric: Optional[str] = None
     secondary_metrics: Optional[List[str]] = None
     auto: bool = False
@@ -161,6 +163,19 @@ class AnalysisRunRequest:
         }
         return cls(**kwargs)
 
+    @classmethod
+    def from_widget_values(cls, mode: str, values: Dict[str, Any]) -> "AnalysisRunRequest":
+        """Build a request from a flat dict of TUI widget values.
+
+        Keys mirror the dataclass field names. Missing keys take dataclass
+        defaults, keeping TUI behavior aligned with CLI defaults.
+        """
+        field_names = {f.name for f in fields(cls)}
+        unknown = set(values) - field_names
+        if unknown:
+            raise ValueError(f"Unknown request fields from TUI: {sorted(unknown)}")
+        return cls(mode=mode, **{k: v for k, v in values.items() if k in field_names and k != "mode"})
+
 
 @dataclass
 class AnalysisArtifacts:
@@ -185,6 +200,7 @@ class AnalysisArtifacts:
     audit_package_output: Optional[str] = None
     publication_output: Optional[str] = None
     report_model: Any = None
+    json_output: Optional[str] = None
 
 
 @dataclass

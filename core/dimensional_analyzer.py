@@ -7,7 +7,7 @@ following Mastercard privacy rules for balanced benchmarking.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 import logging
 import warnings
 from time import perf_counter
@@ -26,7 +26,6 @@ from .impact_calculator import (
     calculate_share_impact as _calculate_share_impact,
 )
 from .privacy_validation import PrivacyValidationResult, build_privacy_validation_result as _build_privacy_validation_result
-from .privacy_validation_builder import build_privacy_validation_dataframe as _build_privacy_validation_dataframe
 from .solver_request_builder import build_heuristic_request, build_lp_request
 from .subset_search import search_largest_feasible_subset
 from .constants import (
@@ -36,6 +35,9 @@ from .constants import (
 )
 from .solvers.lp_solver import LPSolver
 from .solvers.heuristic_solver import HeuristicSolver
+
+if TYPE_CHECKING:
+    from utils.config_manager import ResolvedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +271,67 @@ class DimensionalAnalyzer:
             'skipped_low_representativeness': 0,
         }
         self._log_init_settings()
+
+    @classmethod
+    def from_resolved(
+        cls,
+        resolved: "ResolvedConfig",
+        *,
+        target_entity: Optional[str],
+        entity_column: str,
+        time_column: Optional[str],
+        debug_mode: bool,
+        bic_percentile: float,
+        consistent_weights: bool,
+        rank_preservation_strength: float,
+        lambda_penalty: Optional[float],
+    ) -> "DimensionalAnalyzer":
+        """Build an analyzer from the typed resolved configuration.
+
+        Parameters derived outside the resolved config (consistency mode,
+        rank-preservation strength, lambda penalty) are passed explicitly.
+        """
+        dyn_constraints = resolved.constraints.dynamic_constraints
+        return cls(
+            target_entity=target_entity,
+            entity_column=entity_column,
+            bic_percentile=bic_percentile,
+            debug_mode=debug_mode,
+            consistent_weights=consistent_weights,
+            merchant_mode=resolved.analysis.merchant_mode,
+            rank_constraint_mode=resolved.linear_programming.rank_constraints.get('mode', 'all'),
+            rank_constraint_k=resolved.linear_programming.rank_constraints.get('neighbor_k', 1),
+            max_iterations=resolved.linear_programming.max_iterations,
+            tolerance=resolved.linear_programming.tolerance,
+            max_weight=resolved.bounds.max_weight,
+            min_weight=resolved.bounds.min_weight,
+            volume_preservation_strength=rank_preservation_strength,
+            prefer_slacks_first=resolved.subset_search.prefer_slacks_first,
+            auto_subset_search=resolved.subset_search.enabled,
+            subset_search_max_tests=resolved.subset_search.max_attempts,
+            greedy_subset_search=(resolved.subset_search.strategy == 'greedy'),
+            trigger_subset_on_slack=resolved.subset_search.trigger_on_slack,
+            max_cap_slack=resolved.subset_search.max_slack_threshold,
+            time_column=time_column,
+            volume_weighted_penalties=resolved.linear_programming.volume_weighted_penalties,
+            volume_weighting_exponent=resolved.linear_programming.volume_weighting_exponent,
+            lambda_penalty=lambda_penalty,
+            enforce_additional_constraints=resolved.constraints.enforce_additional_constraints,
+            dynamic_constraints_enabled=dyn_constraints.get('enabled', False),
+            min_peer_count_for_constraints=dyn_constraints.get('min_peer_count', 4),
+            min_effective_peer_count=dyn_constraints.get('min_effective_peer_count', 3.0),
+            min_category_volume_share=dyn_constraints.get('min_category_volume_share', 0.001),
+            min_overall_volume_share=dyn_constraints.get('min_overall_volume_share', 0.0005),
+            min_representativeness=dyn_constraints.get('min_representativeness', 0.1),
+            dynamic_threshold_scale_floor=dyn_constraints.get('threshold_scale_floor', 0.6),
+            dynamic_count_scale_floor=dyn_constraints.get('count_scale_floor', 0.5),
+            representativeness_penalty_floor=dyn_constraints.get('penalty_floor', 0.25),
+            representativeness_penalty_power=dyn_constraints.get('penalty_power', 1.0),
+            bayesian_max_iterations=resolved.bayesian.max_iterations,
+            bayesian_learning_rate=resolved.bayesian.learning_rate,
+            violation_penalty_weight=resolved.bayesian.violation_penalty_weight,
+            enforce_single_weight_set=resolved.constraints.enforce_single_weight_set,
+        )
 
     def _log_init_settings(self) -> None:
         logger.info(f"Initialized DimensionalAnalyzer for entity: {self.target_entity}")
@@ -1271,7 +1334,7 @@ class DimensionalAnalyzer:
 
     def build_privacy_validation_dataframe(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> pd.DataFrame:
         """Build detailed privacy validation dataframe showing original and balanced shares."""
-        return _build_privacy_validation_dataframe(self, df, metric_col, dimensions)
+        return _build_privacy_validation_result(self, df, metric_col, dimensions).to_dataframe()
 
     def build_privacy_validation_result(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> 'PrivacyValidationResult':
         """Build typed privacy validation result; DataFrame rendering stays in the adapter."""

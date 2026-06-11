@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .contracts import AnalysisArtifacts, AnalysisRunRequest
     from .report_models import ReportModel
-    from utils.config_manager import ConfigManager
 
 
 class OutputArtifactWriter:
@@ -60,6 +59,15 @@ def write_outputs(
     """Write Excel (and optionally publication) reports, returning updated artifacts."""
     if logger is None:
         logger = logging.getLogger(__name__)
+
+    posture = (artifacts.compliance_summary or {}).get("posture")
+    violations = int((artifacts.compliance_summary or {}).get("violations", 0) or 0)
+    block_publication = posture == "strict" and violations > 0
+
+    if block_publication:
+        if artifacts.metadata is None:
+            artifacts.metadata = {}
+        artifacts.metadata["publication_withheld_reason"] = "strict_posture_violations"
 
     from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
     from core.report_models import ReportModel
@@ -144,8 +152,42 @@ def write_outputs(
     if writer.write_analysis:
         _write_report(output_file, publication=False)
         logger.info("Analysis report written to %s", output_file)
+
+        report_format = (
+            config.get("output", "format", default="xlsx") if config is not None else "xlsx"
+        )
+        if report_format == "json":
+            json_path = str(Path(output_file).with_suffix(".json"))
+            from core.report_generator import ReportGenerator
+
+            json_results = artifacts.results
+            if request.is_rate and isinstance(artifacts.results, dict) and all(
+                isinstance(v, dict) for v in artifacts.results.values()
+            ):
+                json_results = {
+                    f"{rate_type}_{dimension}": value
+                    for rate_type, rate_results in artifacts.results.items()
+                    for dimension, value in rate_results.items()
+                }
+            ReportGenerator(config).generate_report(
+                json_results,
+                json_path,
+                format="json",
+                analysis_type="share" if request.is_share else "rate",
+                metadata=artifacts.metadata,
+            )
+            artifacts.json_output = json_path
+            logger.info("JSON report written to %s", json_path)
     if writer.write_publication:
-        _write_report(publication_file, publication=True)
-        artifacts.publication_output = publication_file
-        logger.info("Publication report written to %s", publication_file)
+        if block_publication:
+            artifacts.publication_output = None
+            logger.error(
+                "Strict posture: publication output withheld (violations=%d). "
+                "Analysis workbook written for debugging only.",
+                violations,
+            )
+        else:
+            _write_report(publication_file, publication=True)
+            artifacts.publication_output = publication_file
+            logger.info("Publication report written to %s", publication_file)
     return artifacts

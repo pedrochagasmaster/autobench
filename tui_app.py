@@ -354,6 +354,48 @@ class ValidationModal(ModalScreen):
         self.dismiss(False)
 
 
+# Fields populated by the TUI widget-values builder (union of common + mode-specific keys).
+TUI_REQUEST_FIELDS = frozenset({
+    "csv",
+    "entity",
+    "entity_col",
+    "preset",
+    "config",
+    "output",
+    "time_col",
+    "log_level",
+    "validate_input",
+    "analyze_distortion",
+    "compare_presets",
+    "include_calculated",
+    "output_format",
+    "compliance_posture",
+    "acknowledge_accuracy_first",
+    "metric",
+    "secondary_metrics",
+    "auto",
+    "dimensions",
+    "debug",
+    "export_balanced_csv",
+    "per_dimension_weights",
+    "total_col",
+    "approved_col",
+    "fraud_col",
+    "fraud_in_bps",
+})
+
+# CLI fields with no TUI widget yet; post-assembly fields are set after validation modal.
+TUI_UNSUPPORTED_FIELDS = frozenset({
+    "df",
+    "prepared_dataset",
+    "lean",
+    "audit_package",
+    "validate_export",
+    "report_format",
+    "control3_overrides",
+})
+
+
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
 
@@ -1678,87 +1720,88 @@ class BenchmarkApp(App):
 
                 mode = self._analysis_mode()
 
-                request = AnalysisRunRequest(
-                    mode=mode,
-                    csv=csv_path,
-                    entity=entity,
-                    entity_col=entity_col,
-                    preset=preset,
-                    config=self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None,
-                    output=output_file,
-                    time_col=time_col,
-                    log_level="INFO",
-                    validate_input=getattr(self.query_one("#validate_input"), 'value', True),
-                    analyze_distortion=getattr(self.query_one("#analyze_distortion"), 'value', False),
-                    compare_presets=getattr(self.query_one("#compare_presets"), 'value', False),
-                    include_calculated=getattr(self.query_one("#include_calculated"), 'value', False),
-                    output_format=getattr(self.query_one("#output_format"), 'value', 'analysis'),
-                )
-                if preset and not request.config:
+                values: Dict[str, Any] = {
+                    "csv": csv_path,
+                    "entity": entity,
+                    "entity_col": entity_col,
+                    "preset": preset,
+                    "config": self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None,
+                    "output": output_file,
+                    "time_col": time_col,
+                    "log_level": "INFO",
+                    "validate_input": getattr(self.query_one("#validate_input"), 'value', True),
+                    "analyze_distortion": getattr(self.query_one("#analyze_distortion"), 'value', False),
+                    "compare_presets": getattr(self.query_one("#compare_presets"), 'value', False),
+                    "include_calculated": getattr(self.query_one("#include_calculated"), 'value', False),
+                    "output_format": getattr(self.query_one("#output_format"), 'value', 'analysis'),
+                }
+                if preset and not values["config"]:
                     posture = None
                     if not hasattr(self, 'preset_workflow'):
                         self.preset_workflow = PresetWorkflow()
                     preset_data = self.preset_workflow.load_preset_data(preset)
                     posture = preset_data.get('compliance_posture') if isinstance(preset_data, dict) else None
-                    request.compliance_posture = posture
+                    values["compliance_posture"] = posture
                     if posture == 'best_effort':
                         self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
                     if posture == 'accuracy_first':
-                        request.acknowledge_accuracy_first = getattr(self.query_one("#acknowledge_accuracy_first"), 'value', False)
-                        if not request.acknowledge_accuracy_first:
+                        values["acknowledge_accuracy_first"] = getattr(self.query_one("#acknowledge_accuracy_first"), 'value', False)
+                        if not values["acknowledge_accuracy_first"]:
                             self._fail_launch(
                                 "accuracy_first posture requires acknowledgement. Check the box before running.",
                                 focus_id="acknowledge_accuracy_first",
                             )
                             return
 
-                if request.is_share:
+                if mode == "share":
                     metric_val = self.query_one("#share_metric").value
-                    request.metric = metric_val if metric_val != SELECT_BLANK else None
-                    if not request.metric:
+                    values["metric"] = metric_val if metric_val != SELECT_BLANK else None
+                    if not values["metric"]:
                         self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric")
                         return
                     sec_metrics = self.query_one("#share_secondary", SelectionList).selected
-                    request.secondary_metrics = list(sec_metrics) if sec_metrics else None
-                    request.auto = self.query_one("#share_auto_dim").value
+                    values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
+                    values["auto"] = self.query_one("#share_auto_dim").value
                     dims = self.query_one("#share_dims", SelectionList).selected
-                    if not request.auto and not dims:
+                    if not values["auto"] and not dims:
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="share_dims",
                         )
                         return
-                    request.dimensions = list(dims) if dims and not request.auto else None
-                    request.debug = self.query_one("#share_debug").value
-                    request.export_balanced_csv = self.query_one("#share_export_csv").value
-                    request.per_dimension_weights = False
+                    values["dimensions"] = list(dims) if dims and not values["auto"] else None
+                    values["debug"] = self.query_one("#share_debug").value
+                    values["export_balanced_csv"] = self.query_one("#share_export_csv").value
+                    values["per_dimension_weights"] = False
                 else:
                     total_val = self.query_one("#rate_total").value
-                    request.total_col = total_val if total_val != SELECT_BLANK else None
-                    if not request.total_col:
+                    values["total_col"] = total_val if total_val != SELECT_BLANK else None
+                    if not values["total_col"]:
                         self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total")
                         return
                     approved = self.query_one("#rate_approved").value
-                    request.approved_col = approved if approved != SELECT_BLANK else None
+                    values["approved_col"] = approved if approved != SELECT_BLANK else None
                     fraud = self.query_one("#rate_fraud").value
-                    request.fraud_col = fraud if fraud != SELECT_BLANK else None
-                    if not request.approved_col and not request.fraud_col:
+                    values["fraud_col"] = fraud if fraud != SELECT_BLANK else None
+                    if not values["approved_col"] and not values["fraud_col"]:
                         self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved")
                         return
                     sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
-                    request.secondary_metrics = list(sec_metrics) if sec_metrics else None
-                    request.auto = self.query_one("#rate_auto_dim").value
+                    values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
+                    values["auto"] = self.query_one("#rate_auto_dim").value
                     dims = self.query_one("#rate_dims", SelectionList).selected
-                    if not request.auto and not dims:
+                    if not values["auto"] and not dims:
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="rate_dims",
                         )
                         return
-                    request.dimensions = list(dims) if dims and not request.auto else None
-                    request.debug = self.query_one("#rate_debug").value
-                    request.export_balanced_csv = self.query_one("#rate_export_csv").value
-                    request.fraud_in_bps = getattr(self.query_one("#fraud_in_bps"), 'value', True)
+                    values["dimensions"] = list(dims) if dims and not values["auto"] else None
+                    values["debug"] = self.query_one("#rate_debug").value
+                    values["export_balanced_csv"] = self.query_one("#rate_export_csv").value
+                    values["fraud_in_bps"] = getattr(self.query_one("#fraud_in_bps"), 'value', True)
+
+                request = AnalysisRunRequest.from_widget_values(mode, values)
 
                 df = None
                 if request.validate_input and request.csv and os.path.exists(request.csv):

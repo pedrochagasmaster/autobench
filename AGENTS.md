@@ -133,8 +133,20 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── AGENTS.md                 # This file
 ├── 📁 docs/                  # Project documentation
 │   ├── CORE_TECHNICAL_DOC.md    # Canonical technical reference
-│   ├── OPERATIONAL_GAINS.md     # Operational notes
-│   └── archive/                 # Historical docs (not authoritative)
+│   ├── OPERATIONAL_GAINS.md     # Operational notes and executive summary
+│   ├── RELEASE_PROCESS.md       # Production release checklist
+│   ├── RESOURCE_MANAGEMENT.md   # Large-run memory/CPU guidance
+│   ├── control-3-customer-merchant-performance-v5-20260603.md # Canonical Control 3 source
+│   ├── control3_gap_matrix.md   # Control 3 policy coverage matrix
+│   ├── control3_implementation_summary.md # Control 3 enforcement summary
+│   ├── DE_SLOP_AUDIT.md         # Maintenance audit (refactoring opportunities)
+│   ├── PRODUCTION_READINESS_IMPLEMENTATION_PLAN.md # Production readiness plan
+│   ├── post_audit_sweep_results_analysis.md # Post-audit CLI sweep analysis
+│   ├── autobench_master_context*.md # Generated bundles (gitignored; py scripts/build_master_context.py)
+│   ├── *.docx                   # Source Word exports (Control 3, Operational Gains)
+│   ├── 📁 archive/              # Historical docs (not authoritative)
+│   ├── 📁 control-3-media/      # Embedded images for Control 3 markdown
+│   └── 📁 superpowers/plans/    # Agent implementation plans (de-slop, domain truth)
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
 │   ├── analysis_run.py          # Shared CLI/TUI orchestration
@@ -180,12 +192,12 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── 📁 scripts/               # Gate test, sweep generator/runner
 ├── 📁 tests/                 # Unit tests + fixtures/
 │   └── fixtures/                # Portable test data (gate_demo.csv, etc.)
-├── 📁 test_gate/             # Committed gate case definitions (portable)
+├── 📁 test_gate/             # Gate fixtures; cases.jsonl regenerated each run (see policy below)
 ├── 📁 data/                  # Input data (gitignored)
 └── 📁 outputs/               # Generated reports (gitignored)
 ```
 
-**Generated-artifact policy:** product code and portable fixtures under `tests/fixtures/` and `test_gate/` are tracked. Generated `test_sweeps/`, gate run outputs, and investigation scratch under `outputs/` are gitignored and regenerated on demand.
+**Generated-artifact policy:** portable fixtures under `tests/fixtures/` are tracked. The gate runner regenerates `test_gate/*/cases.jsonl` from `generate_cli_sweep.py --mode gate` on every `perform_gate_test.py` run — commit `test_gate/` diffs only when generator logic changes intentionally. Generated `test_sweeps/`, gate run outputs, investigation scratch under `outputs/`, and `docs/autobench_master_context*.md` bundles are gitignored and regenerated on demand.
 
 ---
 
@@ -244,7 +256,7 @@ analysis:
   best_in_class_percentile: 0.85  # 0.0-1.0
 
 output:
-  format: "xlsx"                  # "xlsx" | "csv" | "json"
+  format: "xlsx"                  # xlsx (default) | json (adds .json beside analysis workbook; not publication-redacted) — csv not yet supported
   include_debug_sheets: false
   include_privacy_validation: false
   log_level: "INFO"               # DEBUG|INFO|WARNING|ERROR
@@ -667,17 +679,26 @@ fl_token,Non-tokenized,2024-01,203796570874.8,151927893365.16,185177975.02
 ### 🛡️ Mandatory Verification
 
 After **any** code change, you must run the gate test suite. This performs a full system check:
-1. Generates 17+ representative scenarios (Share/Rate, Peer-Only/Target, etc.)
+1. Generates 18 representative scenarios (Share/Rate, Peer-Only/Target, etc.)
 2. Executes them to verify runtime stability.
 3. **Deeply verifies** outputs: checks Excel sheet structure, value ranges (0-100%), and cross-validates CSV exports against Excel reports (Control 3.2 compliance).
 
 **Use the `py` launcher for all Python commands in this repo (do not use `python`).**
 
 ```powershell
-# 1. Run Gate Test (System Integration)
+# 1. Lint (config in pyproject.toml)
+py -m ruff check .
+
+# 2. Typecheck (local-only; not run in CI)
+py -m mypy core/ utils/
+
+# 3. Run Gate Test (System Integration — full 18 cases before PR)
 py scripts/perform_gate_test.py
 
-# 2. Run Unit Tests
+# Fast gate smoke for inner loop only (not a substitute for the full gate):
+# py scripts/perform_gate_test.py --only share_gate_baseline
+
+# 4. Run Unit Tests
 py -m pytest
 ```
 
@@ -775,7 +796,7 @@ python-dateutil>=2.8.0
 
 | Aspect | Standard |
 |--------|----------|
-| Python | 3.8+ |
+| Python | 3.10+ |
 | Type hints | Required on public methods |
 | Docstrings | NumPy style |
 | Logging | `logger = logging.getLogger(__name__)` |
@@ -824,13 +845,14 @@ Cloud startup runs `bash scripts/cloud_install.sh` (see `.cursor/environment.jso
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
+py -m ruff check .              # Lint (pyproject.toml)
+py -m mypy core/ utils/         # Typecheck (local-only; not run in CI)
 py -m pytest tests/ -v          # Unit tests: 100+ passed
 py scripts/perform_gate_test.py # Gate test: 18 pass (portable fixture, no data/ required)
-ruff check --select E,F --ignore E501,F401 benchmark.py core/ utils/ tui_app.py  # Lint
-mypy core/ utils/               # Typecheck extracted modules
+# Fast smoke: py scripts/perform_gate_test.py --only share_gate_baseline
 ```
 
-Pull requests must pass `.github/workflows/ci.yml` (lint, unit tests, gate on Python 3.10 and 3.12).
+Pull requests must pass `.github/workflows/ci.yml` (ruff, unit tests, gate on Python 3.10 and 3.12). Mypy is a local-only check.
 
 ### Gate test
 

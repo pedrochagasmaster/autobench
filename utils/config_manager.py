@@ -576,6 +576,7 @@ class ConfigManager:
                 'include_calculated_metrics': False,
                 'include_audit_log': True,
                 'include_audit_package': False,
+                'validate_export': True,
                 'impact_thresholds': {
                     'high_pp': 1.0,
                     'low_pp': 0.25,
@@ -758,9 +759,11 @@ class ConfigManager:
             'validate_input': ('input', 'validate_input'),
             'compare_presets': ('output', 'include_preset_comparison'),
             'analyze_distortion': ('output', 'include_impact_summary'),
+            'report_format': ('output', 'format'),
             'output_format': ('output', 'output_format'),
             'include_calculated': ('output', 'include_calculated_metrics'),
             'audit_package': ('output', 'include_audit_package'),
+            'validate_export': ('output', 'validate_export'),
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
@@ -822,6 +825,7 @@ class ConfigManager:
         self._set_nested(self.config, ('output', 'include_calculated_metrics'), False)
         self._set_nested(self.config, ('output', 'include_audit_log'), False)
         self._set_nested(self.config, ('output', 'include_audit_package'), False)
+        self._set_nested(self.config, ('output', 'validate_export'), False)
         self._set_nested(self.config, ('output', 'output_format'), 'analysis')
         self._set_nested(self.config, ('analysis', 'auto_detect_dimensions'), False)
         self._set_nested(self.config, ('optimization', 'subset_search', 'enabled'), False)

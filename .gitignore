@@ -47,6 +47,9 @@ test_sweeps/
 test_gate/config/generated_template.yaml
 outputs/
 
+# Generated agent/audit context bundles — regenerate with: py scripts/build_master_context.py
+docs/autobench_master_context*.md
+
 # Old/backup files
 *_old.py
 *_backup*.py
@@ -60,11 +63,13 @@ config.json
 # Keep these patterns
 !presets.json
 !config.template.json
-!requirements-dev.txt
 
 *.txt
 *.xlsx
 *.csv
+# Negations must follow the blanket patterns (last match wins)
+!requirements-dev.txt
+!constraints.txt
 !tests/fixtures/*.csv
 *.csv.gz
 /offline_packages/*

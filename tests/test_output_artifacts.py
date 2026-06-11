@@ -6,8 +6,8 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import run_share_analysis
-from core.analysis_run import write_outputs as analysis_write_outputs
-from core.output_artifacts import OutputArtifactWriter
+from core.analysis_run import build_run_request, execute_share_run, write_outputs as analysis_write_outputs
+from core.output_artifacts import OutputArtifactWriter, write_outputs
 
 
 def test_core_modules_import_without_benchmark() -> None:
@@ -71,8 +71,10 @@ def _gate_demo_df() -> pd.DataFrame:
 
 def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
+    args = _share_args(output, _share_df(), output_format="both")
+    args.compliance_posture = "best_effort"
 
-    result = run_share_analysis(_share_args(output, _share_df()), __import__("logging").getLogger("test_output"))
+    result = run_share_analysis(args, __import__("logging").getLogger("test_output"))
 
     assert result == 0
     assert output.exists()
@@ -209,9 +211,11 @@ def test_output_format_publication_only_writes_publication_workbook(tmp_path: Pa
     (`generate_publication_workbook` was dead code on `main`).
     """
     output = tmp_path / "share.xlsx"
+    args = _share_args(output, _share_df(), output_format="publication")
+    args.compliance_posture = "best_effort"
 
     result = run_share_analysis(
-        _share_args(output, _share_df(), output_format="publication"),
+        args,
         __import__("logging").getLogger("test_pub_only"),
     )
 
@@ -246,9 +250,11 @@ def test_publication_workbook_includes_compliance_evidence_sheets(tmp_path: Path
     diagnostics (Weight Methods, Subset Search, Structural Diagnostics).
     """
     output = tmp_path / "share.xlsx"
+    args = _share_args(output, _share_df(), output_format="both")
+    args.compliance_posture = "best_effort"
 
     result = run_share_analysis(
-        _share_args(output, _share_df(), output_format="both"),
+        args,
         __import__("logging").getLogger("test_pub_scope"),
     )
 
@@ -268,3 +274,101 @@ def test_publication_workbook_includes_compliance_evidence_sheets(tmp_path: Path
         assert "Data Quality" not in sheetnames
     finally:
         workbook.close()
+
+
+def _artifacts_ready_for_write(
+    tmp_path: Path,
+    *,
+    output_format: str = "both",
+) -> tuple[SimpleNamespace, object]:
+    """Run share analysis without writing outputs; return request and artifacts."""
+    logger = __import__("logging").getLogger("test_publication_gate")
+    args = _share_args(tmp_path / "capture.xlsx", _share_df(), output_format=output_format)
+    request = build_run_request("share", args)
+    with patch("core.analysis_run.write_outputs", lambda _req, art, **_kw: art):
+        artifacts = execute_share_run(request, logger)
+    return request, artifacts
+
+
+def _write_with_posture(
+    tmp_path: Path,
+    *,
+    output_format: str,
+    posture: str,
+    violations: int,
+    stem: str,
+) -> tuple[SimpleNamespace, object, Path, Path]:
+    request, artifacts = _artifacts_ready_for_write(tmp_path, output_format=output_format)
+    output_base = tmp_path / f"{stem}.xlsx"
+    pub_path = output_base.with_name(f"{output_base.stem}_publication.xlsx")
+    artifacts.analysis_output_file = str(output_base)
+    artifacts.publication_output = str(pub_path)
+    if artifacts.metadata is None:
+        artifacts.metadata = {}
+    summary = dict(artifacts.compliance_summary or {})
+    summary["posture"] = posture
+    summary["violations"] = violations
+    artifacts.compliance_summary = summary
+    artifacts.metadata["compliance_summary"] = summary
+    write_outputs(request, artifacts, logger=__import__("logging").getLogger("test_publication_gate"))
+    return request, artifacts, output_base, pub_path
+
+
+def test_strict_posture_with_violations_withholds_publication_workbook(tmp_path: Path) -> None:
+    _, artifacts, output_base, pub_path = _write_with_posture(
+        tmp_path,
+        output_format="both",
+        posture="strict",
+        violations=1,
+        stem="strict_block",
+    )
+
+    assert output_base.exists()
+    assert not pub_path.exists()
+    assert artifacts.publication_output is None
+    assert artifacts.metadata.get("publication_withheld_reason") == "strict_posture_violations"
+
+
+def test_best_effort_posture_with_violations_still_writes_publication(tmp_path: Path) -> None:
+    _, artifacts, output_base, pub_path = _write_with_posture(
+        tmp_path,
+        output_format="both",
+        posture="best_effort",
+        violations=1,
+        stem="best_effort_pub",
+    )
+
+    assert output_base.exists()
+    assert pub_path.exists()
+    assert artifacts.publication_output == str(pub_path)
+    assert "publication_withheld_reason" not in (artifacts.metadata or {})
+
+
+def test_strict_posture_without_violations_writes_publication(tmp_path: Path) -> None:
+    _, artifacts, output_base, pub_path = _write_with_posture(
+        tmp_path,
+        output_format="both",
+        posture="strict",
+        violations=0,
+        stem="strict_compliant",
+    )
+
+    assert output_base.exists()
+    assert pub_path.exists()
+    assert artifacts.publication_output == str(pub_path)
+    assert "publication_withheld_reason" not in (artifacts.metadata or {})
+
+
+def test_strict_posture_publication_only_with_violations_writes_no_workbook(tmp_path: Path) -> None:
+    _, artifacts, output_base, pub_path = _write_with_posture(
+        tmp_path,
+        output_format="publication",
+        posture="strict",
+        violations=1,
+        stem="strict_pub_only",
+    )
+
+    assert not output_base.exists()
+    assert not pub_path.exists()
+    assert artifacts.publication_output is None
+    assert artifacts.metadata.get("publication_withheld_reason") == "strict_posture_violations"
