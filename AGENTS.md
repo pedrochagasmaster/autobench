@@ -285,7 +285,12 @@ The TUI implements a **validation-first** flow using `ValidationModal`:
 | `Checkbox` | `include_calculated` | Add raw/distortion columns to CSV |
 | `Checkbox` | `fraud_in_bps` | Rate tab only: BPS formatting |
 | `Select` | `output_format` | analysis/publication/both |
+| `Static` | `run_status` | Live run state (Ready/Running/Success/Failed) + elapsed |
+| `Static` | `results_panel` | Last-run summary: verdict, posture, report paths |
+| `Static` | `csv_meta` | Loaded-file summary (name, columns, size) |
 | `ValidationModal` | — | Shows validation errors/warnings |
+| `CsvPickerScreen` | — | Modal CSV picker (quick picks + directory tree) |
+| `ConfirmScreen` | — | Quit confirmation while a run is active |
 
 ### Backend Integration Notes
 
@@ -462,11 +467,28 @@ The TUI is built with **Textual** framework and follows these patterns:
 
 ```
 tui_app.py
-├── BenchmarkApp (App)           # Main application
-├── FileListItem (ListItem)      # Custom list item for file paths
-├── LogHandler (logging.Handler) # Redirects logs to TUI
-└── PresetHelpScreen (Screen)    # Modal help screen
+├── BenchmarkApp (App)              # Main application (two-pane layout)
+├── FileListItem (ListItem)         # Custom list item for file paths
+├── LogHandler (logging.Handler)    # Redirects logs to TUI
+├── CsvDirectoryTree (DirectoryTree)# Tree filtered to dirs + *.csv
+├── CsvPickerScreen (ModalScreen)   # CSV picker: quick picks + tree
+├── ConfirmScreen (ModalScreen)     # Generic yes/no confirmation
+├── ValidationModal (ModalScreen)   # Validation issues, proceed/cancel
+└── PresetHelpScreen (ModalScreen)  # Modal help screen
 ```
+
+**Layout**: a `Horizontal` `#app_body` splits the screen into a scrollable
+configuration pane (left, numbered `form-section` containers) and an activity
+pane (right) holding `#run_status`, `#results_panel`, and `#log_output`.
+
+**Session persistence**: the form is saved to `~/.benchmark_tui/session.yaml`
+when a run starts and on quit, and restored on launch (stale paths/columns are
+ignored). Tests must monkeypatch `tui_app.SESSION_FILE` to a tmp path.
+
+**Select sentinel gotcha**: Textual >= 0.89 renamed the Select no-selection
+sentinel from `Select.BLANK` to `Select.NULL` (`Select.BLANK` now resolves to
+`Widget.BLANK`, which is `False`). Always compare against the module-level
+`tui_app.SELECT_BLANK` constant, never `Select.BLANK` directly.
 
 ### Widget Selection Rules
 
@@ -507,21 +529,23 @@ def load_unique_entities(self, column_name):
 dimensions = input_widget.value.split()
 ```
 
-5. **File discovery pattern** — search current dir + `data/`:
+5. **File discovery pattern** — quick picks from current dir, `data/`, and
+   `tests/fixtures/`, plus a `CsvDirectoryTree` for browsing anywhere in the
+   workspace (see `CsvPickerScreen`):
 ```python
-csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
+patterns = ("*.csv", "data/*.csv", "tests/fixtures/*.csv")
 ```
 
 ### TUI Workflow
 
 ```
-1. File Selection    → ListView populated from current dir + data/
+1. File Selection    → CsvPickerScreen modal (quick picks + directory tree)
 2. Entity Column     → Select populated from CSV headers
 3. Target Entity     → Select populated from unique values in selected column
 4. Preset Selection  → Select populated from presets/ directory
 5. Analysis Config   → Tab-based (Share / Rate)
-6. Run Analysis      → Background thread execution
-7. Log Display       → Real-time logging via LogHandler
+6. Run Analysis      → Background thread execution (preflight-checked)
+7. Monitoring        → Run Status + Last Run panels, real-time Execution Log
 ```
 
 ### Coding Conventions for TUI
@@ -538,6 +562,10 @@ csv_files = glob.glob("*.csv") + glob.glob("data/*.csv")
 | `BenchmarkApp` | Main Textual App with CSS and bindings |
 | `FileListItem` | ListView item that safely stores file path |
 | `LogHandler` | Redirects Python logging to TUI Log widget |
+| `CsvDirectoryTree` | DirectoryTree showing only directories and CSVs |
+| `CsvPickerScreen` | Modal CSV picker (quick picks + workspace tree) |
+| `ConfirmScreen` | Yes/no confirmation (used for quit-while-running) |
+| `ValidationModal` | Validation issues with proceed/cancel |
 | `PresetHelpScreen` | Modal screen showing preset descriptions |
 
 ---

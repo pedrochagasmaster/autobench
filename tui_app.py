@@ -1815,10 +1815,9 @@ class BenchmarkApp(App):
         if confirmed and saved_request:
             request = saved_request
             logger = logging.getLogger("benchmark")
-            if self._run_state != "running":
-                # Validation-modal confirmations re-enter here after the UI was
-                # reset, so restore the running state before executing.
-                self.call_from_thread(self._begin_run_ui)
+            # Restart the run clock so the elapsed time reflects execution,
+            # not how long a validation modal sat open.
+            self.call_from_thread(self._begin_run_ui)
             try:
                 # NOTE (audit complement §2.10): `saved_df` is the raw input
                 # DataFrame and does not carry preset/posture state. If a future
