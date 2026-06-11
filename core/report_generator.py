@@ -364,9 +364,10 @@ class ReportGenerator:
                 cell = worksheet.cell(row=row, column=c_idx, value=header)
                 cell.font = self._font_class(bold=True)
             row += 1
-            for r_idx, row_data in enumerate(result_data.itertuples(index=False), start=row):
-                for c_idx, value in enumerate(row_data, start=1):
-                    worksheet.cell(row=r_idx, column=c_idx, value=self._excel_safe_value(value))
+            for row_values in result_data.itertuples(index=False, name=None):
+                worksheet.append(
+                    [self._excel_safe_value(v) for v in row_values]
+                )
     
     def _write_metadata_sheet(
         self,
@@ -421,9 +422,8 @@ class ReportGenerator:
             ws.cell(row=1, column=col_idx, value=str(column))
             if font_cls is not None:
                 ws.cell(row=1, column=col_idx).font = font_cls(bold=True)
-        for row_idx, row in enumerate(df.itertuples(index=False), start=2):
-            for col_idx, value in enumerate(row, start=1):
-                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
+        for row_values in df.itertuples(index=False, name=None):
+            ws.append([self._excel_safe_value(v) for v in row_values])
 
     def _redact_publication_dataframe(self, value: Any, *, reason: str) -> Any:
         """Keep publication evidence sheets without disclosing peer composition."""
