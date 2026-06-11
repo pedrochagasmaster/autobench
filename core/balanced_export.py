@@ -30,9 +30,11 @@ def get_balanced_metrics_df(
     entity_col = analyzer.entity_column
     weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
     
-    # Check if time column is available
+    # Check if time column is available (treat a missing column as no time axis)
     time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
-    has_time = time_col and time_col in df.columns
+    if time_col is not None and time_col not in df.columns:
+        time_col = None
+    has_time = time_col is not None
     
     # Build list of metrics to calculate
     metrics_to_calculate = []
@@ -102,7 +104,7 @@ def get_balanced_metrics_df(
                 }
                 
                 # Add time period if applicable
-                if has_time:
+                if time_col is not None:
                     row_data[time_col] = time_period
                 
                 # Calculate balanced metric for each metric column
@@ -139,7 +141,7 @@ def get_balanced_metrics_df(
     
     # Sort by Dimension, Time (if present), then Category
     sort_cols = ['Dimension']
-    if has_time and time_col in result_df.columns:
+    if time_col is not None and time_col in result_df.columns:
         sort_cols.append(time_col)
     sort_cols.append('Category')
     
@@ -187,8 +189,10 @@ def export_balanced_csv(
     """
     # Create CSV filename from Excel filename
     csv_output = output_file.rsplit('.', 1)[0] + '_balanced.csv'
+    dimensions = dimensions or []
+    numerator_cols = numerator_cols or {}
     
-    if analysis_type == 'rate' and all_results and df is not None and analyzer is not None:
+    if analysis_type == 'rate' and all_results and df is not None and analyzer is not None and total_col is not None:
         # Rate analysis: calculate weighted totals for each dimension-category
         export_rows = []
         
@@ -196,9 +200,11 @@ def export_balanced_csv(
         entity_col = analyzer.entity_column
         weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
         
-        # Check if time column is available
+        # Check if time column is available (treat a missing column as no time axis)
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
-        has_time = time_col and time_col in df.columns
+        if time_col is not None and time_col not in df.columns:
+            time_col = None
+        has_time = time_col is not None
         
         # Get secondary metrics from caller
         secondary_metrics_list = getattr(analyzer, 'secondary_metrics', None)
@@ -339,7 +345,7 @@ def export_balanced_csv(
                             row_data['Fraud_Impact_PP'] = bal_fraud_rate - raw_fraud_rate
                     
                     # Add time period if applicable
-                    if has_time:
+                    if time_col is not None:
                         row_data[time_col] = time_period
                     
                     # Use dynamic column names based on input columns
@@ -366,7 +372,7 @@ def export_balanced_csv(
         
         # Sort by Dimension, Time (if present), then Category
         sort_cols = ['Dimension']
-        if has_time and time_col in export_df.columns:
+        if time_col is not None and time_col in export_df.columns:
             sort_cols.append(time_col)
         sort_cols.append('Category')
         
@@ -385,9 +391,11 @@ def export_balanced_csv(
         entity_col = analyzer.entity_column
         weights = weight_lookup or WeightLookup.from_analyzer(analyzer)
         
-        # Check if time column is available
+        # Check if time column is available (treat a missing column as no time axis)
         time_col = analyzer.time_column if hasattr(analyzer, 'time_column') else None
-        has_time = time_col and time_col in df.columns
+        if time_col is not None and time_col not in df.columns:
+            time_col = None
+        has_time = time_col is not None
         
         # Build list of metrics to calculate (primary + secondary)
         metrics_to_calculate = []
@@ -502,7 +510,7 @@ def export_balanced_csv(
                                 row_data[f'{clean_name}_Impact_PP'] = None
 
                     # Add time period if applicable
-                    if has_time:
+                    if time_col is not None:
                         row_data[time_col] = time_period
 
                     export_rows.append(row_data)
@@ -516,7 +524,7 @@ def export_balanced_csv(
         
         # Sort by Dimension, Time (if present), then Category
         sort_cols = ['Dimension']
-        if has_time and time_col in export_df.columns:
+        if time_col is not None and time_col in export_df.columns:
             sort_cols.append(time_col)
         sort_cols.append('Category')
         
