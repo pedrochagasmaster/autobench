@@ -408,11 +408,19 @@ def generate_gate_cases(
     make_gate_case("baseline", {}, ["--output-format", "analysis", "--validate-input"])
 
     # Case 2: Peer + Auto Dims + Publication + No Validate
-    # Note: entity=None implies peer-only
+    # Note: entity=None implies peer-only. Use best_effort posture so strict
+    # publication withholding (plan 006) does not block this publication-path check.
     make_gate_case(
-        "peer_auto_pub", 
-        {"entity": None, "dimensions": None, "auto": True, "output_format": "publication", "validate_input": False}, 
-        ["--auto", "--output-format", "publication", "--no-validate-input"]
+        "peer_auto_pub",
+        {
+            "entity": None,
+            "dimensions": None,
+            "auto": True,
+            "output_format": "publication",
+            "validate_input": False,
+            "compliance_posture": "best_effort",
+        },
+        ["--auto", "--output-format", "publication", "--no-validate-input", "--compliance-posture", "best_effort"],
     )
 
     # Case 3: Preset + Impact/Distortion (if available)
