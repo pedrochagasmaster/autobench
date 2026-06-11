@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
 
 import pandas as pd
 
@@ -28,6 +28,7 @@ from core.contracts import (
     RunSummary,
     WeightLookup,
     WeightingResult,
+    weighting_result_from_analyzer,
 )
 from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
@@ -745,6 +746,11 @@ def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRun
             summary,
         )
     resolved = config.resolve() if hasattr(config, "resolve") else None
+    if resolved is None:
+        raise RunBlocked(
+            "Configuration could not be resolved for Control 3 policy evaluation",
+            build_blocked_compliance_summary(posture, acknowledgement_given).to_dict(),
+        )
     policy_input = Control3PolicyInput.from_evidence(
         resolved.control3,
         analysis_mode=request.mode,
@@ -797,10 +803,12 @@ class AnalysisModeSpec:
     resolve_preferred_entity_col: Callable[[AnalysisRunRequest, ConfigManager], str]
     validate_request: Callable[[AnalysisRunRequest, pd.DataFrame], None]
     build_validation_kwargs: Callable[
-        [AnalysisRunRequest, str, Optional[str], List[str]],
+        [AnalysisRunRequest, str, Optional[str], Optional[List[str]]],
         Dict[str, Any],
     ]
-    weight_metric_col: Callable[[AnalysisRunRequest], str]
+    # Optional because request fields are Optional; mode validation guarantees
+    # a concrete column before the pipeline reads it.
+    weight_metric_col: Callable[[AnalysisRunRequest], Optional[str]]
     initial_bic_percentile: Callable[[AnalysisRunRequest, ConfigManager], float]
     run_analysis: Callable[
         [AnalysisRunRequest, DimensionalAnalyzer, pd.DataFrame, List[str], ConfigManager],
@@ -820,7 +828,7 @@ def _handle_optimization_failure(
     analyzer: DimensionalAnalyzer,
     compliance_context: Dict[str, Any],
     logger: logging.Logger,
-) -> None:
+) -> NoReturn:
     block_reason = getattr(analyzer, 'compliance_blocked_reason', None) or 'optimization_aborted'
     block_extra: Dict[str, Any] = {'error': str(exc)}
     if hasattr(analyzer, 'compliance_blocked_peer_count'):
@@ -925,6 +933,7 @@ def _compute_share_impact(
         logger.info("Impact skipped: peer-only share has no target entity to compare")
         return None, None, metadata_updates
 
+    assert request.metric is not None  # guaranteed by _validate_share_request
     impact_df = analyzer.calculate_share_impact(
         df,
         request.metric,
@@ -1012,6 +1021,7 @@ def _run_share_analysis(
     dimensions: List[str],
     _config: ConfigManager,
 ) -> Dict[str, Any]:
+    assert request.metric is not None  # guaranteed by _validate_share_request
     results: Dict[str, Any] = {}
     for dim in dimensions:
         results[dim] = analyzer.analyze_dimension_share(df=df, dimension_column=dim, metric_col=request.metric)
@@ -1035,6 +1045,7 @@ def _run_rate_analysis(
     if request.fraud_col:
         bic_percentiles['fraud'] = fraud_bic
 
+    assert request.total_col is not None  # guaranteed by _validate_rate_request
     all_results: Dict[str, Any] = {}
     for rate_type in request.rate_types:
         analyzer.bic_percentile = bic_percentiles[rate_type]
@@ -1319,6 +1330,9 @@ def _execute_run(
             preferred_entity_col=preferred_entity_col,
         )
         if used_prepared:
+            # apply_prepared_dataset only reports used_prepared=True after
+            # materializing all of these.
+            assert prepared_loader is not None and prepared_df is not None and prepared_entity_col is not None
             data_loader = prepared_loader
             df = prepared_df
             entity_col = prepared_entity_col
@@ -1372,6 +1386,7 @@ def _execute_run(
     )
     consistent_weights = analyzer_settings['consistent_weights']
     weight_metric_col = mode_spec.weight_metric_col(request)
+    assert weight_metric_col is not None  # guaranteed by mode_spec.validate_request
 
     try:
         weighting_result = analyzer.fit_privacy_weights(df, weight_metric_col, dimensions)
@@ -1382,6 +1397,9 @@ def _execute_run(
             compliance_context=compliance_context,
             logger=logger,
         )
+    if weighting_result is None:
+        # Defensive snapshot from analyzer side-effect state.
+        weighting_result = weighting_result_from_analyzer(analyzer)
 
     results = mode_spec.run_analysis(request, analyzer, df, dimensions, config)
 

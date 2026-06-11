@@ -18,7 +18,7 @@ from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
 from .global_weight_optimizer import GlobalWeightOptimizer
 from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
-from .contracts import SolverRequest, WeightLookup, WeightingResult
+from .contracts import SolverRequest, WeightLookup, WeightingResult, weighting_result_from_analyzer
 from .impact_calculator import (
     build_weight_map_for_dimension,
     calculate_impact_summary as _calculate_impact_summary,
@@ -191,8 +191,10 @@ class DimensionalAnalyzer:
         # Map legacy volume preservation to rank preservation
         self.rank_preservation_strength: float = float(volume_preservation_strength)
         self.volume_preservation_strength = volume_preservation_strength  # kept for backward compatibility (unused)
-        self.global_weights = {}  # Store global weights for consistent mode
-        self.weights_data = []  # Store weights for debug reporting
+        self.global_weights: Dict[str, Dict[str, Any]] = {}  # Store global weights for consistent mode
+        self.weights_data: List[Dict[str, Any]] = []  # Store weights for debug reporting
+        # Secondary metric column names; set by run orchestration before CSV export.
+        self.secondary_metrics: Optional[List[str]] = None
         # New: store per-dimension specific weights when global LP drops some dimensions
         self.per_dimension_weights: Dict[str, Dict[str, float]] = {}
         # Track the method used for each dimension's weights
@@ -973,7 +975,9 @@ class DimensionalAnalyzer:
             None,
             rule_name,
         )
-        return None
+        # Snapshot per-dimension weights so downstream consumers (WeightLookup,
+        # finalize_analysis_result) see real multipliers instead of None.
+        return weighting_result_from_analyzer(self)
     
     def get_weights_dataframe(self) -> pd.DataFrame:
         """Return a dataframe of global weights and per-dimension weights for debugging."""
@@ -1169,7 +1173,8 @@ class DimensionalAnalyzer:
             result['Impact (pp)'] = round(peer_balanced_avg - original_peer_avg, 6)
         
         # Add target-specific columns only if we have a target entity
-        if self.target_entity is not None:
+        # (target_share is None exactly when target_entity is None).
+        if target_share is not None:
             result['Target Share (%)'] = round(target_share, 6)
             result['Distance to Peer (pp)'] = round(target_share - peer_balanced_avg, 6)
         
@@ -1299,7 +1304,8 @@ class DimensionalAnalyzer:
             result['Impact (pp)'] = round(peer_balanced_rate - original_peer_rate, 6)
         
         # Add target-specific columns only if we have a target entity
-        if self.target_entity is not None:
+        # (target_rate is None exactly when target_entity is None).
+        if target_rate is not None:
             result['Target Rate (%)'] = round(target_rate, 6)
             result['Distance to Peer (pp)'] = round(target_rate - peer_balanced_rate, 6)
         
@@ -1399,7 +1405,7 @@ class DimensionalAnalyzer:
         impact_df: pd.DataFrame,
         analysis_type: str = 'share',
     ) -> pd.DataFrame:
-        return _calculate_impact_summary(self, impact_df, analysis_type)
+        return _calculate_impact_summary(impact_df, analysis_type)
 
 
     def calculate_distortion_summary(
