@@ -17,6 +17,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import yaml
 
+# Remote-friendly renderer defaults (must be set before Textual is imported).
+# The TUI is typically used over SSH/VPN where smooth scrolling and animations
+# multiply the number of frames (and therefore bytes) sent down the wire.
+# `setdefault` keeps these overridable from the environment.
+os.environ.setdefault("TEXTUAL_SMOOTH_SCROLL", "0")
+os.environ.setdefault("TEXTUAL_ANIMATIONS", "none")
+os.environ.setdefault("TEXTUAL_FPS", "20")
+
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
@@ -125,14 +133,55 @@ def write_log_message(log_widget: Log, message: str) -> None:
 
 
 class LogHandler(logging.Handler):
-    """Custom logging handler to send logs to a Textual Log widget."""
+    """Logging handler that batches records into a Textual Log widget.
+
+    Analysis runs can emit hundreds of records in quick succession. Posting
+    each one individually via ``call_from_thread`` wakes the app loop and
+    repaints the Log per record, which causes visible lag and flicker over
+    slow links (SSH/VPN). Instead, records accumulate in a buffer and at most
+    one flush callback is in flight at any time; each flush drains the whole
+    buffer into a single ``Log.write`` call.
+    """
+
     def __init__(self, log_widget: Log):
         super().__init__()
         self.log_widget = log_widget
+        self._buffer: List[str] = []
+        self._buffer_lock = threading.Lock()
+        self._flush_scheduled = False
 
     def emit(self, record):
         msg = self.format(record)
-        write_log_message(self.log_widget, msg)
+        try:
+            app = self.log_widget.app
+        except Exception:
+            # Widget is no longer attached to a running app (e.g. after exit).
+            return
+        if app is None:
+            return
+        text = msg if msg.endswith("\n") else f"{msg}\n"
+        with self._buffer_lock:
+            self._buffer.append(text)
+            if self._flush_scheduled:
+                return
+            self._flush_scheduled = True
+        if getattr(app, "_thread_id", None) == threading.get_ident():
+            self._flush()
+        else:
+            try:
+                app.call_from_thread(self._flush)
+            except Exception:
+                # App is shutting down; drop the pending flush.
+                with self._buffer_lock:
+                    self._flush_scheduled = False
+
+    def _flush(self) -> None:
+        """Drain the buffer into one Log.write (app thread only)."""
+        with self._buffer_lock:
+            pending, self._buffer = self._buffer, []
+            self._flush_scheduled = False
+        if pending:
+            self.log_widget.write("".join(pending))
 
 
 class FileListItem(ListItem):
@@ -737,7 +786,9 @@ class BenchmarkApp(App):
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
-        yield Header(show_clock=True)
+        # No clock: it would repaint the header (and push bytes over SSH)
+        # every second for the lifetime of the app.
+        yield Header(show_clock=False)
 
         with Horizontal(id="app_body"):
             # ═══════════════════════════════════════════════════════════
@@ -939,7 +990,10 @@ class BenchmarkApp(App):
                 results.border_title = "Last Run"
                 yield results
 
-                log = Log(id="log_output", highlight=True)
+                # highlight=False: per-line regex highlighting is CPU-costly on
+                # busy logs. max_lines bounds memory and re-render cost on
+                # long sessions.
+                log = Log(id="log_output", highlight=False, max_lines=2000)
                 log.border_title = "Execution Log"
                 yield log
 
@@ -956,6 +1010,7 @@ class BenchmarkApp(App):
         self._run_started_at: Optional[float] = None
         self._run_mode: Optional[str] = None
         self._elapsed_timer = None
+        self._last_status_text: Optional[str] = None
         self.load_presets()
         self.setup_logging_capture()
         self._refresh_run_status()
@@ -1027,7 +1082,10 @@ class BenchmarkApp(App):
             return
         if not isinstance(session, dict):
             return
+        with self.batch_update():
+            self._apply_session(session)
 
+    def _apply_session(self, session: Dict[str, Any]) -> None:
         csv_path = session.get("csv_path") or ""
         if csv_path and os.path.isfile(csv_path):
             self.query_one("#csv_path", Input).value = csv_path
@@ -1108,8 +1166,12 @@ class BenchmarkApp(App):
         if self._run_started_at is not None and self._run_state == "running":
             elapsed = time.monotonic() - self._run_started_at
             lines.append(f"[dim]Elapsed[/dim] {elapsed:.0f}s")
+        text = "\n".join(lines)
+        if text == self._last_status_text:
+            return  # Nothing changed; skip the repaint.
         try:
-            self.query_one("#run_status", Static).update("\n".join(lines))
+            self.query_one("#run_status", Static).update(text)
+            self._last_status_text = text
         except NoMatches:
             pass
 
@@ -1224,36 +1286,38 @@ class BenchmarkApp(App):
             options = [(c, c) for c in cols]
             selection_options = [(c, c) for c in cols]
 
-            # Update Select widgets, preserving still-valid selections
-            for select_id in ("entity_col", "time_col", "share_metric", "rate_total", "rate_approved", "rate_fraud"):
-                select = self.query_one(f"#{select_id}", Select)
-                previous = select.value
-                select.set_options(options)
-                if previous != SELECT_BLANK and previous in cols:
-                    select.value = previous
+            # Repopulating ten widgets repaints once, not ten times.
+            with self.batch_update():
+                # Update Select widgets, preserving still-valid selections
+                for select_id in ("entity_col", "time_col", "share_metric", "rate_total", "rate_approved", "rate_fraud"):
+                    select = self.query_one(f"#{select_id}", Select)
+                    previous = select.value
+                    select.set_options(options)
+                    if previous != SELECT_BLANK and previous in cols:
+                        select.value = previous
 
-            # Update SelectionLists, preserving still-valid selections
-            for list_id in ["#share_secondary", "#share_dims", "#rate_secondary", "#rate_dims"]:
-                s_list = self.query_one(list_id, SelectionList)
-                previously_selected = set(s_list.selected)
-                s_list.clear_options()
-                s_list.add_options(
-                    [(label, value, value in previously_selected) for label, value in selection_options]
-                )
+                # Update SelectionLists, preserving still-valid selections
+                for list_id in ["#share_secondary", "#share_dims", "#rate_secondary", "#rate_dims"]:
+                    s_list = self.query_one(list_id, SelectionList)
+                    previously_selected = set(s_list.selected)
+                    s_list.clear_options()
+                    s_list.add_options(
+                        [(label, value, value in previously_selected) for label, value in selection_options]
+                    )
 
-            # Fill smart defaults for selects that are still empty
-            defaults = {
-                "entity_col": "issuer_name",
-                "share_metric": "txn_cnt",
-                "rate_total": "txn_cnt",
-                "rate_approved": "app_cnt",
-            }
-            for select_id, column in defaults.items():
-                select = self.query_one(f"#{select_id}", Select)
-                if column in cols and select.value == SELECT_BLANK:
-                    select.value = column
+                # Fill smart defaults for selects that are still empty
+                defaults = {
+                    "entity_col": "issuer_name",
+                    "share_metric": "txn_cnt",
+                    "rate_total": "txn_cnt",
+                    "rate_approved": "app_cnt",
+                }
+                for select_id, column in defaults.items():
+                    select = self.query_one(f"#{select_id}", Select)
+                    if column in cols and select.value == SELECT_BLANK:
+                        select.value = column
 
-            self._update_csv_meta(file_path, cols)
+                self._update_csv_meta(file_path, cols)
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -1313,6 +1377,10 @@ class BenchmarkApp(App):
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
         """Handle focus leaving text inputs."""
+        if getattr(self, "_exit", False):
+            # The focused input blurs during app teardown; reloading the CSV
+            # then would post Changed messages into a dying message pump.
+            return
         if event.input.id == "csv_path":
             try:
                 self._try_load_csv_from_path_input(event.input.value)
@@ -1399,12 +1467,22 @@ class BenchmarkApp(App):
             self._warn_missing_widget(checkbox_id)
             return False
 
+    @property
+    def _override_builder(self) -> ConfigOverrideBuilder:
+        """Shared builder; rebuilding its spec table per field is wasteful."""
+        builder = getattr(self, "_override_builder_cache", None)
+        if builder is None:
+            builder = ConfigOverrideBuilder()
+            self._override_builder_cache = builder
+            self._override_specs_by_widget = {field.widget_id: field for field in builder.specs}
+        return builder
+
     def _read_field_value_from_preset(self, data: Dict[str, Any], spec: Dict[str, Any]) -> Any:
-        specs_by_widget = {field.widget_id: field for field in ConfigOverrideBuilder().specs}
-        field_spec = specs_by_widget.get(spec["widget_id"])
+        builder = self._override_builder
+        field_spec = self._override_specs_by_widget.get(spec["widget_id"])
         if field_spec is None:
             return None
-        return ConfigOverrideBuilder().read_field(data, field_spec)
+        return builder.read_field(data, field_spec)
 
     def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
         if not hasattr(self, 'preset_workflow'):
@@ -1425,32 +1503,35 @@ class BenchmarkApp(App):
 
     def update_advanced_parameters(self, preset_name: str) -> None:
         """Populate editable advanced optimization inputs from preset YAML."""
-        for inp in self.query("Input"):
-            if inp.id and inp.id.startswith("adv_"):
-                inp.value = ""
-        for cb in self.query("Checkbox"):
-            if cb.id and cb.id.startswith("adv_"):
-                cb.value = False
-
         data = self._load_advanced_parameter_data(preset_name)
-        if not data:
-            return
 
-        for spec in self.ADVANCED_FIELD_MAP:
-            value = self._read_field_value_from_preset(data, spec)
-            if value is None:
-                continue
-            if spec["kind"] == "input":
-                self._safe_set_input(spec["widget_id"], value)
-            else:
-                self._safe_set_checkbox(spec["widget_id"], value)
+        # ~20 widgets get reset and rewritten; one repaint instead of dozens.
+        with self.batch_update():
+            for inp in self.query(Input):
+                if inp.id and inp.id.startswith("adv_"):
+                    inp.value = ""
+            for cb in self.query(Checkbox):
+                if cb.id and cb.id.startswith("adv_"):
+                    cb.value = False
+
+            if not data:
+                return
+
+            for spec in self.ADVANCED_FIELD_MAP:
+                value = self._read_field_value_from_preset(data, spec)
+                if value is None:
+                    continue
+                if spec["kind"] == "input":
+                    self._safe_set_input(spec["widget_id"], value)
+                else:
+                    self._safe_set_checkbox(spec["widget_id"], value)
 
     def _collect_advanced_override_data(self) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
         for spec in self.ADVANCED_FIELD_MAP:
             widget_id = spec["widget_id"]
             values[widget_id] = self._get_bool(widget_id) if spec["kind"] == "checkbox" else self._get_input(widget_id)
-        return ConfigOverrideBuilder().read_from_mapping(values)
+        return self._override_builder.read_from_mapping(values)
 
     def apply_advanced_overrides(self) -> None:
         """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
@@ -1585,7 +1666,11 @@ class BenchmarkApp(App):
 
     def load_unique_entities(self, column_name):
         """Load unique values from the specified column."""
-        csv_path = self.query_one("#csv_path").value
+        try:
+            csv_path = self.query_one("#csv_path").value
+        except NoMatches:
+            # Deferred Select.Changed arriving while the app tears down.
+            return
         if not csv_path or not os.path.exists(csv_path):
             return
 
@@ -1606,6 +1691,10 @@ class BenchmarkApp(App):
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle select widget changes."""
+        if getattr(self, "_exit", False):
+            # A queued Changed message can land after exit() while the DOM is
+            # being unmounted; reacting to it would query dead widgets.
+            return
         if event.select.id == "entity_col":
             if event.value != SELECT_BLANK:
                 self.load_unique_entities(event.value)
