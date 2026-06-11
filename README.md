@@ -396,15 +396,23 @@ Optional diagnostic sheets (appear when enabled or triggered):
 
 ## Validation and Testing
 
-For contributors, run both after changes:
+For contributors, run after changes:
 
 ```bash
+py -m ruff check .
+py -m mypy core/ utils/
 py scripts/perform_gate_test.py
 py -m pytest tests/ -v
 ```
 
-GitHub Actions runs the same lint, unit, and gate checks on pull requests
-(see `.github/workflows/ci.yml`).
+For a fast inner-loop smoke (not a substitute for the full gate before PR):
+
+```bash
+py scripts/perform_gate_test.py --only share_gate_baseline
+```
+
+GitHub Actions runs ruff, non-blocking mypy, unit tests, and the full gate on
+pull requests (see `.github/workflows/ci.yml`).
 
 Balanced CSV exports are now cross-validated automatically when
 `output.validate_export` is enabled (the default). Rate exports run the full
