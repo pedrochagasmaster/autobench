@@ -139,14 +139,10 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 │   ├── control-3-customer-merchant-performance-v5-20260603.md # Canonical Control 3 source
 │   ├── control3_gap_matrix.md   # Control 3 policy coverage matrix
 │   ├── control3_implementation_summary.md # Control 3 enforcement summary
-│   ├── DE_SLOP_AUDIT.md         # Maintenance audit (refactoring opportunities)
-│   ├── PRODUCTION_READINESS_IMPLEMENTATION_PLAN.md # Production readiness plan
-│   ├── post_audit_sweep_results_analysis.md # Post-audit CLI sweep analysis
+│   ├── sql_ingestion_design.md  # SQL ingestion design (spike 017)
 │   ├── autobench_master_context*.md # Generated bundles (gitignored; py scripts/build_master_context.py)
-│   ├── *.docx                   # Source Word exports (Control 3, Operational Gains)
-│   ├── 📁 archive/              # Historical docs (not authoritative)
-│   ├── 📁 control-3-media/      # Embedded images for Control 3 markdown
-│   └── 📁 superpowers/plans/    # Agent implementation plans (de-slop, domain truth)
+│   ├── *.docx                   # Source Word exports (Control 3)
+│   └── 📁 control-3-media/      # Embedded images for Control 3 markdown
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader
 │   ├── analysis_run.py          # Shared CLI/TUI orchestration

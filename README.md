@@ -440,6 +440,20 @@ into `<output>_audit_package.zip`.
 - `docs/CORE_TECHNICAL_DOC.md` - core engine technical reference
 - `utils/CSV_VALIDATOR_README.md` - CSV validator details
 
+Generate a full agent/audit context bundle:
+
+```bash
+py scripts/build_master_context.py
+```
+
+The generator writes `docs/autobench_master_context.md` and includes relevant
+source by default. Use `--no-include-source` for a documentation-only bundle.
+Use `--split-types` to write separate `*_docs.md` and `*_code.md` bundles.
+
+Generated bundles are snapshots, not sources of truth: they are gitignored,
+go stale as soon as the code or docs change, and should be regenerated on
+demand rather than committed or edited by hand.
+
 ## Version
 
 Configuration model: v3.0.
