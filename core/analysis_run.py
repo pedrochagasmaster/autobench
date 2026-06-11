@@ -1583,7 +1583,10 @@ def _execute_run(
     if output_settings.include_audit_package:
         artifacts.audit_package_output = write_audit_package(
             analysis_output_file=analysis_output_file,
-            report_paths=artifacts.report_paths or [],
+            report_paths=[
+                *(artifacts.report_paths or []),
+                *([artifacts.json_output] if artifacts.json_output else []),
+            ],
             csv_output=artifacts.csv_output,
             audit_log_output=artifacts.audit_log_output,
             config_snapshot=config.config,
