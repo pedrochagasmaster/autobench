@@ -18,6 +18,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
 - [TUI Workflow](#tui-workflow)
 - [CLI Cookbook](#cli-cookbook)
+- [Programmatic use (Python API)](#programmatic-use-python-api)
 - [Large Dataset / Low-Memory Runs](#large-dataset--low-memory-runs)
 - [Presets](#presets)
 - [Outputs](#outputs)
@@ -223,6 +224,51 @@ py benchmark.py config show balanced_default
 py benchmark.py config validate my_config.yaml
 py benchmark.py config generate my_config.yaml
 ```
+
+## Programmatic use (Python API)
+
+For scheduled pipelines or notebook integration, call the same in-process backend
+the CLI and TUI use instead of shelling out to `benchmark.py`.
+
+**Stable public surface** (kept compatible across releases; everything else in
+`core/` is internal and may change without notice):
+
+| Symbol | Role |
+|--------|------|
+| `core.contracts.AnalysisRunRequest` | Input contract for share or rate runs |
+| `core.analysis_run.execute_share_run` | Run share analysis |
+| `core.analysis_run.execute_rate_run` | Run rate analysis |
+| `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+
+A complete runnable example lives at `examples/run_from_python.py`. Minimal
+share run:
+
+```python
+import logging
+from core.analysis_run import execute_share_run
+from core.contracts import AnalysisRunRequest
+
+request = AnalysisRunRequest(
+    csv="tests/fixtures/gate_demo.csv",
+    entity="Target",
+    metric="txn_cnt",
+    dimensions=["card_type", "channel"],
+    time_col="year_month",
+    preset="balanced_default",
+    compliance_posture="strict",
+    output="report.xlsx",
+)
+artifacts = execute_share_run(request, logging.getLogger("pipeline"))
+print(artifacts.analysis_output_file)
+```
+
+When a preset is set, pass `compliance_posture` explicitly (matches TUI/CLI
+behavior). For rate runs, set `mode="rate"` plus `total_col` and numerator
+columns. Advanced: pass a pre-loaded DataFrame via `request.df` to skip CSV
+reload after validation.
+
+Contract tests in `tests/test_public_api.py` pin imports, signatures, and field
+names; breaking changes require updating the README, example, and consumers.
 
 ## Large Dataset / Low-Memory Runs
 
