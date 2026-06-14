@@ -14,7 +14,7 @@ import threading
 import glob
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 import yaml
 
 # Remote-friendly renderer defaults (must be set before Textual is imported).
@@ -68,11 +68,9 @@ try:
     from utils.logger import setup_logging
     from utils.config_manager import ConfigManager
     from utils.config_overrides import (
-        ADVANCED_FIELD_MAP,
+        ADVANCED_FIELD_SPECS,
+        ConfigFieldSpec,
         ConfigOverrideBuilder,
-        nested_get,
-        nested_set,
-        try_parse_number,
     )
     from core.data_loader import ValidationIssue, ValidationSeverity
 except ImportError as e:
@@ -457,7 +455,7 @@ class BenchmarkApp(App):
         ("ctrl+l", "clear_log", "Clear Log"),
     ]
 
-    ADVANCED_FIELD_MAP: List[Dict[str, Any]] = ADVANCED_FIELD_MAP
+    ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = ADVANCED_FIELD_SPECS
 
     CSS = """
     #app_body {
@@ -1420,18 +1418,6 @@ class BenchmarkApp(App):
         except NoMatches:
             pass
 
-    @staticmethod
-    def _nested_get(data: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
-        return nested_get(data, keys)
-
-    @staticmethod
-    def _nested_set(data: Dict[str, Any], keys: Tuple[str, ...], value: Any) -> None:
-        nested_set(data, keys, value)
-
-    @staticmethod
-    def _try_parse_number(value: str) -> Any:
-        return try_parse_number(value)
-
     def _warn_missing_widget(self, widget_id: str) -> None:
         logging.getLogger(__name__).warning("Advanced widget not found: %s", widget_id)
         self.notify(
@@ -1474,15 +1460,10 @@ class BenchmarkApp(App):
         if builder is None:
             builder = ConfigOverrideBuilder()
             self._override_builder_cache = builder
-            self._override_specs_by_widget = {field.widget_id: field for field in builder.specs}
         return builder
 
-    def _read_field_value_from_preset(self, data: Dict[str, Any], spec: Dict[str, Any]) -> Any:
-        builder = self._override_builder
-        field_spec = self._override_specs_by_widget.get(spec["widget_id"])
-        if field_spec is None:
-            return None
-        return builder.read_field(data, field_spec)
+    def _read_field_value_from_preset(self, data: Dict[str, Any], spec: ConfigFieldSpec) -> Any:
+        return self._override_builder.read_field(data, spec)
 
     def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
         if not hasattr(self, 'preset_workflow'):
@@ -1517,20 +1498,20 @@ class BenchmarkApp(App):
             if not data:
                 return
 
-            for spec in self.ADVANCED_FIELD_MAP:
+            for spec in self.ADVANCED_FIELD_SPECS:
                 value = self._read_field_value_from_preset(data, spec)
                 if value is None:
                     continue
-                if spec["kind"] == "input":
-                    self._safe_set_input(spec["widget_id"], value)
+                if spec.kind == "input":
+                    self._safe_set_input(spec.widget_id, value)
                 else:
-                    self._safe_set_checkbox(spec["widget_id"], value)
+                    self._safe_set_checkbox(spec.widget_id, value)
 
     def _collect_advanced_override_data(self) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
-        for spec in self.ADVANCED_FIELD_MAP:
-            widget_id = spec["widget_id"]
-            values[widget_id] = self._get_bool(widget_id) if spec["kind"] == "checkbox" else self._get_input(widget_id)
+        for spec in self.ADVANCED_FIELD_SPECS:
+            widget_id = spec.widget_id
+            values[widget_id] = self._get_bool(widget_id) if spec.kind == "checkbox" else self._get_input(widget_id)
         return self._override_builder.read_from_mapping(values)
 
     def apply_advanced_overrides(self) -> None:
