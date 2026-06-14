@@ -20,7 +20,6 @@ from .global_weight_optimizer import GlobalWeightOptimizer
 from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
 from .contracts import SolverRequest, WeightLookup, WeightingResult, weighting_result_from_analyzer
 from .impact_calculator import (
-    build_weight_map_for_dimension,
     calculate_impact_summary as _calculate_impact_summary,
     calculate_rate_impact as _calculate_rate_impact,
     calculate_share_impact as _calculate_share_impact,
@@ -857,10 +856,6 @@ class DimensionalAnalyzer:
                     )
             else:
                 logger.warning(f"Per-dimension solving failed for '{dimension}'")
-
-    def _build_weight_map_for_dimension(self, dimension: str) -> Dict[str, float]:
-        return build_weight_map_for_dimension(self, dimension)
-
 
     def _get_peer_multiplier(self, dimension_column: str, peer: str) -> float:
         if dimension_column in self.per_dimension_weights and peer in self.per_dimension_weights[dimension_column]:
