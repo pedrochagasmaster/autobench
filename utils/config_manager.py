@@ -356,33 +356,6 @@ class ConfigManager:
             logger.error(f"Failed to load configuration: {str(e)}")
             raise
     
-    def load_column_mapping(self, mapping_file: str) -> None:
-        """
-        Load column mapping from JSON file.
-        
-        Parameters:
-        -----------
-        mapping_file : str
-            Path to column mapping file
-        """
-        logger.info(f"Loading column mapping from: {mapping_file}")
-        
-        path = Path(mapping_file)
-        if not path.exists():
-            logger.warning(f"Mapping file not found: {mapping_file}")
-            return
-        
-        try:
-            with open(path, 'r') as f:
-                mapping = json.load(f)
-            
-            self.column_mapping.update(mapping)
-            logger.info(f"Loaded {len(mapping)} column mappings")
-            
-        except Exception as e:
-            logger.error(f"Failed to load column mapping: {str(e)}")
-            raise
-    
     def get_column_mapping(self) -> Dict[str, str]:
         """
         Get current column mapping.
@@ -393,53 +366,6 @@ class ConfigManager:
             Column name mapping dictionary
         """
         return self.column_mapping.copy()
-    
-    def get_comparison_metrics(self, analysis_dimensions: List[str]) -> Dict[str, List[str]]:
-        """
-        Get comparison metrics for analysis dimensions.
-        
-        Parameters:
-        -----------
-        analysis_dimensions : List[str]
-            List of dimensions being analyzed
-            
-        Returns:
-        --------
-        Dict[str, List[str]]
-            Comparison metrics by dimension
-        """
-        # Build metrics dictionary for each dimension
-        metrics_by_dimension = {}
-        
-        for dimension in analysis_dimensions:
-            # Use default metrics or custom if configured
-            if dimension in self.config.get('dimension_metrics', {}):
-                metrics_by_dimension[dimension] = self.config['dimension_metrics'][dimension]
-            else:
-                # Use rate metrics as default
-                metrics_by_dimension[dimension] = self.comparison_metrics['rate']
-        
-        return metrics_by_dimension
-    
-    def get_evaluation_metrics(self, analysis_type: str) -> List[str]:
-        """
-        Get evaluation metrics for privacy validation.
-        
-        Parameters:
-        -----------
-        analysis_type : str
-            Type of analysis ('rate', 'share', 'volume')
-            
-        Returns:
-        --------
-        List[str]
-            List of metrics to evaluate
-        """
-        if analysis_type in self.comparison_metrics:
-            return self.comparison_metrics[analysis_type]
-        else:
-            logger.warning(f"Unknown analysis type: {analysis_type}, using rate metrics")
-            return self.comparison_metrics['rate']
     
     def get_sql_connection(self) -> Any:
         """
@@ -480,58 +406,6 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"Failed to create SQL connection: {str(e)}")
             raise
-    
-    def save_config(self, output_file: str) -> None:
-        """
-        Save current configuration to file.
-        
-        Parameters:
-        -----------
-        output_file : str
-            Path to save configuration
-        """
-        logger.info(f"Saving configuration to: {output_file}")
-        
-        config_data = {
-            'column_mappings': self.column_mapping,
-            'comparison_metrics': self.comparison_metrics,
-            'sql': self.sql_config
-        }
-        
-        with open(output_file, 'w') as f:
-            json.dump(config_data, f, indent=2)
-        
-        logger.info("Configuration saved successfully")
-    
-    def get_preset_config(self, preset_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get preset configuration by name.
-        
-        Parameters:
-        -----------
-        preset_name : str
-            Name of preset
-            
-        Returns:
-        --------
-        Dict or None
-            Preset configuration
-        """
-        presets_file = Path(__file__).parent.parent / 'presets.json'
-        
-        if not presets_file.exists():
-            logger.warning("presets.json not found")
-            return None
-        
-        try:
-            with open(presets_file, 'r') as f:
-                presets = json.load(f).get('presets', {})
-            
-            return presets.get(preset_name)
-            
-        except Exception as e:
-            logger.error(f"Failed to load preset: {str(e)}")
-            return None
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration.

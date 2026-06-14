@@ -12,10 +12,6 @@ from core.contracts import WeightLookup
 logger = logging.getLogger(__name__)
 
 
-def build_weight_map_for_dimension(analyzer, dimension: str) -> Dict[str, float]:
-    return WeightLookup.from_analyzer(analyzer).map_for_dimension(dimension)
-
-
 def calculate_share_impact(
     analyzer,
     df: pd.DataFrame,

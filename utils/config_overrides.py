@@ -18,18 +18,6 @@ class ConfigFieldSpec:
     always_write: bool = False
     read_paths: Tuple[Tuple[str, ...], ...] = ()
 
-    def as_legacy_dict(self) -> Dict[str, Any]:
-        data: Dict[str, Any] = {
-            "widget_id": self.widget_id,
-            "keys": self.path,
-            "kind": self.kind,
-        }
-        if self.always_write:
-            data["always_write"] = True
-        if self.read_paths:
-            data["read_keys"] = list(self.read_paths)
-        return data
-
 
 ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = [
     ConfigFieldSpec("adv_lp_tolerance", ("optimization", "linear_programming", "tolerance"), "input"),
@@ -114,8 +102,3 @@ class ConfigOverrideBuilder:
     def write_yaml(self, values: Dict[str, Any], path: Path) -> None:
         with open(path, "w", encoding="utf-8") as handle:
             yaml.safe_dump(values, handle, sort_keys=False)
-
-
-ADVANCED_FIELD_MAP: List[Dict[str, Any]] = [
-    spec.as_legacy_dict() for spec in ADVANCED_FIELD_SPECS
-]

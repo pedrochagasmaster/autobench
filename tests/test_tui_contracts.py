@@ -152,14 +152,14 @@ def test_prepared_validation_can_be_reused_without_second_validation() -> None:
 
 
 def test_benchmark_app_advanced_field_map_covers_load_and_save_keys() -> None:
-    widget_ids = {spec["widget_id"] for spec in BenchmarkApp.ADVANCED_FIELD_MAP}
+    widget_ids = {spec.widget_id for spec in BenchmarkApp.ADVANCED_FIELD_SPECS}
     assert "adv_lp_tolerance" in widget_ids
     assert "adv_subset_max_attempts" in widget_ids
 
     max_attempts_spec = next(
-        spec for spec in BenchmarkApp.ADVANCED_FIELD_MAP if spec["widget_id"] == "adv_subset_max_attempts"
+        spec for spec in BenchmarkApp.ADVANCED_FIELD_SPECS if spec.widget_id == "adv_subset_max_attempts"
     )
-    assert ("optimization", "subset_search", "max_tests") in max_attempts_spec.get("read_keys", [])
+    assert ("optimization", "subset_search", "max_tests") in max_attempts_spec.read_paths
 
 
 def test_config_override_specs_contain_required_widget_ids() -> None:
@@ -187,7 +187,7 @@ def test_advanced_parameters_use_effective_preset_defaults() -> None:
 
     data = app._load_advanced_parameter_data("balanced_default")
     privacy_spec = next(
-        spec for spec in BenchmarkApp.ADVANCED_FIELD_MAP if spec["widget_id"] == "adv_output_privacy_validation"
+        spec for spec in BenchmarkApp.ADVANCED_FIELD_SPECS if spec.widget_id == "adv_output_privacy_validation"
     )
 
     assert app._read_field_value_from_preset(data, privacy_spec) is True
