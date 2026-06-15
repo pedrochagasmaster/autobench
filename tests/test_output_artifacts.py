@@ -11,16 +11,25 @@ from core.output_artifacts import OutputArtifactWriter, write_outputs
 
 
 def test_core_modules_import_without_benchmark() -> None:
-    import importlib
+    # Run in a fresh interpreter: importing core must not pull in `benchmark`.
+    # A subprocess avoids mutating this process's sys.modules (in-process
+    # pop/reimport corrupts patch targets for later tests).
+    import subprocess
     import sys
 
-    saved = {name: sys.modules.pop(name) for name in list(sys.modules) if name in {"benchmark", "core.analysis_run", "core.output_artifacts"}}
-    try:
-        importlib.import_module("core.analysis_run")
-        importlib.import_module("core.output_artifacts")
-        assert "benchmark" not in sys.modules
-    finally:
-        sys.modules.update(saved)
+    code = (
+        "import sys\n"
+        "import core.analysis_run\n"
+        "import core.output_artifacts\n"
+        "assert 'benchmark' not in sys.modules, 'core imports must not pull in benchmark'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _share_args(output: Path, df: pd.DataFrame, output_format: str = "both") -> SimpleNamespace:
