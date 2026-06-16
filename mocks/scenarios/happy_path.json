@@ -1,0 +1,4 @@
+{
+  "description": "Every Resource Pool accepts the query on the first attempt.",
+  "delay_seconds": 0
+}

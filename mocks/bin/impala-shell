@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Mock impala-shell used by Dispatch offline tests.
+
+Accepts the orchestrator argv documented in docs/plan.md section 13.1:
+unknown flags are tolerated, `-q` carries SQL, and `-o` requests CSV output.
+Resource Pool extraction follows the documented regex exactly.
+
+Internal structure
+------------------
+``route_sql(normalized_query)``
+    Maps a normalised SQL string to a routing tag so that metadata queries
+    (SHOW TABLES, DESCRIBE, DROP TABLE) are separated from the data-query path
+    that goes through scenario dispatch.
+
+``handle_schema_query(tag)``
+    Handles any non-DATA_QUERY tag, returning the appropriate stdout lines
+    and exit code.  Adding a new metadata query type only touches this function.
+
+``apply_scenario(scenario, pool, count, output_file)``
+    Maps the loaded scenario dict + call count to an exit code and side-effects.
+    Adding a new scenario only touches this function.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+
+POOL_RE = re.compile(r"\s*set\s+request_pool\s*=\s*(\w+)\s*;", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Scenario loading
+# ---------------------------------------------------------------------------
+
+def _scenario_path(name: str) -> Path:
+    root = Path(__file__).resolve().parents[1]
+    return root / "scenarios" / f"{name}.json"
+
+
+def _load_scenario() -> dict:
+    name = os.environ.get("DISPATCH_MOCK_SCENARIO", "happy_path")
+    path = _scenario_path(name)
+    if not path.exists():
+        print(f"Unknown DISPATCH_MOCK_SCENARIO={name}", file=sys.stderr)
+        sys.exit(2)
+    with path.open("r", encoding="utf-8") as handle:
+        scenario = json.load(handle)
+    scenario["name"] = name
+    return scenario
+
+
+# ---------------------------------------------------------------------------
+# Call-count state (drives memory_exceeded retry simulation)
+# ---------------------------------------------------------------------------
+
+def _state_file(scenario: str) -> Path:
+    root = Path(os.environ.get("DISPATCH_MOCK_STATE_DIR", "/tmp/dispatch_mock_state"))
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{scenario}.count"
+
+
+def _increment_count(scenario: str) -> int:
+    path = _state_file(scenario)
+    try:
+        value = int(path.read_text(encoding="utf-8").strip() or "0")
+    except FileNotFoundError:
+        value = 0
+    value += 1
+    path.write_text(str(value), encoding="utf-8")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _write_csv(path: str) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("id,value\n1,mock\n", encoding="utf-8")
+
+
+def _fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# SQL routing  (seam: query type → tag)
+# ---------------------------------------------------------------------------
+
+def route_sql(normalized_query: str) -> str:
+    """Map a normalised SQL query to a routing tag.
+
+    Returns one of: ``SHOW_TABLES``, ``DESCRIBE``, ``DROP_TABLE``,
+    ``DATA_QUERY``.  The tag is the sole input to ``handle_schema_query``
+    and is checked before scenario dispatch so metadata queries are never
+    affected by the active scenario.
+    """
+    if normalized_query.startswith("show tables"):
+        return "SHOW_TABLES"
+    if normalized_query.startswith("describe"):
+        return "DESCRIBE"
+    if normalized_query.startswith("drop table"):
+        return "DROP_TABLE"
+    return "DATA_QUERY"
+
+
+# ---------------------------------------------------------------------------
+# Schema-query handler  (seam: tag → stdout + exit code)
+# ---------------------------------------------------------------------------
+
+def handle_schema_query(tag: str) -> int:
+    """Respond to metadata queries that bypass scenario dispatch.
+
+    Each branch emits mock rows matching the delimiter contract used by the
+    real Impala metadata commands.  Returns exit code 0 for all known tags.
+    """
+    if tag == "SHOW_TABLES":
+        print("dispatch_result")
+        print("dispatch_monthly_fulljoin")
+        return 0
+    if tag == "DESCRIBE":
+        print("name|type|comment")
+        print("id|int|mock identifier")
+        print("value|string|mock value")
+        return 0
+    if tag == "DROP_TABLE":
+        print("Table dropped")
+        return 0
+    raise ValueError(f"handle_schema_query called with non-metadata tag: {tag!r}")
+
+
+# ---------------------------------------------------------------------------
+# Scenario handler  (seam: scenario × call-count → exit code + side-effects)
+# ---------------------------------------------------------------------------
+
+def apply_scenario(scenario: dict, pool: str, count: int, output_file: str | None) -> int:
+    """Map the active scenario and call state to an exit code.
+
+    Adding a new scenario file only requires adding a new branch here.
+    ``output_file`` is the value of the ``-o`` flag when present (CSV export).
+    """
+    name = scenario["name"]
+
+    if name == "syntax_error":
+        return _fail("AnalysisException: Syntax error in line 1: SELCT")
+    if name == "auth_error":
+        return _fail("AuthenticationException: unable to obtain Kerberos principal")
+    if name == "all_queues_full":
+        return _fail(f"Admission for query exceeded timeout: queue is full ({pool})")
+    if name == "table_not_found":
+        return _fail("AnalysisException: could not resolve path to table: unknown_table")
+    if name == "memory_exceeded" and count <= int(scenario.get("failures_before_success", 2)):
+        return _fail("Memory limit exceeded: Not enough memory available")
+
+    # happy_path / slow / memory_exceeded after failures → success
+    if output_file:
+        _write_csv(output_file)
+    print(f"Mock impala-shell scenario={name} pool={pool} succeeded")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-q", "--query", dest="query", default="")
+    parser.add_argument("-o", "--output-file", dest="output_file")
+    args, _unknown = parser.parse_known_args()
+
+    scenario = _load_scenario()
+    query = args.query or ""
+    match = POOL_RE.match(query)
+    pool = match.group(1) if match else "unknown"
+    count = _increment_count(scenario["name"])
+
+    delay = float(os.environ.get("DISPATCH_MOCK_DELAY", scenario.get("delay_seconds", 0)))
+    if delay:
+        time.sleep(delay)
+
+    normalized_query = " ".join(query.lower().split())
+    tag = route_sql(normalized_query)
+    if tag != "DATA_QUERY":
+        return handle_schema_query(tag)
+
+    return apply_scenario(scenario, pool, count, args.output_file)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

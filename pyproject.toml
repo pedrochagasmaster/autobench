@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dispatch"
+version = "1.0.0"
+description = "Server-side TUI for launching Impala jobs through the Hadoop Query Launcher orchestrators."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "textual==8.2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[project.scripts]
+dispatch = "dispatch.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dispatch*"]
+
+[tool.setuptools.package-data]
+dispatch = ["*.tcss"]
