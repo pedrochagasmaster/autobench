@@ -46,6 +46,10 @@ data/
 test_sweeps/
 test_gate/config/generated_template.yaml
 outputs/
+tools/prod_tui/screens/
+tools/prod_tui/reports/
+tools/prod_tui/logs/
+tools/prod_tui/*.log
 
 # Generated agent/audit context bundles — regenerate with: py scripts/build_master_context.py
 docs/autobench_master_context*.md

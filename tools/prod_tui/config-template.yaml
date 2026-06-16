@@ -1,0 +1,9 @@
+host: "your-user@edge-node"
+repo_path: "/ads_storage/autobench"
+session_name: "autobench-prod-test"
+terminal_width: 120
+terminal_height: 40
+ssh_options: "-p 2222 -o StrictHostKeyChecking=no"
+operator_email: ""
+launcher: "autobench"
+cli_launcher: "autobench-cli"

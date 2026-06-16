@@ -1353,7 +1353,10 @@ class BenchmarkApp(App):
         if exclude is None:
             exclude = []
 
-        s_list = self.query_one(list_id, SelectionList)
+        try:
+            s_list = self.query_one(list_id, SelectionList)
+        except NoMatches:
+            return
         current_selected = set(s_list.selected)
 
         s_list.clear_options()
