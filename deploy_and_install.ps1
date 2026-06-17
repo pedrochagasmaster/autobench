@@ -18,6 +18,7 @@ $ZipName = "autobench_deploy.zip"
 $SetupScript = "setup_remote_env.sh"
 $OfflineDir = "offline_packages"
 $ChecksumManifest = "SHA256SUMS"
+$TargetConstraints = "constraints-linux-py310.generated.txt"
 $PythonRemote = "/sys_apps_01/python/python310/bin/python3.10"
 
 # --- Step 1: Create Offline Bundle ---
@@ -37,7 +38,15 @@ if (!(Test-Path requirements.txt)) {
 }
 
 Write-Host "Downloading binary packages for Linux (Python 3.10)..."
-py -m pip download -r requirements.txt -c constraints.txt --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
+$constraintsForTarget = Get-Content constraints.txt | ForEach-Object {
+    if ($_ -match 'python_version\s*>=\s*["'']3\.11["'']') {
+        return
+    }
+    $_ -replace '\s*;\s*python_version\s*<\s*["'']3\.11["'']\s*$', ''
+}
+Set-Content -Path $TargetConstraints -Value $constraintsForTarget -Encoding UTF8
+
+py -m pip download -r requirements.txt -c $TargetConstraints --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Download failed."
@@ -68,7 +77,7 @@ $PyScript = @"
 import zipfile, os, sys
 
 zip_name = '$ZipName'
-items = ['offline_packages', 'requirements.txt', 'constraints.txt', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
+items = ['offline_packages', 'requirements.txt', 'constraints.txt', '$TargetConstraints', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
 
 print(f'Creating {zip_name}...')
 with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -77,7 +86,7 @@ with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
             continue
         if os.path.isfile(item):
             print(f'  Adding {item}')
-            zf.write(item, os.path.basename(item))
+            zf.write(item, item.replace(os.sep, '/'))
         elif os.path.isdir(item):
             print(f'  Adding {item} (recursive)')
             for root, dirs, files in os.walk(item):

@@ -30,10 +30,10 @@ case "${1:-tui}" in
         if [ "${1:-}" = "tui" ]; then
             shift
         fi
-        py "$TUI_APP" "$@"
+        python "$TUI_APP" "$@"
         ;;
     share|rate|config)
-        py "$BENCHMARK_APP" "$@"
+        python "$BENCHMARK_APP" "$@"
         ;;
     *)
         echo "Usage: ./run_tool.sh [tui|share|rate|config] [options...]"

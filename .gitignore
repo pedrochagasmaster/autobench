@@ -78,3 +78,4 @@ config.json
 *.csv.gz
 /offline_packages/*
 autobench_deploy.zip
+SHA256SUMS

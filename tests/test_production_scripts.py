@@ -12,7 +12,7 @@ def test_run_tool_routes_cli_subcommands_to_benchmark() -> None:
 
     assert "BENCHMARK_APP=" in script
     assert "share|rate|config" in script
-    assert 'py "$BENCHMARK_APP"' in script
+    assert 'python "$BENCHMARK_APP"' in script
 
 
 def test_run_tool_shell_syntax_is_valid() -> None:
