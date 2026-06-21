@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Preset Comparison">
+  <title>Preset Comparison</title>
+  <!-- Matrix of presets x mean distortion -->
+  <rect x="8" y="8" width="32" height="32" rx="3"/>
+  <line x1="18.67" y1="8" x2="18.67" y2="40"/>
+  <line x1="29.33" y1="8" x2="29.33" y2="40"/>
+  <line x1="8" y1="18.67" x2="40" y2="18.67"/>
+  <line x1="8" y1="29.33" x2="40" y2="29.33"/>
+  <!-- Optimal configuration cell -->
+  <rect x="30.4" y="19.7" width="8.5" height="8.5" rx="1.2" fill="currentColor" stroke="none"/>
+</svg>

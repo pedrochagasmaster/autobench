@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Code Commit">
+  <title>Code Commit</title>
+  <!-- Git commit on a branch -->
+  <line x1="5" y1="24" x2="17" y2="24"/>
+  <line x1="31" y1="24" x2="43" y2="24"/>
+  <circle cx="24" cy="24" r="7"/>
+  <circle cx="24" cy="24" r="2.2" fill="currentColor" stroke="none"/>
+</svg>

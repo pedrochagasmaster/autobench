@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Rank-Change Tracking">
+  <title>Rank-Change Tracking</title>
+  <!-- Rank moves up -->
+  <line x1="17" y1="36" x2="17" y2="13"/>
+  <polyline points="11.5 18.5 17 13 22.5 18.5"/>
+  <!-- Rank moves down -->
+  <line x1="31" y1="12" x2="31" y2="35"/>
+  <polyline points="25.5 29.5 31 35 36.5 29.5"/>
+</svg>

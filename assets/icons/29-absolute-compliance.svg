@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Absolute Compliance">
+  <title>Absolute Compliance</title>
+  <!-- Shield = privacy-cap compliance -->
+  <path d="M24 5 L39 10.5 V23 C39 31.8 32.6 39.4 24 42.5 C15.4 39.4 9 31.8 9 23 V10.5 Z"/>
+  <!-- Lock = cryptographically verifiable -->
+  <path d="M21.2 23.5 v-2.7 a2.8 2.8 0 0 1 5.6 0 v2.7"/>
+  <rect x="19.4" y="23.5" width="9.2" height="8" rx="1.7" fill="currentColor" stroke="none"/>
+</svg>

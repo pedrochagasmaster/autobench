@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Lean Execution">
+  <title>Lean Execution</title>
+  <!-- Bullseye = 100% focus on the global objective -->
+  <circle cx="24" cy="24" r="16" stroke-opacity="0.32"/>
+  <circle cx="24" cy="24" r="9"/>
+  <circle cx="24" cy="24" r="3" fill="currentColor" stroke="none"/>
+  <!-- Crosshair: nothing but the target -->
+  <line x1="24" y1="3.5" x2="24" y2="7.5"/>
+  <line x1="24" y1="40.5" x2="24" y2="44.5"/>
+  <line x1="3.5" y1="24" x2="7.5" y2="24"/>
+  <line x1="40.5" y1="24" x2="44.5" y2="24"/>
+</svg>

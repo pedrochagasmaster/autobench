@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Real-time Diagnostics">
+  <title>Real-time Diagnostics</title>
+  <!-- Faint baseline -->
+  <line x1="6" y1="26" x2="42" y2="26" stroke-opacity="0.28"/>
+  <!-- Live activity / heartbeat pulse -->
+  <polyline points="6 26 15 26 19 26 22 12 26 38 29 26 42 26"/>
+  <!-- Live point -->
+  <circle cx="42" cy="26" r="2.4" fill="currentColor" stroke="none"/>
+</svg>

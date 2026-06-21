@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Mathematical Parity">
+  <title>Mathematical Parity</title>
+  <!-- CSV export -->
+  <rect x="6" y="12" width="14" height="24" rx="2"/>
+  <line x1="9.5" y1="20" x2="16.5" y2="20" stroke-opacity="0.5"/>
+  <line x1="9.5" y1="25" x2="16.5" y2="25" stroke-opacity="0.5"/>
+  <line x1="9.5" y1="30" x2="14" y2="30" stroke-opacity="0.5"/>
+  <!-- Excel output -->
+  <rect x="28" y="12" width="14" height="24" rx="2"/>
+  <line x1="31.5" y1="20" x2="38.5" y2="20" stroke-opacity="0.5"/>
+  <line x1="31.5" y1="25" x2="38.5" y2="25" stroke-opacity="0.5"/>
+  <line x1="31.5" y1="30" x2="36" y2="30" stroke-opacity="0.5"/>
+  <!-- Parity / equality -->
+  <line x1="22" y1="21.5" x2="26" y2="21.5"/>
+  <line x1="22" y1="26.5" x2="26" y2="26.5"/>
+</svg>

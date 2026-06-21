@@ -71,10 +71,16 @@ config.json
 *.txt
 *.xlsx
 *.csv
+*.svg
+*.png
+*.zip
+
 # Negations must follow the blanket patterns (last match wins)
 !requirements-dev.txt
 !constraints.txt
 !tests/fixtures/*.csv
+!assets/icons/**/*.svg
+!assets/icons/**/*.png
 *.csv.gz
 /offline_packages/*
 autobench_deploy.zip
