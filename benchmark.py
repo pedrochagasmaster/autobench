@@ -66,7 +66,8 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
 
     parser.add_argument('--time-col', help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
     parser.add_argument('--config', help='Configuration file (YAML)')
-    parser.add_argument('--preset', choices=preset_choices, help='Preset configuration name')
+    available_presets = ', '.join(preset_choices) if preset_choices else 'none found'
+    parser.add_argument('--preset', help=f'Preset configuration name (available: {available_presets})')
     parser.add_argument(
         '--compliance-posture',
         choices=['strict', 'best_effort', 'accuracy_first'],
@@ -391,6 +392,33 @@ def handle_config_command(args: argparse.Namespace) -> int:
         return 1
 
 
+def _validate_preset_arg(args: argparse.Namespace) -> Optional[str]:
+    """Validate the ``--preset`` argument against the available presets.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed CLI arguments.
+
+    Returns
+    -------
+    str or None
+        A user-facing error message when ``--preset`` names an unknown preset,
+        otherwise ``None``. This mirrors the ``ValueError`` raised by
+        ``ConfigManager`` so the CLI and Python API report unknown presets
+        consistently, both listing the available presets.
+    """
+    preset = getattr(args, 'preset', None)
+    if not preset:
+        return None
+    from utils.preset_manager import PresetManager
+    available = PresetManager().list_presets()
+    if preset not in available:
+        listing = ', '.join(available) if available else 'none found'
+        return f"Error: preset '{preset}' not found. Available presets: {listing}"
+    return None
+
+
 def print_version() -> None:
     """Print version information."""
     import sys
@@ -528,6 +556,13 @@ def main() -> int:
     if not args.command:
         parser.print_help()
         return 0
+
+    # Validate preset selection consistently for both CLI and Python API
+    if args.command in ('share', 'rate'):
+        preset_error = _validate_preset_arg(args)
+        if preset_error:
+            print(preset_error)
+            return 1
     
     # Setup logging for analysis commands
     log_level = getattr(args, 'log_level', None) or 'INFO'

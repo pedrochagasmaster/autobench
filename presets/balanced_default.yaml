@@ -24,7 +24,7 @@ optimization:
   subset_search:
     enabled: true
     strategy: "random"
-    max_tests: 200
+    max_attempts: 200
     trigger_on_slack: true
     max_slack_threshold: 0.05  # Allow tiny slack before triggering search
     prefer_slacks_first: false

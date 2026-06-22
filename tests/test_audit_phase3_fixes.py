@@ -107,3 +107,54 @@ def test_control3_remediation_hint(reason, fragment):
     hint = remediation_hint(reason)
     assert hint and fragment in hint
     assert remediation_hint(None) is None
+
+
+def test_unknown_preset_cli_reports_available_presets():
+    """F-019: unknown --preset gives a consistent error listing available presets."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "benchmark.py",
+            "share",
+            "--csv",
+            "tests/fixtures/gate_demo.csv",
+            "--entity",
+            "Target",
+            "--metric",
+            "txn_cnt",
+            "--dimensions",
+            "card_type",
+            "--preset",
+            "definitely_not_a_preset",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "not found" in result.stdout.lower()
+    assert "balanced_default" in result.stdout
+
+
+def test_shipped_presets_use_canonical_max_attempts():
+    """F-009: shipped presets use the canonical subset_search.max_attempts key."""
+    import yaml
+
+    preset_dir = REPO_ROOT / "presets"
+    for preset_path in preset_dir.glob("*.yaml"):
+        data = yaml.safe_load(preset_path.read_text())
+        subset = data.get("optimization", {}).get("subset_search")
+        if not subset:
+            continue
+        assert "max_tests" not in subset, f"{preset_path.name} still uses legacy max_tests"
+        assert "max_attempts" in subset, f"{preset_path.name} missing max_attempts"
+
+
+def test_tui_has_distinct_validating_state():
+    """B-055/B-061: the TUI exposes a Validating state separate from Running."""
+    import tui_app
+
+    badges = tui_app.BenchmarkApp._STATE_BADGES
+    assert "validating" in badges
+    assert "Validating" in badges["validating"]
+    assert hasattr(tui_app.BenchmarkApp, "_begin_validation_ui")

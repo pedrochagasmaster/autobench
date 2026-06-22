@@ -1144,6 +1144,7 @@ class BenchmarkApp(App):
 
     _STATE_BADGES = {
         "idle": "[dim]●[/dim] [b]Ready[/b]",
+        "validating": "[cyan]●[/cyan] [b cyan]Validating[/b cyan]",
         "running": "[yellow]●[/yellow] [b yellow]Running[/b yellow]",
         "success": "[green]●[/green] [b green]Success[/b green]",
         "error": "[red]●[/red] [b red]Failed[/b red]",
@@ -1173,6 +1174,26 @@ class BenchmarkApp(App):
             self._last_status_text = text
         except NoMatches:
             pass
+
+    def _begin_validation_ui(self) -> None:
+        """Switch UI into the pre-run validation state (app thread only).
+
+        Disables the run button (to block double launches) and shows a
+        distinct ``Validating`` badge, but deliberately does NOT start the
+        elapsed clock or the ``running`` badge: execution has not begun yet,
+        and a ``ValidationModal`` may still be awaiting the user's decision.
+        """
+        self._run_state = "validating"
+        self._run_started_at = None
+        self._run_mode = self._analysis_mode()
+        btn = self.query_one("#btn_run", Button)
+        btn.disabled = True
+        btn.label = "Validating…"
+        if self._elapsed_timer is not None:
+            self._elapsed_timer.stop()
+            self._elapsed_timer = None
+        self._refresh_run_status()
+        self._save_session()
 
     def _begin_run_ui(self) -> None:
         """Switch UI into the running state (app thread only)."""
@@ -1606,7 +1627,7 @@ class BenchmarkApp(App):
 
     def action_quit(self) -> None:
         """Quit, confirming first when an analysis is still running."""
-        if self._run_state == "running":
+        if self._run_state in ("running", "validating"):
             def on_confirm(confirmed: Optional[bool]) -> None:
                 if confirmed:
                     self._save_session()
@@ -1762,7 +1783,7 @@ class BenchmarkApp(App):
 
             self.call_from_thread(log_widget.clear)
             self.call_from_thread(log_widget.write, "Starting analysis sequence...\n")
-            self.call_from_thread(self._begin_run_ui)
+            self.call_from_thread(self._begin_validation_ui)
 
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

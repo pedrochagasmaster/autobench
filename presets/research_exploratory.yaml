@@ -22,7 +22,7 @@ optimization:
   subset_search:
     enabled: true
     strategy: "random"
-    max_tests: 400
+    max_attempts: 400
     trigger_on_slack: false  # Accept slack
     max_slack_threshold: 0.0
     prefer_slacks_first: true  # Try relaxing rank preservation first
