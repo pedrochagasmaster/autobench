@@ -23,6 +23,7 @@ from typing import Optional, Dict
 import pandas as pd
 
 # Import core modules
+from core.control3_policy import remediation_hint
 from core.preset_comparison import run_preset_comparison as _run_shared_preset_comparison
 from core.analysis_run import (
     build_dimensional_analyzer,
@@ -204,20 +205,20 @@ def create_parser() -> argparse.ArgumentParser:
         epilog=f"""
 EXAMPLES:
   # Share analysis with preset
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --preset standard
+  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --preset balanced_default
 
   # Share analysis with custom config
   python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --config my_config.yaml
 
   # Rate analysis (approval rates)
   python benchmark.py rate --csv data.csv --entity "BANCO SANTANDER" \\
-    --total-col txn_cnt --approved-col app_cnt --preset conservative
+    --total-col txn_cnt --approved-col app_cnt --preset compliance_strict
 
   # List available presets
   python benchmark.py config list
 
   # Show preset details
-  python benchmark.py config show conservative
+  python benchmark.py config show compliance_strict
 
   # Generate config template
   python benchmark.py config generate my_config.yaml
@@ -341,6 +342,8 @@ def handle_config_command(args: argparse.Namespace) -> int:
     
     elif args.config_command == 'show':
         print(preset_mgr.format_preset_detail(args.preset_name))
+        if args.preset_name not in preset_mgr.list_presets():
+            return 1
         return 0
     
     elif args.config_command == 'validate':
@@ -436,7 +439,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        print(f"Entity: {artifacts.metadata.get('entity', 'PEER-ONLY MODE')}")
+        print(f"Entity: {artifacts.metadata.get('entity', 'PEER-ONLY')}")
         print(f"Metric: {artifacts.metadata.get('metric')}")
         print(f"Compliance Posture: {artifacts.metadata.get('compliance_posture')}")
         print(f"Compliance Verdict: {artifacts.metadata.get('compliance_verdict')}")
@@ -452,10 +455,16 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     except RunBlocked as e:
         logger.error(f"Analysis blocked: {e}")
         print(f"Analysis blocked: {e}")
+        reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
+        hint = remediation_hint(reason)
+        if hint:
+            print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return 1
     except Exception as e:
-        logger.error(f"Analysis failed: {e}", exc_info=True)
+        logger.error(f"Analysis failed: {e}")
+        logger.debug("Full traceback for analysis failure", exc_info=True)
+        print(f"Analysis failed: {e}")
         return 1
 
 
@@ -468,7 +477,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(f"\n{'='*80}")
         print("RATE ANALYSIS COMPLETE")
         print(f"{'='*80}")
-        print(f"Entity: {artifacts.metadata.get('entity', 'PEER-ONLY MODE')}")
+        print(f"Entity: {artifacts.metadata.get('entity', 'PEER-ONLY')}")
         print(f"Rate Types Analyzed: {', '.join([rt.upper() for rt in artifacts.metadata.get('rate_types', [])])}")
         print(f"Compliance Posture: {artifacts.metadata.get('compliance_posture')}")
         print(f"Compliance Verdict: {artifacts.metadata.get('compliance_verdict')}")
@@ -484,10 +493,16 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     except RunBlocked as e:
         logger.error(f"Analysis blocked: {e}")
         print(f"Analysis blocked: {e}")
+        reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
+        hint = remediation_hint(reason)
+        if hint:
+            print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return 1
     except Exception as e:
-        logger.error(f"Analysis failed: {e}", exc_info=True)
+        logger.error(f"Analysis failed: {e}")
+        logger.debug("Full traceback for analysis failure", exc_info=True)
+        print(f"Analysis failed: {e}")
         return 1
 
 

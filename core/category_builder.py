@@ -47,9 +47,18 @@ class CategoryBuilder:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
         """Aggregate by entity and dimension categories for the given dimensions."""
         self.validate_dimension_names(dimensions)
-        if self.time_column and self.consistent_weights:
+        if self.time_column and self.consistent_weights and self.time_column in df.columns:
             return self.build_time_aware_categories(df, metric_col, dimensions)
 
+        return self._build_standard_categories(df, metric_col, dimensions)
+
+    def _build_standard_categories(
+        self,
+        df: pd.DataFrame,
+        metric_col: str,
+        dimensions: List[str]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
+        """Aggregate categories without any time-aware constraints."""
         all_categories: List[Dict[str, Any]] = []
         for dim in dimensions:
             entity_dim_agg = df.groupby([self.entity_column, dim]).agg({metric_col: 'sum'}).reset_index()
@@ -89,14 +98,14 @@ class CategoryBuilder:
         """Build categories that include time-aware constraints for consistent weights."""
         self.validate_dimension_names(dimensions)
         if not self.time_column:
-            return self.build_categories(df, metric_col, dimensions)
+            return self._build_standard_categories(df, metric_col, dimensions)
 
         if self.time_column not in df.columns:
             logger.warning(
                 "Time column '%s' not found in data. Falling back to standard aggregation.",
                 self.time_column
             )
-            return self.build_categories(df, metric_col, dimensions)
+            return self._build_standard_categories(df, metric_col, dimensions)
 
         logger.info("Building time-aware categories using time column: %s", self.time_column)
 

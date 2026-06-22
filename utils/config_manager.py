@@ -202,12 +202,14 @@ class ConfigManager:
         
         # Transaction counts
         'txn_count': 'transaction_count',
+        'txn_cnt': 'transaction_count',
         'count': 'transaction_count',
         'cnt': 'transaction_count',
         
         # Transaction amounts
         'txn_amt': 'transaction_amount',
         'tpv': 'transaction_amount',
+        'amt': 'transaction_amount',
         'amount': 'transaction_amount',
         'volume': 'transaction_amount',
         
@@ -591,13 +593,19 @@ class ConfigManager:
                 if 'max_attempts' not in subset_cfg and 'max_tests' in subset_cfg:
                     subset_cfg['max_attempts'] = subset_cfg.get('max_tests')
 
-        # Backward compatibility: map legacy distortion keys to impact keys
+        # Backward compatibility: map legacy distortion keys to impact keys.
+        # Defaults already populate the impact keys, so the merged config can
+        # never be "missing" them. Detect legacy intent from the incoming
+        # override instead, and let an explicit legacy key win over the default.
+        override_output = override_copy.get('output', {})
+        if not isinstance(override_output, dict):
+            override_output = {}
         output_cfg = self.config.get('output', {})
         if isinstance(output_cfg, dict):
-            if 'include_impact_summary' not in output_cfg and 'include_distortion_summary' in output_cfg:
-                output_cfg['include_impact_summary'] = output_cfg.get('include_distortion_summary', False)
-            if 'impact_thresholds' not in output_cfg and 'distortion_thresholds' in output_cfg:
-                legacy = output_cfg.get('distortion_thresholds', {}) or {}
+            if 'include_impact_summary' not in override_output and 'include_distortion_summary' in override_output:
+                output_cfg['include_impact_summary'] = bool(override_output.get('include_distortion_summary'))
+            if 'impact_thresholds' not in override_output and 'distortion_thresholds' in override_output:
+                legacy = override_output.get('distortion_thresholds', {}) or {}
                 output_cfg['impact_thresholds'] = {
                     'high_pp': legacy.get('high_distortion_pp', 1.0),
                     'low_pp': legacy.get('low_distortion_pp', 0.25),

@@ -103,6 +103,7 @@ SESSION_CHECKBOX_IDS = (
     "compare_presets",
     "validate_input",
     "include_calculated",
+    "acknowledge_accuracy_first",
     "share_auto_dim",
     "share_debug",
     "share_export_csv",
@@ -1017,7 +1018,7 @@ class BenchmarkApp(App):
         # Set initial focus
         self.query_one("#csv_path").focus()
         self.notify(
-            "Ctrl+O browse · Ctrl+R run · Ctrl+A advanced · Ctrl+L clear log · F1 preset guide",
+            "Ctrl+O browse · Ctrl+R run · Ctrl+A advanced · Ctrl+E export adv · Ctrl+L clear log · F1 preset guide",
             title="Keyboard shortcuts",
             severity="information",
             timeout=6,
