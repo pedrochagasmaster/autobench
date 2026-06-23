@@ -121,7 +121,7 @@ def write_report(
         redacted_checks.append(item)
     payload = {
         "tool": "autobench",
-        "timestamp_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         "node": node,
         "repo_path": repo_path,
         "commit": commit,

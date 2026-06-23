@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,7 @@ def test_installer_contract_is_autobench_specific() -> None:
 
 def test_production_harness_help_runs() -> None:
     result = subprocess.run(
-        ["py", "-m", "tools.prod_tui"],
+        [sys.executable, "-m", "tools.prod_tui"],
         cwd=ROOT,
         text=True,
         capture_output=True,
