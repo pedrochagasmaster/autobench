@@ -94,6 +94,25 @@ After the shared tree is deployed, send users the short flow in
 [`onboarding.md`](../onboarding.md). They should not need Git, bundle, or
 rollback details to launch the TUI.
 
+## 6. Updating the Deployment
+
+Always update the node through Git, never by copying or `scp`-ing individual
+files onto it. Out-of-band copies from a Windows working tree reintroduce CRLF
+line endings (which break shell-script shebangs) and leave the tree drifted
+from Git. The repository pins `*.sh` to LF via `.gitattributes`, so a Git-based
+update is always correct.
+
+From the node:
+
+```bash
+cd /ads_storage/autobench
+./update.sh            # git fetch + reset --hard to the canonical branch
+```
+
+`update.sh` preserves untracked files such as `.venv/` and `offline_packages/`,
+so the installed environment survives. If dependencies changed, refresh the
+offline bundle with `deploy_and_install.ps1` and re-run `setup_remote_env.sh`.
+
 ## Troubleshooting
 
 | Issue | Cause | Fix |
