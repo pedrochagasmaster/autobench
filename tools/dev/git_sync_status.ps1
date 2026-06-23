@@ -2,7 +2,7 @@
 param(
     [string]$Remote = "bitbucket",
     [string]$Branch = "main",
-    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/dispatch.git"
+    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/autobench.git"
 )
 
 Set-StrictMode -Version Latest
