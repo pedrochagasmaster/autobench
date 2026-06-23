@@ -28,5 +28,12 @@ git fetch "${REMOTE}" "${BRANCH}"
 echo "==> Resetting working tree to ${REMOTE}/${BRANCH} ..."
 git reset --hard "${REMOTE}/${BRANCH}"
 
+# git reset rewrites files with umask-default permissions, which drops the
+# shared read/execute access other analysts need. Re-apply it every sync so
+# the shared deployment stays usable by all users (dirs +rx, files +r,
+# executables stay runnable). Run from a writable directory for outputs.
+echo "==> Re-applying shared read/execute permissions ..."
+chmod -R a+rX . 2>/dev/null || echo "    Note: some paths could not be chmod'd (skipped)."
+
 echo "==> Now at: $(git log -1 --format='%h %s')"
 echo "==> Update complete (.venv/ and offline_packages/ preserved)."
