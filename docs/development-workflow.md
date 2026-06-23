@@ -81,8 +81,12 @@ cd /ads_storage/autobench
 git fetch bitbucket
 git checkout main
 git pull --ff-only bitbucket main
-AUTOBENCH_PYTHON_BIN=$(command -v python3.11 || command -v python3.10) ./install.sh
+./install.sh
 ```
+
+`install.sh` auto-selects an interpreter matching the bundled offline wheels
+(currently CPython 3.10). Only set `AUTOBENCH_PYTHON_BIN=/path/to/python3.10`
+if the node hides the right interpreter from the installer's search.
 
 For release validation or rollback, use an exact commit:
 

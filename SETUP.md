@@ -6,6 +6,10 @@ Since the remote server (`/ads_storage/autobench`) has **no internet access**, y
 
 1.  **Local Machine (Windows):** Internet access, PowerShell, and Python 3.10+ installed.
 2.  **Remote Server (Linux):** Python 3.10 installed at `/sys_apps_01/python/python310/bin/python3.10`.
+    The offline bundle contains prebuilt **CPython 3.10 (`cp310`)** wheels for
+    `numpy`/`pandas`/`scipy`, so the remote venv must be built with Python 3.10.
+    `deploy_and_install.ps1`, `setup_remote_env.sh`, and `install.sh` all target
+    3.10; a 3.11 interpreter cannot install these wheels.
 3.  **Repository:** Cloned on *both* your local machine and the remote server.
 
 ## Automated Deployment (Dependencies)

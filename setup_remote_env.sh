@@ -2,7 +2,11 @@
 
 # setup_remote_env.sh
 
-# Define the specific Python interpreter path
+# Define the specific Python interpreter path.
+# This MUST be Python 3.10: the offline bundle built by deploy_and_install.ps1
+# contains CPython 3.10 (cp310) wheels for numpy/pandas/scipy, which cannot be
+# installed by a 3.11+ interpreter. Keep this in sync with install.sh and
+# deploy_and_install.ps1 (--abi cp310 / --python-version 3.10).
 PYTHON_BIN="/sys_apps_01/python/python310/bin/python3.10"
 VENV_DIR=".venv"
 OFFLINE_DIR="./offline_packages"

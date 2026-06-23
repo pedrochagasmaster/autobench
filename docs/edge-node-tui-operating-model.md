@@ -65,14 +65,21 @@ record.
 
 ## Installer Contract
 
-`install.sh` resolves Python 3.10+, creates
-`/ads_storage/$USER/.autobench/venv`, installs pinned requirements from
-`offline_packages/` or `vendor/` when present, writes launchers to
-`~/.local/bin/autobench` and `~/.local/bin/autobench-cli`, records `VERSION` in
-`installed_version`, and prints the exact next command when `PATH` is stale.
+`install.sh` selects a Python interpreter that matches the bundled offline
+wheels. When `offline_packages/` (or `vendor/`) contains binary wheels, the
+installer reads their CPython ABI tag (e.g. `cp310`) and requires a matching
+`python3.X` interpreter (currently 3.10); with no binary wheels it falls back to
+any supported 3.10+. It then creates `/ads_storage/$USER/.autobench/venv`,
+installs pinned requirements from `offline_packages/` or `vendor/` when present,
+writes launchers to `~/.local/bin/autobench` and `~/.local/bin/autobench-cli`,
+records `VERSION` in `installed_version`, and prints the exact next command when
+`PATH` is stale.
 
-It must not require `source install.sh`, overwrite user state, store secrets, or
-silently continue after a dependency install failure.
+It must not require `source install.sh`, overwrite user state, store secrets,
+silently continue after a dependency install failure, or build the venv with an
+interpreter whose ABI does not match the bundled wheels (it fails with an
+actionable message instead of emitting a cryptic pip "No matching distribution"
+error).
 
 ## Production Harness Contract
 

@@ -48,5 +48,11 @@ If the TUI opens but file paths fail, confirm the CSV path is readable from the
 Edge Node session and rerun from a working directory where you can write output
 files.
 
+If `./install.sh` stops with a message about a Python version / interpreter
+mismatch (for example it found `python3.11` but the packages need Python 3.10),
+the node is missing the expected interpreter. The bundled packages are built for
+Python 3.10; ask your operator to make Python 3.10 available, or run
+`AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh`.
+
 If setup still fails, send the installer output and the result of
 `which autobench` to the tool owner.

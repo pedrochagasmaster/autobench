@@ -28,7 +28,8 @@ SSH to the node and confirm Python and storage:
 
 ```bash
 ssh -p 2222 <user>@<edge-node>
-python3.11 --version || python3.10 --version || /sys_apps_01/python/python310/bin/python3.10 --version
+# The offline bundle ships CPython 3.10 (cp310) wheels, so confirm 3.10 is present:
+/sys_apps_01/python/python310/bin/python3.10 --version || python3.10 --version
 mkdir -p /ads_storage/$USER/.autobench
 touch /ads_storage/$USER/.autobench/.smoke_test
 ```
@@ -46,7 +47,17 @@ klist
 ```bash
 cd /ads_storage/autobench
 chmod +x install.sh
-AUTOBENCH_PYTHON_BIN=$(command -v python3.11 || command -v python3.10) ./install.sh
+./install.sh
+```
+
+The installer reads the CPython ABI tag of the bundled offline wheels (currently
+`cp310`) and automatically selects a matching `python3.10` interpreter, so you do
+not normally set `AUTOBENCH_PYTHON_BIN`. If the node has only a mismatched
+interpreter (for example `python3.11`), the installer stops with a clear message
+rather than failing later inside pip; install Python 3.10 or point it at one:
+
+```bash
+AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh
 ```
 
 The installer creates `/ads_storage/$USER/.autobench`, installs dependencies

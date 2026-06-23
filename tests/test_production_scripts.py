@@ -26,6 +26,45 @@ def test_run_tool_shell_syntax_is_valid() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_install_and_setup_shell_syntax_is_valid() -> None:
+    for name in ("install.sh", "setup_remote_env.sh"):
+        result = subprocess.run(
+            ["bash", "-n", str(ROOT / name)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, f"{name}: {result.stderr}"
+
+
+def test_installer_matches_interpreter_to_offline_wheel_abi() -> None:
+    """Guards the cp310-wheels-vs-python3.11 deployment break.
+
+    install.sh must derive the required CPython version from the bundled wheel
+    ABI tag and refuse a mismatched interpreter, rather than preferring 3.11
+    unconditionally and failing later inside pip.
+    """
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "required_wheel_python" in script
+    assert "cp3" in script
+    assert "REQUIRED_PY" in script
+    # The wheel-ABI detection must come before the online python3.11 fallback,
+    # so bundled binary wheels dictate the interpreter version.
+    assert script.index("required_wheel_python") < script.index("python3.11")
+
+
+def test_offline_bundle_targets_python_310_cp310() -> None:
+    """deploy_and_install.ps1 and setup_remote_env.sh must agree on Python 3.10."""
+    deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
+    setup = (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8")
+
+    assert "--abi cp310" in deploy
+    assert "--python-version 3.10" in deploy
+    assert "/sys_apps_01/python/python310/bin/python3.10" in setup
+
+
 def test_offline_bundle_checksum_manifest_round_trips(tmp_path: Path) -> None:
     package_dir = tmp_path / "offline_packages"
     package_dir.mkdir()
