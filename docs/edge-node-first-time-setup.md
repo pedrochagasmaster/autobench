@@ -1,150 +1,123 @@
-# Edge Node First-Time Setup
+# Autobench Edge Node First-Time Setup
 
-This is the canonical first-time deployment and install flow for Dispatch on a real Hadoop Edge Node.
+This runbook bootstraps Autobench on a Hadoop Edge Node.
 
-It covers:
+## 1. Prepare the Deployable Tree
 
-- preparing the deployable tree locally
-- uploading the repo and vendored dependency wheels
-- installing Dispatch for one user on the Edge Node
-- validating that the TUI starts correctly
-
-## 1. Prepare the deployable tree locally
-
-Confirm the vendored wheels exist:
-
-```bash
-ls vendor/*.whl
-```
-
-If `vendor/` needs to be refreshed, rebuild it locally:
-
-```bash
-python -m pip download -r requirements.txt -d vendor
-```
-
-### Recommendation: Zip for Upload
-For Windows-to-Linux transfers or unstable connections, upload a single ZIP archive to avoid `scp`/`rsync` overhead and potential file corruption.
-
-```powershell
-Compress-Archive -Path dispatch, scr, vendor, install.sh, pyproject.toml, requirements.txt, VERSION, README.md, docs -DestinationPath dispatch_deploy.zip
-```
-
-## 2. Upload the repo to the Edge Node
-
-Recommended target: `/ads_storage/dispatch`
-
-```powershell
-scp -P 2222 dispatch_deploy.zip <user>@<edge-node>:/ads_storage/dispatch/
-```
-
-On the server, unzip and clean up:
-```bash
-cd /ads_storage/dispatch
-unzip dispatch_deploy.zip
-rm dispatch_deploy.zip
-```
-
-### Alternative: Bitbucket-backed working tree
-
-When the Edge Node can reach the corporate Bitbucket server, prefer a Git
-working tree for ongoing updates. It keeps the deployed code tied to a commit
-and makes rollback straightforward.
-
-One-time setup:
+The preferred ongoing model is a Git working tree backed by the corporate remote:
 
 ```bash
 cd /ads_storage
-git clone -o bitbucket https://scm.mastercard.int/stash/scm/~e176097/autobench.git dispatch
-cd /ads_storage/dispatch
+git clone -o bitbucket https://scm.mastercard.int/stash/scm/~e176097/dispatch.git autobench
+cd /ads_storage/autobench
 git remote -v
 ```
 
-Normal update:
+If the node cannot reach Git, use the existing offline bundle workflow:
 
-```bash
-cd /ads_storage/dispatch
-git fetch bitbucket
-git checkout main
-git pull --ff-only bitbucket main
+```powershell
+.\deploy_and_install.ps1
 ```
 
-Exact-commit deploy:
+The bundle path remains a fallback for first-time setup, dependency refresh, and
+recovery. The Git path is the preferred repeatable deployment model.
 
-```bash
-cd /ads_storage/dispatch
-git fetch bitbucket
-git checkout <commit-sha>
-```
+## 2. Verify Prerequisites
 
-Rollback uses the same shape: checkout the previous known-good commit, then run
-`install.sh` again.
-
-## 3. Verify Edge Node prerequisites
-
-SSH to the Edge Node (port `2222`; enter the RSA SecurID PASSCODE at the
-`Enter PASSCODE:` prompt, then run `kinit` to obtain a Kerberos ticket):
+SSH to the node and confirm Python and storage:
 
 ```bash
 ssh -p 2222 <user>@<edge-node>
-kinit            # enter Kerberos password, then confirm with: klist
+# The offline bundle ships CPython 3.10 (cp310) wheels, so confirm 3.10 is present:
+/sys_apps_01/python/python310/bin/python3.10 --version || python3.10 --version
+mkdir -p /ads_storage/$USER/.autobench
+touch /ads_storage/$USER/.autobench/.smoke_test
 ```
 
-Then verify the prerequisites:
+If the workflow requires Kerberos-backed data access, initialize Kerberos before
+running analyses:
 
 ```bash
-# Check Python versions (3.10 or 3.11 are supported)
-python3.11 --version || python3.10 --version
-
-which impala-shell
-which klist
-
-# Ensure writable storage
-mkdir -p /ads_storage/$USER/.dispatch
-touch /ads_storage/$USER/.dispatch/.smoke_test
+kinit
+klist
 ```
 
-## 4. Run the installer
-
-From the deployed tree:
+## 3. Install for the Current User
 
 ```bash
-cd /ads_storage/dispatch
+cd /ads_storage/autobench
 chmod +x install.sh
-DISPATCH_EMAIL=you@example.com DISPATCH_PYTHON_BIN=$(command -v python3.11) ./install.sh
+./install.sh
 ```
 
-For repeatable update, validation, and rollback workflows, see
-[docs/development-workflow.md](./development-workflow.md).
+The installer reads the CPython ABI tag of the bundled offline wheels (currently
+`cp310`) and automatically selects a matching `python3.10` interpreter, so you do
+not normally set `AUTOBENCH_PYTHON_BIN`. If the node has only a mismatched
+interpreter (for example `python3.11`), the installer stops with a clear message
+rather than failing later inside pip; install Python 3.10 or point it at one:
 
-
-
-## 5. Post-install validation
-
-Launch the TUI:
 ```bash
-dispatch
+AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh
 ```
 
-Confirm:
-- Dashboard renders correctly.
-- Kerberos indicator is visible.
-- Navigation (`N`, `H`, `B`) works.
+The installer creates `/ads_storage/$USER/.autobench`, installs dependencies
+into that user's virtualenv, writes `~/.local/bin/autobench` and
+`~/.local/bin/autobench-cli`, and records `/ads_storage/$USER/.autobench/installed_version`.
 
-After the shared tree is deployed, give end users the short setup flow in
-[onboarding.md](../onboarding.md). They should not need this operator runbook.
+## 4. Post-Install Checks
 
-## Gotchas & Troubleshooting
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+which autobench
+which autobench-cli
+autobench-cli config list
+```
+
+Run a small share smoke:
+
+```bash
+cd /ads_storage/autobench
+autobench-cli share \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --export-balanced-csv \
+  --output /tmp/autobench_setup_smoke.xlsx
+```
+
+## 5. Hand Off to End Users
+
+After the shared tree is deployed, send users the short flow in
+[`onboarding.md`](../onboarding.md). They should not need Git, bundle, or
+rollback details to launch the TUI.
+
+## 6. Updating the Deployment
+
+Always update the node through Git, never by copying or `scp`-ing individual
+files onto it. Out-of-band copies from a Windows working tree reintroduce CRLF
+line endings (which break shell-script shebangs) and leave the tree drifted
+from Git. The repository pins `*.sh` to LF via `.gitattributes`, so a Git-based
+update is always correct.
+
+From the node:
+
+```bash
+cd /ads_storage/autobench
+./update.sh            # git fetch + reset --hard to the canonical branch
+```
+
+`update.sh` preserves untracked files such as `.venv/` and `offline_packages/`,
+so the installed environment survives. If dependencies changed, refresh the
+offline bundle with `deploy_and_install.ps1` and re-run `setup_remote_env.sh`.
+
+## Troubleshooting
 
 | Issue | Cause | Fix |
 |---|---|---|
-| `IndentationError` in dispatch script | Heredoc with spaces | Use `cat <<'EOF'` to avoid variable expansion and ensure exact spacing. |
-| SSH Disconnections | Idle timeout | Connect with `ssh -o ServerAliveInterval=30`. |
-| Permission Denied in `/ads_storage` | Sticky bits or ownership | Use `/ads_storage/$USER/` for personal data (venv, logs, jobs). |
-
-## 6. Production validation harness
-
-For repeatable real-environment validation over SSH and tmux, use the production harness:
-
-- [tools/prod_tui/README.md](../tools/prod_tui/README.md)
-- [docs/edge-node-smoke-test.md](./edge-node-smoke-test.md)
+| `autobench: command not found` | Shell has not picked up `~/.local/bin` | Run `export PATH="$HOME/.local/bin:$PATH"` or open a new SSH session. |
+| Dependency install fails | No internet and no offline wheels | Refresh `offline_packages/` with `deploy_and_install.ps1`. |
+| Output write fails | Working directory not writable | Run from a writable directory or choose an output path under `/tmp` or `/ads_storage/$USER`. |
+| Git prompts during pull | Remote credentials not cached/configured | Configure an approved read-only credential strategy before automating pulls. |

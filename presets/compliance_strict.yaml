@@ -1,0 +1,38 @@
+version: "3.0"
+preset_name: "compliance_strict"
+compliance_posture: "strict"
+description: "Regulatory Compliance - Zero tolerance for violations (formerly strict_privacy)"
+
+# Intent: "I need a report for the regulator/compliance."
+# Priority: Zero privacy violations.
+# Trade-off: May drop dimensions (calculate them separately), leading to different weights for different parts of the report.
+
+optimization:
+  bounds:
+    max_weight: 10.0
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 1000
+    tolerance: 0.0  # Strict - no tolerance for violations
+  
+  constraints:
+    volume_preservation: 0.95  # High, but allow slight reordering to find solutions
+  
+  subset_search:
+    enabled: true
+    strategy: "greedy"  # Deterministic: remove most unbalanced dimension iteratively
+    max_tests: 200
+    trigger_on_slack: true
+    max_slack_threshold: 0.0  # Trigger on ANY slack usage
+    prefer_slacks_first: false  # Go directly to subset search
+  
+  bayesian:
+    max_iterations: 100
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

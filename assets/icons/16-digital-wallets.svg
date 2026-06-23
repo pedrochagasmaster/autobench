@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Digital Wallets">
+  <title>Digital Wallets</title>
+  <!-- Wallet body -->
+  <rect x="7" y="14" width="34" height="21" rx="4"/>
+  <!-- Card pocket on the right -->
+  <path d="M41 22 H33 a3.2 3.2 0 0 0 0 6.4 H41"/>
+  <!-- Snap / chip -->
+  <circle cx="34.4" cy="25.2" r="1.7" fill="currentColor" stroke="none"/>
+</svg>

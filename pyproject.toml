@@ -1,28 +1,57 @@
-[build-system]
-requires = ["setuptools>=65"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "dispatch"
-version = "1.0.0"
-description = "Server-side TUI for launching Impala jobs through the Hadoop Query Launcher orchestrators."
-readme = "README.md"
+name = "autobench"
+version = "3.0"
+description = "Privacy-compliant peer benchmark tool (Mastercard Control 3.2)"
 requires-python = ">=3.10"
-dependencies = [
-  "textual==8.2.5",
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+include = [
+    "benchmark.py",
+    "tui_app.py",
+    "core/**/*.py",
+    "utils/**/*.py",
+    "scripts/**/*.py",
+    "tests/**/*.py",
+]
+extend-exclude = [
+    "examples/**",
+    "*.ipynb",
 ]
 
-[project.optional-dependencies]
-dev = [
-  "pytest",
-  "pytest-asyncio",
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_configs = true
+disallow_untyped_calls = false
+check_untyped_defs = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+warn_return_any = false
+disallow_any_generics = false
+warn_unused_ignores = false
+exclude = '''(?x)(
+    ^benchmark\.py$|
+    ^tui_app\.py$
+)'''
+
+[[tool.mypy.overrides]]
+module = [
+    "scipy.*",
+    "pandas.*",
+    "yaml.*",
+    "openpyxl.*",
+    "pypyodbc.*",
 ]
-
-[project.scripts]
-dispatch = "dispatch.__main__:main"
-
-[tool.setuptools.packages.find]
-include = ["dispatch*"]
-
-[tool.setuptools.package-data]
-dispatch = ["*.tcss"]
+ignore_missing_imports = true

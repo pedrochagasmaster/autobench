@@ -1,58 +1,58 @@
-# Dispatch Onboarding
+# Autobench Onboarding
 
-Welcome to Dispatch. After the administrator deploys the shared
-`/ads_storage/dispatch` tree, each user only needs to run the installer once.
+After the operator deploys the shared `/ads_storage/autobench` tree, each user
+runs the installer once. The installer keeps your personal runtime under
+`/ads_storage/$USER/.autobench`.
 
 ## Install
 
-Run the installer directly from the deployed tree:
-
 ```bash
-cd /ads_storage/dispatch
+cd /ads_storage/autobench
 ./install.sh
 ```
 
-Do not run it with `source`. The installer creates your personal Dispatch
-runtime under `/ads_storage/$USER/.dispatch`, writes the `dispatch` launcher to
-`~/.local/bin/dispatch`, and updates your shell profile so new sessions can find
-the command.
-
-If the installer says:
-
-```bash
-To use dispatch in this shell now:
-  export PATH="$HOME/.local/bin:$PATH"
-```
-
-copy and run that one command. Otherwise, open a new SSH session.
-
-## Launch Your First Job
-
-Go to the directory that contains your SQL files and start Dispatch:
-
-```bash
-cd /path/to/your/sql/files
-dispatch
-```
-
-If the TUI opens, setup is complete.
-
-## Quick Checks
-
-If `dispatch` is not found:
+Do not run it with `source`. If the installer prints this command, run it in the
+current shell or open a new SSH session:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
-which dispatch
 ```
 
-If `which dispatch` still prints nothing, rerun the installer and keep the full
-output for support:
+## Launch
+
+Start the guided terminal UI from the directory where you keep inputs and
+outputs:
 
 ```bash
-cd /ads_storage/dispatch
-./install.sh
+cd /path/to/my/work
+autobench
 ```
 
-If Dispatch opens but reports Kerberos problems, run `kinit`, confirm the ticket
-with `klist`, then launch `dispatch` again.
+The CLI is available as `autobench-cli`:
+
+```bash
+autobench-cli config list
+autobench-cli share --help
+```
+
+## Quick Checks
+
+If `autobench` is not found:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+which autobench
+```
+
+If the TUI opens but file paths fail, confirm the CSV path is readable from the
+Edge Node session and rerun from a working directory where you can write output
+files.
+
+If `./install.sh` stops with a message about a Python version / interpreter
+mismatch (for example it found `python3.11` but the packages need Python 3.10),
+the node is missing the expected interpreter. The bundled packages are built for
+Python 3.10; ask your operator to make Python 3.10 available, or run
+`AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh`.
+
+If setup still fails, send the installer output and the result of
+`which autobench` to the tool owner.

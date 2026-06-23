@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Global LP Optimization">
+  <title>Global LP Optimization</title>
+  <!-- Containment ring: the global solution space -->
+  <circle cx="24" cy="24" r="18.5" stroke-opacity="0.28"/>
+  <!-- Spokes: every dimension tied to one global solve (no crossing lines) -->
+  <line x1="24" y1="24" x2="24" y2="9"/>
+  <line x1="24" y1="24" x2="11.01" y2="16.5"/>
+  <line x1="24" y1="24" x2="11.01" y2="31.5"/>
+  <line x1="24" y1="24" x2="24" y2="39"/>
+  <line x1="24" y1="24" x2="36.99" y2="31.5"/>
+  <line x1="24" y1="24" x2="36.99" y2="16.5"/>
+  <!-- Central global optimum -->
+  <circle cx="24" cy="24" r="3.6" fill="currentColor" stroke="none"/>
+  <!-- Peer / dimension nodes -->
+  <circle cx="24" cy="9" r="2.7" fill="#ffffff"/>
+  <circle cx="11.01" cy="16.5" r="2.7" fill="#ffffff"/>
+  <circle cx="11.01" cy="31.5" r="2.7" fill="#ffffff"/>
+  <circle cx="24" cy="39" r="2.7" fill="#ffffff"/>
+  <circle cx="36.99" cy="31.5" r="2.7" fill="#ffffff"/>
+  <circle cx="36.99" cy="16.5" r="2.7" fill="#ffffff"/>
+</svg>

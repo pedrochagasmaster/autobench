@@ -5,7 +5,7 @@ Write-Host "=== Configuration ===" -ForegroundColor Cyan
 $RemoteUserInput = Read-Host "Enter Remote User [default: e176097]"
 $RemoteUser = if ([string]::IsNullOrWhiteSpace($RemoteUserInput)) { "e176097" } else { $RemoteUserInput }
 
-$HostSuffix = Read-Host "Enter Host Suffix (e.g., '03' for hde2stl020003)"
+$HostSuffix = Read-Host "Enter Host Suffix (e.g., '04' for hde2stl020004)"
 if ([string]::IsNullOrWhiteSpace($HostSuffix)) {
     Write-Error "Host Suffix is required."
     exit 1
@@ -13,22 +13,24 @@ if ([string]::IsNullOrWhiteSpace($HostSuffix)) {
 
 $RemoteServer = "hde2stl0200${HostSuffix}.mastercard.int"
 $RemotePort = 2222
-$RemotePath = "/ads_storage/dispatch"
-$ZipName = "dispatch_deploy.zip"
-$SetupScript = "install.sh"
-$VendorDir = "vendor"
-$PythonRemote = "python3" # Uses whatever python3 is on the PATH (3.10 or 3.11)
+$RemotePath = "/ads_storage/autobench"
+$ZipName = "autobench_deploy.zip"
+$SetupScript = "setup_remote_env.sh"
+$OfflineDir = "offline_packages"
+$ChecksumManifest = "SHA256SUMS"
+$TargetConstraints = "constraints-linux-py310.generated.txt"
+$PythonRemote = "/sys_apps_01/python/python310/bin/python3.10"
 
-# --- Step 1: Create Vendor Bundle ---
-Write-Host "`n=== Step 1: Creating Vendor Bundle ===" -ForegroundColor Cyan
+# --- Step 1: Create Offline Bundle ---
+Write-Host "`n=== Step 1: Creating Offline Bundle ===" -ForegroundColor Cyan
 
-if (!(Test-Path -Path $VendorDir)) {
-    New-Item -ItemType Directory -Path $VendorDir | Out-Null
-    Write-Host "Created directory: $VendorDir"
+if (!(Test-Path -Path $OfflineDir)) {
+    New-Item -ItemType Directory -Path $OfflineDir | Out-Null
+    Write-Host "Created directory: $OfflineDir"
 }
 
 # Clean previous packages to ensure fresh download
-Remove-Item -Path "$VendorDir\*" -Force -Recurse -ErrorAction SilentlyContinue
+Remove-Item -Path "$OfflineDir\*" -Force -Recurse -ErrorAction SilentlyContinue
 
 if (!(Test-Path requirements.txt)) {
     Write-Error "requirements.txt not found!"
@@ -36,16 +38,32 @@ if (!(Test-Path requirements.txt)) {
 }
 
 Write-Host "Downloading binary packages for Linux (Python 3.10)..."
-py -m pip download -r requirements.txt --dest $VendorDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
+$constraintsForTarget = Get-Content constraints.txt | ForEach-Object {
+    if ($_ -match 'python_version\s*>=\s*["'']3\.11["'']') {
+        return
+    }
+    $_ -replace '\s*;\s*python_version\s*<\s*["'']3\.11["'']\s*$', ''
+}
+Set-Content -Path $TargetConstraints -Value $constraintsForTarget -Encoding UTF8
+
+py -m pip download -r requirements.txt -c $TargetConstraints --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Download failed."
+    Write-Host "Hint: If this failed, a package in requirements.txt might not have a Linux binary wheel." -ForegroundColor Yellow
     exit 1
 }
 
 # Verify files exist
-if ((Get-ChildItem $VendorDir).Count -eq 0) {
-    Write-Error "Vendor directory is empty! Something went wrong with the download."
+if ((Get-ChildItem $OfflineDir).Count -eq 0) {
+    Write-Error "Offline packages directory is empty! Something went wrong with the download."
+    exit 1
+}
+
+Write-Host "Writing SHA-256 checksum manifest..."
+py scripts/offline_bundle_checksums.py write $OfflineDir requirements.txt --output $ChecksumManifest
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Checksum manifest generation failed."
     exit 1
 }
 
@@ -56,31 +74,26 @@ if (Test-Path $ZipName) { Remove-Item $ZipName -Force }
 # We use Python to zip because Compress-Archive uses Windows backslashes,
 # which breaks directory structure when unzipped on Linux.
 $PyScript = @"
-import zipfile, os
+import zipfile, os, sys
 
 zip_name = '$ZipName'
-items = ['dispatch', 'scr', 'vendor', 'install.sh', 'pyproject.toml', 'requirements.txt', 'VERSION', 'README.md', 'docs']
+items = ['offline_packages', 'requirements.txt', 'constraints.txt', '$TargetConstraints', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
 
 print(f'Creating {zip_name}...')
 with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
     for item in items:
         if not os.path.exists(item):
-            print(f'  Warning: {item} not found, skipping.')
             continue
         if os.path.isfile(item):
             print(f'  Adding {item}')
-            zf.write(item, os.path.basename(item))
+            zf.write(item, item.replace(os.sep, '/'))
         elif os.path.isdir(item):
             print(f'  Adding {item} (recursive)')
             for root, dirs, files in os.walk(item):
-                # Skip .pyc files or __pycache__
-                if '__pycache__' in root:
-                    continue
                 for file in files:
-                    if file.endswith('.pyc'):
-                        continue
                     file_path = os.path.join(root, file)
-                    # Create relative path for archive
+                    # Create relative path for archive (e.g., offline_packages/file.whl)
+                    # We assume we are running from project root
                     arcname = os.path.relpath(file_path, os.getcwd())
                     # FORCE forward slashes for Linux compatibility
                     arcname = arcname.replace(os.sep, '/')
@@ -123,15 +136,15 @@ $RemoteCommand = "cd $RemotePath && " +
                  "ls -F && " +
                  "echo '--- Running Setup ---' && " +
                  "chmod +x $SetupScript && " +
-                 "DISPATCH_PYTHON_BIN=`$(command -v python3.11 || command -v python3.10) ./$SetupScript"
+                 "./$SetupScript"
 
 Write-Host "Executing setup on remote server..."
 ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" "$RemoteCommand"
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "`n=== SUCCESS! ===" -ForegroundColor Green
-    Write-Host "Dispatch is deployed and installed."
-    Write-Host "You can verify by running: ssh -p $RemotePort ${RemoteUser}@${RemoteServer} 'source ~/.bashrc && dispatch --help'"
+    Write-Host "The tool is deployed and installed."
+    Write-Host "You can verify by running: ssh -p $RemotePort ${RemoteUser}@${RemoteServer} 'cd $RemotePath && ./run_tool.sh share --help'"
 } else {
     Write-Error "Remote installation failed."
 }

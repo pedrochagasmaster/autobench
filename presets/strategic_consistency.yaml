@@ -1,0 +1,42 @@
+version: "3.0"
+preset_name: "strategic_consistency"
+compliance_posture: "best_effort"
+description: "Strategic Analysis - Global weights with minimized violations (formerly global_with_violations)"
+
+# Intent: "I need a strategic overview and I want consistent numbers."
+# Priority: Global consistency (one set of weights).
+# Trade-off: Will allow privacy violations in specific categories, but minimizes their business impact.
+
+optimization:
+  bounds:
+    max_weight: 15.0  # Flexibility to find global solution
+    min_weight: 0.01
+  
+  linear_programming:
+    max_iterations: 100000
+    tolerance: 25.0  # High tolerance to absorb violations, but not infinite
+    lambda_penalty: 100000000  # Very high penalty to minimize slack usage
+    volume_weighted_penalties: true  # Weight slack penalties by category volume
+    volume_weighting_exponent: 1.5  # Strong emphasis on protecting large categories
+  
+  constraints:
+    volume_preservation: 0.95  # Slight relaxation to help global solution
+    enforce_single_weight_set: true  # CRITICAL: keep one global weight set
+  
+  subset_search:
+    enabled: false  # CRITICAL: Never drop dimensions
+    strategy: "greedy"
+    max_attempts: 1
+    trigger_on_slack: false  # CRITICAL: Don't drop even if slack occurs
+    max_slack_threshold: 999.0  # Effectively disabled
+    prefer_slacks_first: false
+  
+  bayesian:
+    max_iterations: 150
+    learning_rate: 0.01
+
+analysis:
+  best_in_class_percentile: 0.85
+
+output:
+  include_debug_sheets: true

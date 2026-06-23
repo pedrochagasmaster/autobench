@@ -2,7 +2,7 @@
 param(
     [string]$Remote = "bitbucket",
     [string]$Branch = "main",
-    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/autobench.git"
+    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/dispatch.git"
 )
 
 Set-StrictMode -Version Latest
@@ -45,7 +45,7 @@ $remoteUrl = ($remoteUrl -join "`n").Trim()
 Write-Host "Remote:     $Remote -> $remoteUrl"
 
 if ($Remote -eq "bitbucket" -and $remoteUrl -ne $ExpectedUrl) {
-    Write-Warning "Remote '$Remote' does not match the expected Bitbucket URL."
+    Write-Warning "Remote '$Remote' does not match the expected deployment URL."
     Write-Host ""
     Write-Host "Fix it with:"
     Write-Host "  git remote set-url $Remote $ExpectedUrl"
@@ -77,6 +77,6 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "When ready to publish this branch to Bitbucket, run:"
+Write-Host "When ready to publish this branch to the deployment remote, run:"
 Write-Host "  git push -u $Remote HEAD"
 exit 0

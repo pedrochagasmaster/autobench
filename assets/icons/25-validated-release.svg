@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Validated Release">
+  <title>Validated Release</title>
+  <!-- Verified release -->
+  <circle cx="24" cy="24" r="16"/>
+  <polyline points="16 24.5 21.5 30 32 18"/>
+</svg>

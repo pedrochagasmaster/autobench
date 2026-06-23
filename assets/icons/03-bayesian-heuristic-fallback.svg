@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Bayesian Heuristic Fallback">
+  <title>Bayesian / Heuristic Fallback</title>
+  <!-- Baseline -->
+  <line x1="6" y1="35" x2="42" y2="35" stroke-opacity="0.4"/>
+  <!-- Gaussian posterior bell curve -->
+  <path d="M6 35 C 16 35, 17 13, 24 13 C 31 13, 32 35, 42 35"/>
+  <!-- Mean / converged estimate -->
+  <line x1="24" y1="14.5" x2="24" y2="35" stroke-dasharray="2.5 3" stroke-opacity="0.65"/>
+  <!-- Peak estimate -->
+  <circle cx="24" cy="13" r="2.6" fill="currentColor" stroke="none"/>
+</svg>

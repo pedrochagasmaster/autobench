@@ -1,5 +1,0 @@
-{
-  "description": "Memory errors occur twice, then the query succeeds.",
-  "failures_before_success": 2,
-  "delay_seconds": 0
-}

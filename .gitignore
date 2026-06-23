@@ -1,14 +1,87 @@
-mocks/sent_emails/
-dispatch_deploy.zip
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Output files
+benchmark_output_*.xlsx
+benchmark_share_*.xlsx
+benchmark_rate_*.xlsx
+benchmark_dimensional_*.xlsx
+test_*.xlsx
+nubank_*.xlsx
+*_output_*.xlsx
+
+# Log files
+*.log
+benchmark_log_*.txt
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Data files
+data/
+
+# Generated sweep and gate artifacts
+test_sweeps/
+test_gate/config/generated_template.yaml
+outputs/
 tools/prod_tui/screens/
 tools/prod_tui/reports/
 tools/prod_tui/logs/
 tools/prod_tui/*.log
-tools/prod_tui/_remote_*.py
-.understand-anything/
-*.pyc
-__pycache__/
-.pytest_cache/
-.pylint.d/
-build/
-*.egg-info/
+
+# Generated agent/audit context bundles — regenerate with: py scripts/build_master_context.py
+docs/autobench_master_context*.md
+
+# Old/backup files
+*_old.py
+*_backup*.py
+*_new.py
+
+# Configuration (if contains secrets)
+config.json
+*.env
+.env
+
+# Keep these patterns
+!presets.json
+!config.template.json
+
+*.txt
+*.xlsx
+*.csv
+*.svg
+*.png
+*.zip
+
+# Negations must follow the blanket patterns (last match wins)
+!requirements-dev.txt
+!constraints.txt
+!tests/fixtures/*.csv
+!assets/icons/**/*.svg
+!assets/icons/**/*.png
+*.csv.gz
+/offline_packages/*
+autobench_deploy.zip
+SHA256SUMS

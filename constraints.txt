@@ -1,0 +1,41 @@
+# Known-good resolved versions for this project's dependency tree (curated --
+# NOT a full pip freeze; keep it limited to this project's direct + transitive deps).
+# Refresh deliberately:
+#   1. py -m pip install -U -r requirements.txt -r requirements-dev.txt
+#   2. py -m pytest tests/ -q ; py scripts/perform_gate_test.py   (both must pass)
+#   3. Update the pins below to the now-installed versions, e.g. in PowerShell:
+#        py -m pip freeze | Select-String -Pattern "^(pandas|numpy|scipy|...)=="
+#      for the packages already listed here; add/remove lines only when the
+#      dependency tree itself changes.
+colorama==0.4.6
+et_xmlfile==2.0.0
+iniconfig==2.3.0
+librt==0.10.0
+linkify-it-py==2.0.3
+markdown-it-py==3.0.0
+mdit-py-plugins==0.5.0
+mdurl==0.1.2
+mypy==1.20.2
+mypy_extensions==1.1.0
+numpy==2.2.6
+openpyxl==3.1.5
+packaging==25.0
+pandas==2.3.2
+pathspec==1.1.1
+platformdirs==4.3.7
+pluggy==1.6.0
+Pygments==2.19.2
+pytest==8.4.2
+python-dateutil==2.9.0.post0
+pytz==2025.2
+PyYAML==6.0.3
+rich==14.2.0
+ruff==0.15.16
+# scipy 1.16 dropped Python 3.10 (requires >=3.11); 1.15.3 is the last 3.10-compatible release.
+scipy==1.16.3; python_version >= "3.11"
+scipy==1.15.3; python_version < "3.11"
+six==1.17.0
+textual==6.6.0
+typing_extensions==4.15.0
+tzdata==2025.2
+uc-micro-py==1.0.3

@@ -1,10 +1,17 @@
-textual==8.2.5
-markdown-it-py==4.2.0
-mdit-py-plugins==0.6.0
-platformdirs==4.9.6
-pygments==2.20.0
-rich==15.0.0
-typing-extensions==4.15.0
-linkify-it-py==2.1.0
-mdurl==0.1.2
-uc-micro-py==2.0.0
+# Data processing
+pandas>=2.0,<3
+numpy>=1.24,<3
+
+# Excel support
+openpyxl>=3.1,<4
+
+# Configuration
+PyYAML>=6.0,<7
+
+# Optimization (required for strict privacy-cap LP solver)
+scipy>=1.10,<2
+
+# SQL ingestion is optional: install an ODBC driver package (e.g. pypyodbc) manually if using load_from_sql_*
+
+# TUI
+textual>=0.40.0,<7

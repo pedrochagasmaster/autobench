@@ -3,16 +3,88 @@ set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)
 USER_NAME=${USER:-$(id -un)}
-DATA_ROOT=${DISPATCH_DATA_ROOT:-/ads_storage/$USER_NAME}
-DISPATCH_HOME="$DATA_ROOT/.dispatch"
-PYTHON_BIN=${DISPATCH_PYTHON_BIN:-}
+DATA_ROOT=${AUTOBENCH_DATA_ROOT:-/ads_storage/$USER_NAME}
+AUTOBENCH_HOME="$DATA_ROOT/.autobench"
+# Determine the CPython minor version the bundled binary wheels were built for
+# (e.g. "3.10" from a cp310 tag). Empty when no binary wheels are bundled, which
+# means this is an online install and any supported interpreter is acceptable.
+required_wheel_python() {
+  for _whl in "$ROOT_DIR"/offline_packages/*.whl "$ROOT_DIR"/vendor/*.whl; do
+    [ -e "$_whl" ] || continue
+    _cp=$(printf '%s\n' "$_whl" | grep -oE 'cp3[0-9]+' | head -n1 || true)
+    if [ -n "${_cp:-}" ]; then
+      printf '3.%s\n' "${_cp#cp3}"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# Resolve an interpreter for an exact "3.X" version across PATH and the known
+# Edge Node locations.
+find_python() {
+  _ver=$1
+  _nodots=$(printf '%s' "$_ver" | tr -d '.')
+  for _cand in \
+    "python${_ver}" \
+    "/sys_apps_01/python/python${_nodots}/bin/python${_ver}" \
+    "/sys_apps_01/python/python${_nodots}/bin/python3" \
+    "/usr/bin/python${_ver}" \
+    "/usr/local/bin/python${_ver}"; do
+    if command -v "$_cand" >/dev/null 2>&1; then
+      command -v "$_cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+interpreter_python_version() {
+  "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true
+}
+
+REQUIRED_PY=$(required_wheel_python)
+PYTHON_BIN=${AUTOBENCH_PYTHON_BIN:-}
+
 if [ -z "$PYTHON_BIN" ]; then
-  if command -v python3.11 >/dev/null 2>&1; then
-    PYTHON_BIN=$(command -v python3.11)
-  elif command -v python3.10 >/dev/null 2>&1; then
-    PYTHON_BIN=$(command -v python3.10)
+  if [ -n "$REQUIRED_PY" ]; then
+    # Bundled binary wheels (cp3XX) dictate the interpreter version: a mismatched
+    # interpreter cannot install them (the classic cp310-wheels-vs-python3.11 break).
+    PYTHON_BIN=$(find_python "$REQUIRED_PY" || true)
+    if [ -z "$PYTHON_BIN" ]; then
+      echo "Bundled offline packages require Python $REQUIRED_PY, but no python$REQUIRED_PY interpreter was found." >&2
+      echo "Install Python $REQUIRED_PY or set AUTOBENCH_PYTHON_BIN to a matching interpreter." >&2
+      exit 1
+    fi
   else
-    PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10
+    # Online install (no binary wheels bundled): accept any supported 3.10+.
+    if command -v python3.11 >/dev/null 2>&1; then
+      PYTHON_BIN=$(command -v python3.11)
+    elif command -v python3.10 >/dev/null 2>&1; then
+      PYTHON_BIN=$(command -v python3.10)
+    else
+      PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10
+    fi
+  fi
+fi
+
+if [ ! -x "$PYTHON_BIN" ] && ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "Python interpreter not found: $PYTHON_BIN" >&2
+  echo "Set AUTOBENCH_PYTHON_BIN to a supported Python 3.10+ interpreter." >&2
+  exit 1
+fi
+
+# Guard the classic failure mode where bundled cp3XX wheels cannot install into a
+# mismatched interpreter (e.g. cp310 wheels + python3.11). Fail with a clear,
+# actionable message instead of a cryptic "No matching distribution" from pip.
+if [ -n "$REQUIRED_PY" ]; then
+  ACTUAL_PY=$(interpreter_python_version "$PYTHON_BIN")
+  if [ -n "$ACTUAL_PY" ] && [ "$ACTUAL_PY" != "$REQUIRED_PY" ]; then
+    echo "Interpreter mismatch: $PYTHON_BIN is Python $ACTUAL_PY, but the bundled offline" >&2
+    echo "wheels target Python $REQUIRED_PY (prebuilt cp$(printf '%s' "$REQUIRED_PY" | tr -d '.') wheels for numpy/pandas/scipy)." >&2
+    echo "Use a Python $REQUIRED_PY interpreter (set AUTOBENCH_PYTHON_BIN) or rebuild" >&2
+    echo "offline_packages for Python $ACTUAL_PY with deploy_and_install.ps1." >&2
+    exit 1
   fi
 fi
 
@@ -21,38 +93,36 @@ if [ ! -d "$DATA_ROOT" ] || [ ! -w "$DATA_ROOT" ]; then
   exit 1
 fi
 
-mkdir -p "$DISPATCH_HOME/jobs"
+mkdir -p "$AUTOBENCH_HOME/config" "$AUTOBENCH_HOME/logs" "$AUTOBENCH_HOME/cache"
+"$PYTHON_BIN" -m venv "$AUTOBENCH_HOME/venv"
 
-LOCK_FILE="$DISPATCH_HOME/install.lock"
-# exec 9>"$LOCK_FILE"
-# flock 9
-
-if [ ! -x "$PYTHON_BIN" ]; then
-  echo "Python 3.10 not found at $PYTHON_BIN" >&2
-  echo "Set DISPATCH_PYTHON_BIN for dev-mode validation if needed." >&2
-  exit 1
-fi
-
-command -v klist >/dev/null 2>&1 || { echo "klist not found on PATH" >&2; exit 1; }
-command -v impala-shell >/dev/null 2>&1 || { echo "impala-shell not found on PATH" >&2; exit 1; }
-
-"$PYTHON_BIN" -m venv "$DISPATCH_HOME/venv"
-if [ -n "$(find "$ROOT_DIR/vendor" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null)" ]; then
-  "$DISPATCH_HOME/venv/bin/pip" install --no-index --find-links="$ROOT_DIR/vendor" -r "$ROOT_DIR/requirements.txt"
+if [ -n "$(find "$ROOT_DIR/offline_packages" "$ROOT_DIR/vendor" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null || true)" ]; then
+  "$AUTOBENCH_HOME/venv/bin/pip" install \
+    --no-index \
+    --find-links="$ROOT_DIR/offline_packages" \
+    --find-links="$ROOT_DIR/vendor" \
+    -r "$ROOT_DIR/requirements.txt"
 else
-  "$DISPATCH_HOME/venv/bin/pip" install --index-url "${DISPATCH_PIP_INDEX_URL:-https://pypi.org/simple}" \
+  "$AUTOBENCH_HOME/venv/bin/pip" install \
+    --index-url "${AUTOBENCH_PIP_INDEX_URL:-https://pypi.org/simple}" \
     -r "$ROOT_DIR/requirements.txt"
 fi
-# "$DISPATCH_HOME/venv/bin/pip" install --no-deps -e "$ROOT_DIR"
 
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
-cat > "$LOCAL_BIN/dispatch" <<EOF
+cat > "$LOCAL_BIN/autobench" <<EOF
 #!/bin/bash
 export PYTHONPATH="$ROOT_DIR"
-exec "$DISPATCH_HOME/venv/bin/python" -m dispatch "\$@"
+exec "$AUTOBENCH_HOME/venv/bin/python" "$ROOT_DIR/tui_app.py" "\$@"
 EOF
-chmod +x "$LOCAL_BIN/dispatch"
+chmod +x "$LOCAL_BIN/autobench"
+
+cat > "$LOCAL_BIN/autobench-cli" <<EOF
+#!/bin/bash
+export PYTHONPATH="$ROOT_DIR"
+exec "$AUTOBENCH_HOME/venv/bin/python" "$ROOT_DIR/benchmark.py" "\$@"
+EOF
+chmod +x "$LOCAL_BIN/autobench-cli"
 
 SHELL_RC="$HOME/.bashrc"
 [ "${SHELL:-}" ] && [ "$(basename "$SHELL")" = "zsh" ] && [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
@@ -60,33 +130,21 @@ PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 case ":$PATH:" in
   *":$LOCAL_BIN:"*) ;;
   *)
-    if ! grep -F "$PATH_LINE" "$SHELL_RC" >/dev/null 2>&1; then
-      printf '\n# Dispatch command\n%s\n' "$PATH_LINE" >>"$SHELL_RC"
+    if [ -f "$SHELL_RC" ] && ! grep -F "$PATH_LINE" "$SHELL_RC" >/dev/null 2>&1; then
+      printf '\n# Autobench command\n%s\n' "$PATH_LINE" >>"$SHELL_RC"
     fi
     ;;
 esac
 
-CONFIG="$DISPATCH_HOME/config.json"
-if [ ! -f "$CONFIG" ]; then
-  EMAIL=${DISPATCH_EMAIL:-}
-  if [ -z "$EMAIL" ]; then
-    printf "Email: "
-    read -r EMAIL
-  fi
-  printf '{\n  "email": "%s"\n}\n' "$EMAIL" >"$CONFIG"
-fi
-
-cp "$ROOT_DIR/VERSION" "$DISPATCH_HOME/installed_version"
+cp "$ROOT_DIR/VERSION" "$AUTOBENCH_HOME/installed_version"
 echo
-echo "Dispatch installed."
+echo "Autobench installed."
 case ":$PATH:" in
-  *":$LOCAL_BIN:"*)
-    echo "The dispatch command is available in this shell."
-    ;;
+  *":$LOCAL_BIN:"*) echo "The autobench command is available in this shell." ;;
   *)
-    echo "To use dispatch in this shell now:"
+    echo "To use autobench in this shell now:"
     echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo "New shells will pick this up automatically from $SHELL_RC."
     ;;
 esac
-echo "Then cd to your SQL files and run: dispatch"
+echo "Then cd to your working directory and run: autobench"

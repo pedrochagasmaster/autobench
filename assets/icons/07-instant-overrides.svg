@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Instant Overrides">
+  <title>Instant Overrides</title>
+  <!-- Toggle switch in the ON state = flip panels/rules instantly -->
+  <rect x="7" y="16" width="34" height="16" rx="8"/>
+  <circle cx="33" cy="24" r="5" fill="currentColor" stroke="none"/>
+</svg>

@@ -7,15 +7,14 @@ $ErrorActionPreference = "Stop"
 function Invoke-Step {
     param(
         [string]$Name,
-        [string[]]$Command
+        [string]$Display,
+        [scriptblock]$Action
     )
 
     Write-Host ""
     Write-Host "== $Name ==" -ForegroundColor Cyan
-    Write-Host ($Command -join " ")
-    $exe = $Command[0]
-    $args = if ($Command.Count -gt 1) { $Command[1..($Command.Count - 1)] } else { @() }
-    & $exe @args
+    Write-Host $Display
+    & $Action
     if ($LASTEXITCODE -ne 0) {
         throw "$Name failed with exit code $LASTEXITCODE"
     }
@@ -23,14 +22,32 @@ function Invoke-Step {
 
 $repoRoot = (& git rev-parse --show-toplevel 2>&1)
 if ($LASTEXITCODE -ne 0) {
-    throw "Run this script from inside the Dispatch git repository."
+    throw "Run this script from inside the Autobench git repository."
 }
 
 Set-Location (($repoRoot -join "`n").Trim())
 
-Invoke-Step "Compile Python sources" @("py", "-m", "compileall", "dispatch", "scr")
-Invoke-Step "Run unit tests" @("py", "-m", "pytest", "tests", "tools/prod_tui/tests", "-q")
-Invoke-Step "Dispatch help smoke" @("py", "-m", "dispatch", "--help")
+# Wrapped commands:
+# py -m compileall benchmark.py tui_app.py core utils scripts tools
+# py -m ruff check .
+# py -m mypy core/ utils/
+# py scripts/perform_gate_test.py
+# py -m pytest
+Invoke-Step "Compile Python sources" "py -m compileall benchmark.py tui_app.py core utils scripts tools" {
+    py -m compileall benchmark.py tui_app.py core utils scripts tools
+}
+Invoke-Step "Lint" "py -m ruff check ." {
+    py -m ruff check .
+}
+Invoke-Step "Typecheck" "py -m mypy core/ utils/" {
+    py -m mypy core/ utils/
+}
+Invoke-Step "Gate test" "py scripts/perform_gate_test.py" {
+    py scripts/perform_gate_test.py
+}
+Invoke-Step "Unit tests" "py -m pytest" {
+    py -m pytest
+}
 
 Write-Host ""
 Write-Host "Local check passed." -ForegroundColor Green

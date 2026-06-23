@@ -1,0 +1,30 @@
+version: "1.0"
+
+rules:
+  "5/25":
+    min_entities: 5
+    max_concentration: 25.0
+
+  "6/30":
+    min_entities: 6
+    max_concentration: 30.0
+    additional:
+      min_count_above_threshold: [3, 7.0]
+
+  "7/35":
+    min_entities: 7
+    max_concentration: 35.0
+    additional:
+      min_count_15: 2
+      min_count_8: 1
+
+  "10/40":
+    min_entities: 10
+    max_concentration: 40.0
+    additional:
+      min_count_20: 2
+      min_count_10: 1
+
+  "4/35":
+    min_entities: 4
+    max_concentration: 35.0

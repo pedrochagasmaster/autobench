@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="The Audit Package">
+  <title>The Audit Package</title>
+  <!-- Archive lid -->
+  <rect x="8" y="11" width="32" height="8" rx="2"/>
+  <!-- Archive body -->
+  <rect x="10.5" y="19" width="27" height="19" rx="2"/>
+  <!-- Lock = immutable, audit-ready -->
+  <path d="M21 27 v-2 a3 3 0 0 1 6 0 v2"/>
+  <rect x="19.5" y="27" width="9" height="7" rx="1.5" fill="currentColor" stroke="none"/>
+</svg>

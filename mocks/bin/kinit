@@ -1,3 +1,0 @@
-#!/usr/bin/env sh
-echo "mock kinit accepted"
-exit 0

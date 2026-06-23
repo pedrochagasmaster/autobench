@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Adaptive Chunking">
+  <title>Adaptive Chunking</title>
+  <!-- Heavy stream split into fixed-size chunks -->
+  <rect x="7" y="17" width="34" height="14" rx="3"/>
+  <!-- First chunk currently in flight -->
+  <rect x="9" y="19" width="7" height="10" rx="1" fill="currentColor" stroke="none"/>
+  <!-- Chunk dividers -->
+  <line x1="18" y1="17" x2="18" y2="31"/>
+  <line x1="29" y1="17" x2="29" y2="31"/>
+</svg>
