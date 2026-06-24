@@ -347,19 +347,18 @@ def export_balanced_csv(
                     # Add time period if applicable
                     if time_col is not None:
                         row_data[time_col] = time_period
-                    
-                    # Use dynamic column names based on input columns
-                    row_data[total_col] = round(balanced_total, 2)
-                    
-                    if numerator_cols:
-                        if approval_col := numerator_cols.get('approval'):
-                            row_data[approval_col] = round(balanced_approval, 2) if balanced_approval > 0 else None
-                        if fraud_col := numerator_cols.get('fraud'):
-                            row_data[fraud_col] = round(balanced_fraud, 2) if balanced_fraud > 0 else None
-                    
-                    # Add secondary metrics to row
-                    for sec_metric, sec_value in secondary_balanced.items():
-                        row_data[sec_metric] = round(sec_value, 2)
+
+                    if not include_calculated:
+                        row_data[total_col] = round(balanced_total, 2)
+
+                        if numerator_cols:
+                            if approval_col := numerator_cols.get('approval'):
+                                row_data[approval_col] = round(balanced_approval, 2) if balanced_approval > 0 else None
+                            if fraud_col := numerator_cols.get('fraud'):
+                                row_data[fraud_col] = round(balanced_fraud, 2) if balanced_fraud > 0 else None
+
+                        for sec_metric, sec_value in secondary_balanced.items():
+                            row_data[sec_metric] = round(sec_value, 2)
                     
                     export_rows.append(row_data)
         

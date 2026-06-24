@@ -85,6 +85,50 @@ class Control3PolicyResult:
     details: Dict[str, Any] = field(default_factory=dict)
 
 
+REMEDIATION_HINTS: Dict[str, str] = {
+    "fraud_chargeback_requires_clearing_spend_basis": (
+        "Re-run with --privacy-basis clearing_spend; fraud/chargeback issuer "
+        "benchmarking must use the clearing-spend concentration basis."
+    ),
+    "digital_wallet_metrics_require_privacy_review": (
+        "Obtain the required Privacy review for digital wallet metrics, then "
+        "re-run with --digital-wallet-review-approved."
+    ),
+    "top_merchant_lists_not_allowed": (
+        "Control 3 prohibits top-merchant deliverables; remove the top-merchant "
+        "list from the output and drop --contains-top-merchant-output."
+    ),
+    "dual_entity_axis_requires_privacy_review": (
+        "Obtain the required Privacy review for the dual entity-axis benchmark, "
+        "then re-run with --dual-entity-axis-review-approved."
+    ),
+    "recurring_deliverable_recheck_required": (
+        "Record a current privacy re-check with --last-privacy-recheck-date "
+        "YYYY-MM-DD (within the last 365 days; re-check whenever the peer group "
+        "changes)."
+    ),
+}
+
+
+def remediation_hint(reason: Optional[str]) -> Optional[str]:
+    """Return a human-facing remediation hint for a Control 3 block reason.
+
+    Parameters
+    ----------
+    reason : str, optional
+        The machine ``blocked_reason`` code produced by the policy gates.
+
+    Returns
+    -------
+    str or None
+        A short, actionable hint telling the user which flag/evidence resolves
+        the block, or ``None`` when no hint is registered for ``reason``.
+    """
+    if not reason:
+        return None
+    return REMEDIATION_HINTS.get(reason)
+
+
 def _normalized_basis(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
