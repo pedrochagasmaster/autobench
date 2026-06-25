@@ -80,6 +80,15 @@ git commit -m "Describe the change"
 6. Publish to Bitbucket only when ready for a server update — see
    [Publish to Bitbucket](#publish-to-bitbucket-deployment-snapshot) below.
 
+## Deployment Decision Table
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
+| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
+| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
+| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+
 ## Publish to Bitbucket (Deployment Snapshot)
 
 The `bitbucket` (`autobench`) repo does **not** share history with local `main`,
@@ -91,22 +100,20 @@ force-push.
 
 ```powershell
 $env:BB_TOKEN = "<your-bitbucket-PAT>"
-git -c "http.extraHeader=Authorization: Bearer $env:BB_TOKEN" fetch bitbucket
-$short = git rev-parse --short main
-git checkout --detach main
-git reset --soft bitbucket/main
-git commit -m "Deploy snapshot: autobench main $short ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
-git -c "http.extraHeader=Authorization: Bearer $env:BB_TOKEN" push bitbucket "HEAD:main"
-git checkout main
+.\tools\dev\publish_bitbucket_snapshot.ps1
+git fetch bitbucket main
+git log --oneline -1 bitbucket/main
 ```
 
-`reset --soft bitbucket/main` keeps `main`'s working tree but re-parents the new
-commit onto Bitbucket's tip, so the push fast-forwards. The closing
-`git checkout main` leaves local `main` untouched: Bitbucket only ever receives
-snapshots derived from `main` — never pull Bitbucket back into local `main`.
+The helper validates the deployment remote before any fetch/push, uses
+`main` as the source tree, creates one authored snapshot parented on the current
+`bitbucket/main`, and returns you to your starting branch even when the push
+fails. Bitbucket only ever receives snapshots derived from local `main` — never
+pull Bitbucket back into local `main`.
 
-Do not use `git commit-tree` for the snapshot; in agent sessions the git wrapper
-injects a trailer and mangles it. Use the detached-HEAD sequence above.
+If you need to debug the underlying Git sequence, the helper wraps the same
+detached-HEAD + `reset --soft bitbucket/main` model that was previously run by
+hand.
 
 ## Edge Node Update
 
@@ -126,7 +133,9 @@ the executable bit on entrypoint scripts (`run_tool.sh`, `install.sh`, etc.).
 Untracked paths such as `.venv/` and `offline_packages/` are preserved, so the
 installed environment survives the update. (Override the source with
 `AUTOBENCH_GIT_REMOTE` / `AUTOBENCH_GIT_BRANCH` if needed; defaults are
-`bitbucket` / `main`.)
+`bitbucket` / `main`.) After the reset, the script prints both an install
+decision (`install not required`, `install recommended`, or `install required`)
+and the dependency signal that triggered it.
 
 Always update through `update.sh` (Git), never by copying or `scp`-ing individual
 files onto the node — out-of-band copies reintroduce CRLF line endings and drift
@@ -142,7 +151,10 @@ cd /ads_storage/autobench
 
 `install.sh` auto-selects an interpreter matching the bundled offline wheels
 (currently CPython 3.10). Only set `AUTOBENCH_PYTHON_BIN=/path/to/python3.10`
-if the node hides the right interpreter from the installer's search.
+if the node hides the right interpreter from the installer's search. Treat
+`install required` as a hard stop before smoke tests; `install recommended`
+means runtime or launcher inputs changed and the per-user install should be
+refreshed before claiming parity.
 
 For release validation or rollback, reset to an exact snapshot commit:
 
@@ -155,6 +167,12 @@ chmod -R a+rX .
 
 Treat each Edge Node as independent until shared storage is proven. Validate
 each node separately and name the node in every production claim.
+
+For rollback reporting, record the node, old SHA, rollback SHA (target SHA),
+install decision, drift result, smoke level, and wrapper checks
+(`./run_tool.sh config list` and `./run_tool.sh share --help`). Local
+verification is not a substitute for node-specific Edge acceptance when SSH,
+Kerberos, storage, or terminal behavior are in scope.
 
 ## Full Bundle Deploy
 

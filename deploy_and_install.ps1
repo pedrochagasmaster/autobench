@@ -20,6 +20,11 @@ $OfflineDir = "offline_packages"
 $ChecksumManifest = "SHA256SUMS"
 $TargetConstraints = "constraints-linux-py310.generated.txt"
 $PythonRemote = "/sys_apps_01/python/python310/bin/python3.10"
+$SourceCommit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($SourceCommit)) {
+    Write-Error "Could not resolve the local source commit."
+    exit 1
+}
 
 # --- Step 1: Create Offline Bundle ---
 Write-Host "`n=== Step 1: Creating Offline Bundle ===" -ForegroundColor Cyan
@@ -109,6 +114,14 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+$BundleHash = (Get-FileHash -Algorithm SHA256 $ZipName).Hash
+Write-Host "Source commit: $SourceCommit"
+Write-Host "Bundle SHA256: $BundleHash"
+Write-Host "Extraction path: $RemotePath"
+Write-Host "Runtime Python: $PythonRemote"
+Write-Host "Drift result: remote setup will emit the drift artifact path and status."
+Write-Host "Smoke level: 1"
+
 # --- Step 3: Transfer to Server ---
 Write-Host "`n=== Step 3: Transferring to Server ===" -ForegroundColor Cyan
 $Destination = "${RemoteUser}@${RemoteServer}:${RemotePath}"
@@ -136,7 +149,14 @@ $RemoteCommand = "cd $RemotePath && " +
                  "ls -F && " +
                  "echo '--- Running Setup ---' && " +
                  "chmod +x $SetupScript && " +
-                 "./$SetupScript"
+                 "./$SetupScript && " +
+                 "echo '--- Wrapper smoke ---' && " +
+                 "./run_tool.sh config list && " +
+                 "./run_tool.sh share --help && " +
+                  "echo 'Wrapper smoke: passed' && " +
+                 "echo 'Drift result: reported' && " +
+                 "echo 'Smoke level: 1' && " +
+                 "echo 'SUMMARY bundle=$ZipName checksum=$BundleHash source_commit=$SourceCommit extraction_path=$RemotePath runtime_python=$PythonRemote wrapper_checks=passed drift_result=reported smoke_level=1'"
 
 Write-Host "Executing setup on remote server..."
 ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" "$RemoteCommand"
