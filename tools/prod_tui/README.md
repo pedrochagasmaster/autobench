@@ -22,8 +22,9 @@ Set `host`, `repo_path`, `session_name`, terminal size, SSH options, and the
 deployment metadata fields you need for the final report contract:
 `source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
 `runtime_python_*`, `update_method`, `install_decision`, `dependency_signal`,
-and `permission_evidence`. Do not store passcodes, passwords, or tokens in
-config files.
+and `permission_evidence`. Copy the permission evidence from the live
+`update.sh` or `setup_remote_env.sh` output; do not invent it in chat. Do not
+store passcodes, passwords, or tokens in config files.
 
 Before sending commands to a live node, inspect the tmux session first:
 

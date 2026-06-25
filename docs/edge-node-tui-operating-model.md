@@ -78,7 +78,8 @@ Autobench includes:
    executable bit on entrypoint scripts all match the repo, and re-applies
    `chmod -R a+rX` so every analyst can run the shared scripts. Untracked
    `.venv/` and `offline_packages/` are preserved. The updater also prints the
-   install decision and the dependency signal that produced it.
+   install decision, the dependency signal that produced it, and permission
+   evidence for the repo root plus the shared entrypoint scripts.
 5. Run `./install.sh` only when dependencies changed (new/updated offline
    wheels).
 6. Verify drift is zero with `py -m tools.prod_tui drift`.

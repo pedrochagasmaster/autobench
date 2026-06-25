@@ -17,6 +17,7 @@ WRAPPER_CHECKS="not_run"
 RUNTIME_PYTHON="unknown"
 DRIFT_RESULT="not_run"
 SMOKE_LEVEL="0"
+PERMISSION_EVIDENCE="not_run"
 DRIFT_OUTPUT="tools/prod_tui/reports/bundle_drift.json"
 
 # 1. Create Virtual Environment
@@ -74,6 +75,11 @@ if [ -d "$OFFLINE_DIR" ]; then
         mkdir -p "$(dirname "$DRIFT_OUTPUT")"
         "$PYTHON_BIN" -m tools.prod_tui drift --local . --remote /ads_storage/autobench --output "$DRIFT_OUTPUT"
         DRIFT_RESULT="reported"
+        echo "Permission evidence (repo root):"
+        ls -ld "$BUNDLE_PATH" 2>/dev/null || true
+        echo "Permission evidence (entrypoints):"
+        ls -l run_tool.sh setup_alias.sh 2>/dev/null || true
+        PERMISSION_EVIDENCE="reported"
 
         echo "---------------------------------------------------"
         echo "Setup complete! Environment is ready."
@@ -83,7 +89,8 @@ if [ -d "$OFFLINE_DIR" ]; then
         echo "WRAPPER_CHECKS=$WRAPPER_CHECKS"
         echo "DRIFT_RESULT=$DRIFT_RESULT"
         echo "SMOKE_LEVEL=$SMOKE_LEVEL"
-        echo "SUMMARY bundle_path=$BUNDLE_PATH runtime_python=$RUNTIME_PYTHON install_result=$INSTALL_RESULT wrapper_checks=$WRAPPER_CHECKS drift_result=$DRIFT_RESULT smoke_level=$SMOKE_LEVEL"
+        echo "PERMISSION_EVIDENCE=$PERMISSION_EVIDENCE"
+        echo "SUMMARY bundle_path=$BUNDLE_PATH runtime_python=$RUNTIME_PYTHON install_result=$INSTALL_RESULT wrapper_checks=$WRAPPER_CHECKS drift_result=$DRIFT_RESULT smoke_level=$SMOKE_LEVEL permission_evidence=$PERMISSION_EVIDENCE"
         echo "To activate it in the future, run: source .venv/bin/activate"
         echo "---------------------------------------------------"
     else

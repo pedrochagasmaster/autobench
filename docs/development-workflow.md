@@ -135,7 +135,9 @@ installed environment survives the update. (Override the source with
 `AUTOBENCH_GIT_REMOTE` / `AUTOBENCH_GIT_BRANCH` if needed; defaults are
 `bitbucket` / `main`.) After the reset, the script prints both an install
 decision (`install not required`, `install recommended`, or `install required`)
-and the dependency signal that triggered it.
+and the dependency signal that triggered it. It also emits permission evidence
+for the repo root and shared entrypoint scripts so the node report can record
+what was actually runnable after the sync.
 
 Always update through `update.sh` (Git), never by copying or `scp`-ing individual
 files onto the node — out-of-band copies reintroduce CRLF line endings and drift

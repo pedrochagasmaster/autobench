@@ -28,7 +28,9 @@ Populate the report-contract fields in the node config as needed:
 `source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
 `runtime_python_path`, `runtime_python_version`, `update_method`,
 `install_decision`, `dependency_signal`, and `permission_evidence`. Do not
-commit personal credentials or passcodes.
+commit personal credentials or passcodes. Prefer copying `permission_evidence`
+from the `update.sh` or `setup_remote_env.sh` output instead of typing it by
+hand.
 
 Before sending commands to any session, prove you are targeting the intended
 remote shell:

@@ -121,6 +121,7 @@ Write-Host "Extraction path: $RemotePath"
 Write-Host "Runtime Python: $PythonRemote"
 Write-Host "Drift result: remote setup will emit the drift artifact path and status."
 Write-Host "Smoke level: 1"
+Write-Host "Permission evidence: remote setup will emit repo-root and entrypoint listings."
 
 # --- Step 3: Transfer to Server ---
 Write-Host "`n=== Step 3: Transferring to Server ===" -ForegroundColor Cyan
@@ -156,7 +157,11 @@ $RemoteCommand = "cd $RemotePath && " +
                   "echo 'Wrapper smoke: passed' && " +
                  "echo 'Drift result: reported' && " +
                  "echo 'Smoke level: 1' && " +
-                 "echo 'SUMMARY bundle=$ZipName checksum=$BundleHash source_commit=$SourceCommit extraction_path=$RemotePath runtime_python=$PythonRemote wrapper_checks=passed drift_result=reported smoke_level=1'"
+                 "echo 'Permission evidence (repo root):' && " +
+                 "ls -ld . && " +
+                 "echo 'Permission evidence (entrypoints):' && " +
+                 "ls -l run_tool.sh setup_alias.sh && " +
+                 "echo 'SUMMARY bundle=$ZipName checksum=$BundleHash source_commit=$SourceCommit extraction_path=$RemotePath runtime_python=$PythonRemote wrapper_checks=passed drift_result=reported smoke_level=1 permission_evidence=reported'"
 
 Write-Host "Executing setup on remote server..."
 ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" "$RemoteCommand"

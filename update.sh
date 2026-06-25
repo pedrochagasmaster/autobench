@@ -75,6 +75,11 @@ git reset --hard "${REMOTE}/${BRANCH}"
 # executables stay runnable). Run from a writable directory for outputs.
 echo "==> Re-applying shared read/execute permissions ..."
 chmod -R a+rX . 2>/dev/null || echo "    Note: some paths could not be chmod'd (skipped)."
+echo "==> Permission evidence: reported"
+echo "==> Repo root permissions:"
+ls -ld . 2>/dev/null || echo "    unavailable"
+echo "==> Entrypoint permissions:"
+ls -l run_tool.sh install.sh setup_alias.sh 2>/dev/null || echo "    unavailable"
 
 echo "==> Now at: $(git log -1 --format='%h %s')"
 echo "==> Install decision: ${INSTALL_DECISION}"

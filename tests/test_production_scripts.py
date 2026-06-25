@@ -85,8 +85,12 @@ def test_deploy_and_install_script_records_bundle_report_contract() -> None:
     assert "Wrapper smoke" in deploy
     assert "Drift result" in deploy
     assert "Smoke level" in deploy
+    assert "Permission evidence" in deploy
+    assert "ls -ld ." in deploy
+    assert "ls -l run_tool.sh setup_alias.sh" in deploy
     assert "./run_tool.sh config list" in deploy
     assert "./run_tool.sh share --help" in deploy
+    assert "permission_evidence=reported" in deploy
     assert "SUMMARY bundle=" in deploy
 
 
@@ -101,7 +105,11 @@ def test_setup_remote_env_runs_wrapper_checks_and_emits_summary_contract() -> No
     assert "WRAPPER_CHECKS=" in setup
     assert "DRIFT_RESULT=" in setup
     assert "SMOKE_LEVEL=" in setup
+    assert "PERMISSION_EVIDENCE=" in setup
+    assert 'ls -ld "$BUNDLE_PATH"' in setup
+    assert "ls -l run_tool.sh setup_alias.sh" in setup
     assert "bundle rebuild" in setup.lower() or "interpreter mismatch" in setup.lower()
+    assert "permission_evidence=$PERMISSION_EVIDENCE" in setup
     assert "SUMMARY bundle_path=" in setup
 
 
@@ -174,6 +182,9 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
     assert result.returncode == 0, result.stderr or result.stdout
     assert "Install decision: install not required" in result.stdout
     assert "dependency inputs unchanged" in result.stdout
+    assert "Permission evidence: reported" in result.stdout
+    assert "Repo root permissions:" in result.stdout
+    assert "Entrypoint permissions:" in result.stdout
 
 
 def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(tmp_path: Path) -> None:
