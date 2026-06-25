@@ -58,6 +58,15 @@ Autobench includes:
 - `.gitattributes`: LF normalization for Linux-bound files.
 - `.gitignore`: generated report/log/screen/bundle exclusions.
 
+## Deployment Decision Table
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
+| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
+| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
+| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+
 ## Golden Path
 
 1. Develop and test locally.
@@ -68,7 +77,9 @@ Autobench includes:
    branch). The hard reset guarantees content, LF line endings, and the
    executable bit on entrypoint scripts all match the repo, and re-applies
    `chmod -R a+rX` so every analyst can run the shared scripts. Untracked
-   `.venv/` and `offline_packages/` are preserved.
+   `.venv/` and `offline_packages/` are preserved. The updater also prints the
+   install decision, the dependency signal that produced it, and permission
+   evidence for the repo root plus the shared entrypoint scripts.
 5. Run `./install.sh` only when dependencies changed (new/updated offline
    wheels).
 6. Verify drift is zero with `py -m tools.prod_tui drift`.
@@ -131,4 +142,8 @@ chmod -R a+rX .
 autobench-cli config list
 ```
 
-After rollback, run Level 1/2 smoke and record the deployed commit.
+After rollback, run Level 1/2 smoke and record the node, old SHA, rollback SHA
+(target SHA), install decision, drift result, smoke level, and wrapper checks.
+This is human-gated Edge acceptance: local verification is not a substitute for
+real node validation when SSH, Kerberos, storage, permissions, or terminal
+behavior are in scope.

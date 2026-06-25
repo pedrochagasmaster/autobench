@@ -24,19 +24,22 @@ git remote set-url bitbucket https://scm.mastercard.int/stash/scm/~e176097/autob
 
 Do not deploy Autobench to the old `dispatch.git` remote.
 
+## Deployment Decision Table
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
+| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
+| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
+| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+
 ## 3. Publish a Deployment Snapshot
 
 Autobench Bitbucket history may not share local `main` history and may reject commits not authored by the current user. Use the documented detached-HEAD snapshot sequence, not a direct local-history push:
 
 ```powershell
 $env:BB_TOKEN = "<your-bitbucket-PAT>"
-git -c "http.extraHeader=Authorization: Bearer $env:BB_TOKEN" fetch bitbucket
-$short = git rev-parse --short main
-git checkout --detach main
-git reset --soft bitbucket/main
-git commit -m "Deploy snapshot: autobench main $short ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
-git -c "http.extraHeader=Authorization: Bearer $env:BB_TOKEN" push bitbucket "HEAD:main"
-git checkout main
+.\tools\dev\publish_bitbucket_snapshot.ps1
 git fetch bitbucket main
 git log --oneline -1 bitbucket/main
 ```

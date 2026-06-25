@@ -8,7 +8,7 @@ The preferred ongoing model is a Git working tree backed by the corporate remote
 
 ```bash
 cd /ads_storage
-git clone -o bitbucket https://scm.mastercard.int/stash/scm/~e176097/dispatch.git autobench
+git clone -o bitbucket https://scm.mastercard.int/stash/scm/~e176097/autobench.git autobench
 cd /ads_storage/autobench
 git remote -v
 ```
@@ -21,6 +21,15 @@ If the node cannot reach Git, use the existing offline bundle workflow:
 
 The bundle path remains a fallback for first-time setup, dependency refresh, and
 recovery. The Git path is the preferred repeatable deployment model.
+
+## Deployment Decision Table
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
+| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
+| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
+| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
 
 ## 2. Verify Prerequisites
 
@@ -110,8 +119,11 @@ cd /ads_storage/autobench
 ```
 
 `update.sh` preserves untracked files such as `.venv/` and `offline_packages/`,
-so the installed environment survives. If dependencies changed, refresh the
-offline bundle with `deploy_and_install.ps1` and re-run `setup_remote_env.sh`.
+so the installed environment survives. It also prints an install decision and
+the dependency signal behind it. If the decision is `install required`, refresh
+the offline bundle with `deploy_and_install.ps1` and re-run
+`setup_remote_env.sh`. If the decision is `install recommended`, refresh the
+per-user runtime with `./install.sh` before treating the node as current.
 
 ## Troubleshooting
 
