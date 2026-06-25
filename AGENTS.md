@@ -18,6 +18,22 @@
 
 ---
 
+## Agent Skills
+
+For Bitbucket snapshot publishing, Edge Node updates, offline bundle refreshes,
+production TUI smoke/drift checks, or shared `/ads_storage/autobench`
+permission fixes, use:
+
+```text
+.agents/skills/autobench-edge-deploy/SKILL.md
+```
+
+The skill captures the repeatable Autobench deployment procedure for the
+corporate `bitbucket` remote, `/ads_storage/autobench`, `update.sh`,
+`deploy_and_install.ps1`, `setup_remote_env.sh`, and node03/node04 validation.
+
+---
+
 ## 🏗️ Architecture
 
 ```

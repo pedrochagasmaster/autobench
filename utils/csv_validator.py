@@ -60,6 +60,19 @@ def detect_share_column(csv_df: pd.DataFrame) -> Optional[str]:
     return None
 
 
+def detect_share_metric_column(csv_df: pd.DataFrame) -> Optional[str]:
+    """Return the balanced metric column for default share balanced exports."""
+    balanced_cols = [
+        col
+        for col in csv_df.columns
+        if col.startswith("Balanced_")
+        and col not in {"Balanced_Approval_Total", "Balanced_Fraud_Total", "Balanced_Total"}
+        and not col.endswith("_Share_%")
+        and "Total" not in col
+    ]
+    return balanced_cols[0] if balanced_cols else None
+
+
 def load_excel_data(excel_path: Path) -> Dict[str, pd.DataFrame]:
     """Load dimension sheets from Excel benchmark report.
     
@@ -189,6 +202,18 @@ def calculate_rate_from_csv(
             val = row[total_col]
             return val / 100.0 if pd.notna(val) else None
         return None
+
+    if rate_type == 'share_metric':
+        metric_col = total_col
+        if metric_col not in row or pd.isna(row[metric_col]):
+            return None
+        mask = csv_df['Dimension'] == dimension
+        if time_period is not None and time_col and time_col in csv_df.columns:
+            mask = mask & (csv_df[time_col] == time_period)
+        dimension_total = pd.to_numeric(csv_df.loc[mask, metric_col], errors='coerce').sum()
+        if dimension_total == 0:
+            return None
+        return float(row[metric_col]) / float(dimension_total)
     
     # Get balanced totals
     balanced_total = row.get(total_col)
@@ -250,6 +275,7 @@ def extract_rate_from_excel(
         explicit_share_cols = [
             col for col in excel_df.columns
             if str(col) == 'Balanced_Share_%'
+            or str(col) == 'Balanced Peer Average (%)'
             or (str(col).startswith('Balanced_') and str(col).endswith('_Share_%'))
         ]
         if not explicit_share_cols:
@@ -402,10 +428,11 @@ def validate_dimension(
                     active_excel_df = rate_excel_dfs[rate_type]
 
                 # Extract rate from Excel
+                excel_rate_type = 'share' if rate_type == 'share_metric' else rate_type
                 excel_rate = extract_rate_from_excel(
                     active_excel_df,
                     category,
-                    rate_type,
+                    excel_rate_type,
                     time_period,
                     time_col_hint=time_col,
                 )
@@ -507,6 +534,11 @@ EXAMPLES:
     elif share_col:
         total_col = share_col
         rate_types.append('share')
+    elif is_share_export_csv(csv_df):
+        share_metric_col = detect_share_metric_column(csv_df)
+        if share_metric_col:
+            total_col = share_metric_col
+            rate_types.append('share_metric')
     else:
         summary_total = summary_metadata.get('Total Column') or summary_metadata.get('Total Column (Shared Denominator)')
         summary_approval = summary_metadata.get('Approval Column')
@@ -540,11 +572,16 @@ EXAMPLES:
                         break
 
     if not total_col or not rate_types:
-        print("ERROR No rate/share columns found in CSV")
-        print("  Expected Balanced_* total/rate columns, share columns, or summary-based metric columns.")
+        if is_share_export_csv(csv_df) and detect_share_metric_column(csv_df):
+            print("ERROR Share balanced export is missing required Dimension/Category columns")
+        else:
+            print("ERROR No rate/share columns found in CSV")
+            print("  Expected Balanced_* total/rate columns, share columns, or summary-based metric columns.")
         return 1
 
     print(f"Value Types: {', '.join(rate_types)}")
+    if 'share_metric' in rate_types:
+        print(f"Share Metric Column: {total_col}")
 
     # Check for time column
     time_col = None
@@ -602,6 +639,8 @@ EXAMPLES:
             # Check if this sheet is rate-type-specific: "{rate_type}_{dimension}"
             matched_rate_type = None
             for rt in rate_types:
+                if rt == 'share_metric':
+                    continue
                 prefix = f"{rt}_"
                 if sheet_name.startswith(prefix):
                     remainder = sheet_name[len(prefix):]

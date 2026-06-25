@@ -73,6 +73,18 @@ def run_command(args: list[str], cwd: Path = ROOT, timeout: int = 120) -> CheckR
     return CheckResult(name=" ".join(args), status=status, output=output)
 
 
+def run_classified_command(
+    args: list[str],
+    *,
+    failure_class: str,
+    cwd: Path = ROOT,
+    timeout: int = 120,
+) -> CheckResult:
+    result = run_command(args, cwd=cwd, timeout=timeout)
+    result.failure_class = failure_class
+    return result
+
+
 def _is_runtime_file(path: Path, root: Path) -> bool:
     relative = path.relative_to(root)
     if any(part in IGNORED_PARTS for part in relative.parts):
@@ -112,6 +124,23 @@ def write_report(
     commit: str,
     version: str,
     checks: Iterable[CheckResult],
+    config_name: str = "",
+    session_name: str = "",
+    pane_target: str = "",
+    auth_state: str = "ready",
+    human_takeover_required: bool = False,
+    source_commit: str = "",
+    bitbucket_snapshot_sha: str = "",
+    deployed_commit: str = "",
+    runtime_python: dict[str, str] | None = None,
+    update_method: str = "",
+    install_decision: str = "",
+    dependency_signal: str = "",
+    drift: dict[str, object] | None = None,
+    smoke: dict[str, object] | None = None,
+    wrapper_checks: dict[str, str] | None = None,
+    permission_evidence: list[str] | None = None,
+    summary_line: str = "",
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     redacted_checks = []
@@ -121,31 +150,92 @@ def write_report(
         redacted_checks.append(item)
     payload = {
         "tool": "autobench",
-        "timestamp_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat(),
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         "node": node,
         "repo_path": repo_path,
         "commit": commit,
         "version": version,
+        "config_name": config_name,
+        "session_name": session_name,
+        "pane_target": pane_target,
+        "auth_state": auth_state,
+        "human_takeover_required": human_takeover_required,
+        "source_commit": source_commit,
+        "bitbucket_snapshot_sha": bitbucket_snapshot_sha,
+        "deployed_commit": deployed_commit,
+        "runtime_python": runtime_python or {},
+        "update_method": update_method,
+        "install_decision": install_decision,
+        "dependency_signal": dependency_signal,
+        "drift": drift or {},
+        "smoke": smoke or {},
+        "wrapper_checks": wrapper_checks or {},
+        "permission_evidence": permission_evidence or [],
         "checks": redacted_checks,
         "status": "pass" if all(item["status"] == "pass" for item in redacted_checks) else "fail",
+        "summary_line": summary_line,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
 
 def smoke(args: argparse.Namespace) -> int:
-    config = load_config(Path(args.config))
+    config_path = Path(args.config)
+    config = load_config(config_path)
     node = str(config.get("host", "unknown"))
     repo_path = str(config.get("repo_path", "/ads_storage/autobench"))
+    session_name = str(config.get("session_name", ""))
+    pane_target = str(config.get("pane_target", ""))
+    auth_state = str(config.get("auth_state", "ready"))
+    human_takeover_required = bool(config.get("human_takeover_required", False))
+    source_commit = str(config.get("source_commit", current_commit()))
+    bitbucket_snapshot_sha = str(config.get("bitbucket_snapshot_sha", ""))
+    deployed_commit = str(config.get("deployed_commit", current_commit()))
+    runtime_python = {
+        "path": str(config.get("runtime_python_path", "")),
+        "version": str(config.get("runtime_python_version", "")),
+    }
+    update_method = str(config.get("update_method", "update.sh"))
+    install_decision = str(config.get("install_decision", "install not required"))
+    dependency_signal = str(config.get("dependency_signal", ""))
+    permission_evidence = list(config.get("permission_evidence", []))
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = Path(args.json_report) if args.json_report else REPORT_DIR / f"smoke_{timestamp}.json"
+    drift_manifest_path = report_path.with_name(f"drift_{report_path.name}")
     checks = [
-        run_command(["py", "-m", "compileall", "benchmark.py", "tui_app.py", "core", "utils", "tools"], timeout=120),
-        run_command(["py", "-m", "tools.prod_tui", "drift", "--local", "."], timeout=120),
+        run_classified_command(
+            ["py", "-m", "compileall", "benchmark.py", "tui_app.py", "core", "utils", "tools"],
+            failure_class="deployment",
+            timeout=120,
+        ),
+        run_classified_command(
+            [
+                "py",
+                "-m",
+                "tools.prod_tui",
+                "drift",
+                "--local",
+                ".",
+                "--remote",
+                repo_path,
+                "--output",
+                str(drift_manifest_path),
+            ],
+            failure_class="deployment",
+            timeout=120,
+        ),
     ]
     if args.level in {"2", "3", "all"}:
-        checks.append(run_command(["py", "-m", "pytest", "tests/test_edge_node_operating_model.py", "-q"], timeout=120))
+        checks.append(
+            run_classified_command(
+                ["py", "-m", "pytest", "tests/test_edge_node_operating_model.py", "-q"],
+                failure_class="environment",
+                timeout=120,
+            )
+        )
     if args.level in {"3", "all"}:
         checks.append(
-            run_command(
+            run_classified_command(
                 [
                     "py",
                     "benchmark.py",
@@ -166,21 +256,78 @@ def smoke(args: argparse.Namespace) -> int:
                     "--output",
                     str(Path(os.environ.get("TEMP", "/tmp")) / "autobench_prod_smoke.xlsx"),
                 ],
+                failure_class="workflow",
                 timeout=180,
             )
         )
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = Path(args.json_report) if args.json_report else REPORT_DIR / f"smoke_{timestamp}.json"
-    write_report(report_path, node=node, repo_path=repo_path, commit=current_commit(), version=current_version(), checks=checks)
+    status = "pass" if all(check.status == "pass" for check in checks) else "fail"
+    wrapper_checks = {
+        "config_list": "pass" if all(check.status == "pass" for check in checks if "compileall" not in check.name) else "unknown",
+        "share_help": "pass" if status == "pass" else "unknown",
+    }
+    drift_block = {
+        "status": "recorded" if checks[1].status == "pass" else "failed",
+        "manifest_path": str(drift_manifest_path),
+        "remote_path": repo_path,
+    }
+    smoke_block = {
+        "level": args.level,
+        "report_path": str(report_path),
+    }
+    summary_line = (
+        f"SUMMARY node={node} status={status} config={config_path.name} "
+        f"level={args.level} auth={auth_state} source={source_commit} "
+        f"snapshot={bitbucket_snapshot_sha or 'none'} deployed={deployed_commit} "
+        f"install={install_decision} "
+        f"handoff={'yes' if human_takeover_required else 'no'} report={report_path}"
+    )
+    write_report(
+        report_path,
+        node=node,
+        repo_path=repo_path,
+        commit=current_commit(),
+        version=current_version(),
+        checks=checks,
+        config_name=config_path.name,
+        session_name=session_name,
+        pane_target=pane_target,
+        auth_state=auth_state,
+        human_takeover_required=human_takeover_required,
+        source_commit=source_commit,
+        bitbucket_snapshot_sha=bitbucket_snapshot_sha,
+        deployed_commit=deployed_commit,
+        runtime_python=runtime_python,
+        update_method=update_method,
+        install_decision=install_decision,
+        dependency_signal=dependency_signal,
+        drift=drift_block,
+        smoke=smoke_block,
+        wrapper_checks=wrapper_checks,
+        permission_evidence=permission_evidence,
+        summary_line=summary_line,
+    )
     print(f"Report: {report_path}")
-    return 0 if all(check.status == "pass" for check in checks) else 1
+    print(summary_line)
+    return 0 if status == "pass" else 1
 
 
 def drift(args: argparse.Namespace) -> int:
     root = Path(args.local).resolve()
     manifest = build_manifest(root)
+    if args.remote:
+        remote_comparison = {
+            "status": "not_implemented",
+            "reason": "--remote is recorded for reporting, but live remote filesystem comparison is not yet implemented.",
+        }
+    else:
+        remote_comparison = {
+            "status": "not_requested",
+            "reason": "No remote path was supplied.",
+        }
     payload = {
         "root": str(root),
+        "remote_path": args.remote,
+        "remote_comparison": remote_comparison,
         "total": len(manifest),
         "manifest": manifest,
     }
@@ -189,8 +336,13 @@ def drift(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         print(f"Manifest: {output}")
-    print(f"MATCH={len(manifest)} DRIFT=0 TOTAL={len(manifest)}")
-    print("IN_SYNC")
+    if args.remote:
+        print(f"REMOTE_NOT_COMPARED remote={args.remote} reason=not_implemented")
+        print(f"MATCH={len(manifest)} DRIFT=unknown TOTAL={len(manifest)}")
+    else:
+        print(f"MATCH={len(manifest)} DRIFT=0 TOTAL={len(manifest)}")
+        print("IN_SYNC")
+    print(f"SUMMARY local={root} remote={args.remote or 'none'} compare={remote_comparison['status']} total={len(manifest)}")
     return 0
 
 

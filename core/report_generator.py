@@ -11,6 +11,7 @@ from datetime import datetime
 import json
 import logging
 
+from core.privacy_rules import privacy_rule_from_config
 from core.report_content import (
     resolve_convert_all_rates,
     should_convert_rate_column,
@@ -72,6 +73,87 @@ class ReportGenerator:
     @staticmethod
     def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
         return should_convert_rate_column(column_name, convert_all_rates)
+
+    @staticmethod
+    def _format_privacy_rule_line(metadata: Dict[str, Any]) -> str:
+        """Format the Summary-sheet privacy rule from run metadata."""
+        rule_name = metadata.get("privacy_rule")
+        participants = metadata.get("participants", metadata.get("peer_count"))
+        max_concentration = metadata.get("max_concentration")
+
+        if max_concentration is None and rule_name:
+            try:
+                max_concentration = privacy_rule_from_config(str(rule_name)).max_concentration
+            except Exception:
+                max_concentration = None
+
+        if rule_name and participants is not None and max_concentration is not None:
+            return f"{rule_name} ({int(participants)} participants, {max_concentration:g}% max)"
+        if rule_name and participants is not None:
+            return f"{rule_name} ({int(participants)} participants)"
+        if rule_name and max_concentration is not None:
+            return f"{rule_name} ({max_concentration:g}% max)"
+        if rule_name:
+            return str(rule_name)
+        if participants is not None and max_concentration is not None:
+            return f"{int(participants)} participants, {max_concentration:g}% max"
+        return "Not available"
+
+    @staticmethod
+    def _prepare_preset_comparison_df(comparison_df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize preset comparison rows for formatted workbook output."""
+        if comparison_df is None or comparison_df.empty:
+            return pd.DataFrame(
+                columns=["Preset", "Mean_Distortion", "Max_Distortion", "Time_Seconds", "Best"]
+            )
+
+        working = comparison_df.copy()
+        mean_col = next(
+            (
+                column
+                for column in ("Mean_Distortion", "Mean_Distortion_PP", "Mean_Impact_PP")
+                if column in working.columns
+            ),
+            None,
+        )
+        max_col = next(
+            (
+                column
+                for column in ("Max_Distortion", "Max_Distortion_PP", "Max_Impact_PP")
+                if column in working.columns
+            ),
+            None,
+        )
+        time_col = next(
+            (column for column in ("Time_Seconds", "Time", "Elapsed_Seconds") if column in working.columns),
+            None,
+        )
+
+        prepared = pd.DataFrame(
+            {
+                "Preset": working["Preset"] if "Preset" in working.columns else working.index.astype(str),
+                "Mean_Distortion": working[mean_col] if mean_col else None,
+                "Max_Distortion": working[max_col] if max_col else None,
+                "Time_Seconds": working[time_col] if time_col else None,
+            }
+        )
+
+        if "Status" in working.columns:
+            eligible = working["Status"].astype(str).str.lower().eq("ok")
+        else:
+            eligible = prepared["Mean_Distortion"].notna()
+
+        best_idx: Optional[int] = None
+        if eligible.any():
+            numeric_means = pd.to_numeric(prepared.loc[eligible, "Mean_Distortion"], errors="coerce")
+            if numeric_means.notna().any():
+                best_idx = int(numeric_means.idxmin())
+
+        prepared["Best"] = ""
+        if best_idx is not None:
+            prepared.loc[best_idx, "Best"] = "*"
+
+        return prepared
 
     @staticmethod
     def _build_unique_sheet_name(raw_name: str, existing_names: List[str]) -> str:
@@ -224,7 +306,9 @@ class ReportGenerator:
         self._write_optional_dataframe_sheet(wb, "Peer Weights", metadata, "weights_df")
         self._write_optional_dataframe_sheet(wb, "Weight Methods", metadata, "method_breakdown_df")
         self._write_optional_dataframe_sheet(wb, "Privacy Validation", metadata, "privacy_validation_df")
-        self._write_optional_dataframe_sheet(wb, "Preset Comparison", metadata, "preset_comparison_df")
+        comparison_df = metadata.get("preset_comparison_df") if metadata else None
+        if comparison_df is not None and hasattr(comparison_df, "empty") and not comparison_df.empty:
+            self.add_preset_comparison_sheet(wb, comparison_df, analysis_type=analysis_type)
         self._write_optional_dataframe_sheet(wb, "Impact Detail", metadata, "impact_df")
         self._write_optional_dataframe_sheet(wb, "Impact Summary", metadata, "impact_summary_df")
         self._write_optional_dataframe_sheet(wb, "Secondary Metrics", metadata, "secondary_results")
@@ -281,8 +365,7 @@ class ReportGenerator:
                 row += 1
             
             worksheet[f'A{row}'] = "Privacy Rule:"
-            worksheet[f'B{row}'] = f"{metadata.get('participants', 'N/A')} participants, " \
-                                   f"{metadata.get('max_concentration', 'N/A')}% max"
+            worksheet[f'B{row}'] = self._format_privacy_rule_line(metadata)
             row += 2
             compliance_summary = (
                 report_model.compliance_summary
@@ -474,76 +557,27 @@ class ReportGenerator:
         """
         from openpyxl.utils.dataframe import dataframe_to_rows
         from openpyxl.styles import Font, PatternFill
-        
+
+        prepared_df = self._prepare_preset_comparison_df(comparison_df)
         ws = workbook.create_sheet("Preset Comparison")
-        
-        # Header
+
         ws['A1'] = f"Preset Comparison - {analysis_type.title()} Analysis"
         ws['A1'].font = Font(bold=True, size=14)
         ws.merge_cells('A1:E1')
-        
-        # Column headers
+
         headers = ['Preset', 'Mean Distortion (PP)', 'Max Distortion (PP)', 'Time (s)', 'Best']
         self._write_header_row(ws, 3, headers, Font, PatternFill, "CCE5FF")
-        
-        # Data rows
-        for row_idx, row_data in enumerate(dataframe_to_rows(comparison_df, index=False, header=False), 4):
+
+        for row_idx, row_data in enumerate(dataframe_to_rows(prepared_df, index=False, header=False), 4):
             for col_idx, value in enumerate(row_data, 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
-                # Highlight best row
                 if len(row_data) > 4 and row_data[4] == '*':
                     cell.fill = PatternFill(start_color="E6FFE6", end_color="E6FFE6", fill_type="solid")
-        
-        # Adjust column widths
+
         self._set_column_widths(ws, {'A': 25, 'B': 20, 'C': 20, 'D': 12, 'E': 8})
-        
+
         logger.info("Added Preset Comparison sheet")
-    
-    def add_distortion_summary_sheet(
-        self,
-        workbook: Any,
-        summary_df: 'pd.DataFrame',
-        analysis_type: str = 'share'
-    ) -> None:
-        """
-        Add Distortion Summary sheet to workbook.
-        
-        Parameters
-        ----------
-        workbook : openpyxl.Workbook
-            Target workbook
-        summary_df : pd.DataFrame
-            DataFrame with columns: Dimension, Mean_Distortion, Min, Max, Std
-        analysis_type : str
-            'share' or 'rate'
-        """
-        from openpyxl.utils.dataframe import dataframe_to_rows
-        from openpyxl.styles import Font, PatternFill
-        
-        ws = workbook.create_sheet("Distortion Summary")
-        
-        # Header
-        ws['A1'] = f"Distortion Summary - {analysis_type.title()} Analysis"
-        ws['A1'].font = Font(bold=True, size=14)
-        ws.merge_cells('A1:E1')
-        
-        ws['A2'] = "Shows impact of privacy weighting on metric values (percentage points)"
-        ws['A2'].font = Font(italic=True, size=10)
-        
-        # Column headers
-        headers = ['Dimension', 'Mean (PP)', 'Min (PP)', 'Max (PP)', 'Std Dev']
-        self._write_header_row(ws, 4, headers, Font, PatternFill, "FFF2CC")
-        
-        # Data rows
-        for row_idx, row_data in enumerate(dataframe_to_rows(summary_df, index=False, header=False), 5):
-            for col_idx, value in enumerate(row_data, 1):
-                ws.cell(row=row_idx, column=col_idx, value=self._excel_safe_value(value))
-        
-        # Adjust column widths
-        self._set_column_widths(ws, {'A': 20, 'B': 12, 'C': 12, 'D': 12, 'E': 12})
-        
-        logger.info("Added Distortion Summary sheet")
-    
+
     def add_data_quality_sheet(
         self,
         workbook: Any,
@@ -895,9 +929,16 @@ class ReportGenerator:
             ("Peer Weights", "weights_df"),
             ("Privacy Validation", "privacy_validation_df"),
             ("Rank Changes", "rank_changes_df"),
-            ("Preset Comparison", "preset_comparison_df"),
         ]:
             self._write_optional_dataframe_sheet(wb, sheet_name, publication_metadata, metadata_key)
+
+        publication_comparison_df = publication_metadata.get("preset_comparison_df")
+        if (
+            publication_comparison_df is not None
+            and hasattr(publication_comparison_df, "empty")
+            and not publication_comparison_df.empty
+        ):
+            self.add_preset_comparison_sheet(wb, publication_comparison_df, analysis_type=analysis_type)
 
         # Auto-adjust column widths (skip merged header cells safely)
         from openpyxl.utils import get_column_letter

@@ -1,6 +1,18 @@
 host: "your-user@edge-node"
 repo_path: "/ads_storage/autobench"
 session_name: "autobench-prod-test"
+pane_target: ""
+auth_state: "ready"
+human_takeover_required: false
+source_commit: ""
+bitbucket_snapshot_sha: ""
+deployed_commit: ""
+runtime_python_path: "/sys_apps_01/python/python310/bin/python3.10"
+runtime_python_version: "Python 3.10"
+update_method: "update.sh"
+install_decision: "install not required"
+dependency_signal: ""
+permission_evidence: []
 terminal_width: 120
 terminal_height: 40
 ssh_options: "-p 2222 -o StrictHostKeyChecking=no"

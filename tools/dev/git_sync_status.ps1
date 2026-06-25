@@ -2,7 +2,7 @@
 param(
     [string]$Remote = "bitbucket",
     [string]$Branch = "main",
-    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/dispatch.git"
+    [string]$ExpectedUrl = "https://scm.mastercard.int/stash/scm/~e176097/autobench.git"
 )
 
 Set-StrictMode -Version Latest
@@ -77,6 +77,6 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ""
-Write-Host "When ready to publish this branch to the deployment remote, run:"
-Write-Host "  git push -u $Remote HEAD"
+Write-Host "When ready to publish a deployment snapshot, run:"
+Write-Host "  .\tools\dev\publish_bitbucket_snapshot.ps1"
 exit 0

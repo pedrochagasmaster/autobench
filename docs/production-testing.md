@@ -24,7 +24,27 @@ Copy-Item tools/prod_tui/config-template.yaml tools/prod_tui/config-node04.yaml
 ```
 
 Set `host`, `repo_path`, `session_name`, terminal size, and any SSH options.
-Do not commit personal credentials or passcodes.
+Populate the report-contract fields in the node config as needed:
+`source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
+`runtime_python_path`, `runtime_python_version`, `update_method`,
+`install_decision`, `dependency_signal`, and `permission_evidence`. Do not
+commit personal credentials or passcodes. Prefer copying `permission_evidence`
+from the `update.sh` or `setup_remote_env.sh` output instead of typing it by
+hand.
+
+Before sending commands to any session, prove you are targeting the intended
+remote shell:
+
+```powershell
+tmux ls
+tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index} #{pane_current_command} #{pane_current_path}"
+tmux capture-pane -t <session> -p -S -80
+```
+
+If SSH has auto-logged out, stop at the PASSCODE prompt and hand control to the
+human operator. Agents may prepare SSH commands and record auth state in the
+report, but humans enter credentials. A blocked auth flow should end in a ready
+human takeover, not repeated retries.
 
 ## Level 1: Safe TUI Smoke
 
@@ -75,11 +95,15 @@ Never use arbitrary user files as a production smoke fixture.
 To compare deployable files in the local tree:
 
 ```powershell
-py -m tools.prod_tui drift --local .
+py -m tools.prod_tui drift --local . --remote /ads_storage/autobench
 ```
 
 The report ignores generated reports, logs, screens, caches, bytecode, local
-data, and output directories. A zero-drift deployment should be recorded as:
+data, and output directories. When `--remote` is provided, the path is recorded
+in the report and summary line, but live remote filesystem comparison is not
+yet implemented. In that mode the harness must not claim zero drift or
+`IN_SYNC`; it should report the remote comparison as not implemented. A
+local-only zero-drift run may be recorded as:
 
 ```text
 MATCH=<n> DRIFT=0 IN_SYNC
@@ -96,4 +120,17 @@ The JSON report uses these failure classes:
 - `workflow`: controlled fixture analysis failure.
 
 Generated reports redact common token, password, and passcode patterns before
-writing output.
+writing output. The smoke report can carry source/snapshot/deployed commit
+metadata, runtime Python, update method, install decision, dependency signal,
+drift and smoke blocks, wrapper checks, permission evidence, and auth handoff
+state.
+
+## Human-Gated Edge Acceptance
+
+Human-gated Edge acceptance starts only after the operator has a node-specific
+deployment or rollback target. Record the node, old SHA, rollback SHA (target
+SHA), smoke level, and wrapper checks in the acceptance note or handoff.
+
+Use local verification to qualify code before deployment, but local verification
+is not a substitute for real Edge acceptance when SSH, Kerberos, storage,
+permissions, tmux, or launcher behavior are in scope.

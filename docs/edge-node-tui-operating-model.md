@@ -13,17 +13,26 @@ SSH/tmux terminal harness rather than plain subprocess tests.
    - Run `tools/dev/local_check.ps1` before publishing a deployable change.
 
 2. **Corporate deployment remote**
-   - The deployment transport is
-     `https://scm.mastercard.int/stash/scm/~e176097/dispatch.git`.
+   - The deployment transport is the `autobench` repo:
+     `https://scm.mastercard.int/stash/scm/~e176097/autobench.git`.
+     (An older `dispatch` repo was used by mistake and is obsolete — always
+     target `autobench`.)
    - Configure it as `bitbucket` so Edge Node instructions are explicit.
+   - The repo does not share history with local `main` and rejects commits you
+     did not author, so publish a single **deployment snapshot** per
+     `docs/development-workflow.md` rather than pushing full history.
    - Keep GitHub `origin` only for the external mirror/review workflow when
      needed.
 
 3. **Shared deployed tree**
    - Default path: `/ads_storage/autobench`.
    - Contains `benchmark.py`, `tui_app.py`, `core/`, `utils/`, `config/`,
-     `presets/`, `tests/fixtures/`, `install.sh`, docs, and production harness.
-   - May be updated by Git pull or by the existing zip/offline bundle path.
+     `presets/`, `tests/fixtures/`, `install.sh`, `update.sh`, docs, and
+     production harness.
+   - Updated via `./update.sh` (Git fetch + `reset --hard` to the canonical
+     branch, then `chmod -R a+rX`), or by the zip/offline bundle path for
+     dependency refreshes. Never copy or `scp` individual files onto the node —
+     that reintroduces CRLF line endings and drifts the tree from Git.
 
 4. **Per-user runtime home**
    - Default path: `/ads_storage/$USER/.autobench`.
@@ -37,6 +46,7 @@ SSH/tmux terminal harness rather than plain subprocess tests.
 Autobench includes:
 
 - `install.sh`: idempotent per-user installer.
+- `update.sh`: Git-based node sync (fetch + `reset --hard` + `chmod -R a+rX`).
 - `onboarding.md`: short end-user install and launch path.
 - `docs/development-workflow.md`: local to Git to Edge update loop.
 - `docs/edge-node-first-time-setup.md`: operator bootstrap guide.
@@ -48,13 +58,30 @@ Autobench includes:
 - `.gitattributes`: LF normalization for Linux-bound files.
 - `.gitignore`: generated report/log/screen/bundle exclusions.
 
+## Deployment Decision Table
+
+| Situation | Use | Why |
+| --- | --- | --- |
+| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
+| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
+| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
+| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+
 ## Golden Path
 
 1. Develop and test locally.
 2. Commit the change.
-3. Push to the corporate remote.
-4. On each Edge Node, fetch and checkout the target commit.
-5. Run `./install.sh`.
+3. Publish a deployment snapshot to the corporate remote (`bitbucket` →
+   `autobench`); see `docs/development-workflow.md`.
+4. On each Edge Node, run `./update.sh` (fetch + `reset --hard` to the canonical
+   branch). The hard reset guarantees content, LF line endings, and the
+   executable bit on entrypoint scripts all match the repo, and re-applies
+   `chmod -R a+rX` so every analyst can run the shared scripts. Untracked
+   `.venv/` and `offline_packages/` are preserved. The updater also prints the
+   install decision, the dependency signal that produced it, and permission
+   evidence for the repo root plus the shared entrypoint scripts.
+5. Run `./install.sh` only when dependencies changed (new/updated offline
+   wheels).
 6. Verify drift is zero with `py -m tools.prod_tui drift`.
 7. Run Level 1/2 smoke through tmux/SSH.
 8. Record node, commit, version, installer exit, drift status, and report path.
@@ -103,14 +130,20 @@ Safety levels:
 
 ## Rollback
 
-Rollback is a Git checkout plus reinstall:
+Rollback is a Git reset to a known-good snapshot plus, if dependencies differ, a
+reinstall:
 
 ```bash
 cd /ads_storage/autobench
 git fetch bitbucket
-git checkout <previous-known-good-sha>
-./install.sh
+git reset --hard <previous-known-good-sha>
+chmod -R a+rX .
+./install.sh   # only if the offline bundle differs at that commit
 autobench-cli config list
 ```
 
-After rollback, run Level 1/2 smoke and record the deployed commit.
+After rollback, run Level 1/2 smoke and record the node, old SHA, rollback SHA
+(target SHA), install decision, drift result, smoke level, and wrapper checks.
+This is human-gated Edge acceptance: local verification is not a substitute for
+real node validation when SSH, Kerberos, storage, permissions, or terminal
+behavior are in scope.
