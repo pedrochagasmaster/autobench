@@ -1,0 +1,18 @@
+# autobench/edge_deploy.yaml
+tool: autobench
+repo_path: /ads_storage/autobench
+bitbucket_url: https://scm.mastercard.int/stash/scm/~e176097/autobench.git
+release_branch: main
+runtime_paths: [benchmark.py, tui_app.py, "core/**/*.py", "utils/**/*.py", "scripts/**/*.py"]
+compile_targets: "benchmark.py tui_app.py core utils scripts tools"
+version_files: [VERSION, pyproject.toml]
+install_trigger_paths: [install.sh, requirements.txt, constraints.txt, pyproject.toml, VERSION]
+dependency_paths: [requirements.txt, constraints.txt]
+smoke:
+  standard:
+    - "./run_tool.sh config list"
+    - "./run_tool.sh share --help"
+  deep: []                       # autobench's fixture run is offline; no Kerberos
+sensitive_paths: []
+tui_chrome_regex: "Privacy-Compliant Peer Benchmark|Control 3.2 dimensional analysis"
+tui_exit: ctrl_c                 # autobench TUI has no q/escape quit; CLI smoke avoids the TUI anyway

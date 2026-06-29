@@ -44,7 +44,7 @@ interpreter_python_version() {
 }
 
 REQUIRED_PY=$(required_wheel_python)
-PYTHON_BIN=${AUTOBENCH_PYTHON_BIN:-}
+PYTHON_BIN=${EDGE_DEPLOY_PYTHON_BIN:-${AUTOBENCH_PYTHON_BIN:-}}
 
 if [ -z "$PYTHON_BIN" ]; then
   if [ -n "$REQUIRED_PY" ]; then

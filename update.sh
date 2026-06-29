@@ -11,14 +11,20 @@
 # so the installed environment is left intact. If dependencies changed, refresh
 # the offline bundle and re-run setup_remote_env.sh afterwards.
 #
-# Overridable via environment:
-#   AUTOBENCH_GIT_REMOTE (default: bitbucket)
-#   AUTOBENCH_GIT_BRANCH (default: main)
+# Overridable via environment (EDGE_DEPLOY_* takes precedence; the AUTOBENCH_*
+# names remain as fallback aliases for one release, per ADR-0004):
+#   EDGE_DEPLOY_REMOTE / AUTOBENCH_GIT_REMOTE (default: bitbucket)
+#   EDGE_DEPLOY_BRANCH / AUTOBENCH_GIT_BRANCH (default: main)
+#
+# Optionally pass a target ref (branch, tag, or exact SHA) as the first argument
+# (defaults to <remote>/<branch>); the install-decision diff and the working-tree
+# reset are computed against that resolved target.
 
 set -euo pipefail
 
-REMOTE="${AUTOBENCH_GIT_REMOTE:-bitbucket}"
-BRANCH="${AUTOBENCH_GIT_BRANCH:-main}"
+REMOTE="${EDGE_DEPLOY_REMOTE:-${AUTOBENCH_GIT_REMOTE:-bitbucket}}"
+BRANCH="${EDGE_DEPLOY_BRANCH:-${AUTOBENCH_GIT_BRANCH:-main}}"
+TARGET_REF="${1:-$REMOTE/$BRANCH}"
 
 cd "$(dirname "$0")"
 
@@ -58,16 +64,16 @@ EOF
 echo "==> Fetching ${REMOTE}/${BRANCH} ..."
 git fetch "${REMOTE}" "${BRANCH}"
 
-if [ -n "$CURRENT_HEAD" ] && git rev-parse --verify "${REMOTE}/${BRANCH}" >/dev/null 2>&1; then
-  CHANGED_FILES="$(git diff --name-only "$CURRENT_HEAD" "${REMOTE}/${BRANCH}" 2>/dev/null || true)"
+if [ -n "$CURRENT_HEAD" ] && git rev-parse --verify "${TARGET_REF}" >/dev/null 2>&1; then
+  CHANGED_FILES="$(git diff --name-only "$CURRENT_HEAD" "${TARGET_REF}" 2>/dev/null || true)"
   classify_install_decision "$CHANGED_FILES"
 else
   INSTALL_DECISION="install recommended"
-  INSTALL_SIGNAL="could not compare the current deployment to ${REMOTE}/${BRANCH}"
+  INSTALL_SIGNAL="could not compare the current deployment to ${TARGET_REF}"
 fi
 
-echo "==> Resetting working tree to ${REMOTE}/${BRANCH} ..."
-git reset --hard "${REMOTE}/${BRANCH}"
+echo "==> Resetting working tree to ${TARGET_REF} ..."
+git reset --hard "${TARGET_REF}"
 
 # git reset rewrites files with umask-default permissions, which drops the
 # shared read/execute access other analysts need. Re-apply it every sync so
