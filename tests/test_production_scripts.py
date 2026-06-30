@@ -187,6 +187,34 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
     assert "Entrypoint permissions:" in result.stdout
 
 
+def test_update_sh_repairs_corrupt_remote_tracking_ref(tmp_path: Path) -> None:
+    node_checkout = _build_update_repo_scenario(
+        tmp_path,
+        "benchmark.py",
+        "print('source-only change')\n",
+    )
+    remote_ref = node_checkout / ".git" / "refs" / "remotes" / "origin" / "main"
+    remote_ref.parent.mkdir(parents=True, exist_ok=True)
+    remote_ref.write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env={
+            **dict(os.environ),
+            "AUTOBENCH_GIT_REMOTE": "origin",
+            "AUTOBENCH_GIT_BRANCH": "main",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Detected stale remote-tracking ref" in result.stderr
+    assert "Update complete" in result.stdout
+
+
 def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(tmp_path: Path) -> None:
     node_checkout = _build_update_repo_scenario(
         tmp_path,

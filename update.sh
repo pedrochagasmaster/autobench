@@ -24,6 +24,7 @@ set -euo pipefail
 
 REMOTE="${EDGE_DEPLOY_REMOTE:-${AUTOBENCH_GIT_REMOTE:-bitbucket}}"
 BRANCH="${EDGE_DEPLOY_BRANCH:-${AUTOBENCH_GIT_BRANCH:-main}}"
+REMOTE_REF="refs/remotes/$REMOTE/$BRANCH"
 TARGET_REF="${1:-$REMOTE/$BRANCH}"
 
 cd "$(dirname "$0")"
@@ -62,7 +63,21 @@ EOF
 }
 
 echo "==> Fetching ${REMOTE}/${BRANCH} ..."
-git fetch "${REMOTE}" "${BRANCH}"
+FETCH_OUTPUT="$(git fetch --prune "$REMOTE" "$BRANCH" 2>&1)" || {
+  FETCH_STATUS=$?
+  case "$FETCH_OUTPUT" in
+    *"cannot lock ref '$REMOTE_REF'"*"unable to resolve reference"*|*"fatal: bad object $REMOTE_REF"*)
+      echo "Detected stale remote-tracking ref at $REMOTE_REF; repairing and retrying..." >&2
+      git update-ref -d "$REMOTE_REF" 2>/dev/null || true
+      rm -f ".git/$REMOTE_REF" ".git/logs/$REMOTE_REF"
+      git fetch --prune "$REMOTE" "$BRANCH"
+      ;;
+    *)
+      printf '%s\n' "$FETCH_OUTPUT" >&2
+      exit "$FETCH_STATUS"
+      ;;
+  esac
+}
 
 if [ -n "$CURRENT_HEAD" ] && git rev-parse --verify "${TARGET_REF}" >/dev/null 2>&1; then
   CHANGED_FILES="$(git diff --name-only "$CURRENT_HEAD" "${TARGET_REF}" 2>/dev/null || true)"
