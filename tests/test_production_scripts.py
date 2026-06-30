@@ -244,7 +244,8 @@ def test_publish_snapshot_script_has_safe_remote_and_auth_defaults() -> None:
 
     assert "https://scm.mastercard.int/stash/scm/~e176097/autobench.git" in script
     assert "GIT_TERMINAL_PROMPT" in script
-    assert "http.extraHeader=Authorization: Bearer" in script
+    assert "--config-env=http.extraHeader=" in script
+    assert "Authorization: Bearer" in script
     assert "--force" not in script
     assert "user takeover" in script.lower() or "handoff" in script.lower()
 
