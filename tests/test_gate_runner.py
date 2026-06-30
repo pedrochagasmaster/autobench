@@ -34,6 +34,8 @@ def test_gate_generation_uses_portable_fixture(monkeypatch: pytest.MonkeyPatch, 
     cmd = captured["cmd"]
     assert "--csv" in cmd
     csv_path = Path(cmd[cmd.index("--csv") + 1])
+    assert not csv_path.is_absolute()
+    assert csv_path == Path("tests") / "fixtures" / "gate_demo.csv"
     assert csv_path.name == "gate_demo.csv"
     assert csv_path.exists()
 
