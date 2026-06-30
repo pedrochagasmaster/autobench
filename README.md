@@ -68,6 +68,9 @@ py benchmark.py share --help
 py benchmark.py rate --help
 ```
 
+Contributors should use [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+validation, commit, and release handoff.
+
 ## First Successful Run (Copy/Paste)
 
 Use the tracked fixture `tests/fixtures/gate_demo.csv` (1 target + 6 peers). On

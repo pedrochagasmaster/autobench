@@ -1,7 +1,9 @@
 # Autobench Development and Release Workflow
 
-This is the canonical workflow for Autobench development and production
-release. The default release path is the shared release orchestrator in
+This is the canonical Autobench release workflow. For local setup, focused
+tests, and commit hygiene, start with [../CONTRIBUTING.md](../CONTRIBUTING.md).
+
+The default release path is the shared release orchestrator in
 `D:\Projects\edge-deploy-core`; repo-local deployment scripts are retained for
 bootstrap, recovery, and deep troubleshooting.
 
