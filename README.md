@@ -8,7 +8,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - Use `py benchmark.py share|rate ...` for automation.
 - Privacy caps are always enforced automatically.
 - Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
-- Docs-only release markers are safe for deployment validation; runtime behavior changes only when code/config paths change.
+- A README-only release validates snapshot publishing, rollout, drift, and standard smoke checks without triggering installation.
 
 ## Table of Contents
 
