@@ -155,15 +155,12 @@ These are **legal compliance requirements**. The tool auto-selects based on peer
 ├── AGENTS.md                 # This file
 ├── 📁 docs/                  # Project documentation
 │   ├── CORE_TECHNICAL_DOC.md    # Canonical technical reference
-│   ├── OPERATIONAL_GAINS.md     # Operational notes and executive summary
-│   ├── RELEASE_PROCESS.md       # Production release checklist
 │   ├── RESOURCE_MANAGEMENT.md   # Large-run memory/CPU guidance
 │   ├── control-3-customer-merchant-performance-v5-20260603.md # Canonical Control 3 source
-│   ├── control3_gap_matrix.md   # Control 3 policy coverage matrix
-│   ├── control3_implementation_summary.md # Control 3 enforcement summary
-│   ├── sql_ingestion_design.md  # SQL ingestion design (spike 017)
+│   ├── development-workflow.md  # Default development and release workflow
+│   ├── edge-node-first-time-setup.md # Bootstrap/recovery setup
+│   ├── production-testing.md    # Production validation harness
 │   ├── autobench_master_context*.md # Generated bundles (gitignored; py scripts/build_master_context.py)
-│   ├── *.docx                   # Source Word exports (Control 3)
 │   └── 📁 control-3-media/      # Embedded images for Control 3 markdown
 ├── 📁 core/                  # Business logic
 │   ├── __init__.py              # Exports: DimensionalAnalyzer, PrivacyValidator, DataLoader

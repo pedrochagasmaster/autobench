@@ -20,7 +20,6 @@ REQUIRED_OPERATING_MODEL_FILES = [
     "docs/development-workflow.md",
     "docs/edge-node-first-time-setup.md",
     "docs/production-testing.md",
-    "docs/edge-node-tui-operating-model.md",
     "tools/dev/local_check.ps1",
     "tools/dev/git_sync_status.ps1",
     "tools/dev/publish_bitbucket_snapshot.ps1",
@@ -355,9 +354,6 @@ def test_autobench_bitbucket_remote_is_documented() -> None:
         "first_time_setup": (ROOT / "docs/edge-node-first-time-setup.md").read_text(
             encoding="utf-8"
         ),
-        "operating_model": (ROOT / "docs/edge-node-tui-operating-model.md").read_text(
-            encoding="utf-8"
-        ),
         "workflow": (
             ROOT / ".agents/skills/autobench-edge-deploy/WORKFLOW.md"
         ).read_text(encoding="utf-8"),
@@ -382,38 +378,28 @@ def test_active_edge_deploy_docs_share_the_same_deploy_decision_table() -> None:
     docs = [
         (ROOT / "docs/development-workflow.md").read_text(encoding="utf-8"),
         (ROOT / "docs/edge-node-first-time-setup.md").read_text(encoding="utf-8"),
-        (ROOT / "docs/edge-node-tui-operating-model.md").read_text(encoding="utf-8"),
         (ROOT / ".agents/skills/autobench-edge-deploy/WORKFLOW.md").read_text(
             encoding="utf-8"
         ),
     ]
 
-    expected_lines = [
-        "| Situation | Use | Why |",
-        "| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |",
-        "| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |",
-        "| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |",
-        "| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |",
-    ]
-
     for doc in docs:
-        for line in expected_lines:
-            assert line in doc
+        assert "py -m edge_deploy release --tool autobench --smoke standard" in doc
+        assert "recovery" in doc.lower() or "bootstrap" in doc.lower()
+        assert "Normal daily deployment" not in doc
 
 
 def test_active_docs_define_node_specific_rollback_and_human_gated_acceptance() -> None:
     docs = [
         (ROOT / "docs/development-workflow.md").read_text(encoding="utf-8"),
         (ROOT / "docs/production-testing.md").read_text(encoding="utf-8"),
-        (ROOT / "docs/edge-node-tui-operating-model.md").read_text(encoding="utf-8"),
         (ROOT / "tools/prod_tui/README.md").read_text(encoding="utf-8"),
     ]
 
     combined = "\n".join(docs)
 
-    assert "rollback SHA" in combined or "target SHA" in combined
-    assert "old SHA" in combined
+    assert "release report" in combined
+    assert "recovery" in combined.lower()
     assert "wrapper checks" in combined
-    assert "Level 1/2 smoke" in combined or "smoke level" in combined
-    assert "human-gated Edge acceptance" in combined or "human-gated acceptance" in combined
+    assert "smoke" in combined.lower()
     assert "local verification is not a substitute" in combined

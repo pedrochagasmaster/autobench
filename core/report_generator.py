@@ -293,8 +293,8 @@ class ReportGenerator:
         self._write_summary_sheet(ws_summary, results, analysis_type, metadata, report_model=model)
         
         # Create sheets for each result. Use the plain metric/dimension name so
-        # the workbook is consistent with pre-refactor archives, the CSV
-        # validator's Dimension column, and OPERATIONAL_GAINS audit deliverables.
+        # the workbook is consistent with the CSV validator's Dimension column
+        # and previously published workbook layouts.
         # `_build_unique_sheet_name` adds a numeric suffix only on collisions
         # (e.g. when the same dimension is used for the primary and a secondary
         # metric).

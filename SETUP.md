@@ -73,8 +73,8 @@ compliance verdict. It should also produce `/tmp/setup_smoke_balanced.csv`,
 `--no-validate-input` only for diagnostic runs where the result is not intended
 for publication.
 
-For release packaging, rollback, and bundle checksums, see
-`docs/RELEASE_PROCESS.md`.
+For the default development and release workflow, see
+`docs/development-workflow.md`.
 
 ## Manual Alternative (Dependencies)
 

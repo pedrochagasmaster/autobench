@@ -1,7 +1,7 @@
 """Regression tests for defects found during the feature-audit (Phase 3 fixes).
 
-Each test pins a specific logistical bug uncovered while testing the documented
-user stories in ``docs/FEATURE_USER_STORIES.csv``.
+Each test pins a specific logistical bug uncovered during feature-audit
+regression testing.
 """
 
 import subprocess

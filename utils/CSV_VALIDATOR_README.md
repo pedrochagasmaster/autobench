@@ -276,5 +276,4 @@ pip install pandas openpyxl
 
 ## Related Documentation
 
-- [BALANCED_CSV_EXPORT.md](../BALANCED_CSV_EXPORT.md) - CSV export feature documentation
 - [README.md](../README.md) - Main tool documentation
