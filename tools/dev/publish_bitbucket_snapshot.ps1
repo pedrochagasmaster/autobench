@@ -66,13 +66,19 @@ function Invoke-Git {
     $stdoutPath = [System.IO.Path]::GetTempFileName()
     $stderrPath = [System.IO.Path]::GetTempFileName()
 
+    $authEnvName = "AUTOBENCH_GIT_AUTH_HEADER"
+    $previousAuthHeader = [Environment]::GetEnvironmentVariable($authEnvName)
+
     try {
         $gitExe = (Get-Command git).Source
         $argumentList = @()
 
         if ($UseAuth -and $script:BitbucketToken) {
-            $argumentList += "-c"
-            $argumentList += "http.extraHeader=Authorization: Bearer $script:BitbucketToken"
+            [Environment]::SetEnvironmentVariable(
+                $authEnvName,
+                "Authorization: Bearer $script:BitbucketToken"
+            )
+            $argumentList += "--config-env=http.extraHeader=$authEnvName"
         }
 
         $argumentList += $GitArgs
@@ -90,6 +96,11 @@ function Invoke-Git {
         $text = (@($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n"
         $text = $text.Trim()
     } finally {
+        if ($null -eq $previousAuthHeader) {
+            [Environment]::SetEnvironmentVariable($authEnvName, $null)
+        } else {
+            [Environment]::SetEnvironmentVariable($authEnvName, $previousAuthHeader)
+        }
         Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
     }
 
