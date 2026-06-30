@@ -36,13 +36,12 @@ class GateTestRunner:
     def generate_cases(self):
         """Run generate_cli_sweep.py in gate mode."""
         logger.info("Generating gate test cases...")
-        fixture = self.root_dir / "tests" / "fixtures" / "gate_demo.csv"
         cmd = [
             sys.executable,
             str(self.generate_script),
             "--mode", "gate",
             "--out-dir", str(self.output_dir),
-            "--csv", str(fixture),
+            "--csv", str(self.fixture_csv),
             "--entity-col", "issuer_name",
             "--entity", "Target",
             "--metric-col", "txn_cnt",
