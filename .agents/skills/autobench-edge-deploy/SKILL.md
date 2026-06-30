@@ -1,65 +1,65 @@
 ---
 name: autobench-edge-deploy
-description: Deploys this repo's Autobench tree to the corporate Bitbucket deployment remote and updates Hadoop Edge Node checkouts under /ads_storage/autobench. Use when the user asks to push Autobench to Bitbucket, update edge nodes, deploy node03/node04, refresh offline packages, run production TUI smoke/drift checks, or make remote Autobench files executable for all users.
+description: Handles Autobench release, recovery, bootstrap, and Edge Node validation. The default release path is edge-deploy-core; repo-local scripts are recovery and diagnostic tools.
 ---
 
 # Autobench Edge Deploy
 
-Use this skill for Autobench-specific deployment work. It captures the known-good flow for publishing local `main` as a Bitbucket deployment snapshot, updating `/ads_storage/autobench`, refreshing offline dependencies when needed, running Edge Node smoke checks, and enforcing shared permissions.
+Use the shared release orchestrator for normal Autobench releases:
 
-For exact commands, use [WORKFLOW.md](WORKFLOW.md). Read it before touching the remote nodes.
+```powershell
+cd D:\Projects\edge-deploy-core
+py -m edge_deploy release --tool autobench --smoke standard
+```
+
+Use `--tool both` for coordinated Autobench + Dispatch releases.
+
+Read [WORKFLOW.md](WORKFLOW.md) before doing any repo-local recovery,
+bootstrap, or manual node work.
 
 ## Deployment Model
 
-- Local `main` is the source tree.
-- `origin` is GitHub and is not the deployment target unless the user explicitly asks.
-- `bitbucket` must be the corporate `autobench` repo: `https://scm.mastercard.int/stash/scm/~e176097/autobench.git`.
-- Bitbucket does not share local history. Publish a deployment snapshot authored by the current user and parented on `bitbucket/main`; do not push local `main` history directly.
+- Local `main` in `D:\Projects\autobench` is the source tree unless the user
+  explicitly selects another commit.
+- `edge-deploy-core` owns the default publish, node update, drift, smoke, and
+  report workflow.
+- `origin` is GitHub and is not the deployment target unless the user asks.
+- `bitbucket` is the corporate Autobench deployment remote:
+  `https://scm.mastercard.int/stash/scm/~e176097/autobench.git`.
 - The shared deployed tree is `/ads_storage/autobench`.
 - Per-user runtime state lives under `/ads_storage/$USER/.autobench`.
-- `update.sh` is the preferred Git update path. `deploy_and_install.ps1` plus `setup_remote_env.sh` is the offline package refresh or first-time recovery path.
+- `update.sh`, `deploy_and_install.ps1`, and `setup_remote_env.sh` are
+  bootstrap/recovery tools, not the default release interface.
 
 ## Standard Nodes
 
 - node03: `hde2stl020003.mastercard.int`
 - node04: `hde2stl020004.mastercard.int`
 
-Always inspect live tmux panes before sending commands. If SSH has auto-logged out, start SSH in the pane and let the user enter PASSCODE. Never handle PASSCODE in chat or scripts.
+The release orchestrator opens the SSH flow and waits for human-entered RSA
+PASSCODEs. Never handle PASSCODEs in chat, scripts, or config files.
 
 ## Required Verification
 
-Before publishing:
+For the default release, verify:
 
-- `git status --short --branch`
-- `git remote -v`
-- `git log --oneline --decorate --max-count=8`
-- `.\tools\dev\local_check.ps1`
+- `edge-deploy\reports\release-*\release.json` reports success.
+- Both Autobench rollout reports passed.
+- Drift and smoke checks passed for node03 and node04.
+- `remote_git_preflight` is present for each node.
+- No secret-shaped values appear in the report.
 
-After Bitbucket push:
-
-- `git fetch bitbucket main`
-- `git log --oneline -1 bitbucket/main`
-
-On each node after update:
-
-- `/ads_storage/autobench` is at the deployed snapshot.
-- `git status --porcelain` is empty, excluding intentional untracked runtime artifacts.
-- `py -m tools.prod_tui drift --local . --remote /ads_storage/autobench` or the node-side drift equivalent reports no unexpected drift.
-- `python -m compileall benchmark.py tui_app.py core utils scripts tools` succeeds on the deployed tree.
-- `./run_tool.sh config list` and `./run_tool.sh share --help` work from `/ads_storage/autobench`.
-- If `install.sh` was run, `/ads_storage/$USER/.autobench/installed_version` matches `VERSION` and `~/.local/bin/autobench-cli config list` works.
-- Shared permissions are verified with `ls -ld`, `ls -l`, and a directory traversal scan.
+For recovery work, also record the exact local source commit, deployment SHA,
+node, command output, drift result, smoke result, permission evidence, and why
+the orchestrator path was not enough.
 
 ## Operational Lessons
 
-- Prefer `tmux capture-pane` and metadata before attaching or guessing.
-- Use authenticated tmux sessions for Edge work; noninteractive SSH may fail on PASSCODE policy.
-- Use `tmux send-keys -l` for commands containing quotes, globs, `$USER`, or `$(...)`; plain `send-keys` can mangle shell quoting.
-- If a command lands in local PowerShell after SSH logout, stop, reauthenticate, and rerun remotely.
-- The offline bundle targets CPython 3.10 / `cp310`; if dependency install fails with wheel compatibility errors, rebuild `offline_packages` with `deploy_and_install.ps1`.
+- Prefer the orchestrated release report over manual terminal notes.
+- Inspect release reports before touching live tmux sessions.
+- Use authenticated tmux sessions only for recovery or deep troubleshooting.
+- If Git reports a corrupt `refs/remotes/bitbucket/main`, use the bounded
+  repair path documented in [WORKFLOW.md](WORKFLOW.md); the orchestrator and
+  current `update.sh` already self-heal the known signature.
 - Linux wrappers must use `python`, not the Windows `py` launcher.
 - Do not use the stale `dispatch.git` remote for Autobench deployment.
-
-## Reporting
-
-Report the exact Bitbucket snapshot SHA, local source commit, nodes updated, local validation, remote update/install/smoke evidence, drift evidence, permission evidence, and any auth or remote-state issue.

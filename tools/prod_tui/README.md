@@ -1,7 +1,18 @@
 # Autobench Production TUI Harness
 
-This directory contains the local tmux/psmux + SSH harness for validating the
-real Autobench Textual TUI on a Hadoop Edge Node.
+This directory contains the local tmux/psmux + SSH harness for validating and
+diagnosing the real Autobench Textual TUI on a Hadoop Edge Node.
+
+The default release workflow is not this harness directly. For normal
+production releases, run the shared orchestrator:
+
+```powershell
+cd D:\Projects\edge-deploy-core
+py -m edge_deploy release --tool autobench --smoke standard
+```
+
+Use this harness when the release report calls for deeper node diagnosis or
+when a controlled manual recovery needs extra smoke/drift evidence.
 
 ## Prerequisites
 
@@ -23,7 +34,7 @@ deployment metadata fields you need for the final report contract:
 `source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
 `runtime_python_*`, `update_method`, `install_decision`, `dependency_signal`,
 and `permission_evidence`. Copy the permission evidence from the live
-`update.sh` or `setup_remote_env.sh` output; do not invent it in chat. Do not
+the release report, `update.sh`, or `setup_remote_env.sh` output; do not invent it in chat. Do not
 store passcodes, passwords, or tokens in config files.
 
 Before sending commands to a live node, inspect the tmux session first:

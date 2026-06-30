@@ -1,16 +1,17 @@
 # Edge Node TUI Operating Model for Autobench
 
-Autobench follows the reusable Edge Node TUI model proven by Dispatch:
-committed Git state is the deployable source of truth, the shared deployed tree
-is separate from per-user runtime state, and real production validation uses an
-SSH/tmux terminal harness rather than plain subprocess tests.
+Autobench follows the shared Edge release model: committed Git state is the
+deployable source of truth, `edge-deploy-core` is the default release
+orchestrator, the shared deployed tree is separate from per-user runtime state,
+and the tmux/SSH harness is for release validation evidence and deep
+troubleshooting.
 
 ## Autobench Surfaces
 
 1. **Local development machine**
    - Edit source under `D:\Projects\autobench`.
    - Use PowerShell and `py` for local commands.
-   - Run `tools/dev/local_check.ps1` before publishing a deployable change.
+   - Run `tools/dev/local_check.ps1` before committing a deployable change.
 
 2. **Corporate deployment remote**
    - The deployment transport is the `autobench` repo:
@@ -19,8 +20,8 @@ SSH/tmux terminal harness rather than plain subprocess tests.
      target `autobench`.)
    - Configure it as `bitbucket` so Edge Node instructions are explicit.
    - The repo does not share history with local `main` and rejects commits you
-     did not author, so publish a single **deployment snapshot** per
-     `docs/development-workflow.md` rather than pushing full history.
+     did not author. The default `edge_deploy release` workflow publishes the
+     deployment snapshot; repo-local publishing is recovery only.
    - Keep GitHub `origin` only for the external mirror/review workflow when
      needed.
 
@@ -29,10 +30,10 @@ SSH/tmux terminal harness rather than plain subprocess tests.
    - Contains `benchmark.py`, `tui_app.py`, `core/`, `utils/`, `config/`,
      `presets/`, `tests/fixtures/`, `install.sh`, `update.sh`, docs, and
      production harness.
-   - Updated via `./update.sh` (Git fetch + `reset --hard` to the canonical
-     branch, then `chmod -R a+rX`), or by the zip/offline bundle path for
-     dependency refreshes. Never copy or `scp` individual files onto the node —
-     that reintroduces CRLF line endings and drifts the tree from Git.
+   - Updated by `edge-deploy-core` during the default release. The node-side
+     `update.sh` and zip/offline bundle path remain recovery and bootstrap
+     mechanisms. Never copy or `scp` individual files onto the node — that
+     reintroduces CRLF line endings and drifts the tree from Git.
 
 4. **Per-user runtime home**
    - Default path: `/ads_storage/$USER/.autobench`.
@@ -46,9 +47,11 @@ SSH/tmux terminal harness rather than plain subprocess tests.
 Autobench includes:
 
 - `install.sh`: idempotent per-user installer.
-- `update.sh`: Git-based node sync (fetch + `reset --hard` + `chmod -R a+rX`).
+- `update.sh`: node-side Git sync used by the release orchestrator and manual
+  recovery.
 - `onboarding.md`: short end-user install and launch path.
-- `docs/development-workflow.md`: local to Git to Edge update loop.
+- `docs/development-workflow.md`: canonical local development and
+  `edge-deploy-core` release workflow.
 - `docs/edge-node-first-time-setup.md`: operator bootstrap guide.
 - `docs/production-testing.md`: tmux/SSH harness and safety levels.
 - `tools/dev/local_check.ps1`: strongest local check command.
@@ -58,37 +61,34 @@ Autobench includes:
 - `.gitattributes`: LF normalization for Linux-bound files.
 - `.gitignore`: generated report/log/screen/bundle exclusions.
 
-## Deployment Decision Table
+## Release Decision Table
 
 | Situation | Use | Why |
 | --- | --- | --- |
-| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
-| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
-| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
-| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+| Normal development release | `py -m edge_deploy release --tool autobench --smoke standard` from `D:\Projects\edge-deploy-core` | Default production promotion, node update, drift, smoke, and report path. |
+| Coordinated Autobench + Dispatch release | `py -m edge_deploy release --tool both --smoke standard` | Default shared release path when both tools change. |
+| First-time bootstrap or offline dependency recovery | `deploy_and_install.ps1`, `setup_remote_env.sh`, `install.sh` | Bootstrap/recovery only. |
+| Node-specific diagnosis | `tools/prod_tui`, `update.sh`, tmux/SSH inspection | Deep troubleshooting after reviewing the release report. |
 
 ## Golden Path
 
 1. Develop and test locally.
 2. Commit the change.
-3. Publish a deployment snapshot to the corporate remote (`bitbucket` →
-   `autobench`); see `docs/development-workflow.md`.
-4. On each Edge Node, run `./update.sh` (fetch + `reset --hard` to the canonical
-   branch). The hard reset guarantees content, LF line endings, and the
-   executable bit on entrypoint scripts all match the repo, and re-applies
-   `chmod -R a+rX` so every analyst can run the shared scripts. Untracked
-   `.venv/` and `offline_packages/` are preserved. The updater also prints the
-   install decision, the dependency signal that produced it, and permission
-   evidence for the repo root plus the shared entrypoint scripts.
-5. Run `./install.sh` only when dependencies changed (new/updated offline
-   wheels).
-6. Verify drift is zero with `py -m tools.prod_tui drift`.
-7. Run Level 1/2 smoke through tmux/SSH.
-8. Record node, commit, version, installer exit, drift status, and report path.
+3. From `D:\Projects\edge-deploy-core`, run:
 
-Zip upload and incremental sync are fallback paths. They are useful for offline
-installs or fast iteration, but they do not replace a committed deployment
-record.
+   ```powershell
+   py -m edge_deploy release --tool autobench --smoke standard
+   ```
+
+4. Enter RSA PASSCODEs in the visible terminal when prompted.
+5. Verify `edge-deploy\reports\release-*\release.json` and the Autobench
+   rollout reports show passing update, drift, smoke, and
+   `remote_git_preflight` checks for node03 and node04.
+6. Record the release report directory, local source commit, deployment SHA,
+   nodes updated, and any authentication handoff.
+
+Zip upload, direct `update.sh`, and manual tmux operation are fallback paths.
+They do not replace the orchestrated release record.
 
 ## Installer Contract
 

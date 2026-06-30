@@ -1,203 +1,144 @@
-# Autobench Development Workflow
+# Autobench Development and Release Workflow
 
-This is the canonical workflow for making Autobench changes locally, publishing
-them to the corporate deployment remote, and updating Hadoop Edge Nodes in a way
-that can be traced to a Git commit.
+This is the canonical workflow for Autobench development and production
+release. The default release path is the shared release orchestrator in
+`D:\Projects\edge-deploy-core`; repo-local deployment scripts are retained for
+bootstrap, recovery, and deep troubleshooting.
+
+## Default Workflow
+
+1. Start from `main` unless the user explicitly asks for another branch.
+
+   ```powershell
+   cd D:\Projects\autobench
+   git status --short --branch
+   git branch -vv
+   ```
+
+2. Make the change and run focused checks for the touched files.
+
+3. Run the local gate before committing:
+
+   ```powershell
+   .\tools\dev\local_check.ps1
+   ```
+
+4. Commit the reviewed change locally:
+
+   ```powershell
+   git diff
+   git add <files>
+   git commit -m "Describe the change"
+   ```
+
+5. Release from `edge-deploy-core`:
+
+   ```powershell
+   cd D:\Projects\edge-deploy-core
+   py -m edge_deploy release --tool autobench --smoke standard
+   ```
+
+   Use `--tool both` when Autobench and Dispatch must be released together.
+   The release command publishes the deployable snapshot, drives node03 and
+   node04 updates, handles the interactive RSA prompts in the visible terminal,
+   runs drift/smoke validation, and writes the release evidence under
+   `D:\Projects\edge-deploy-core\edge-deploy\reports\release-*`.
+
+6. Verify the release report:
+
+   - `release.json` has `overall_status: "passed"`.
+   - Every Autobench rollout has `status: "passed"`.
+   - `remote_git_preflight` is present for each node.
+   - Drift and smoke checks passed for node03 and node04.
+   - No secret-shaped values were written to the report.
 
 ## Remotes
 
 Keep remote roles explicit:
 
-- `origin`: GitHub mirror/review remote (full branch history).
-- `bitbucket`: corporate deployment remote — the **`autobench`** repo reachable by
-  the Edge Nodes. (An older `dispatch` repo was used by mistake; it is obsolete —
-  always target `autobench`.)
+- `origin`: GitHub mirror/review remote.
+- `bitbucket`: corporate deployment remote for the Edge Nodes:
+  `https://scm.mastercard.int/stash/scm/~e176097/autobench.git`.
 
-Configure Bitbucket once:
+Configure Bitbucket once if needed:
 
 ```powershell
 git remote add bitbucket https://scm.mastercard.int/stash/scm/~e176097/autobench.git
 git remote -v
 ```
 
-If the remote already exists with another URL (e.g. the old `dispatch` URL):
+If the remote already exists with another URL, fix it:
 
 ```powershell
 git remote set-url bitbucket https://scm.mastercard.int/stash/scm/~e176097/autobench.git
 ```
 
-Bitbucket is SSO-protected. Authenticate fetches/pushes with a personal HTTP
-access token (PAT) passed as a Bearer header instead of an interactive prompt:
+Do not push to either remote from an agent session unless the user explicitly
+asks. The release orchestrator owns the normal deployment push.
 
-```powershell
-$env:BB_TOKEN = "<your-bitbucket-PAT>"
-git -c "http.extraHeader=Authorization: Bearer $env:BB_TOKEN" ls-remote bitbucket main
-```
+## Release Decision Table
 
-Never commit the PAT. Do not push from an agent session unless the user
-explicitly asks for the push.
-
-## First-Time Local Setup
-
-```powershell
-py -m pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
-```
-
-## Daily Loop
-
-1. Inspect branch and local changes:
-
-```powershell
-git status --short --branch
-git branch -vv
-```
-
-2. Make the change and run focused tests.
-
-3. Run the standard local gate:
-
-```powershell
-.\tools\dev\local_check.ps1
-```
-
-The script runs compile, lint, typecheck, full gate, and pytest using the repo
-standard `py` launcher.
-
-4. Commit locally after review:
-
-```powershell
-git diff
-git add <files>
-git commit -m "Describe the change"
-```
-
-5. Check remote sync state:
-
-```powershell
-.\tools\dev\git_sync_status.ps1
-```
-
-6. Publish to Bitbucket only when ready for a server update — see
-   [Publish to Bitbucket](#publish-to-bitbucket-deployment-snapshot) below.
-
-## Deployment Decision Table
-
-| Situation | Use | Why |
+| Situation | Use | Scope |
 | --- | --- | --- |
-| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
-| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
-| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
-| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+| Normal development release | `py -m edge_deploy release --tool autobench --smoke standard` from `D:\Projects\edge-deploy-core` | Default path for production promotion, node updates, drift, smoke, and report evidence. |
+| Coordinated Autobench + Dispatch release | `py -m edge_deploy release --tool both --smoke standard` | Default path when both tools need the same release process. |
+| Exact rollback or targeted recovery | `edge_deploy release` with the selected rollback/recovery option, or the repo-local skill when the orchestrator cannot proceed | Operator-controlled exception; record the report path and target SHA. |
+| First-time node bootstrap or offline dependency refresh | `deploy_and_install.ps1`, `setup_remote_env.sh`, and `install.sh` | Bootstrap/recovery only, not the default release path. |
+| Low-level node diagnosis | `tools/prod_tui`, `update.sh`, tmux/SSH inspection | Deep troubleshooting only, preferably after checking the release report. |
 
-## Publish to Bitbucket (Deployment Snapshot)
+## What the Release Orchestrator Does
 
-The `bitbucket` (`autobench`) repo does **not** share history with local `main`,
-and a pre-receive hook rejects any commit you did not author ("you can only push
-your own commits"). So you cannot push your full `main` history — publish a single
-**deployment snapshot** of `main`'s tree, re-parented on the current
-`bitbucket/main` and authored by you. This is always a clean fast-forward; never
-force-push.
+For Autobench, `edge_deploy release` is responsible for the end-to-end release:
+
+- confirms the local source commit,
+- publishes the deployment snapshot to the corporate remote,
+- updates `/ads_storage/autobench` on node03 and node04,
+- uses a safe Git fetch shape and self-heals the known corrupt
+  `refs/remotes/bitbucket/main` condition,
+- preserves per-user runtime state,
+- records update, drift, smoke, and permission evidence,
+- produces machine-readable reports under `edge-deploy/reports/release-*`.
+
+The operator may still have to type RSA PASSCODEs in the visible terminal.
+Manual tmux attachment and node-side commands are not part of the default path.
+
+## Recovery and Bootstrap Paths
+
+Use `.agents/skills/autobench-edge-deploy/WORKFLOW.md` only when the normal
+release command is unavailable or the release report points to a node-specific
+condition that requires manual inspection.
+
+Repo-local commands such as these are valid only in that recovery/bootstrap
+context:
 
 ```powershell
-$env:BB_TOKEN = "<your-bitbucket-PAT>"
 .\tools\dev\publish_bitbucket_snapshot.ps1
-git fetch bitbucket main
-git log --oneline -1 bitbucket/main
-```
-
-The helper validates the deployment remote before any fetch/push, uses
-`main` as the source tree, creates one authored snapshot parented on the current
-`bitbucket/main`, and returns you to your starting branch even when the push
-fails. Bitbucket only ever receives snapshots derived from local `main` — never
-pull Bitbucket back into local `main`.
-
-If you need to debug the underlying Git sequence, the helper wraps the same
-detached-HEAD + `reset --soft bitbucket/main` model that was previously run by
-hand.
-
-## Edge Node Update
-
-Preferred deployment path — run the tracked updater:
-
-```bash
-cd /ads_storage/autobench
-./update.sh
-```
-
-`update.sh` runs `git fetch` + `git reset --hard bitbucket/main`, then re-applies
-shared read/execute permissions (`chmod -R a+rX`). The hard reset (not
-`git pull`) guarantees the tree — content **and** line endings — exactly matches
-the repo: `.gitattributes` pins `*.sh` to LF, so script shebangs stay valid even
-if a file was ever touched from a Windows working tree. The reset also restores
-the executable bit on entrypoint scripts (`run_tool.sh`, `install.sh`, etc.).
-Untracked paths such as `.venv/` and `offline_packages/` are preserved, so the
-installed environment survives the update. (Override the source with
-`AUTOBENCH_GIT_REMOTE` / `AUTOBENCH_GIT_BRANCH` if needed; defaults are
-`bitbucket` / `main`.) After the reset, the script prints both an install
-decision (`install not required`, `install recommended`, or `install required`)
-and the dependency signal that triggered it. It also emits permission evidence
-for the repo root and shared entrypoint scripts so the node report can record
-what was actually runnable after the sync.
-
-Always update through `update.sh` (Git), never by copying or `scp`-ing individual
-files onto the node — out-of-band copies reintroduce CRLF line endings and drift
-the tree from Git.
-
-Run `./install.sh` only when dependencies changed (new/updated offline wheels):
-
-```bash
-cd /ads_storage/autobench
-./update.sh
-./install.sh   # only when the offline bundle changed
-```
-
-`install.sh` auto-selects an interpreter matching the bundled offline wheels
-(currently CPython 3.10). Only set `AUTOBENCH_PYTHON_BIN=/path/to/python3.10`
-if the node hides the right interpreter from the installer's search. Treat
-`install required` as a hard stop before smoke tests; `install recommended`
-means runtime or launcher inputs changed and the per-user install should be
-refreshed before claiming parity.
-
-For release validation or rollback, reset to an exact snapshot commit:
-
-```bash
-cd /ads_storage/autobench
-git fetch bitbucket
-git reset --hard <commit-sha>
-chmod -R a+rX .
-```
-
-Treat each Edge Node as independent until shared storage is proven. Validate
-each node separately and name the node in every production claim.
-
-For rollback reporting, record the node, old SHA, rollback SHA (target SHA),
-install decision, drift result, smoke level, and wrapper checks
-(`./run_tool.sh config list` and `./run_tool.sh share --help`). Local
-verification is not a substitute for node-specific Edge acceptance when SSH,
-Kerberos, storage, or terminal behavior are in scope.
-
-## Full Bundle Deploy
-
-Use the existing offline path for first-time setup, dependency wheel refreshes,
-or recovery when Git access from the node is unavailable:
-
-```powershell
 .\deploy_and_install.ps1
 ```
 
-The generated `autobench_deploy.zip` is an artifact and must not be committed.
+```bash
+cd /ads_storage/autobench
+./update.sh
+./install.sh
+```
+
+When using recovery paths, record the node, target SHA, command output, drift
+result, smoke result, and why the default release command was not sufficient.
 
 ## Production Validation
 
-After deployment, run the production harness with the node-specific config:
+The default validation is the release report produced by `edge_deploy release`.
+Use the repo-local production harness for additional diagnosis or deeper
+coverage:
 
 ```powershell
+cd D:\Projects\autobench
 py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 2 --save-screens
 py -m tools.prod_tui drift --local . --remote /ads_storage/autobench
 ```
 
-For changes that affect end-to-end analysis behavior, also run the repository
-gate on the deployed tree:
+For changes that affect end-to-end analysis behavior, the release smoke or a
+manual recovery session may also run:
 
 ```bash
 cd /ads_storage/autobench
@@ -207,7 +148,10 @@ autobench-cli share --csv tests/fixtures/gate_demo.csv --entity Target --metric 
 
 ## Change Hygiene
 
-- Do not commit generated bundles, reports, logs, screens, or local data.
-- Do not commit credentials, passcodes, personal config, or internal screenshots.
-- Prefer resetting to an exact snapshot commit for production promotion and rollback.
-- After manual server edits, run drift detection before claiming parity.
+- Do not commit generated bundles, reports, logs, screens, local data, or
+  credentials.
+- Do not commit RSA passcodes, Kerberos passwords, PATs, or internal
+  screenshots.
+- Prefer the orchestrated release report over ad hoc terminal notes for release
+  evidence.
+- If any manual server edit occurs, run drift detection before claiming parity.

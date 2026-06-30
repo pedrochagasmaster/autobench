@@ -15,6 +15,17 @@ The harness lives in `tools/prod_tui/`. It records JSON reports under
 `tools/prod_tui/reports/`, optional screen captures under
 `tools/prod_tui/screens/`, and logs under `tools/prod_tui/logs/`.
 
+For normal production releases, run the shared orchestrator instead of driving
+this harness directly:
+
+```powershell
+cd D:\Projects\edge-deploy-core
+py -m edge_deploy release --tool autobench --smoke standard
+```
+
+Use this document for deeper validation, recovery, or diagnosis after reviewing
+the release report.
+
 ## Configure
 
 Copy the template for each node:

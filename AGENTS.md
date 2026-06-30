@@ -20,17 +20,23 @@
 
 ## Agent Skills
 
-For Bitbucket snapshot publishing, Edge Node updates, offline bundle refreshes,
-production TUI smoke/drift checks, or shared `/ads_storage/autobench`
-permission fixes, use:
+For the default development and release workflow, use
+`docs/development-workflow.md`. Releases are orchestrated from
+`D:\Projects\edge-deploy-core` with `py -m edge_deploy release`; repo-local
+Bitbucket publishing, `update.sh`, `deploy_and_install.ps1`, and tmux/SSH
+steps are recovery, bootstrap, or deep-troubleshooting paths.
+
+For Autobench-specific recovery details, offline bundle refreshes, production
+TUI smoke/drift checks, or shared `/ads_storage/autobench` permission fixes,
+use:
 
 ```text
 .agents/skills/autobench-edge-deploy/SKILL.md
 ```
 
-The skill captures the repeatable Autobench deployment procedure for the
-corporate `bitbucket` remote, `/ads_storage/autobench`, `update.sh`,
-`deploy_and_install.ps1`, `setup_remote_env.sh`, and node03/node04 validation.
+The skill delegates the normal release to `edge-deploy-core` and keeps the
+repo-local scripts documented for explicit recovery, bootstrap, and diagnostic
+work only.
 
 ---
 

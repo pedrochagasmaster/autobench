@@ -1,6 +1,11 @@
 # Autobench Edge Node First-Time Setup
 
-This runbook bootstraps Autobench on a Hadoop Edge Node.
+This runbook bootstraps Autobench on a Hadoop Edge Node. It is not the default
+release workflow. After bootstrap, use `D:\Projects\edge-deploy-core`:
+
+```powershell
+py -m edge_deploy release --tool autobench --smoke standard
+```
 
 ## 1. Prepare the Deployable Tree
 
@@ -20,16 +25,17 @@ If the node cannot reach Git, use the existing offline bundle workflow:
 ```
 
 The bundle path remains a fallback for first-time setup, dependency refresh, and
-recovery. The Git path is the preferred repeatable deployment model.
+recovery. A Git-backed shared tree is preferred for bootstrap because the
+default `edge_deploy release` workflow can then manage repeatable updates.
 
-## Deployment Decision Table
+## Release and Bootstrap Decision Table
 
 | Situation | Use | Why |
 | --- | --- | --- |
-| Normal daily deployment | `./update.sh` | Git update of `/ads_storage/autobench` without reinstalling user runtime state. |
-| Dependencies, interpreter, or launcher inputs changed | `./update.sh` then `./install.sh` | Shared tree changes landed, then per-user runtime is refreshed only when needed. |
-| Git unavailable on the node, first-time setup, or recovery | `./deploy_and_install.ps1` | Offline bundle path for bootstrap or recovery when the Git path cannot complete. |
-| Need a known-good production state | exact-SHA `git reset --hard <snapshot-sha>` | Node-specific rollback or validation against a named Bitbucket snapshot. |
+| Normal development release | `py -m edge_deploy release --tool autobench --smoke standard` | Default release path after the node is bootstrapped. |
+| First-time Git tree setup | `git clone -o bitbucket ... /ads_storage/autobench` | Creates the shared tree the orchestrator updates. |
+| Git unavailable, offline dependency refresh, or recovery | `deploy_and_install.ps1`, `setup_remote_env.sh`, `install.sh` | Bootstrap/recovery only. |
+| Node-specific diagnosis | `update.sh`, `tools.prod_tui`, tmux/SSH inspection | Deep troubleshooting after reviewing the release report. |
 
 ## 2. Verify Prerequisites
 
@@ -105,25 +111,29 @@ rollback details to launch the TUI.
 
 ## 6. Updating the Deployment
 
-Always update the node through Git, never by copying or `scp`-ing individual
-files onto it. Out-of-band copies from a Windows working tree reintroduce CRLF
-line endings (which break shell-script shebangs) and leave the tree drifted
-from Git. The repository pins `*.sh` to LF via `.gitattributes`, so a Git-based
-update is always correct.
+For normal releases, do not update the node by hand. Use the shared release
+orchestrator from `D:\Projects\edge-deploy-core`:
 
-From the node:
+```powershell
+py -m edge_deploy release --tool autobench --smoke standard
+```
+
+For bootstrap recovery or a node-specific repair, update through Git, never by
+copying or `scp`-ing individual files onto it. Out-of-band copies from a
+Windows working tree reintroduce CRLF line endings and leave the tree drifted
+from Git.
+
+Recovery command from the node:
 
 ```bash
 cd /ads_storage/autobench
-./update.sh            # git fetch + reset --hard to the canonical branch
+./update.sh            # recovery Git fetch + reset --hard to the canonical branch
 ```
 
-`update.sh` preserves untracked files such as `.venv/` and `offline_packages/`,
-so the installed environment survives. It also prints an install decision and
-the dependency signal behind it. If the decision is `install required`, refresh
-the offline bundle with `deploy_and_install.ps1` and re-run
-`setup_remote_env.sh`. If the decision is `install recommended`, refresh the
-per-user runtime with `./install.sh` before treating the node as current.
+`update.sh` preserves untracked files and is also used internally by the
+orchestrator. If running it manually, record why the default release command was
+not enough, then capture the install decision, dependency signal, drift result,
+and smoke result.
 
 ## Troubleshooting
 
