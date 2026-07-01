@@ -12,6 +12,8 @@ import time
 import logging
 import threading
 import glob
+import contextlib
+import io
 import pandas as pd
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -1255,6 +1257,24 @@ class BenchmarkApp(App):
                     pass
             self.call_from_thread(_focus)
 
+    def _execute_run_for_tui(self, request: AnalysisRunRequest, logger: logging.Logger, log_widget: Log):
+        """Run analysis while keeping library print output inside the TUI log.
+
+        Textual captures process stdout while the app is running. In some Windows
+        headless/release runners, forwarding captured prints back to the original
+        console can raise ``OSError: [WinError 6] The handle is invalid``. Console
+        output from the shared CLI seam is useful context, not a reason to fail
+        the TUI run, so capture it and append it to the Log widget instead.
+        """
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            artifacts = execute_run(request, logger)
+        output = "\n".join(part.strip() for part in (stdout.getvalue(), stderr.getvalue()) if part.strip())
+        if output:
+            self.call_from_thread(log_widget.write, output + "\n")
+        return artifacts
+
     # ──────────────────────────────────────────────────────────────────
     # CSV loading
     # ──────────────────────────────────────────────────────────────────
@@ -1975,7 +1995,7 @@ class BenchmarkApp(App):
                 request.df = saved_df
                 if saved_df is not None and request.prepared_dataset is None:
                     request.prepared_dataset = PreparedDataset(df=saved_df)
-                artifacts = execute_run(request, logger)
+                artifacts = self._execute_run_for_tui(request, logger, log_widget)
                 self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
                 summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
                 posture = summary.get('posture') or summary.get('compliance_posture')

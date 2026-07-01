@@ -219,3 +219,50 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
     assert run_state == "success"
     assert "fully_compliant" in results_text
     assert output.exists()
+
+
+def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    output = tmp_path / "ux_run_broken_stdout.xlsx"
+
+    class BrokenStream:
+        def write(self, text: str) -> None:
+            raise OSError(6, "The handle is invalid")
+
+        def flush(self) -> None:
+            return None
+
+    async def scenario() -> tuple[str, str]:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            app._original_stdout = BrokenStream()
+            app._original_stderr = BrokenStream()
+            await pilot.pause()
+            app.query_one("#csv_path").value = str(FIXTURE)
+            app.load_csv_headers(str(FIXTURE))
+            await pilot.pause()
+            app.query_one("#entity_col", Select).value = "issuer_name"
+            app.load_unique_entities("issuer_name")
+            app.query_one("#entity_name", Select).value = "Target"
+            app.query_one("#time_col", Select).value = "year_month"
+            app.query_one("#share_metric", Select).value = "txn_cnt"
+            dims = app.query_one("#share_dims", SelectionList)
+            dims.select("card_type")
+            dims.select("channel")
+            app.query_one("#output_file").value = str(output)
+            app.query_one("#validate_input", Checkbox).value = True
+
+            app.run_analysis()
+            log_text = ""
+            for _ in range(120):
+                await pilot.pause(0.5)
+                log_text = "\n".join(app.query_one("#log_output").lines)
+                if "Analysis completed successfully" in log_text or "Execution" in log_text:
+                    break
+            return log_text, app._run_state
+
+    log_text, run_state = asyncio.run(scenario())
+    assert "Balanced CSV:" in log_text
+    assert "Analysis completed successfully" in log_text
+    assert run_state == "success"
+    assert output.exists()
