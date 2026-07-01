@@ -30,7 +30,7 @@ Set-Location (($repoRoot -join "`n").Trim())
 # Wrapped commands:
 # py -m compileall benchmark.py tui_app.py core utils scripts tools
 # py -m ruff check .
-# py -m mypy core/ utils/
+# py -m mypy --no-site-packages core/ utils/
 # py scripts/perform_gate_test.py
 # py -m pytest
 Invoke-Step "Compile Python sources" "py -m compileall benchmark.py tui_app.py core utils scripts tools" {
@@ -39,8 +39,8 @@ Invoke-Step "Compile Python sources" "py -m compileall benchmark.py tui_app.py c
 Invoke-Step "Lint" "py -m ruff check ." {
     py -m ruff check .
 }
-Invoke-Step "Typecheck" "py -m mypy core/ utils/" {
-    py -m mypy core/ utils/
+Invoke-Step "Typecheck" "py -m mypy --no-site-packages core/ utils/" {
+    py -m mypy --no-site-packages core/ utils/
 }
 Invoke-Step "Gate test" "py scripts/perform_gate_test.py" {
     py scripts/perform_gate_test.py

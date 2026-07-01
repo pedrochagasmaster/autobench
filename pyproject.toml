@@ -72,6 +72,8 @@ exclude = '''(?x)(
 
 [[tool.mypy.overrides]]
 module = [
+    "numpy",
+    "numpy.*",
     "scipy.*",
     "pandas.*",
     "yaml.*",

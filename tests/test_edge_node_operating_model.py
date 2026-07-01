@@ -341,7 +341,7 @@ def test_local_check_references_repo_gate_commands() -> None:
 
     assert "py -m compileall" in script
     assert "py -m ruff check ." in script
-    assert "py -m mypy core/ utils/" in script
+    assert "py -m mypy --no-site-packages core/ utils/" in script
     assert "py scripts/perform_gate_test.py" in script
     assert "py -m pytest" in script
 
