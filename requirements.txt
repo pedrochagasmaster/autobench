@@ -14,4 +14,4 @@ scipy>=1.10,<2
 # SQL ingestion is optional: install an ODBC driver package (e.g. pypyodbc) manually if using load_from_sql_*
 
 # TUI
-textual>=0.40.0,<7
+textual>=0.40.0,<8

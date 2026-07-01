@@ -94,14 +94,31 @@ if [ ! -d "$DATA_ROOT" ] || [ ! -w "$DATA_ROOT" ]; then
 fi
 
 mkdir -p "$AUTOBENCH_HOME/config" "$AUTOBENCH_HOME/logs" "$AUTOBENCH_HOME/cache"
+
+if [ -f "$ROOT_DIR/SHA256SUMS" ] && [ -f "$ROOT_DIR/scripts/offline_bundle_checksums.py" ]; then
+  echo "Verifying offline package checksums..."
+  if ! "$PYTHON_BIN" "$ROOT_DIR/scripts/offline_bundle_checksums.py" verify \
+    --manifest "$ROOT_DIR/SHA256SUMS" \
+    --base-dir "$ROOT_DIR"; then
+    echo "Offline package checksum verification failed." >&2
+    echo "Ask the operator to rebuild and redeploy the offline bundle with deploy_and_install.ps1." >&2
+    exit 1
+  fi
+fi
+
 "$PYTHON_BIN" -m venv "$AUTOBENCH_HOME/venv"
 
 if [ -n "$(find "$ROOT_DIR/offline_packages" "$ROOT_DIR/vendor" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null || true)" ]; then
-  "$AUTOBENCH_HOME/venv/bin/pip" install \
+  if ! "$AUTOBENCH_HOME/venv/bin/pip" install \
     --no-index \
     --find-links="$ROOT_DIR/offline_packages" \
     --find-links="$ROOT_DIR/vendor" \
-    -r "$ROOT_DIR/requirements.txt"
+    -r "$ROOT_DIR/requirements.txt"; then
+    echo "Offline dependency install failed." >&2
+    echo "The shared offline_packages bundle does not satisfy requirements.txt." >&2
+    echo "Ask the operator to rebuild and redeploy the offline bundle with deploy_and_install.ps1." >&2
+    exit 1
+  fi
 else
   "$AUTOBENCH_HOME/venv/bin/pip" install \
     --index-url "${AUTOBENCH_PIP_INDEX_URL:-https://pypi.org/simple}" \

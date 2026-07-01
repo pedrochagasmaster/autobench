@@ -65,6 +65,24 @@ def test_installer_matches_interpreter_to_offline_wheel_abi() -> None:
     assert script.index("required_wheel_python") < script.index("python3.11")
 
 
+def test_textual_75_node_bundle_is_supported() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    constraints = (ROOT / "constraints.txt").read_text(encoding="utf-8")
+
+    assert '"textual>=0.40.0,<8"' in pyproject
+    assert "textual>=0.40.0,<8" in requirements
+    assert "textual==7.5.0" in constraints
+
+
+def test_installer_reports_stale_offline_bundle_action() -> None:
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "offline_bundle_checksums.py" in script
+    assert "Offline dependency install failed." in script
+    assert "deploy_and_install.ps1" in script
+
+
 def test_offline_bundle_targets_python_310_cp310() -> None:
     """deploy_and_install.ps1 and setup_remote_env.sh must agree on Python 3.10."""
     deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")

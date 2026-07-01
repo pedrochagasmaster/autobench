@@ -54,5 +54,10 @@ the node is missing the expected interpreter. The bundled packages are built for
 Python 3.10; ask your operator to make Python 3.10 available, or run
 `AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh`.
 
+If `./install.sh` stops during offline dependency installation, the shared
+`offline_packages/` bundle is stale or incomplete for the checked-out
+`requirements.txt`. Ask the operator to rebuild and redeploy the bundle with
+`deploy_and_install.ps1`, then rerun `./install.sh`.
+
 If setup still fails, send the installer output and the result of
 `which autobench` to the tool owner.
