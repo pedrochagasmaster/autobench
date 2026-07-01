@@ -8,8 +8,8 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - Use `py benchmark.py share|rate ...` for automation.
 - Privacy caps are always enforced automatically.
 - Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
-- Default production releases use the installed `edge-deploy-core` package with `py -m edge_deploy release --tool autobench --smoke standard`; see [docs/development-workflow.md](docs/development-workflow.md).
-- A README-only release validates the same release pipeline without triggering installation.
+- Development ends with a GitHub pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- Release Operators use [docs/release-workflow.md](docs/release-workflow.md).
 
 ## Table of Contents
 
@@ -51,7 +51,7 @@ Requires Python 3.10+.
 Install dependencies:
 
 ```powershell
-py -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 ```
 
 Run the TUI:
@@ -69,7 +69,7 @@ py benchmark.py rate --help
 ```
 
 Contributors should use [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
-validation, commit, and release handoff.
+validation, and the GitHub pull-request handoff.
 
 ## First Successful Run (Copy/Paste)
 

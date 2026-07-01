@@ -30,7 +30,7 @@ IGNORED_PARTS = {
     "logs",
 }
 RUNTIME_SUFFIXES = {".py", ".sh", ".ps1", ".yaml", ".yml", ".toml", ".txt", ".md"}
-RUNTIME_NAMES = {"VERSION", "requirements.txt", "requirements-dev.txt", "constraints.txt"}
+RUNTIME_NAMES = {"VERSION", "requirements.txt", "constraints.txt"}
 SECRET_PATTERNS = [
     re.compile(r"(?i)(password\s*=\s*)\S+"),
     re.compile(r"(?i)(passcode\s*=\s*)\S+"),

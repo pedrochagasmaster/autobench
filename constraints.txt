@@ -1,7 +1,7 @@
 # Known-good resolved versions for this project's dependency tree (curated --
 # NOT a full pip freeze; keep it limited to this project's direct + transitive deps).
 # Refresh deliberately:
-#   1. py -m pip install -U -r requirements.txt -r requirements-dev.txt
+#   1. py -m pip install -U -e ".[dev]"
 #   2. py -m pytest tests/ -q ; py scripts/perform_gate_test.py   (both must pass)
 #   3. Update the pins below to the now-installed versions, e.g. in PowerShell:
 #        py -m pip freeze | Select-String -Pattern "^(pandas|numpy|scipy|...)=="

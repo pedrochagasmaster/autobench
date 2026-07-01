@@ -1,6 +1,7 @@
 # autobench/edge_deploy.yaml
 tool: autobench
 repo_path: /ads_storage/autobench
+github_url: https://github.com/pedrochagasmaster/autobench.git
 bitbucket_url: https://scm.mastercard.int/stash/scm/~e176097/autobench.git
 release_branch: main
 runtime_paths: [benchmark.py, tui_app.py, "core/**/*.py", "utils/**/*.py", "scripts/**/*.py"]

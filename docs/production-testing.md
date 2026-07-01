@@ -19,7 +19,7 @@ For normal production releases, run the shared orchestrator instead of driving
 this harness directly:
 
 ```powershell
-py -m edge_deploy release --tool autobench --smoke standard
+python -m edge_deploy release
 ```
 
 Use this document for deeper validation, recovery, or diagnosis after reviewing

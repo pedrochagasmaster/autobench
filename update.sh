@@ -39,7 +39,7 @@ classify_install_decision() {
   while IFS= read -r _path; do
     [ -n "$_path" ] || continue
     case "$_path" in
-      requirements.txt|requirements-dev.txt|constraints.txt|setup_remote_env.sh|SHA256SUMS|scripts/offline_bundle_checksums.py|offline_packages/*|vendor/*)
+      requirements.txt|constraints.txt|setup_remote_env.sh|SHA256SUMS|scripts/offline_bundle_checksums.py|offline_packages/*|vendor/*)
         _required_hits="${_required_hits}${_required_hits:+, }$_path"
         ;;
       VERSION|install.sh)

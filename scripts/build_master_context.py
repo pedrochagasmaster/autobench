@@ -41,7 +41,7 @@ CORE_DOCS = [
     "SETUP.md",
     "docs/CORE_TECHNICAL_DOC.md",
     "docs/control-3-customer-merchant-performance-v5-20260603.md",
-    "docs/development-workflow.md",
+    "docs/release-workflow.md",
     "docs/edge-node-first-time-setup.md",
     "docs/production-testing.md",
     "docs/RESOURCE_MANAGEMENT.md",

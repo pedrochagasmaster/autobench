@@ -1,8 +1,32 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "autobench"
 version = "3.0"
 description = "Privacy-compliant peer benchmark tool (Mastercard Control 3.2)"
 requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0,<3",
+    "numpy>=1.24,<3",
+    "openpyxl>=3.1,<4",
+    "PyYAML>=6.0,<7",
+    "scipy>=1.10,<2",
+    "textual>=0.40.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7,<9", "ruff>=0.4,<1", "mypy>=1.8,<2"]
+release = [
+    "edge-deploy-core @ git+https://github.com/pedrochagasmaster/edge-deploy-core.git@v1.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["benchmark", "tui_app"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "utils*", "scripts*", "tools*"]
 
 [tool.ruff]
 target-version = "py310"

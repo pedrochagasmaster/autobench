@@ -7,7 +7,7 @@ The default release workflow is not this harness directly. For normal
 production releases, run the shared orchestrator:
 
 ```powershell
-py -m edge_deploy release --tool autobench --smoke standard
+python -m edge_deploy release
 ```
 
 Use this harness when the release report calls for deeper node diagnosis or

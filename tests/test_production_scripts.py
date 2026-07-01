@@ -131,7 +131,6 @@ def _build_update_repo_scenario(tmp_path: Path, changed_path: str, changed_conte
         "install.sh": (ROOT / "install.sh").read_text(encoding="utf-8"),
         "setup_remote_env.sh": (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8"),
         "requirements.txt": "pandas==1.0\n",
-        "requirements-dev.txt": "pytest==8.0\n",
         "constraints.txt": "pandas==1.0\n",
         "VERSION": "1.0.0\n",
         "benchmark.py": "print('baseline')\n",

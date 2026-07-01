@@ -1,60 +1,35 @@
 # Contributing to Autobench
 
-This is the shortest safe path for making a change.
+Development ends with a reviewed GitHub pull request. Deployment is a separate
+Release Operator responsibility.
 
-## 1. Set up
+## Contributor
 
-```powershell
-cd <autobench-repo>
-py -m pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
-py -m edge_deploy --help
+Local developers and Cursor agents follow the same path:
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c <short-branch-name>
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
-## 2. Make a change
+Commit the focused change, push the branch to GitHub, and open a pull request
+against `main`. Contributors without write access may use a fork.
 
-Start from `main` unless the user asks for a branch.
+Include the test result and release risk in the pull request. Do not commit
+generated workbooks, CSVs, audit packages, reports, local data, credentials, or
+passcodes.
 
-```powershell
-git status --short --branch
-git branch -vv
-```
+`requirements.txt` and `constraints.txt` are production offline-bundle inputs;
+they are not contributor setup files.
 
-Run focused tests for the files you touched. If you are unsure, run the local
-gate.
+## Maintainer
 
-## 3. Validate locally
+Merge only after CI passes on Python 3.10 and 3.12 and one human Maintainer
+approves. Use squash merge and delete the merged branch. Do not push directly
+to `main`.
 
-Fast product smoke:
-
-```powershell
-py benchmark.py share --csv tests/fixtures/gate_demo.csv --entity Target --metric txn_cnt --dimensions card_type channel --time-col year_month --preset balanced_default --output gate_demo_share.xlsx
-py benchmark.py rate --csv tests/fixtures/gate_demo.csv --entity Target --total-col total --approved-col approved --fraud-col fraud --dimensions card_type channel --time-col year_month --preset balanced_default --export-balanced-csv --output gate_demo_rate.xlsx
-```
-
-Full local gate:
-
-```powershell
-.\tools\dev\local_check.ps1
-```
-
-## 4. Commit
-
-```powershell
-git diff
-git add <files>
-git commit -m "Describe the change"
-```
-
-Do not commit generated `.xlsx`, balanced CSVs, audit packages, logs, deploy
-zips, screenshots, local data, credentials, or passcodes.
-
-## 5. Release
-
-Normal releases use the installed `edge-deploy-core` package. You do not need a
-separate sibling checkout under `D:\Projects`.
-
-```powershell
-py -m edge_deploy release --tool autobench --smoke standard
-```
-
-Use repo-local deployment scripts only for bootstrap, recovery, or diagnosis.
+Release work starts only after merge and is documented in
+[docs/release-workflow.md](docs/release-workflow.md).

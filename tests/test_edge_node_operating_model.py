@@ -17,7 +17,7 @@ REQUIRED_OPERATING_MODEL_FILES = [
     "onboarding.md",
     "VERSION",
     ".gitattributes",
-    "docs/development-workflow.md",
+    "docs/release-workflow.md",
     "docs/edge-node-first-time-setup.md",
     "docs/production-testing.md",
     "tools/dev/local_check.ps1",
@@ -348,15 +348,12 @@ def test_local_check_references_repo_gate_commands() -> None:
 
 def test_autobench_bitbucket_remote_is_documented() -> None:
     docs = {
-        "development": (ROOT / "docs/development-workflow.md").read_text(
+        "release": (ROOT / "docs/release-workflow.md").read_text(
             encoding="utf-8"
         ),
         "first_time_setup": (ROOT / "docs/edge-node-first-time-setup.md").read_text(
             encoding="utf-8"
         ),
-        "workflow": (
-            ROOT / ".agents/skills/autobench-edge-deploy/WORKFLOW.md"
-        ).read_text(encoding="utf-8"),
     }
 
     combined = "\n".join(docs.values())
@@ -374,24 +371,20 @@ def test_autobench_bitbucket_remote_is_documented() -> None:
     assert "/ads_storage/$USER/.autobench" in combined
 
 
-def test_active_edge_deploy_docs_share_the_same_deploy_decision_table() -> None:
+def test_release_command_has_one_canonical_home() -> None:
     docs = [
-        (ROOT / "docs/development-workflow.md").read_text(encoding="utf-8"),
+        (ROOT / "docs/release-workflow.md").read_text(encoding="utf-8"),
         (ROOT / "docs/edge-node-first-time-setup.md").read_text(encoding="utf-8"),
-        (ROOT / ".agents/skills/autobench-edge-deploy/WORKFLOW.md").read_text(
-            encoding="utf-8"
-        ),
     ]
 
-    for doc in docs:
-        assert "py -m edge_deploy release --tool autobench --smoke standard" in doc
-        assert "recovery" in doc.lower() or "bootstrap" in doc.lower()
-        assert "Normal daily deployment" not in doc
+    assert "python -m edge_deploy release" in docs[0]
+    assert "recovery" in docs[1].lower() or "bootstrap" in docs[1].lower()
+    assert "--tool autobench" not in "\n".join(docs)
 
 
 def test_active_docs_define_node_specific_rollback_and_human_gated_acceptance() -> None:
     docs = [
-        (ROOT / "docs/development-workflow.md").read_text(encoding="utf-8"),
+        (ROOT / "docs/release-workflow.md").read_text(encoding="utf-8"),
         (ROOT / "docs/production-testing.md").read_text(encoding="utf-8"),
         (ROOT / "tools/prod_tui/README.md").read_text(encoding="utf-8"),
     ]

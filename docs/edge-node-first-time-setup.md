@@ -5,7 +5,7 @@ release workflow. After bootstrap, use the installed `edge-deploy-core`
 package:
 
 ```powershell
-py -m edge_deploy release --tool autobench --smoke standard
+python -m edge_deploy release
 ```
 
 ## 1. Prepare the Deployable Tree
@@ -33,7 +33,7 @@ default `edge_deploy release` workflow can then manage repeatable updates.
 
 | Situation | Use | Why |
 | --- | --- | --- |
-| Normal development release | `py -m edge_deploy release --tool autobench --smoke standard` | Default release path after the node is bootstrapped. |
+| Normal operator release | `python -m edge_deploy release` | Default release path after the node is bootstrapped. |
 | First-time Git tree setup | `git clone -o bitbucket ... /ads_storage/autobench` | Creates the shared tree the orchestrator updates. |
 | Git unavailable, offline dependency refresh, or recovery | `deploy_and_install.ps1`, `setup_remote_env.sh`, `install.sh` | Bootstrap/recovery only. |
 | Node-specific diagnosis | `update.sh`, `tools.prod_tui`, tmux/SSH inspection | Deep troubleshooting after reviewing the release report. |
@@ -116,7 +116,7 @@ For normal releases, do not update the node by hand. Use the installed
 `edge-deploy-core` release orchestrator:
 
 ```powershell
-py -m edge_deploy release --tool autobench --smoke standard
+python -m edge_deploy release
 ```
 
 For bootstrap recovery or a node-specific repair, update through Git, never by

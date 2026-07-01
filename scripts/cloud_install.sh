@@ -17,6 +17,6 @@ else
   printf '>>> py launcher: %s (ensure ~/.local/bin is on PATH)\n' "${HOME}/.local/bin/py"
 fi
 
-pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+pip install -e ".[dev]"
 
 printf '<<< [cloud_install] complete\n'
