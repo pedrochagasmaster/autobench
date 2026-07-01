@@ -22,6 +22,12 @@ Successful verification creates the same immutable release tag on GitHub and
 Bitbucket. Redacted evidence is appended to the Bitbucket-only `release-log`
 branch in `edge-deploy-core`.
 
+Rollback is a separate tagged operation:
+
+```powershell
+python -m edge_deploy rollback --tag release-<UTC>-<short-sha>
+```
+
 Real operator configuration lives at
 `%APPDATA%\edge-deploy\config.yaml`. Bootstrap and recovery procedures remain
 in [edge-node-first-time-setup.md](edge-node-first-time-setup.md); they are not
