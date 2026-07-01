@@ -1,7 +1,8 @@
 # Autobench Edge Node First-Time Setup
 
 This runbook bootstraps Autobench on a Hadoop Edge Node. It is not the default
-release workflow. After bootstrap, use `D:\Projects\edge-deploy-core`:
+release workflow. After bootstrap, use the installed `edge-deploy-core`
+package:
 
 ```powershell
 py -m edge_deploy release --tool autobench --smoke standard
@@ -111,8 +112,8 @@ rollback details to launch the TUI.
 
 ## 6. Updating the Deployment
 
-For normal releases, do not update the node by hand. Use the shared release
-orchestrator from `D:\Projects\edge-deploy-core`:
+For normal releases, do not update the node by hand. Use the installed
+`edge-deploy-core` release orchestrator:
 
 ```powershell
 py -m edge_deploy release --tool autobench --smoke standard

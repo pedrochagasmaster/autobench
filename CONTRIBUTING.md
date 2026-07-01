@@ -5,8 +5,9 @@ This is the shortest safe path for making a change.
 ## 1. Set up
 
 ```powershell
-cd D:\Projects\autobench
+cd <autobench-repo>
 py -m pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+py -m edge_deploy --help
 ```
 
 ## 2. Make a change
@@ -49,10 +50,10 @@ zips, screenshots, local data, credentials, or passcodes.
 
 ## 5. Release
 
-Normal releases happen from `edge-deploy-core`, not from this repo:
+Normal releases use the installed `edge-deploy-core` package. You do not need a
+separate sibling checkout under `D:\Projects`.
 
 ```powershell
-cd D:\Projects\edge-deploy-core
 py -m edge_deploy release --tool autobench --smoke standard
 ```
 

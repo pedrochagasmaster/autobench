@@ -8,7 +8,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - Use `py benchmark.py share|rate ...` for automation.
 - Privacy caps are always enforced automatically.
 - Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
-- Default production releases run from `D:\Projects\edge-deploy-core` with `py -m edge_deploy release --tool autobench --smoke standard`; see [docs/development-workflow.md](docs/development-workflow.md).
+- Default production releases use the installed `edge-deploy-core` package with `py -m edge_deploy release --tool autobench --smoke standard`; see [docs/development-workflow.md](docs/development-workflow.md).
 - A README-only release validates the same release pipeline without triggering installation.
 
 ## Table of Contents

@@ -38,7 +38,7 @@ py benchmark.py rate --csv tests/fixtures/gate_demo.csv --entity Target --total-
 
 ## Release workflow
 
-Default releases are orchestrated from `D:\Projects\edge-deploy-core`:
+Default releases are orchestrated by the installed `edge-deploy-core` package:
 
 ```powershell
 py -m edge_deploy release --tool autobench --smoke standard
