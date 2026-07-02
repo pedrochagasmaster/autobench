@@ -9,6 +9,13 @@ compile_targets: "benchmark.py tui_app.py core utils scripts tools"
 version_files: [VERSION, pyproject.toml]
 install_trigger_paths: [install.sh, requirements.txt, constraints.txt, pyproject.toml, VERSION]
 dependency_paths: [requirements.txt, constraints.txt]
+dependency_bundle:
+  requirements_file: requirements.txt
+  constraints_file: constraints.txt
+  python_version: "3.10"
+  implementation: cp
+  abi: cp310
+  platform: manylinux2014_x86_64
 smoke:
   standard:
     - "./run_tool.sh config list"

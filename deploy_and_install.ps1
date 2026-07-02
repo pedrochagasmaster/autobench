@@ -1,4 +1,6 @@
 # deploy_and_install.ps1
+# Bootstrap/recovery only. Normal releases build and deliver verified dependency
+# bundles through edge-deploy-core v1.1.0.
 
 # --- Configuration ---
 Write-Host "=== Configuration ===" -ForegroundColor Cyan

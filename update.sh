@@ -94,8 +94,19 @@ git reset --hard "${TARGET_REF}"
 # shared read/execute access other analysts need. Re-apply it every sync so
 # the shared deployment stays usable by all users (dirs +rx, files +r,
 # executables stay runnable). Run from a writable directory for outputs.
-echo "==> Re-applying shared read/execute permissions ..."
-chmod -R a+rX . 2>/dev/null || echo "    Note: some paths could not be chmod'd (skipped)."
+echo "==> Re-applying permissions to updated tracked paths ..."
+while IFS= read -r _path; do
+  [ -n "$_path" ] || continue
+  [ -e "$_path" ] && chmod a+r "$_path" 2>/dev/null || true
+  _parent=$(dirname "$_path")
+  while [ "$_parent" != "." ] && [ "$_parent" != "/" ]; do
+    chmod a+rx "$_parent" 2>/dev/null || true
+    _parent=$(dirname "$_parent")
+  done
+done <<EOF
+$CHANGED_FILES
+EOF
+chmod a+rx . run_tool.sh install.sh setup_alias.sh update.sh 2>/dev/null || true
 echo "==> Permission evidence: reported"
 echo "==> Repo root permissions:"
 ls -ld . 2>/dev/null || echo "    unavailable"
