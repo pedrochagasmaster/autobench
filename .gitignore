@@ -86,3 +86,4 @@ config.json
 autobench_deploy.zip
 SHA256SUMS
 .edge-deploy-bundles/
+edge-deploy/*
