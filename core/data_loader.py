@@ -56,6 +56,7 @@ VALIDATION_THRESHOLDS = {
     'min_denominator': 100,           # Minimum total for stable rate calculation
     'min_peer_count': 5,              # Minimum peers for privacy compliance
     'max_rate_deviation': 50.0,       # Max rate deviation from 0-100% expected range
+    'max_peer_rate_ratio': 10.0,      # Peer-relative outlier threshold (rate vs peer median)
     'min_rows_per_category': 3,       # Minimum rows per category for statistical validity
     'max_null_percentage': 5.0,       # Max percentage of null values in critical columns
     'max_entity_concentration': 50.0, # Max single entity concentration (warning threshold)
@@ -1334,11 +1335,45 @@ class DataLoader:
                 )
                 outliers = rates[outlier_mask]
                 if len(outliers) > 0:
+                    band_upper = 100 + t['max_rate_deviation']
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.WARNING,
                         category="outlier_rates",
-                        message=f"Rate '{rate_name}' has {len(outliers)} outlier values outside 0-100% range"
+                        message=(
+                            f"Rate '{rate_name}' has {len(outliers)} outlier values "
+                            f"outside 0-{band_upper:.0f}% plausible band"
+                        ),
                     ))
+
+        # 9. Peer-relative outlier check (warn-only)
+        for rate_name, num_col in numerator_cols.items():
+            entity_totals = df.groupby(entity_col)[total_col].sum()
+            entity_numerators = df.groupby(entity_col)[num_col].sum()
+            valid_entities = entity_totals[entity_totals > 0].index
+            if len(valid_entities) < 2:
+                continue
+            entity_rates = (
+                100.0 * entity_numerators.loc[valid_entities] / entity_totals.loc[valid_entities]
+            )
+            peer_median = float(entity_rates.median())
+            if peer_median <= 0:
+                continue
+            threshold = t['max_peer_rate_ratio'] * peer_median
+            outlier_entities = entity_rates[
+                (entity_rates > threshold + RATE_COMPARISON_EPSILON)
+                & (entity_rates > 1.0 + RATE_COMPARISON_EPSILON)
+            ]
+            if outlier_entities.empty:
+                continue
+            entity_details = ", ".join(
+                f"{entity}={rate:.2f}% (median {peer_median:.2f}%)"
+                for entity, rate in outlier_entities.items()
+            )
+            issues.append(ValidationIssue(
+                severity=ValidationSeverity.WARNING,
+                category="peer_outlier_rate",
+                message=f"Rate '{rate_name}': peer-relative outlier(s) — {entity_details}",
+            ))
         
         logger.info(f"Rate validation complete: {len([i for i in issues if i.severity == ValidationSeverity.ERROR])} errors, "
                    f"{len([i for i in issues if i.severity == ValidationSeverity.WARNING])} warnings")

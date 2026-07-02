@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 from openpyxl import load_workbook
 
-from benchmark import run_share_analysis
+from benchmark import EXIT_STRICT_NON_COMPLIANT, run_share_analysis
 from core.analysis_run import build_run_request, execute_share_run, write_outputs as analysis_write_outputs
 from core.output_artifacts import OutputArtifactWriter, write_outputs
 
@@ -94,12 +94,14 @@ def test_output_writer_receives_report_model(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
     writer_cls = MagicMock(side_effect=OutputArtifactWriter)
 
+    args = _share_args(output, _share_df(), output_format="analysis")
+    args.compliance_posture = "best_effort"
     with patch.dict(
         analysis_write_outputs.__globals__,
         {"OutputArtifactWriter": writer_cls},
     ):
         result = run_share_analysis(
-            _share_args(output, _share_df(), output_format="analysis"),
+            args,
             __import__("logging").getLogger("test_report_model_boundary"),
         )
 
@@ -115,7 +117,9 @@ def test_no_validate_input_cannot_emit_fully_compliant_audit(tmp_path: Path) -> 
         __import__("logging").getLogger("test_no_validate_verdict"),
     )
 
-    assert result == 0
+    # Strict default posture + unchecked input is not publishable, so the CLI
+    # now signals it via the strict non-compliant exit code.
+    assert result == EXIT_STRICT_NON_COMPLIANT
     audit_log = tmp_path / "share_audit.log"
     assert audit_log.exists()
     audit_text = audit_log.read_text(encoding="utf-8")
@@ -126,8 +130,10 @@ def test_no_validate_input_cannot_emit_fully_compliant_audit(tmp_path: Path) -> 
 def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
 
+    args = _share_args(output, _share_df(), output_format="analysis")
+    args.compliance_posture = "best_effort"
     result = run_share_analysis(
-        _share_args(output, _share_df(), output_format="analysis"),
+        args,
         __import__("logging").getLogger("test_sheets"),
     )
 
@@ -165,7 +171,9 @@ def test_analysis_workbook_keeps_weight_methods_when_privacy_sheet_disabled(tmp_
 
     result = run_share_analysis(args, __import__("logging").getLogger("test_privacy_sheet_disabled"))
 
-    assert result == 0
+    # Strict posture + unchecked input exits with the strict non-compliant code
+    # while still writing the analysis workbook this test inspects.
+    assert result == EXIT_STRICT_NON_COMPLIANT
     workbook = load_workbook(output, read_only=True)
     try:
         assert "Weight Methods" in workbook.sheetnames
@@ -205,7 +213,9 @@ def test_subset_search_diagnostics_with_dimension_lists_write_to_workbook(tmp_pa
 
     result = run_share_analysis(args, __import__("logging").getLogger("test_subset_lists"))
 
-    assert result == 0
+    # Strict posture + unchecked input exits with the strict non-compliant code
+    # while still writing the analysis workbook this test inspects.
+    assert result == EXIT_STRICT_NON_COMPLIANT
     workbook = load_workbook(output, read_only=True)
     try:
         assert "Subset Search" in workbook.sheetnames
@@ -239,8 +249,10 @@ def test_metric_sheet_names_use_plain_dimension_names(tmp_path: Path) -> None:
     """
     output = tmp_path / "share.xlsx"
 
+    args = _share_args(output, _share_df(), output_format="analysis")
+    args.compliance_posture = "best_effort"
     result = run_share_analysis(
-        _share_args(output, _share_df(), output_format="analysis"),
+        args,
         __import__("logging").getLogger("test_sheet_names"),
     )
 

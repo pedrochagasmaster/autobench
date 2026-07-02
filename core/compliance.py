@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from core.constants import COMPARISON_EPSILON
 from core.privacy_rules import PrivacyRuleEvaluation, evaluate_rule
 from core.privacy_validation import PrivacyValidationResult, PrivacyValidationRow
 
@@ -65,7 +66,9 @@ def build_strict_final_validation(
     df = privacy_validation_df.copy()
     balanced = pd.to_numeric(df["Balanced_Share_%"], errors="coerce")
     cap = pd.to_numeric(df["Privacy_Cap_%"], errors="coerce")
-    result["primary_cap_fail_rows"] = int(((balanced > cap) | balanced.isna() | cap.isna()).sum())
+    result["primary_cap_fail_rows"] = int(
+        ((balanced > cap + COMPARISON_EPSILON) | balanced.isna() | cap.isna()).sum()
+    )
 
     if "Additional_Constraints_Relaxed" in df.columns:
         relaxed = df["Additional_Constraints_Relaxed"].astype(str).str.strip().str.lower()
@@ -139,7 +142,7 @@ def _build_strict_final_validation_from_rows(
             if (
                 math.isnan(float(row.balanced_share_pct))
                 or math.isnan(float(row.primary_cap_pct))
-                or float(row.balanced_share_pct) > float(row.primary_cap_pct)
+                or float(row.balanced_share_pct) > float(row.primary_cap_pct) + COMPARISON_EPSILON
             )
         )
     )

@@ -18,6 +18,12 @@ from core.control3_policy import CONTROL3_POLICY_KEYS, Control3PolicyInput, eval
 from core.audit_log import build_audit_log_model
 from core.audit_package import write_audit_package
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
+from core.category_suppression import (
+    apply_suppression_to_results,
+    compute_suppressed_categories,
+    extract_structural_infeasible_pairs,
+    format_suppression_warning,
+)
 from core.contracts import (
     AnalysisArtifacts,
     AnalysisPlan,
@@ -34,6 +40,7 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import write_outputs
+from core.privacy_validator import PrivacyValidator
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
 from core.report_artifact_builder import build_analysis_artifacts
 from core.report_generator import ReportGenerator
@@ -1162,6 +1169,7 @@ def _export_share_balanced_csv(
     output_settings: OutputSettings,
     logger: logging.Logger,
     weighting_result: WeightingResult,
+    suppressed_categories: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     export_balanced_csv(
         results,
@@ -1175,6 +1183,7 @@ def _export_share_balanced_csv(
         secondary_metrics=request.secondary_metrics,
         include_calculated=output_settings.include_calculated_metrics,
         weight_lookup=WeightLookup.from_weighting_result(weighting_result),
+        suppressed_categories=suppressed_categories,
     )
 
 
@@ -1189,6 +1198,7 @@ def _export_rate_balanced_csv(
     output_settings: OutputSettings,
     logger: logging.Logger,
     weighting_result: WeightingResult,
+    suppressed_categories: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     analyzer.secondary_metrics = request.secondary_metrics
     export_balanced_csv(
@@ -1204,6 +1214,7 @@ def _export_rate_balanced_csv(
         numerator_cols=request.numerator_cols,
         include_calculated=output_settings.include_calculated_metrics,
         weight_lookup=WeightLookup.from_weighting_result(weighting_result),
+        suppressed_categories=suppressed_categories,
     )
 
 
@@ -1403,6 +1414,30 @@ def _execute_run(
 
     results = mode_spec.run_analysis(request, analyzer, df, dimensions, config)
 
+    privacy_rule_name = getattr(analyzer, 'privacy_rule_name', None)
+    rule_cfg = PrivacyValidator.get_rule_config(privacy_rule_name or '')
+    min_entities = int(rule_cfg.get('min_entities', 0) or 0)
+    structural_infeasible_pairs = extract_structural_infeasible_pairs(
+        getattr(analyzer, 'structural_detail_df', None),
+        dimensions=dimensions,
+    )
+    suppressed_categories = compute_suppressed_categories(
+        df,
+        entity_col=entity_col,
+        target_entity=resolved_entity,
+        dimensions=dimensions,
+        metric_col=weight_metric_col,
+        min_entities=min_entities,
+        time_col=time_col,
+        structural_infeasible=structural_infeasible_pairs,
+    )
+    results = apply_suppression_to_results(
+        results,
+        suppressed_categories,
+        is_rate=request.is_rate,
+        time_col=time_col,
+    )
+
     secondary_results_df = None
     if request.secondary_metrics:
         secondary_results_df = get_balanced_metrics_df(
@@ -1410,13 +1445,14 @@ def _execute_run(
             analyzer=analyzer,
             secondary_metrics=request.secondary_metrics,
             weight_lookup=WeightLookup.from_weighting_result(weighting_result),
+            suppressed_categories=suppressed_categories,
             **mode_spec.secondary_metrics_kwargs(request, dimensions),
         )
 
     dimensions_analyzed = len(results) if request.is_share else len(dimensions)
     dimension_names = list(results.keys()) if request.is_share else dimensions
 
-    metadata = {
+    metadata: Dict[str, Any] = {
         **build_common_run_metadata(
             args,
             resolved,
@@ -1450,6 +1486,11 @@ def _execute_run(
             weighting_result=weighting_result,
         ),
     }
+    metadata['suppressed_categories'] = suppressed_categories
+    if suppressed_categories:
+        run_warnings = metadata.setdefault('run_warnings', [])
+        for record in suppressed_categories:
+            run_warnings.append(format_suppression_warning(record, min_entities=min_entities))
     metadata.update(
         RunSummary(
             entity=str(metadata.get('entity', 'PEER-ONLY')),
@@ -1568,6 +1609,7 @@ def _execute_run(
             output_settings=output_settings,
             logger=logger,
             weighting_result=weighting_result,
+            suppressed_categories=suppressed_categories,
         )
         artifacts.csv_output = analysis_output_file.rsplit('.', 1)[0] + '_balanced.csv'
 
@@ -1579,6 +1621,8 @@ def _execute_run(
                 compliance_posture=compliance_context['compliance_posture'],
                 logger=logger,
             )
+            if artifacts.metadata is not None:
+                artifacts.metadata['export_validation'] = metadata['export_validation']
 
     artifacts.report_paths = build_report_paths(
         output_settings.output_format,

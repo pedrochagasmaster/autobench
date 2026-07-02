@@ -196,7 +196,12 @@ def test_case01_regression_fixture_is_publishable_with_validation_enabled(tmp_pa
 
         summary_rows = list(workbook["Summary"].iter_rows(values_only=True))
         assert ("Compliance Verdict:", "fully_compliant") in summary_rows
-        assert ("Input Validation:", "pass") in summary_rows
+        # Input validation passes; warning count is disclosed when warnings exist
+        # (this fixture has low_denominator warnings, asserted below).
+        input_validation_values = [
+            row[1] for row in summary_rows if row[0] == "Input Validation:"
+        ]
+        assert input_validation_values and str(input_validation_values[0]).startswith("pass")
 
         dq_rows = list(workbook["Data Quality"].iter_rows(values_only=True))
         headers = dq_rows[6]

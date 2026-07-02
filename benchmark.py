@@ -34,6 +34,12 @@ from core.analysis_run import (
 )
 from utils.logger import setup_logging
 
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_STRICT_NON_COMPLIANT = 2
+
+_GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
+
 
 def get_presets_help() -> str:
     """Generate help text for available presets."""
@@ -430,6 +436,81 @@ def print_version() -> None:
     print(f"Platform: {platform.system()} {platform.release()}")
 
 
+def _resolve_compliance_fields(artifacts) -> tuple[Optional[str], Optional[str]]:
+    """Read compliance verdict and posture from run artifacts."""
+    metadata = artifacts.metadata
+    verdict = metadata.get("compliance_verdict")
+    posture = metadata.get("compliance_posture")
+    if verdict is not None and posture is not None:
+        return verdict, posture
+
+    summary = getattr(artifacts, "compliance_summary", None) or metadata.get("compliance_summary")
+    if isinstance(summary, dict):
+        verdict = verdict or summary.get("compliance_verdict")
+        posture = posture or summary.get("posture") or summary.get("compliance_posture")
+    return verdict, posture
+
+
+def _print_run_metadata_warnings(metadata: Dict) -> None:
+    """Print optional run warnings and disclosure counts from metadata."""
+    run_warnings = list(metadata.get("run_warnings") or [])
+    printed = set(run_warnings)
+    for warning in run_warnings:
+        print(f"WARNING: {warning}")
+
+    suppressed = metadata.get("suppressed_categories") or []
+    if suppressed:
+        print(f"Suppressed categories: {len(suppressed)}")
+
+    # Representativeness warnings are usually merged into run_warnings by the
+    # artifact builder; only print ones that were not.
+    representativeness = metadata.get("representativeness") or {}
+    for warning in representativeness.get("warnings") or []:
+        if warning not in printed:
+            print(f"WARNING: {warning}")
+
+
+def _resolve_exit_code(posture: Optional[str], verdict: Optional[str]) -> int:
+    """Map compliance posture and verdict to a process exit code."""
+    if posture == "strict" and verdict != "fully_compliant":
+        print(f"STRICT POSTURE: verdict '{verdict}' -> exit code 2")
+        return EXIT_STRICT_NON_COMPLIANT
+    return EXIT_OK
+
+
+def _format_analysis_failure_message(exc: Exception) -> str:
+    """Prefer actionable detail from the exception chain when available."""
+    primary = str(exc).strip()
+    seen = {primary}
+    chain_messages = [primary]
+
+    current: Optional[BaseException] = exc
+    while current is not None:
+        cause = current.__cause__ or current.__context__
+        if cause is None:
+            break
+        text = str(cause).strip()
+        if text and text not in seen:
+            seen.add(text)
+            chain_messages.append(text)
+        current = cause
+
+    if isinstance(exc, RunBlocked):
+        summary = getattr(exc, "compliance_summary", None)
+        if isinstance(summary, dict):
+            error_detail = summary.get("error")
+            if isinstance(error_detail, str) and error_detail.strip():
+                return error_detail.strip()
+
+    if primary == _GENERIC_VALIDATION_ABORT:
+        for text in chain_messages[1:]:
+            lowered = text.lower()
+            if "peer" in lowered or "minimum" in lowered or text.startswith("Only "):
+                return text
+
+    return primary
+
+
 def run_preset_comparison(
     df: pd.DataFrame,
     metric_col: str,
@@ -478,22 +559,24 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             print("WARNING: accuracy_first posture prioritizes analytical fidelity over strict compliance.")
         print(f"Dimensions Analyzed: {len(artifacts.results)}")
         print(f"Report: {', '.join(artifacts.report_paths)}")
+        _print_run_metadata_warnings(artifacts.metadata)
         print(f"{'='*80}\n")
-        return 0
+        verdict, posture = _resolve_compliance_fields(artifacts)
+        return _resolve_exit_code(posture, verdict)
     except RunBlocked as e:
         logger.error(f"Analysis blocked: {e}")
-        print(f"Analysis blocked: {e}")
+        print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
         hint = remediation_hint(reason)
         if hint:
             print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
-        return 1
+        return EXIT_FAILURE
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
-        print(f"Analysis failed: {e}")
-        return 1
+        print(f"Analysis failed: {_format_analysis_failure_message(e)}")
+        return EXIT_FAILURE
 
 
 def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
@@ -516,22 +599,24 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             print("WARNING: accuracy_first posture prioritizes analytical fidelity over strict compliance.")
         print(f"Dimensions Analyzed: {len(artifacts.metadata.get('dimension_names', []))}")
         print(f"Report: {', '.join(artifacts.report_paths)}")
+        _print_run_metadata_warnings(artifacts.metadata)
         print(f"{'='*80}\n")
-        return 0
+        verdict, posture = _resolve_compliance_fields(artifacts)
+        return _resolve_exit_code(posture, verdict)
     except RunBlocked as e:
         logger.error(f"Analysis blocked: {e}")
-        print(f"Analysis blocked: {e}")
+        print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
         hint = remediation_hint(reason)
         if hint:
             print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
-        return 1
+        return EXIT_FAILURE
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
-        print(f"Analysis failed: {e}")
-        return 1
+        print(f"Analysis failed: {_format_analysis_failure_message(e)}")
+        return EXIT_FAILURE
 
 
 def main() -> int:

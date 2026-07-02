@@ -17,6 +17,7 @@ from core.report_content import (
     should_convert_rate_column,
 )
 from core.contracts import AnalysisArtifacts
+from core.data_loader import ValidationSeverity
 from core.export_sanitizer import sanitize_cell
 from core.report_models import ReportModel
 
@@ -329,7 +330,50 @@ class ReportGenerator:
         
         # Save workbook
         wb.save(output_file)
-    
+
+    @staticmethod
+    def _resolve_validation_warning_count(
+        metadata: Optional[Dict[str, Any]],
+        compliance_summary: Dict[str, Any],
+    ) -> int:
+        if metadata and metadata.get("validation_warnings") is not None:
+            return int(metadata["validation_warnings"])
+        if compliance_summary.get("validation_warnings") is not None:
+            return int(compliance_summary["validation_warnings"])
+        validation_issues = metadata.get("validation_issues") if metadata else None
+        if validation_issues:
+            return sum(
+                1
+                for issue in validation_issues
+                if getattr(issue, "severity", None) == ValidationSeverity.WARNING
+            )
+        return 0
+
+    @staticmethod
+    def _collect_zero_bic_warnings(results: Dict[str, Any], analysis_type: str) -> List[str]:
+        if analysis_type.lower() != "rate":
+            return []
+
+        frames: List[pd.DataFrame] = []
+        for value in results.values():
+            if isinstance(value, pd.DataFrame):
+                frames.append(value)
+            elif isinstance(value, dict):
+                frames.extend(
+                    nested for nested in value.values() if isinstance(nested, pd.DataFrame)
+                )
+
+        for frame in frames:
+            bic_columns = [column for column in frame.columns if "BIC" in str(column)]
+            for column in bic_columns:
+                values = pd.to_numeric(frame[column], errors="coerce").fillna(1.0)
+                if (values.abs() <= 1e-9).any():
+                    return [
+                        "Best-in-class of 0.0% — at least one peer reported zero for this rate; "
+                        "interpret with caution"
+                    ]
+        return []
+
     def _write_summary_sheet(
         self,
         worksheet: Any,
@@ -393,20 +437,56 @@ class ReportGenerator:
                     "Strict Final Validation:",
                     "pass" if strict_final.get("total_violations", 0) == 0 else "fail",
                 ),
-                (
-                    "Input Validation:",
-                    "pass"
-                    if compliance_summary.get("data_quality_publishable") is True
-                    else (
-                        "disabled"
-                        if compliance_summary.get("data_quality_checked") is False
-                        else "warn/error"
-                    ),
-                ),
             ]:
                 worksheet[f'A{row}'] = label
                 worksheet[f'B{row}'] = value
                 row += 1
+
+            validation_warning_count = self._resolve_validation_warning_count(metadata, compliance_summary)
+            if compliance_summary.get("data_quality_publishable") is True:
+                input_validation = (
+                    f"pass ({validation_warning_count} warnings)"
+                    if validation_warning_count > 0
+                    else "pass"
+                )
+            elif compliance_summary.get("data_quality_checked") is False:
+                input_validation = "disabled"
+            else:
+                input_validation = "warn/error"
+            worksheet[f'A{row}'] = "Input Validation:"
+            worksheet[f'B{row}'] = input_validation
+            row += 1
+
+            suppressed_categories = metadata.get("suppressed_categories") or []
+            if suppressed_categories:
+                worksheet[f'A{row}'] = "Suppressed Categories:"
+                worksheet[f'B{row}'] = len(suppressed_categories)
+                row += 1
+                max_rows = 10
+                for record in suppressed_categories[:max_rows]:
+                    dimension = record.get("dimension", "?")
+                    category = record.get("category", "?")
+                    reason = record.get("reason", "unknown")
+                    worksheet[f'A{row}'] = f"  - {dimension}/{category}:"
+                    worksheet[f'B{row}'] = reason
+                    row += 1
+                remaining = len(suppressed_categories) - max_rows
+                if remaining > 0:
+                    worksheet[f'A{row}'] = "  ..."
+                    worksheet[f'B{row}'] = f"...and {remaining} more"
+                    row += 1
+
+            summary_warnings = list(metadata.get("run_warnings") or [])
+            summary_warnings.extend(self._collect_zero_bic_warnings(results, analysis_type))
+            if summary_warnings:
+                worksheet[f'A{row}'] = "Warnings:"
+                worksheet[f'B{row}'] = len(summary_warnings)
+                row += 1
+                for warning in summary_warnings:
+                    worksheet[f'A{row}'] = "  -"
+                    worksheet[f'B{row}'] = self._excel_safe_value(warning)
+                    row += 1
+
             row += 1
         
         # Results summary
