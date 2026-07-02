@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from core.contracts import AnalysisArtifacts, AnalysisResult
+from core.representativeness import compute_representativeness
 from core.report_models import ReportModel
 
 
@@ -27,6 +28,19 @@ def build_analysis_artifacts(
 ) -> AnalysisArtifacts:
     """Assemble the reporting payload used by output writers."""
     output_path = Path(analysis_output_file)
+    metadata = dict(metadata)
+    if diagnostics.get("weights_df") is not None and "weights_df" not in metadata:
+        metadata["weights_df"] = diagnostics["weights_df"]
+    if diagnostics.get("method_breakdown_df") is not None and "method_breakdown_df" not in metadata:
+        metadata["method_breakdown_df"] = diagnostics["method_breakdown_df"]
+
+    representativeness = compute_representativeness(metadata)
+    metadata["representativeness"] = representativeness
+    for warning in representativeness.get("warnings", []):
+        run_warnings = metadata.setdefault("run_warnings", [])
+        if warning not in run_warnings:
+            run_warnings.append(warning)
+
     return AnalysisArtifacts(
         results=analysis_result.results,
         metadata=metadata,

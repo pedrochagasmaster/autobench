@@ -86,8 +86,10 @@ def test_share_export_neutralizes_malicious_category(tmp_path: Path) -> None:
     output = tmp_path / "share.xlsx"
     csv_path = _malicious_gate_demo_csv(tmp_path)
 
+    args = _share_args(output, csv_path)
+    args.compliance_posture = "best_effort"
     result = run_share_analysis(
-        _share_args(output, csv_path),
+        args,
         logging.getLogger("test_export_sanitization"),
     )
 

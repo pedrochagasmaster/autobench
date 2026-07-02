@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from core.category_suppression import is_category_suppressed
 
 from core.contracts import WeightLookup
 from core.dimensional_analyzer import DimensionalAnalyzer
@@ -21,6 +23,7 @@ def get_balanced_metrics_df(
     total_col: Optional[str] = None,
     numerator_cols: Optional[Dict[str, str]] = None,
     weight_lookup: Optional[WeightLookup] = None,
+    suppressed_categories: Optional[List[Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     """
     Calculate balanced metrics for primary and secondary metrics.
@@ -85,6 +88,13 @@ def get_balanced_metrics_df(
         
         for category in categories:
             for time_period in time_periods:
+                if is_category_suppressed(
+                    suppressed_categories or [],
+                    dimension,
+                    category,
+                    time_period,
+                ):
+                    continue
                 # Filter to this category (and time period if applicable)
                 if has_time:
                     cat_df = entity_dim_agg[
@@ -163,6 +173,7 @@ def export_balanced_csv(
     secondary_metrics: Optional[list] = None,
     include_calculated: bool = False,
     weight_lookup: Optional[WeightLookup] = None,
+    suppressed_categories: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
     Export balanced metrics to CSV in concatenated dimension format.
@@ -248,10 +259,17 @@ def export_balanced_csv(
             
             for category in categories:
                 for time_period in time_periods:
+                    if is_category_suppressed(
+                        suppressed_categories or [],
+                        dimension,
+                        category,
+                        time_period,
+                    ):
+                        continue
                     # Filter to this category (and time period if applicable)
                     if has_time:
                         cat_df = entity_dim_agg[
-                            (entity_dim_agg[dimension] == category) & 
+                            (entity_dim_agg[dimension] == category) &
                             (entity_dim_agg[time_col] == time_period)
                         ]
                     else:
@@ -437,6 +455,13 @@ def export_balanced_csv(
 
             for category in categories:
                 for time_period in time_periods:
+                    if is_category_suppressed(
+                        suppressed_categories or [],
+                        dimension,
+                        category,
+                        time_period,
+                    ):
+                        continue
                     # Filter to this category (and time period if applicable)
                     if has_time:
                         cat_df = entity_dim_agg[
