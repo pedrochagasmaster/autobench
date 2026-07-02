@@ -5,11 +5,14 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)
 USER_NAME=${USER:-$(id -un)}
 DATA_ROOT=${AUTOBENCH_DATA_ROOT:-/ads_storage/$USER_NAME}
 AUTOBENCH_HOME="$DATA_ROOT/.autobench"
+BUNDLE_DIR=${EDGE_DEPLOY_BUNDLE_DIR:-/ads_storage/$USER/.edge-deploy/bundles/autobench/current}
+WHEEL_DIR="$BUNDLE_DIR/wheels"
+REQUIREMENTS_FILE="$BUNDLE_DIR/requirements/requirements.txt"
 # Determine the CPython minor version the bundled binary wheels were built for
 # (e.g. "3.10" from a cp310 tag). Empty when no binary wheels are bundled, which
 # means this is an online install and any supported interpreter is acceptable.
 required_wheel_python() {
-  for _whl in "$ROOT_DIR"/offline_packages/*.whl "$ROOT_DIR"/vendor/*.whl; do
+  for _whl in "$WHEEL_DIR"/*.whl; do
     [ -e "$_whl" ] || continue
     _cp=$(printf '%s\n' "$_whl" | grep -oE 'cp3[0-9]+' | head -n1 || true)
     if [ -n "${_cp:-}" ]; then
@@ -95,34 +98,20 @@ fi
 
 mkdir -p "$AUTOBENCH_HOME/config" "$AUTOBENCH_HOME/logs" "$AUTOBENCH_HOME/cache"
 
-if [ -f "$ROOT_DIR/SHA256SUMS" ] && [ -f "$ROOT_DIR/scripts/offline_bundle_checksums.py" ]; then
-  echo "Verifying offline package checksums..."
-  if ! "$PYTHON_BIN" "$ROOT_DIR/scripts/offline_bundle_checksums.py" verify \
-    --manifest "$ROOT_DIR/SHA256SUMS" \
-    --base-dir "$ROOT_DIR"; then
-    echo "Offline package checksum verification failed." >&2
-    echo "Ask the operator to rebuild and redeploy the offline bundle with deploy_and_install.ps1." >&2
-    exit 1
-  fi
+if [ ! -f "$BUNDLE_DIR/manifest.json" ] || [ ! -f "$REQUIREMENTS_FILE" ]; then
+  echo "Verified dependency bundle not found: $BUNDLE_DIR" >&2
+  echo "Run the edge-deploy dependency delivery phase before installing." >&2
+  exit 1
 fi
 
 "$PYTHON_BIN" -m venv "$AUTOBENCH_HOME/venv"
 
-if [ -n "$(find "$ROOT_DIR/offline_packages" "$ROOT_DIR/vendor" -maxdepth 1 -name '*.whl' -print -quit 2>/dev/null || true)" ]; then
-  if ! "$AUTOBENCH_HOME/venv/bin/pip" install \
-    --no-index \
-    --find-links="$ROOT_DIR/offline_packages" \
-    --find-links="$ROOT_DIR/vendor" \
-    -r "$ROOT_DIR/requirements.txt"; then
-    echo "Offline dependency install failed." >&2
-    echo "The shared offline_packages bundle does not satisfy requirements.txt." >&2
-    echo "Ask the operator to rebuild and redeploy the offline bundle with deploy_and_install.ps1." >&2
-    exit 1
-  fi
-else
-  "$AUTOBENCH_HOME/venv/bin/pip" install \
-    --index-url "${AUTOBENCH_PIP_INDEX_URL:-https://pypi.org/simple}" \
-    -r "$ROOT_DIR/requirements.txt"
+if ! "$AUTOBENCH_HOME/venv/bin/pip" install \
+  --no-index \
+  --find-links="$WHEEL_DIR" \
+  -r "$REQUIREMENTS_FILE"; then
+  echo "Offline dependency install failed for verified bundle $BUNDLE_DIR." >&2
+  exit 1
 fi
 
 LOCAL_BIN="$HOME/.local/bin"

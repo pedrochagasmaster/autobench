@@ -85,3 +85,4 @@ config.json
 /offline_packages/*
 autobench_deploy.zip
 SHA256SUMS
+.edge-deploy-bundles/

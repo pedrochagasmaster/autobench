@@ -9,7 +9,7 @@ From the Autobench checkout:
 git switch main
 git pull --ff-only origin main
 python -m pip install -e ".[dev,release]"
-python -m pytest
+python -m pytest -n 4 --dist loadfile
 python -m edge_deploy release
 ```
 
@@ -17,6 +17,10 @@ The command requires clean local `main` exactly matching GitHub `origin/main`,
 successful post-merge GitHub CI for that SHA, the configured `bitbucket`
 remote, available centralized audit storage, and interactive Edge
 authentication. It publishes and deploys one tool only.
+
+When `requirements.txt` or `constraints.txt` changes, edge-deploy-core v1.1.0
+builds, transfers, verifies, and installs a content-addressed offline bundle before
+updating the checkout. `deploy_and_install.ps1` is bootstrap/recovery only.
 
 Successful verification creates the same immutable release tag on GitHub and
 Bitbucket. Redacted evidence is appended to the Bitbucket-only `release-log`
