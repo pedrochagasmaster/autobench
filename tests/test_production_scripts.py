@@ -442,7 +442,8 @@ def test_publish_snapshot_script_refuses_unexpected_remote_url_before_mutating_r
 
     assert result.returncode == 1
     output = (result.stderr + result.stdout).lower()
-    assert "does not match the expected" in output
+    normalized_output = " ".join(output.split())
+    assert "does not match the expected" in normalized_output
     assert "autobench.git" in output
     current_branch = subprocess.run(
         ["git", "-C", str(local_repo), "branch", "--show-current"],
