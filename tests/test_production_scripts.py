@@ -75,12 +75,20 @@ def test_textual_75_node_bundle_is_supported() -> None:
     assert "textual==7.5.0" in constraints
 
 
-def test_installer_reports_stale_offline_bundle_action() -> None:
+def test_installer_requires_core_verified_dependency_bundle() -> None:
     script = (ROOT / "install.sh").read_text(encoding="utf-8")
 
-    assert "offline_bundle_checksums.py" in script
-    assert "Offline dependency install failed." in script
-    assert "deploy_and_install.ps1" in script
+    assert "EDGE_DEPLOY_BUNDLE_DIR" in script
+    assert "manifest.json" in script
+    assert "--no-index" in script
+    assert "AUTOBENCH_PIP_INDEX_URL" not in script
+
+
+def test_update_permissions_do_not_recurse_through_runtime_directories() -> None:
+    script = (ROOT / "update.sh").read_text(encoding="utf-8")
+
+    assert "chmod -R" not in script
+    assert "$CHANGED_FILES" in script
 
 
 def test_offline_bundle_targets_python_310_cp310() -> None:
