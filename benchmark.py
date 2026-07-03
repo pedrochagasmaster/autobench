@@ -665,3 +665,5 @@ def main() -> int:
 
 if __name__ == '__main__':
     sys.exit(main())
+
+# E2E release exercise: cosmetic runtime change; no behavior change.
