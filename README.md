@@ -20,6 +20,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
 - [TUI Workflow](#tui-workflow)
 - [CLI Cookbook](#cli-cookbook)
+- [Offline Telemetry](#offline-telemetry)
 - [Programmatic use (Python API)](#programmatic-use-python-api)
 - [Large Dataset / Low-Memory Runs](#large-dataset--low-memory-runs)
 - [Presets](#presets)
@@ -229,6 +230,48 @@ py benchmark.py config show balanced_default
 py benchmark.py config validate my_config.yaml
 py benchmark.py config generate my_config.yaml
 ```
+
+## Offline Telemetry
+
+Autobench records low-volume, privacy-minimized product telemetry locally so
+operators can see who uses the tool and how share/rate analyses are used. It is
+best-effort product data, not an audit log: it does not record analysis content,
+file paths, entity names, or error details, and it must never affect analysis,
+privacy enforcement, or exit codes.
+
+Telemetry is **enabled by default**. Case-insensitive values `0`, `false`,
+`off`, and `no` in `AUTOBENCH_TELEMETRY` opt out of future private and shared
+writes. Opt-out does **not** delete existing records.
+
+| Location | Path |
+|---|---|
+| Shared parent (default) | `/ads_storage/autobench/telemetry` (direct child is `users/`) |
+| Private file | `/ads_storage/<resolved-user>/.autobench/telemetry/events.jsonl` |
+
+`AUTOBENCH_TELEMETRY_DIR` overrides the shared parent exactly (same semantics as
+`--dir`). The portable shared profile intentionally makes usernames and approved
+event data world-readable on the node. Shared parent directories are created by
+operators/deployment; the application does not create them. Provisioning and
+filesystem capability checks are an operator requirement.
+
+Report commands (installed CLI and repo entry point; default window is **30
+days**):
+
+```powershell
+autobench-cli telemetry who
+autobench-cli telemetry summary
+autobench-cli telemetry who --days 7 --dir /path/to/telemetry
+autobench-cli telemetry summary --user alice --days 14
+
+py benchmark.py telemetry who
+py benchmark.py telemetry summary
+py benchmark.py telemetry who --days 7 --dir /path/to/telemetry
+py benchmark.py telemetry summary --user alice --days 14
+```
+
+`--dir` names the telemetry **parent** whose direct child is `users/`. Reports
+prefer shared `users/*.jsonl` when present; otherwise they fall back to the
+current user's private file.
 
 ## Programmatic use (Python API)
 
