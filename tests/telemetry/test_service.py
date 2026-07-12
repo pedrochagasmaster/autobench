@@ -195,6 +195,12 @@ def test_drop_newest_when_data_capacity_full_with_blocking_writer(
 
 
 def test_physical_reserved_controls_when_data_queue_full() -> None:
+    """Reserved slots must accept session_end + flush while data capacity is full.
+
+    Writer stays blocked so queued data is not drained. Shutdown runs on another
+    thread; observing ``closing`` under the admission lock means control puts
+    already completed. This fails if the queue maxsize is only ``data_capacity``.
+    """
     entered = threading.Event()
     release = threading.Event()
     written: list[bytes] = []
@@ -205,17 +211,86 @@ def test_physical_reserved_controls_when_data_queue_full() -> None:
         assert release.wait(timeout=2.0)
 
     capacity = 3
-    svc = _make_service(writer=writer, data_capacity=capacity, shutdown_budget_s=1.0)
+    svc = _make_service(writer=writer, data_capacity=capacity, shutdown_budget_s=2.0)
+    assert svc._queue.maxsize == capacity + 2
+
     svc.start_session("cli_rate")
     assert entered.wait(timeout=2.0)
     for _ in range(capacity):
         svc.surface_viewed("rate")
-    # Data full; shutdown must still place session_end + flush using reserved slots.
+
+    finished = threading.Event()
+
+    def shut() -> None:
+        svc.shutdown()
+        finished.set()
+
+    shutting = threading.Thread(target=shut)
+    shutting.start()
+
+    deadline = _deadline()
+    saw_closing = False
+    poll = threading.Event()
+    while time.monotonic() < deadline:
+        with svc._lock:
+            # Acquiring the lock after shutdown entered closing means the
+            # session_end/flush puts under that critical section have finished.
+            if svc._state in {"closing", "closed"}:
+                saw_closing = True
+                break
+        poll.wait(timeout=0.01)
+    _assert_before(deadline)
+    assert saw_closing
+
     release.set()
-    svc.shutdown()
+    assert finished.wait(timeout=2.0)
+    shutting.join(timeout=2.0)
+    assert svc.state == "closed"
+
     names = [_event_name(r) for r in written]
     assert "session_end" in names
     assert names.index("session_start") < names.index("session_end")
+    end_at = names.index("session_end")
+    assert all(i < end_at for i, n in enumerate(names) if n != "session_end")
+    assert svc._flush_done.is_set()
+
+
+def test_consumer_thread_start_failure_clears_and_retries(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    starts = {"n": 0}
+    real_start = threading.Thread.start
+
+    def flaky_start(self: threading.Thread) -> None:
+        starts["n"] += 1
+        if starts["n"] == 1:
+            raise RuntimeError("simulated thread start failure")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", flaky_start)
+
+    written: list[bytes] = []
+    drained = threading.Event()
+
+    def writer(record: bytes) -> None:
+        written.append(record)
+        if len(written) >= 2:
+            drained.set()
+
+    svc = _make_service(writer=writer, data_capacity=8, shutdown_budget_s=1.0)
+    with caplog.at_level(logging.DEBUG, logger="core.telemetry.service"):
+        svc.start_session("tui")
+    assert svc.consumer_thread is None
+    assert getattr(svc, "_consumer", None) is None
+    assert any("start" in r.message.lower() for r in caplog.records)
+
+    svc.surface_viewed("share")
+    assert drained.wait(timeout=2.0)
+    assert svc.consumer_thread is not None
+    assert starts["n"] >= 2
+    names = [_event_name(r) for r in written]
+    assert names[:2] == ["session_start", "surface_viewed"]
+    svc.shutdown()
 
 
 def test_state_transitions_and_rejection_during_closing_closed(

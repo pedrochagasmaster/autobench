@@ -287,8 +287,13 @@ class TelemetryService:
             name="autobench-telemetry",
             daemon=True,
         )
+        try:
+            thread.start()
+        except Exception:
+            logger.debug("telemetry consumer start failed", exc_info=True)
+            self._consumer = None
+            return
         self._consumer = thread
-        thread.start()
 
     def _consumer_main(self) -> None:
         while True:
