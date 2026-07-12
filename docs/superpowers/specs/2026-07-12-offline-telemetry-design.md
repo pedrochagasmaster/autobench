@@ -1,6 +1,6 @@
 # Autobench Offline Telemetry Design
 
-Status: approved design; pending written-spec review
+Status: approved for implementation
 
 ## Purpose and adaptation
 
