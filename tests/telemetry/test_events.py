@@ -371,6 +371,25 @@ def test_decode_rejects_missing_envelope_keys() -> None:
         decode_record(line)
 
 
+def test_decode_accepts_reordered_envelope_keys() -> None:
+    reordered = {
+        "props": {"launch_context": "tui"},
+        "app_version": APP_VERSION,
+        "session_id": str(SESSION_ID),
+        "user": USER,
+        "event": "session_start",
+        "ts": "2026-07-12T22:00:00Z",
+        "schema_version": SCHEMA_VERSION,
+    }
+    assert tuple(reordered.keys()) != ENVELOPE_KEYS
+    assert set(reordered.keys()) == set(ENVELOPE_KEYS)
+    line = (json.dumps(reordered, separators=(",", ":")) + "\n").encode("utf-8")
+    decoded = decode_record(line)
+    assert decoded.event == "session_start"
+    assert decoded.user == USER
+    assert dict(decoded.props) == {"launch_context": "tui"}
+
+
 def test_build_rejects_naive_or_non_utc_now() -> None:
     with pytest.raises(EventValidationError):
         _build(

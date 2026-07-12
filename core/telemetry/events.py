@@ -21,14 +21,16 @@ _TS_RE = re.compile(
     r"(?:\.(?P<frac>\d{1,6}))?Z$"
 )
 
-_ENVELOPE_KEYS = (
-    "schema_version",
-    "ts",
-    "event",
-    "user",
-    "session_id",
-    "app_version",
-    "props",
+_ENVELOPE_KEYS = frozenset(
+    {
+        "schema_version",
+        "ts",
+        "event",
+        "user",
+        "session_id",
+        "app_version",
+        "props",
+    }
 )
 
 _LAUNCH_CONTEXTS = frozenset({"cli_share", "cli_rate", "tui"})
@@ -270,7 +272,7 @@ def decode_record(raw_line: bytes) -> ValidatedEvent:
         raise EventValidationError("record is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise EventValidationError("record JSON must be an object")
-    if tuple(payload.keys()) != _ENVELOPE_KEYS:
+    if frozenset(payload.keys()) != _ENVELOPE_KEYS:
         raise EventValidationError("envelope keys must match the exact contract")
 
     schema_version = payload["schema_version"]
