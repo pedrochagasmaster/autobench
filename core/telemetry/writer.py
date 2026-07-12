@@ -86,6 +86,11 @@ def _ensure_private_parents(path: Path, expected_uid: int) -> bool:
             return False
         if stat.S_ISLNK(home_st.st_mode) or not stat.S_ISDIR(home_st.st_mode):
             return False
+        if home_st.st_uid != expected_uid:
+            return False
+        home_mode = stat.S_IMODE(home_st.st_mode)
+        if (home_mode & stat.S_IWOTH) and not (home_mode & stat.S_ISVTX):
+            return False
 
         for directory in (app_dir, telemetry_dir):
             try:
@@ -93,8 +98,11 @@ def _ensure_private_parents(path: Path, expected_uid: int) -> bool:
             except FileNotFoundError:
                 try:
                     os.mkdir(directory, _PRIVATE_DIR_MODE)
-                except OSError:
-                    return False
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    if exc.errno != errno.EEXIST:
+                        return False
                 try:
                     st = os.lstat(directory)
                 except OSError:
