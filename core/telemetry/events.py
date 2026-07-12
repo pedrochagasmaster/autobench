@@ -7,7 +7,8 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 from typing import Mapping
 from uuid import UUID
 
@@ -108,9 +109,13 @@ def _validate_duration(value: object) -> float:
     number = float(value)
     if not math.isfinite(number):
         raise EventValidationError("duration_s must be finite")
-    rounded = round(number, 3)
-    if rounded < 0 or rounded > _MAX_DURATION_S:
+    if number < 0:
         raise EventValidationError("duration_s out of range")
+    rounded = round(number, 3)
+    if rounded > _MAX_DURATION_S:
+        raise EventValidationError("duration_s out of range")
+    if rounded == 0:
+        return 0.0
     return rounded
 
 
@@ -155,10 +160,9 @@ def _require_aware_utc(now: datetime) -> datetime:
         raise EventValidationError("now must be a datetime")
     if now.tzinfo is None or now.utcoffset() is None:
         raise EventValidationError("timestamp must be timezone-aware UTC")
-    utc = now.astimezone(timezone.utc)
-    if utc.utcoffset() != timezone.utc.utcoffset(utc):
-        raise EventValidationError("timestamp must be UTC")
-    return utc
+    if now.utcoffset() != timedelta(0):
+        raise EventValidationError("timestamp must already be UTC with zero offset")
+    return now.replace(tzinfo=timezone.utc)
 
 
 def _format_ts(now: datetime) -> str:
@@ -194,15 +198,17 @@ def _parse_ts(value: object) -> datetime:
         raise EventValidationError("ts is not a valid timestamp") from exc
 
 
-def _require_session_id(session_id: object) -> UUID:
-    if isinstance(session_id, UUID):
-        return session_id
-    if isinstance(session_id, str):
-        try:
-            return UUID(session_id)
-        except ValueError as exc:
-            raise EventValidationError("session_id must be a UUID") from exc
-    raise EventValidationError("session_id must be a UUID")
+def _require_canonical_session_id_text(session_id: object) -> str:
+    if not isinstance(session_id, str):
+        raise EventValidationError("session_id must be a UUID string")
+    try:
+        parsed = UUID(session_id)
+    except ValueError as exc:
+        raise EventValidationError("session_id must be a UUID") from exc
+    canonical = str(parsed)
+    if session_id != canonical:
+        raise EventValidationError("session_id must be canonical lowercase UUID text")
+    return canonical
 
 
 def build_record(
@@ -291,7 +297,7 @@ def decode_record(raw_line: bytes) -> ValidatedEvent:
     except ValueError as exc:
         raise EventValidationError(str(exc)) from exc
 
-    session_uuid = _require_session_id(payload["session_id"])
+    session_id = _require_canonical_session_id_text(payload["session_id"])
     app_version = _validate_app_version(payload["app_version"])
     normalized_props = _normalize_props(event, payload["props"])
 
@@ -300,7 +306,7 @@ def decode_record(raw_line: bytes) -> ValidatedEvent:
         ts=ts,
         event=event,
         user=user,
-        session_id=str(session_uuid),
+        session_id=session_id,
         app_version=app_version,
-        props=normalized_props,
+        props=MappingProxyType(normalized_props),
     )

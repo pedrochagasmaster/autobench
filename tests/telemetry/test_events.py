@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 from uuid import UUID
 
@@ -143,13 +143,46 @@ def test_decode_record_accepts_line_without_trailing_lf() -> None:
     assert decoded.event == "session_start"
 
 
-def test_decode_record_canonicalizes_uuid_session_id() -> None:
+def test_rejects_tiny_negative_duration_before_rounding() -> None:
+    with pytest.raises(EventValidationError):
+        _build("session_end", {"duration_s": -0.0001})
+
+
+def test_duration_zero_normalizes_without_negative_zero() -> None:
+    raw = _build("session_end", {"duration_s": 0.0})
+    props = json.loads(raw.decode("utf-8"))["props"]
+    assert props == {"duration_s": 0.0}
+    assert '"duration_s":-0' not in raw.decode("utf-8")
+    raw_neg_zero = _build("session_end", {"duration_s": -0.0})
+    neg_props = json.loads(raw_neg_zero.decode("utf-8"))["props"]
+    assert neg_props == {"duration_s": 0.0}
+    assert '"duration_s":-0' not in raw_neg_zero.decode("utf-8")
+
+
+def test_decode_accepts_canonical_uuid_session_id() -> None:
+    raw = _build("session_start", {"launch_context": "tui"})
+    decoded = decode_record(raw)
+    assert decoded.session_id == str(SESSION_ID)
+    assert decoded.session_id == "12345678-1234-5678-1234-567812345678"
+
+
+@pytest.mark.parametrize(
+    "bad_session_id",
+    [
+        "12345678-1234-5678-1234-567812345abc".upper(),
+        "urn:uuid:12345678-1234-5678-1234-567812345678",
+        "{12345678-1234-5678-1234-567812345678}",
+        "12345678123456781234567812345678",
+        "12345678-1234-5678-1234-567812345678 ",
+    ],
+)
+def test_decode_rejects_noncanonical_uuid_session_id(bad_session_id: str) -> None:
     raw = _build("session_start", {"launch_context": "tui"})
     payload = json.loads(raw.decode("utf-8"))
-    payload["session_id"] = "12345678-1234-5678-1234-567812345678".upper()
+    payload["session_id"] = bad_session_id
     line = (json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
-    decoded = decode_record(line)
-    assert decoded.session_id == str(SESSION_ID)
+    with pytest.raises(EventValidationError):
+        decode_record(line)
 
 
 def test_app_version_max_bytes_boundary() -> None:
@@ -397,6 +430,23 @@ def test_build_rejects_naive_or_non_utc_now() -> None:
             {"launch_context": "tui"},
             now=datetime(2026, 7, 12, 22, 0, 0),
         )
+    offset = timezone(timedelta(hours=-5))
+    with pytest.raises(EventValidationError):
+        _build(
+            "session_start",
+            {"launch_context": "tui"},
+            now=datetime(2026, 7, 12, 22, 0, 0, tzinfo=offset),
+        )
+
+
+def test_build_record_keeps_z_for_utc_now() -> None:
+    raw = _build(
+        "session_start",
+        {"launch_context": "tui"},
+        now=datetime(2026, 7, 12, 22, 0, 0, 123000, tzinfo=timezone.utc),
+    )
+    assert json.loads(raw.decode("utf-8"))["ts"].endswith("Z")
+    assert "+" not in json.loads(raw.decode("utf-8"))["ts"]
 
 
 def test_validated_event_is_frozen() -> None:
@@ -404,6 +454,13 @@ def test_validated_event_is_frozen() -> None:
     decoded = decode_record(raw)
     with pytest.raises(Exception):
         decoded.event = "x"  # type: ignore[misc]
+
+
+def test_validated_event_props_are_immutable() -> None:
+    raw = _build("session_start", {"launch_context": "tui"})
+    decoded = decode_record(raw)
+    with pytest.raises(TypeError):
+        decoded.props["launch_context"] = "cli_share"  # type: ignore[index]
 
 
 def test_event_validation_error_hierarchy() -> None:
