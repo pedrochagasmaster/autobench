@@ -14,7 +14,7 @@ from uuid import UUID
 
 import pytest
 
-from core.telemetry.constants import DEFAULT_DAYS, DEFAULT_SHARED_DIR, MAX_RECORD_BYTES
+from core.telemetry.constants import DEFAULT_DAYS, MAX_RECORD_BYTES
 from core.telemetry.events import build_record
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.reader import (
@@ -272,6 +272,11 @@ def test_select_sources_empty_env_falls_back_to_default(
 ) -> None:
     identity = _identity()
     monkeypatch.setenv("AUTOBENCH_TELEMETRY_DIR", "   ")
+    isolated_default = tmp_path / "isolated_default_shared"
+    (isolated_default / "users").mkdir(parents=True)
+    monkeypatch.setattr(
+        "core.telemetry.reader.DEFAULT_SHARED_DIR", isolated_default
+    )
     storage = tmp_path / "ads"
     private = _write_private(storage, identity, _session_start())
 
@@ -281,10 +286,9 @@ def test_select_sources_empty_env_falls_back_to_default(
         now=FIXED_NOW,
     ).select_sources()
 
-    # Default shared has no jsonl entries in this test env; private only.
+    # Isolated empty default shared → private only; never touches real /ads_storage.
     assert selection.kind is SourceKind.PRIVATE
     assert selection.paths == (private,)
-    assert DEFAULT_SHARED_DIR.as_posix() == "/ads_storage/autobench/telemetry"
 
 
 def test_select_sources_rejects_invalid_user(tmp_path: Path) -> None:
@@ -530,13 +534,62 @@ def test_skips_oversized_line_and_continues(
     assert events[0].session_id == str(SESSION_B)
 
 
+def test_accepts_exact_max_record_bytes_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Splitter must accept an LF-terminated line of exactly MAX_RECORD_BYTES."""
+    identity = _identity()
+    shared = tmp_path / "shared"
+    compact = _session_start(session_id=SESSION_A)
+    body = compact[:-1]  # drop LF
+    pad = MAX_RECORD_BYTES - 1 - len(body)
+    assert pad > 0
+    # JSON allows insignificant whitespace before the closing brace.
+    exact = body[:-1] + (b" " * pad) + b"}\n"
+    assert len(exact) == MAX_RECORD_BYTES
+    _write_shared(shared, "alice", exact)
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    events = list(
+        _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(days=None)
+    )
+    assert len(events) == 1
+    assert events[0].session_id == str(SESSION_A)
+
+
+def test_skips_multi_megabyte_incomplete_line_without_unbounded_buffers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multi-MiB trailing bytes with no LF are discarded; prior valid event remains."""
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    path = users / f"{encode_user_token('alice')}.jsonl"
+    good = _session_start(session_id=SESSION_A)
+    chunk = b"x" * 65_536
+    megabytes = 2
+    with path.open("wb") as fh:
+        fh.write(good)
+        for _ in range((megabytes * 1024 * 1024) // len(chunk)):
+            fh.write(chunk)
+        # Intentionally no trailing LF: incomplete multi-megabyte tail.
+    assert path.stat().st_size > megabytes * 1024 * 1024
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    events = list(
+        _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(days=None)
+    )
+    assert len(events) == 1
+    assert events[0].session_id == str(SESSION_A)
+
+
 def test_discards_incomplete_final_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     identity = _identity()
     shared = tmp_path / "shared"
     good = _session_start()
-    incomplete = good[:-1]  # strip trailing LF from a second copy attempt
     # First complete event, then incomplete trailing bytes without LF.
     payload = good + b'{"schema_version":1,"ts":"2026-07-12T22:00:00Z"'
     _write_shared(shared, "alice", payload)
@@ -546,7 +599,6 @@ def test_discards_incomplete_final_line(
         _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(days=None)
     )
     assert len(events) == 1
-    assert incomplete  # sanity: we intended truncated content
 
 
 def test_malformed_lines_isolated(

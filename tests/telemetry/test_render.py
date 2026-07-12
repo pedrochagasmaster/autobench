@@ -50,7 +50,10 @@ def test_format_who_sanitizes_username() -> None:
     ]
     out = format_who(rows)
     assert "\x1b" not in out
-    assert "alice" in out or "al?ice" in out or "alice" in sanitize_terminal("al\x1b[31mice")
+    assert out == (
+        "USER  SESSIONS  LAST_SEEN  COMPLETED\n"
+        "alice  1  2026-07-12T22:00:00Z  0\n"
+    )
 
 
 def test_format_summary_golden_sections_and_order() -> None:
