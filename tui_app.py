@@ -2042,59 +2042,73 @@ class BenchmarkApp(App):
             # Restart the run clock so the elapsed time reflects execution,
             # not how long a validation modal sat open.
             self.call_from_thread(self._begin_run_ui)
-            try:
-                # NOTE (audit complement §2.10): `saved_df` is the raw input
-                # DataFrame and does not carry preset/posture state. If a future
-                # change starts caching preset-derived state in `saved_df`,
-                # invalidate the cache when `request.preset` or
-                # `request.compliance_posture` changes between the
-                # validate-and-confirm callback. Today this is a no-op because
-                # the DataFrame is preset-agnostic.
-                request.df = saved_df
-                if saved_df is not None and request.prepared_dataset is None:
-                    request.prepared_dataset = PreparedDataset(df=saved_df)
-                artifacts = self._execute_run_for_tui(request, logger, log_widget)
-                self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
-                summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
-                posture = summary.get('posture') or summary.get('compliance_posture')
-                self.call_from_thread(
-                    log_widget.write,
-                    f"Compliance: posture={posture} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
-                )
-                report_paths = [str(p) for p in (artifacts.report_paths or [artifacts.analysis_output_file]) if p]
-                verdict = str(summary.get('compliance_verdict'))
-                if verdict == 'fully_compliant':
-                    verdict_markup = f"[green]{verdict}[/green]"
-                elif verdict in ('violations_detected', 'not_publishable_input', 'structural_infeasibility', 'blocked'):
-                    verdict_markup = f"[red]{verdict}[/red]"
-                else:
-                    verdict_markup = verdict
-                summary_lines = [
-                    f"[dim]Mode[/dim]     {request.mode} · {request.preset or 'default'}",
-                    f"[dim]Verdict[/dim]  {verdict_markup} [dim](posture={posture})[/dim]",
-                ]
-                for path in report_paths:
-                    summary_lines.append(f"[dim]Report[/dim]   {path}")
-                self.call_from_thread(self._end_run_ui, "success", "\n".join(summary_lines))
-                self.call_from_thread(
-                    self.notify,
-                    f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
-                    title="Analysis Complete",
-                    severity="information",
-                    timeout=10,
-                )
-            except RunBlocked as exc:
-                self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
-                self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
-                self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
-            except RunAborted as exc:
-                self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
-                self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
-                self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
-            except Exception as exc:
-                self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
-                self.call_from_thread(log_widget.write, traceback.format_exc())
-                self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
+            self._execute_confirmed_analysis(request, saved_df, log_widget)
+
+    def _execute_confirmed_analysis(
+        self,
+        request: AnalysisRunRequest,
+        saved_df: Any,
+        log_widget: Log,
+    ) -> None:
+        """Run a confirmed analysis request and map outcomes to TUI UI only.
+
+        Telemetry attempt/refuse/fail/complete events stay in shared
+        ``core.analysis_run`` orchestration; this method must not emit them.
+        """
+        logger = logging.getLogger("benchmark")
+        try:
+            # NOTE (audit complement §2.10): `saved_df` is the raw input
+            # DataFrame and does not carry preset/posture state. If a future
+            # change starts caching preset-derived state in `saved_df`,
+            # invalidate the cache when `request.preset` or
+            # `request.compliance_posture` changes between the
+            # validate-and-confirm callback. Today this is a no-op because
+            # the DataFrame is preset-agnostic.
+            request.df = saved_df
+            if saved_df is not None and request.prepared_dataset is None:
+                request.prepared_dataset = PreparedDataset(df=saved_df)
+            artifacts = self._execute_run_for_tui(request, logger, log_widget)
+            self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+            summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
+            posture = summary.get('posture') or summary.get('compliance_posture')
+            self.call_from_thread(
+                log_widget.write,
+                f"Compliance: posture={posture} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
+            )
+            report_paths = [str(p) for p in (artifacts.report_paths or [artifacts.analysis_output_file]) if p]
+            verdict = str(summary.get('compliance_verdict'))
+            if verdict == 'fully_compliant':
+                verdict_markup = f"[green]{verdict}[/green]"
+            elif verdict in ('violations_detected', 'not_publishable_input', 'structural_infeasibility', 'blocked'):
+                verdict_markup = f"[red]{verdict}[/red]"
+            else:
+                verdict_markup = verdict
+            summary_lines = [
+                f"[dim]Mode[/dim]     {request.mode} · {request.preset or 'default'}",
+                f"[dim]Verdict[/dim]  {verdict_markup} [dim](posture={posture})[/dim]",
+            ]
+            for path in report_paths:
+                summary_lines.append(f"[dim]Report[/dim]   {path}")
+            self.call_from_thread(self._end_run_ui, "success", "\n".join(summary_lines))
+            self.call_from_thread(
+                self.notify,
+                f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
+                title="Analysis Complete",
+                severity="information",
+                timeout=10,
+            )
+        except RunBlocked as exc:
+            self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
+            self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
+            self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
+        except RunAborted as exc:
+            self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
+            self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
+            self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
+        except Exception as exc:
+            self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
+            self.call_from_thread(log_widget.write, traceback.format_exc())
+            self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
 
 
 if __name__ == "__main__":

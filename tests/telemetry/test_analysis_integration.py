@@ -8,7 +8,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, List, Tuple
-from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -23,6 +23,7 @@ from tests.conftest import is_telemetry_test_path
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "gate_demo.csv"
 SHARE_DIMENSIONS = ["card_type", "channel"]
+SESSION_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 SENSITIVE_MARKERS = (
     str(FIXTURE),
     "Target",
@@ -120,7 +121,7 @@ def test_legacy_analysis_opt_out_prevents_writer_thread_and_file(
         "_build_default_service",
         lambda: TelemetryService(
             identity=Identity(uid=os.geteuid(), username="legacy", token=encode_user_token("legacy")),
-            session_id=__import__("uuid").UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            session_id=SESSION_ID,
             app_version="3.0",
             storage_root=ads,
             environ={"AUTOBENCH_TELEMETRY": "0"},
@@ -295,7 +296,7 @@ def test_only_closed_enum_args_and_no_sensitive_payload(
 
     svc = TelemetryService(
         identity=Identity(uid=os.geteuid(), username="alice", token=encode_user_token("alice")),
-        session_id=__import__("uuid").UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        session_id=SESSION_ID,
         app_version="3.0",
         environ={},
         writer=writer,
