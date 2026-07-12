@@ -38,6 +38,7 @@ from core.telemetry.constants import DEFAULT_DAYS
 from core.telemetry.identity import validate_username
 from core.telemetry.reader import TelemetryReader
 from core.telemetry.render import format_summary, format_who, sanitize_terminal
+from core.telemetry import end_session, start_session
 from utils.logger import setup_logging
 from utils.preset_manager import PresetManager
 from utils.validators import validate_config_file
@@ -47,6 +48,14 @@ EXIT_FAILURE = 1
 EXIT_STRICT_NON_COMPLIANT = 2
 
 _GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
+
+
+def _safe_telemetry_call(fn, *args) -> None:
+    """Best-effort telemetry; never alter CLI outcomes."""
+    try:
+        fn(*args)
+    except Exception:
+        pass
 
 
 def get_presets_help() -> str:
@@ -765,11 +774,19 @@ def main() -> int:
     log_level = getattr(args, 'log_level', None) or 'INFO'
     logger = setup_logging(log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
-    # Route to appropriate handler
+    # Route to appropriate handler with a CLI session around usable analysis.
     if args.command == 'share':
-        return run_share_analysis(args, logger)
+        _safe_telemetry_call(start_session, 'cli_share')
+        try:
+            return run_share_analysis(args, logger)
+        finally:
+            _safe_telemetry_call(end_session)
     elif args.command == 'rate':
-        return run_rate_analysis(args, logger)
+        _safe_telemetry_call(start_session, 'cli_rate')
+        try:
+            return run_rate_analysis(args, logger)
+        finally:
+            _safe_telemetry_call(end_session)
     else:
         parser.print_help()
         return 1

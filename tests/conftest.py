@@ -13,6 +13,31 @@ from tests.fixtures.mock_benchmark_data import (
     write_mock_benchmark_csv,
 )
 
+_TELEMETRY_TESTS_DIR = Path(__file__).resolve().parent / "telemetry"
+
+
+def is_telemetry_test_path(path: Path) -> bool:
+    """Return True when ``path`` lives under ``tests/telemetry``."""
+    try:
+        Path(path).resolve().relative_to(_TELEMETRY_TESTS_DIR)
+        return True
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _opt_out_telemetry_outside_telemetry_tests(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Prevent legacy/full-suite tests from writing telemetry under /ads_storage.
+
+    Focused tests under ``tests/telemetry`` keep the default enabled path so
+    instrumentation and helper suites can exercise real writers.
+    """
+    if not is_telemetry_test_path(Path(str(request.path))):
+        monkeypatch.setenv("AUTOBENCH_TELEMETRY", "0")
+
 
 @pytest.fixture
 def mock_benchmark_df():
