@@ -436,11 +436,11 @@ def handle_telemetry_command(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(format_summary(reader.summary(days=days, user=user)))
         return EXIT_OK
-    except ValueError:
-        print("Error: invalid telemetry request.", file=sys.stderr)
-        return EXIT_FAILURE
-    except OSError:
-        print("Error: unable to read telemetry.", file=sys.stderr)
+    except (ValueError, OSError, KeyError):
+        print(
+            sanitize_terminal("Error: unable to read telemetry."),
+            file=sys.stderr,
+        )
         return EXIT_FAILURE
 
 
