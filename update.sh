@@ -113,6 +113,16 @@ ls -ld . 2>/dev/null || echo "    unavailable"
 echo "==> Entrypoint permissions:"
 ls -l run_tool.sh install.sh setup_alias.sh 2>/dev/null || echo "    unavailable"
 
+# Trusted deployment owner provisions shared telemetry parents. Runtime/per-user
+# install.sh must not create these directories. Idempotent normalize every sync.
+echo "==> Provisioning shared telemetry directories ..."
+TELEMETRY_DIR="${AUTOBENCH_TELEMETRY_DIR:-/ads_storage/autobench/telemetry}"
+mkdir -p "$TELEMETRY_DIR/users"
+chmod 0755 "$TELEMETRY_DIR"
+chmod 1777 "$TELEMETRY_DIR/users"
+echo "==> Telemetry permission evidence:"
+ls -ld "$TELEMETRY_DIR" "$TELEMETRY_DIR/users" 2>/dev/null || echo "    unavailable"
+
 echo "==> Now at: $(git log -1 --format='%h %s')"
 echo "==> Install decision: ${INSTALL_DECISION}"
 echo "==> Install signal: ${INSTALL_SIGNAL}"

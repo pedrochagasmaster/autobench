@@ -396,3 +396,50 @@ def test_active_docs_define_node_specific_rollback_and_human_gated_acceptance() 
     assert "wrapper checks" in combined
     assert "smoke" in combined.lower()
     assert "local verification is not a substitute" in combined
+
+
+def test_telemetry_shared_layout_and_validator_are_documented() -> None:
+    setup = (ROOT / "docs/edge-node-first-time-setup.md").read_text(encoding="utf-8")
+    prod = (ROOT / "docs/production-testing.md").read_text(encoding="utf-8")
+    combined = f"{setup}\n{prod}"
+
+    assert "/ads_storage/autobench/telemetry" in combined
+    assert "/ads_storage/autobench/telemetry/users" in combined or "`users`" in combined
+    assert "0755" in combined
+    assert "1777" in combined
+    assert "0644" in combined
+    assert "update.sh" in combined
+    assert "validate_telemetry_filesystem.py" in combined
+    assert "AUTOBENCH_TELEMETRY" in combined
+    assert "AUTOBENCH_TELEMETRY_DIR" in combined
+    assert "world-readable" in combined.lower() or "readable by every local user" in combined.lower()
+    assert "protected_hardlinks" in combined
+    assert "O_APPEND" in combined
+    assert "O_NOFOLLOW" in combined
+    assert "O_NONBLOCK" in combined
+    assert "flock" in combined.lower()
+    assert "sticky" in combined.lower()
+    assert "two-account" in combined.lower() or "two account" in combined.lower()
+    assert "not an audit" in combined.lower() or "self-reported" in combined.lower()
+    assert "install.sh" in setup
+    assert "does not create" in setup.lower() or "never creates" in setup.lower()
+    assert "shared" in combined.lower() and "private" in combined.lower()
+    assert "opt-out" in combined.lower() or "opt out" in combined.lower()
+    # Must not claim cross-user sticky deletion is covered by the validator.
+    assert "cross-user" in combined.lower() or "two-account" in combined.lower()
+    assert "does not exercise cross-user sticky deletion" in combined.lower() or (
+        "outside this script" in combined.lower()
+    )
+    assert "PASS" in combined and "FAIL" in combined
+    assert "retention" in combined.lower() or "deletion" in combined.lower()
+    assert "owner" in combined.lower() and ("token" in combined.lower() or "mismatch" in combined.lower())
+    assert "fallback" in combined.lower() or "disabled" in combined.lower()
+
+
+def test_production_testing_includes_telemetry_filesystem_validation_steps() -> None:
+    prod = (ROOT / "docs/production-testing.md").read_text(encoding="utf-8")
+
+    assert "validate_telemetry_filesystem.py" in prod
+    assert "--dir" in prod
+    assert "/ads_storage/autobench/telemetry" in prod
+    assert "python scripts/validate_telemetry_filesystem.py" in prod

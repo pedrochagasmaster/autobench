@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 import subprocess
 import sys
-import shutil
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -89,6 +90,73 @@ def test_update_permissions_do_not_recurse_through_runtime_directories() -> None
 
     assert "chmod -R" not in script
     assert "$CHANGED_FILES" in script
+
+
+def test_update_sh_provisions_shared_telemetry_directories() -> None:
+    script = (ROOT / "update.sh").read_text(encoding="utf-8")
+
+    assert 'TELEMETRY_DIR="${AUTOBENCH_TELEMETRY_DIR:-/ads_storage/autobench/telemetry}"' in script
+    assert 'mkdir -p "$TELEMETRY_DIR/users"' in script
+    assert 'chmod 0755 "$TELEMETRY_DIR"' in script
+    assert 'chmod 1777 "$TELEMETRY_DIR/users"' in script
+    assert "Telemetry permission evidence" in script or "telemetry permission" in script.lower()
+    # Provisioning must follow the hard reset so modes survive reset side-effects.
+    assert script.index("git reset --hard") < script.index('mkdir -p "$TELEMETRY_DIR/users"')
+
+
+def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "/ads_storage/autobench/telemetry" not in script
+    assert "TELEMETRY_DIR" not in script
+    assert "1777" not in script
+    assert 'mkdir -p "$AUTOBENCH_HOME/config"' in script
+
+
+def test_update_sh_idempotently_creates_telemetry_layout(tmp_path: Path) -> None:
+    node_checkout = _build_update_repo_scenario(
+        tmp_path / "scenario",
+        "benchmark.py",
+        "print('source-only change')\n",
+    )
+    telemetry_dir = tmp_path / "telemetry_home"
+
+    env = {
+        **dict(os.environ),
+        "AUTOBENCH_GIT_REMOTE": "origin",
+        "AUTOBENCH_GIT_BRANCH": "main",
+        "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+    }
+    first = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr or first.stdout
+    users = telemetry_dir / "users"
+    assert telemetry_dir.is_dir()
+    assert users.is_dir()
+    assert stat.S_IMODE(telemetry_dir.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+    assert "Permission evidence" in first.stdout or "telemetry" in first.stdout.lower()
+
+    # Corrupt modes then re-run to prove idempotent normalization.
+    telemetry_dir.chmod(0o0700)
+    users.chmod(0o0755)
+    second = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert second.returncode == 0, second.stderr or second.stdout
+    assert stat.S_IMODE(telemetry_dir.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
 
 
 def test_offline_bundle_targets_python_310_cp310() -> None:
@@ -190,6 +258,7 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
         "benchmark.py",
         "print('source-only change')\n",
     )
+    telemetry_dir = tmp_path / "telemetry_not_required"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -198,6 +267,7 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -221,6 +291,7 @@ def test_update_sh_repairs_corrupt_remote_tracking_ref(tmp_path: Path) -> None:
     remote_ref = node_checkout / ".git" / "refs" / "remotes" / "origin" / "main"
     remote_ref.parent.mkdir(parents=True, exist_ok=True)
     remote_ref.write_text("", encoding="utf-8")
+    telemetry_dir = tmp_path / "telemetry_repair"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -229,6 +300,7 @@ def test_update_sh_repairs_corrupt_remote_tracking_ref(tmp_path: Path) -> None:
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -246,6 +318,7 @@ def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(t
         "VERSION",
         "1.0.1\n",
     )
+    telemetry_dir = tmp_path / "telemetry_recommended"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -254,6 +327,7 @@ def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(t
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -271,6 +345,7 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
         "requirements.txt",
         "pandas==2.0\n",
     )
+    telemetry_dir = tmp_path / "telemetry_required"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -279,6 +354,7 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
