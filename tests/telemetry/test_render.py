@@ -22,7 +22,7 @@ def test_sanitize_preserves_printable_tab_newline_replaces_other() -> None:
 
 def test_format_who_empty_has_header_and_message() -> None:
     assert format_who([]) == (
-        "USER  SESSIONS  LAST_SEEN  COMPLETED\n"
+        "USER\tSESSIONS\tLAST_SEEN\tCOMPLETED\n"
         "No telemetry events.\n"
     )
 
@@ -38,9 +38,9 @@ def test_format_who_golden_sorted_rows() -> None:
         ),
     ]
     assert format_who(rows) == (
-        "USER  SESSIONS  LAST_SEEN  COMPLETED\n"
-        "alice  2  2026-07-12T22:00:00Z  3\n"
-        "bob  1  2026-07-11T08:30:15Z  0\n"
+        "USER\tSESSIONS\tLAST_SEEN\tCOMPLETED\n"
+        "alice\t2\t2026-07-12T22:00:00Z\t3\n"
+        "bob\t1\t2026-07-11T08:30:15Z\t0\n"
     )
 
 
@@ -51,9 +51,28 @@ def test_format_who_sanitizes_username() -> None:
     out = format_who(rows)
     assert "\x1b" not in out
     assert out == (
-        "USER  SESSIONS  LAST_SEEN  COMPLETED\n"
-        "alice  1  2026-07-12T22:00:00Z  0\n"
+        "USER\tSESSIONS\tLAST_SEEN\tCOMPLETED\n"
+        "alice\t1\t2026-07-12T22:00:00Z\t0\n"
     )
+
+
+def test_format_who_username_with_spaces_stays_one_column() -> None:
+    rows = [
+        WhoRow(user="svc account", sessions=1, last_seen=FIXED, completed=2),
+    ]
+    out = format_who(rows)
+    row = out.splitlines()[1]
+    assert row.split("\t") == ["svc account", "1", "2026-07-12T22:00:00Z", "2"]
+
+
+def test_format_who_username_tab_newline_never_forge_columns() -> None:
+    rows = [
+        WhoRow(user="a\tb\nc", sessions=1, last_seen=FIXED, completed=0),
+    ]
+    out = format_who(rows)
+    lines = out.splitlines()
+    assert len(lines) == 2
+    assert lines[1].split("\t") == ["a?b?c", "1", "2026-07-12T22:00:00Z", "0"]
 
 
 def test_format_summary_golden_sections_and_order() -> None:

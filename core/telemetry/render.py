@@ -43,15 +43,23 @@ def _format_ts(ts: datetime) -> str:
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _user_cell(user: str) -> str:
+    """Sanitize a username cell; tab/newline would forge column structure."""
+    cleaned = sanitize_terminal(user)
+    return cleaned.replace("\t", "?").replace("\n", "?")
+
+
 def format_who(rows: list[WhoRow]) -> str:
-    lines = ["USER  SESSIONS  LAST_SEEN  COMPLETED"]
+    # Tab-separated: validated usernames may contain spaces but never tabs,
+    # so rows stay unambiguously parseable (e.g. cut -f1).
+    lines = ["USER\tSESSIONS\tLAST_SEEN\tCOMPLETED"]
     if not rows:
         lines.append("No telemetry events.")
     else:
         for row in rows:
-            user = sanitize_terminal(row.user)
             lines.append(
-                f"{user}  {row.sessions}  {_format_ts(row.last_seen)}  {row.completed}"
+                f"{_user_cell(row.user)}\t{row.sessions}"
+                f"\t{_format_ts(row.last_seen)}\t{row.completed}"
             )
     return "\n".join(lines) + "\n"
 
