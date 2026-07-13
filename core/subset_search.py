@@ -27,16 +27,19 @@ class _TrialResult(NamedTuple):
 
 def _record_trial(
     analyzer: Any, attempt: int, trial_dims: List[str], *, success: bool,
-    max_slack: Any = None, sum_slack: Any = None, method: Any = None, note: str = "",
+    max_slack: Optional[float] = None, sum_slack: Optional[float] = None,
+    method: Optional[str] = None, note: str = "",
 ) -> None:
+    reported_max_slack = None if note and not success else max_slack
+    reported_sum_slack = None if note and not success else sum_slack
     analyzer.subset_search_results.append(
         {
             "Attempt": attempt,
             "Dimensions": list(trial_dims),
             "Count": len(trial_dims),
             "Success": bool(success),
-            "Max_Slack": (max_slack if success else (None if note else max_slack)),
-            "Sum_Slack": (sum_slack if success else (None if note else sum_slack)),
+            "Max_Slack": reported_max_slack,
+            "Sum_Slack": reported_sum_slack,
             "Method": method,
             "Note": note,
         }
