@@ -16,6 +16,7 @@ import errno
 import fcntl
 import os
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -29,6 +30,7 @@ USERS_MODE = 0o1777
 PROBE_CREATE_MODE = 0o0600
 PROBE_FINAL_MODE = 0o0644
 CHILD_TIMEOUT_S = 2.0
+CHILD_KILL_WAIT_S = 0.5
 _REQUIRED_OS_FLAGS = (
     "O_APPEND",
     "O_NOFOLLOW",
@@ -187,27 +189,52 @@ def _child_fifo_open(path_str: str) -> int:
         _close_fd(fd)
 
 
+def _close_pipe(pipe: Optional[object]) -> None:
+    if pipe is None:
+        return
+    close = getattr(pipe, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except OSError:
+        pass
+
+
 def _run_internal_child(
     mode: str, path: Path, timeout_s: float = CHILD_TIMEOUT_S
 ) -> Tuple[str, object]:
     script = Path(__file__).resolve()
+    proc = subprocess.Popen(
+        [sys.executable, str(script), "--internal-child", mode, str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            [sys.executable, str(script), "--internal-child", mode, str(path)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        # Best-effort terminate if the helper left a process (stdlib already killed).
-        if exc.stdout:
-            pass
+        stdout, _stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.communicate(timeout=CHILD_KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            # Stubborn/uninterruptible child: close pipes and fail without an
+            # unbounded wait or context-manager destructor hang.
+            _close_pipe(proc.stdout)
+            _close_pipe(proc.stderr)
+            return ("timeout", None)
         return ("timeout", None)
 
-    raw = (completed.stdout or "").strip().splitlines()
+    raw = (stdout or "").strip().splitlines()
     if not raw:
-        return ("empty", completed.returncode)
+        return ("empty", proc.returncode)
     status, _, detail = raw[-1].partition(":")
     if status in {"busy", "errno"}:
         try:
@@ -378,19 +405,23 @@ def _probe_file_ops(
         # Same-directory rename preserves inode and content.
         rename_src = track(users_dir / _probe_name("rensrc"))
         rename_dst = track(users_dir / _probe_name("rendst"))
-        rfd = os.open(
-            str(rename_src),
-            os.O_CREAT
-            | os.O_EXCL
-            | os.O_NOFOLLOW
-            | os.O_CLOEXEC
-            | os.O_NONBLOCK
-            | os.O_WRONLY,
-            PROBE_CREATE_MODE,
-        )
-        os.write(rfd, b"rename-payload")
-        st_src = os.fstat(rfd)
-        os.close(rfd)
+        rfd: Optional[int] = None
+        try:
+            rfd = os.open(
+                str(rename_src),
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC
+                | os.O_NONBLOCK
+                | os.O_WRONLY,
+                PROBE_CREATE_MODE,
+            )
+            os.write(rfd, b"rename-payload")
+            st_src = os.fstat(rfd)
+        finally:
+            _close_fd(rfd)
+            rfd = None
         os.rename(rename_src, rename_dst)
         # src path no longer exists; keep dst for cleanup.
         owned.remove(rename_src)
@@ -421,13 +452,10 @@ def _probe_file_ops(
             ok = False
         elif status_f == "errno" and detail_f == errno.ENXIO:
             _pass(lines, "FIFO O_NONBLOCK open returns ENXIO promptly without hang")
-        elif status_f == "opened":
-            # Unusual but non-hanging success still proves nonblocking.
-            _pass(lines, "FIFO O_NONBLOCK open completed without hang")
         else:
             _fail(
                 lines,
-                f"FIFO O_NONBLOCK child unexpected result {status_f!r} detail={detail_f!r}",
+                f"FIFO O_NONBLOCK expected ENXIO, got {status_f!r} detail={detail_f!r}",
             )
             ok = False
 

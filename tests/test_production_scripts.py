@@ -94,14 +94,119 @@ def test_update_permissions_do_not_recurse_through_runtime_directories() -> None
 
 def test_update_sh_provisions_shared_telemetry_directories() -> None:
     script = (ROOT / "update.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "provision_telemetry_dirs.sh").read_text(encoding="utf-8")
 
     assert 'TELEMETRY_DIR="${AUTOBENCH_TELEMETRY_DIR:-/ads_storage/autobench/telemetry}"' in script
-    assert 'mkdir -p "$TELEMETRY_DIR/users"' in script
-    assert 'chmod 0755 "$TELEMETRY_DIR"' in script
-    assert 'chmod 1777 "$TELEMETRY_DIR/users"' in script
+    assert "provision_shared_telemetry_dirs" in script
+    assert "provision_telemetry_dirs.sh" in script
     assert "Telemetry permission evidence" in script or "telemetry permission" in script.lower()
-    # Provisioning must follow the hard reset so modes survive reset side-effects.
-    assert script.index("git reset --hard") < script.index('mkdir -p "$TELEMETRY_DIR/users"')
+    assert script.index("git reset --hard") < script.index("provision_shared_telemetry_dirs")
+
+    assert "mkdir -p --" in helper
+    assert "mkdir --" in helper
+    assert 'chmod -- 0755 "$TELEMETRY_DIR"' in helper
+    assert 'chmod -- 1777 "$USERS_DIR"' in helper
+    assert "-L" in helper
+    # Must not chmod through a users symlink.
+    assert "symlink" in helper.lower()
+
+
+def test_provision_telemetry_dirs_rejects_users_symlink_without_chmodding_victim(
+    tmp_path: Path,
+) -> None:
+    """users -> victim must fail; victim mode must remain 0700."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    assert helper.is_file(), "extract testable scripts/provision_telemetry_dirs.sh"
+
+    parent = tmp_path / "telemetry"
+    parent.mkdir(mode=0o0755)
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0700)
+    users = parent / "users"
+    users.symlink_to(victim)
+
+    before = stat.S_IMODE(victim.stat().st_mode)
+    assert before == 0o0700
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    assert users.is_symlink()
+
+
+def test_provision_telemetry_dirs_rejects_telemetry_dir_symlink(
+    tmp_path: Path,
+) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    real = tmp_path / "real"
+    real.mkdir(mode=0o0755)
+    link = tmp_path / "telemetry"
+    link.symlink_to(real)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(link),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o0755
+
+
+def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telemetry"
+
+    def run_once() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+                "provision-test",
+                str(helper),
+                str(parent),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    first = run_once()
+    assert first.returncode == 0, first.stderr or first.stdout
+    users = parent / "users"
+    assert parent.is_dir() and not parent.is_symlink()
+    assert users.is_dir() and not users.is_symlink()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+
+    parent.chmod(0o0700)
+    users.chmod(0o0755)
+    second = run_once()
+    assert second.returncode == 0, second.stderr or second.stdout
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
 
 
 def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
@@ -224,6 +329,9 @@ def _build_update_repo_scenario(tmp_path: Path, changed_path: str, changed_conte
         "update.sh": (ROOT / "update.sh").read_text(encoding="utf-8"),
         "install.sh": (ROOT / "install.sh").read_text(encoding="utf-8"),
         "setup_remote_env.sh": (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8"),
+        "scripts/provision_telemetry_dirs.sh": (
+            ROOT / "scripts" / "provision_telemetry_dirs.sh"
+        ).read_text(encoding="utf-8"),
         "requirements.txt": "pandas==1.0\n",
         "constraints.txt": "pandas==1.0\n",
         "VERSION": "1.0.0\n",

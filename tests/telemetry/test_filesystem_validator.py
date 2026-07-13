@@ -258,45 +258,26 @@ def test_cleanup_after_injected_failure(
     monkeypatch.setattr(validator_mod.os, "fchmod", real_fchmod)
 
 
-def test_cli_exit_codes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_cli_exit_codes_are_exact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod, capsys
 ) -> None:
     parent = _provision_layout(tmp_path / "telemetry")
     protected = _protected(tmp_path)
+    monkeypatch.setattr(validator_mod.sys, "platform", "linux")
+    monkeypatch.setattr(validator_mod, "DEFAULT_PROTECTED_HARDLINKS", protected)
 
-    env = {
-        **dict(os.environ),
-        "AUTOBENCH_TELEMETRY_VALIDATOR_PROTECTED_HARDLINKS": str(protected),
-    }
-    good = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--dir", str(parent)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    # CLI may rely on real /proc; if env injection is unsupported, call via -c.
-    # Prefer module main with argv when env hook absent.
-    mod = _import_validator()
-    monkeypatch.setattr(mod.sys, "platform", "linux")
-    code_ok, _ = mod.validate_filesystem(parent, protected_hardlinks_path=protected)
-    assert code_ok == 0
+    assert validator_mod.main(["--dir", str(parent)]) == 0
+    out_ok = capsys.readouterr().out
+    assert "PASS:" in out_ok
+    assert "FAIL:" not in out_ok
 
     bad_parent = _provision_layout(
         tmp_path / "bad", parent_mode=0o0700, users_mode=0o1777
     )
-    code_bad, lines = mod.validate_filesystem(
-        bad_parent, protected_hardlinks_path=protected
-    )
-    assert code_bad == 1
-    assert any(line.startswith("FAIL:") for line in lines)
+    assert validator_mod.main(["--dir", str(bad_parent)]) == 1
+    out_bad = capsys.readouterr().out
+    assert "FAIL:" in out_bad
 
-    # Exercise argparse main path when possible
-    exit_code = mod.main(["--dir", str(parent)])
-    # Without injected protected path, main may fail on missing /proc in some envs;
-    # require deterministic PASS/FAIL lines and no traceback either way.
-    assert exit_code in (0, 1)
-    # Help exit 0 already covered; bad args should be nonzero
     bad_args = subprocess.run(
         [sys.executable, str(VALIDATOR), "--dir"],
         capture_output=True,
@@ -304,26 +285,123 @@ def test_cli_exit_codes(
         check=False,
     )
     assert bad_args.returncode != 0
-    assert "Traceback" not in (good.stderr or "")
+    assert "Traceback" not in (bad_args.stderr or "")
 
 
-def test_cli_main_uses_dir_and_prints_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod, capsys
+def test_run_internal_child_timeout_kills_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod
+) -> None:
+    """Timeout path must return promptly, attempt killpg, and bound the second wait."""
+    killpg_calls: list[tuple[int, int]] = []
+    communicate_timeouts: list[float | None] = []
+    closed: list[str] = []
+
+    class StubPopenClose:
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("start_new_session") is True
+            self.pid = 4242
+            self.stdout = type("P", (), {"close": lambda self: closed.append("stdout")})()
+            self.stderr = type("P", (), {"close": lambda self: closed.append("stderr")})()
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            communicate_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(cmd="stub", timeout=timeout)
+
+        def kill(self):
+            raise AssertionError("proc.kill should not be needed when killpg works")
+
+    monkeypatch.setattr(validator_mod.subprocess, "Popen", StubPopenClose)
+    monkeypatch.setattr(
+        validator_mod.os,
+        "killpg",
+        lambda pid, sig: killpg_calls.append((pid, sig)),
+    )
+
+    started = time.monotonic()
+    status, detail = validator_mod._run_internal_child(
+        "lock-contend", tmp_path / "x", timeout_s=0.05
+    )
+    elapsed = time.monotonic() - started
+
+    assert status == "timeout"
+    assert detail is None
+    assert elapsed < 1.0
+    assert killpg_calls and killpg_calls[0][0] == 4242
+    assert len(communicate_timeouts) >= 2
+    assert communicate_timeouts[0] == 0.05
+    assert communicate_timeouts[1] is not None and communicate_timeouts[1] <= 1.0
+    assert "stdout" in closed and "stderr" in closed
+
+
+def test_run_internal_child_timeout_returns_without_unbounded_wait(
+    monkeypatch: pytest.MonkeyPatch, validator_mod, tmp_path: Path
+) -> None:
+    waits: list[float | None] = []
+
+    class StubbornPopen:
+        def __init__(self, *args, **kwargs):
+            self.pid = 99
+            self.stdout = type("P", (), {"close": lambda self: waits.append("close-out")})()
+            self.stderr = type("P", (), {"close": lambda self: waits.append("close-err")})()
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired(cmd=["stub"], timeout=timeout or 0)
+
+    monkeypatch.setattr(validator_mod.subprocess, "Popen", StubbornPopen)
+    monkeypatch.setattr(validator_mod.os, "killpg", lambda *a, **k: None)
+
+    started = time.monotonic()
+    status, _ = validator_mod._run_internal_child(
+        validator_mod._INTERNAL_FIFO, tmp_path / "f", timeout_s=0.02
+    )
+    assert status == "timeout"
+    assert time.monotonic() - started < 1.0
+    # First timeout + bounded second communicate; no None/unbounded wait.
+    assert waits[0] == 0.02
+    assert isinstance(waits[1], (int, float)) and waits[1] <= 1.0
+    assert "close-out" in waits and "close-err" in waits
+
+
+def test_run_internal_child_normal_success_no_zombie(
+    tmp_path: Path, validator_mod, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = _provision_layout(tmp_path / "telemetry")
+    probe = parent / "users" / ".lock-probe"
+    fd = os.open(
+        str(probe),
+        os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC | os.O_NONBLOCK,
+        0o0600,
+    )
+    try:
+        status, detail = validator_mod._run_lock_child(probe, timeout_s=2.0)
+        assert status == "locked"
+        assert detail == 0
+    finally:
+        os.close(fd)
+        probe.unlink(missing_ok=True)
+
+
+def test_fifo_probe_fails_on_unexpected_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod
 ) -> None:
     parent = _provision_layout(tmp_path / "telemetry")
     protected = _protected(tmp_path)
     monkeypatch.setattr(validator_mod.sys, "platform", "linux")
-    monkeypatch.setattr(
-        validator_mod,
-        "DEFAULT_PROTECTED_HARDLINKS",
-        protected,
-    )
 
-    code = validator_mod.main(["--dir", str(parent)])
-    captured = capsys.readouterr()
-    assert code == 0
-    assert "PASS:" in captured.out
-    assert "FAIL:" not in captured.out
+    def fake_fifo(_path):
+        return ("opened", 0)
+
+    monkeypatch.setattr(validator_mod, "_run_fifo_child", fake_fifo)
+    code, lines = validator_mod.validate_filesystem(
+        parent, protected_hardlinks_path=protected
+    )
+    assert code == 1
+    assert any(
+        "fifo" in line.lower() and line.startswith("FAIL:") for line in lines
+    )
 
 
 def test_does_not_read_telemetry_payloads(
