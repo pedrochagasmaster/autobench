@@ -300,6 +300,73 @@ def test_explicit_dir_file_returns_one(
     assert "dir" in err.lower() or "directory" in err.lower()
 
 
+def test_relative_dir_with_shared_file_selects_shared(
+    isolate_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    user = _nss_username()
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / "rel-shared"
+    _write_shared(
+        shared,
+        user,
+        _record("session_start", {"launch_context": "tui"}, user=user),
+    )
+    code = _run_main(["telemetry", "who", "--dir", "rel-shared", "--days", "30"], monkeypatch)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert user in out
+
+
+def test_relative_dir_symlink_ancestor_falls_back_private(
+    isolate_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    user = _nss_username()
+    monkeypatch.chdir(tmp_path)
+    ads = tmp_path / "ads"
+    # Private dual-write destination under patched storage_root from isolate_env.
+    private_home = ads / user / ".autobench" / "telemetry"
+    private_home.mkdir(parents=True)
+    private_file = private_home / "events.jsonl"
+    private_file.write_bytes(
+        _record(
+            "session_start",
+            {"launch_context": "cli_share"},
+            user=user,
+            session_id=SESSION_B,
+        )
+    )
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (tmp_path / "autobench").symlink_to(victim)
+    _write_shared(
+        Path("autobench") / "telemetry",
+        user,
+        _record(
+            "session_start",
+            {"launch_context": "tui"},
+            user=user,
+            session_id=SESSION_A,
+        ),
+    )
+
+    code = _run_main(
+        ["telemetry", "who", "--dir", "autobench/telemetry", "--days", "30"],
+        monkeypatch,
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    # Private fallback: SESSION_B only (shared SESSION_A must not be selected).
+    assert user in out
+    assert "  1  " in out
+
+
 def test_nss_keyerror_returns_safe_error(
     isolate_env: Path,
     tmp_path: Path,

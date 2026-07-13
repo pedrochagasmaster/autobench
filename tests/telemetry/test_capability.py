@@ -66,6 +66,65 @@ def test_shared_writer_supported_false_when_ancestor_is_nondirectory(
     )
 
 
+def test_shared_writer_supported_true_for_relative_safe_users_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+    users = _make_users_dir(tmp_path / "shared" / "users")
+
+    assert (
+        shared_writer_supported(
+            Path("shared/users"), protected_hardlinks_path=protected
+        )
+        is True
+    )
+
+
+def test_shared_writer_supported_normalizes_relative_dotdot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+    _make_users_dir(tmp_path / "telem" / "users")
+
+    assert (
+        shared_writer_supported(
+            Path("telem/./x/../users"), protected_hardlinks_path=protected
+        )
+        is True
+    )
+
+
+def test_shared_writer_supported_false_for_relative_symlink_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0755)
+    link = tmp_path / "autobench"
+    link.symlink_to(victim)
+    users = link / "telemetry" / "users"
+    users.mkdir(parents=True)
+    users.chmod(0o1777)
+
+    assert (
+        shared_writer_supported(
+            Path("autobench/telemetry/users"),
+            protected_hardlinks_path=protected,
+        )
+        is False
+    )
+
+
 def test_shared_writer_supported_false_on_non_linux(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

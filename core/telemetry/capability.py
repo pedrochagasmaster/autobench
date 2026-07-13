@@ -8,7 +8,7 @@ import stat
 import sys
 from pathlib import Path
 
-from core.telemetry.fs_safety import existing_ancestors_are_real_dirs
+from core.telemetry.fs_safety import existing_ancestors_are_real_dirs, lexical_absolute_path
 
 _REQUIRED_OS_FLAGS = (
     "O_APPEND",
@@ -47,7 +47,7 @@ def shared_writer_supported(
         raw = protected_hardlinks_path.read_text(encoding="ascii")
         if raw.strip() != "1":
             return False
-        users_path = Path(users_dir)
+        users_path = lexical_absolute_path(users_dir)
         if not existing_ancestors_are_real_dirs(users_path):
             return False
         st = os.lstat(users_path)

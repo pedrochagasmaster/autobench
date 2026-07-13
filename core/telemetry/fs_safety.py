@@ -7,6 +7,16 @@ import stat
 from pathlib import Path
 
 
+def lexical_absolute_path(path: Path | str) -> Path:
+    """Return a lexical absolute path using cwd + normpath (no symlink follow).
+
+    Equivalent to ``Path(os.path.abspath(...))`` / ``normpath(join(cwd, path))``.
+    Never calls ``Path.resolve`` and never follows symlinks while building the
+    absolute string.
+    """
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 def absolute_path_prefixes(path: Path) -> tuple[Path, ...]:
     """Return lexical absolute prefixes from ``/`` through ``path`` (no resolve)."""
     if not path.is_absolute():
@@ -23,14 +33,15 @@ def absolute_path_prefixes(path: Path) -> tuple[Path, ...]:
 def existing_ancestors_are_real_dirs(path: Path) -> bool:
     """Return True when every existing ancestor of ``path`` is a real directory.
 
-    Uses ``lstat`` only (never follows symlinks / never ``Path.resolve``).
+    Relative paths are converted to a lexical absolute path via cwd +
+    ``os.path.abspath`` / ``normpath`` (no ``Path.resolve``, no symlink follow
+    during absolutization). Then each existing prefix is checked with ``lstat``.
     Missing components are allowed; the first missing prefix ends the walk.
     Never raises.
     """
     try:
-        if not path.is_absolute():
-            return False
-        for prefix in absolute_path_prefixes(path):
+        abs_path = lexical_absolute_path(path)
+        for prefix in absolute_path_prefixes(abs_path):
             try:
                 st = os.lstat(prefix)
             except FileNotFoundError:

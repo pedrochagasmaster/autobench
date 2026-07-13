@@ -207,6 +207,56 @@ def test_select_sources_falls_back_private_when_intermediate_ancestor_is_symlink
     assert all(p != shared_path for p in selection.paths)
 
 
+def test_select_sources_relative_shared_dir_selects_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    storage = tmp_path / "ads"
+    shared_path = _write_shared(tmp_path / "shared", "alice", _session_start())
+    _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    selection = _reader(
+        tmp_path,
+        identity=identity,
+        shared_dir=Path("shared"),
+        storage_root=storage,
+    ).select_sources()
+
+    assert selection.kind is SourceKind.SHARED
+    assert len(selection.paths) == 1
+    assert os.path.samefile(selection.paths[0], shared_path)
+
+
+def test_select_sources_relative_symlink_ancestor_falls_back_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0755)
+    (tmp_path / "autobench").symlink_to(victim)
+    shared_path = _write_shared(
+        Path("autobench") / "telemetry", "alice", _session_start()
+    )
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    selection = _reader(
+        tmp_path,
+        identity=identity,
+        shared_dir=Path("autobench/telemetry"),
+        storage_root=storage,
+    ).select_sources()
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert shared_path.exists()
+
+
 def test_select_sources_hostile_only_falls_back_to_private(
     tmp_path: Path,
 ) -> None:
