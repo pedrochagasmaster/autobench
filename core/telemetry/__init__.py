@@ -7,7 +7,7 @@ import threading
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from core.telemetry.events import MAX_APP_VERSION_BYTES
 from core.telemetry.identity import resolve_identity
@@ -81,57 +81,43 @@ def _reset_for_tests(service: TelemetryService | None = None) -> None:
             logger.debug("telemetry reset shutdown failed", exc_info=True)
 
 
-def start_session(launch_context: LaunchContext) -> None:
+def _run_safely(
+    operation: str,
+    callback: Callable[[TelemetryService], None],
+) -> None:
     try:
-        _get_service().start_session(launch_context)
+        callback(_get_service())
     except Exception:
-        logger.debug("telemetry start_session failed", exc_info=True)
+        logger.debug("telemetry %s failed", operation, exc_info=True)
+
+
+def start_session(launch_context: LaunchContext) -> None:
+    _run_safely("start_session", lambda s: s.start_session(launch_context))
 
 
 def end_session() -> None:
-    try:
-        _get_service().end_session()
-    except Exception:
-        logger.debug("telemetry end_session failed", exc_info=True)
+    _run_safely("end_session", lambda s: s.end_session())
 
 
 def surface_viewed(surface: Surface) -> None:
-    try:
-        _get_service().surface_viewed(surface)
-    except Exception:
-        logger.debug("telemetry surface_viewed failed", exc_info=True)
+    _run_safely("surface_viewed", lambda s: s.surface_viewed(surface))
 
 
 def action_attempted(action: Action) -> None:
-    try:
-        _get_service().action_attempted(action)
-    except Exception:
-        logger.debug("telemetry action_attempted failed", exc_info=True)
+    _run_safely("action_attempted", lambda s: s.action_attempted(action))
 
 
 def action_completed(action: Action) -> None:
-    try:
-        _get_service().action_completed(action)
-    except Exception:
-        logger.debug("telemetry action_completed failed", exc_info=True)
+    _run_safely("action_completed", lambda s: s.action_completed(action))
 
 
 def action_cancelled(action: Action) -> None:
-    try:
-        _get_service().action_cancelled(action)
-    except Exception:
-        logger.debug("telemetry action_cancelled failed", exc_info=True)
+    _run_safely("action_cancelled", lambda s: s.action_cancelled(action))
 
 
 def action_refused(action: Action, reason: RefuseReason) -> None:
-    try:
-        _get_service().action_refused(action, reason)
-    except Exception:
-        logger.debug("telemetry action_refused failed", exc_info=True)
+    _run_safely("action_refused", lambda s: s.action_refused(action, reason))
 
 
 def action_failed(action: Action, category: FailCategory) -> None:
-    try:
-        _get_service().action_failed(action, category)
-    except Exception:
-        logger.debug("telemetry action_failed failed", exc_info=True)
+    _run_safely("action_failed", lambda s: s.action_failed(action, category))
