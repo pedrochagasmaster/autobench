@@ -15,3 +15,5 @@ scipy>=1.10,<2
 
 # TUI
 textual>=0.40.0,<8
+
+# E2E release exercise: dependency path changed; dependency set unchanged.
