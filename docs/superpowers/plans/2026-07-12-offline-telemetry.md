@@ -96,6 +96,7 @@ Define:
 ```python
 SCHEMA_VERSION = 1
 MAX_RECORD_BYTES = 8192
+SHARED_GATE_SCAN_MAX_BYTES = 64 * 1024
 DATA_CAPACITY = 256
 PHYSICAL_QUEUE_CAPACITY = DATA_CAPACITY + 2
 SHUTDOWN_BUDGET_S = 0.250
@@ -381,6 +382,14 @@ fleet-wide, stay shared-only and include the encoded user path only when it
 qualifies (empty shared otherwise); do not accept a raw filename by token
 grammar alone.
 
+Pre-gate discovery of that first owner/token event is limited by
+`SHARED_GATE_SCAN_MAX_BYTES` (64 KiB physical `os.read` bytes, counting
+oversized/no-LF/invalid content). The budget applies only before the gate
+during qualification and TOCTOU reopen re-gating; files with no gate event in
+budget are rejected/nonqualifying. After a successful gate, lift the budget and
+continue full-file streaming from the same buffered iterator with ordinary
+per-line 8 KiB limits and malformed-line isolation.
+
 Test the inclusive days boundary, no lower bound when days is `None`, rejection
 beyond five minutes future skew, `--user` validation/token path resolution,
 and terminal-control rejection/sanitization.
@@ -394,10 +403,11 @@ python -m pytest tests/telemetry/test_reader.py -v
 - [ ] **Step 3: Implement source selection and streaming**
 
 When at least one direct shared `users/*.jsonl` candidate *qualifies* as an
-expected event file (safe open/fstat, first schema-valid owner/token gate, safe
-ancestors), select only the sorted qualifying shared paths. Otherwise select
-only the current user's private file. Never combine copies. Hostile non-
-qualifying `*.jsonl` entries must not suppress private fallback.
+expected event file (safe open/fstat, first schema-valid owner/token gate within
+`SHARED_GATE_SCAN_MAX_BYTES`, safe ancestors), select only the sorted
+qualifying shared paths. Otherwise select only the current user's private file.
+Never combine copies. Hostile non-qualifying `*.jsonl` entries must not
+suppress private fallback.
 
 - [ ] **Step 4: Write aggregation and rendering tests**
 

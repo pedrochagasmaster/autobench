@@ -180,6 +180,15 @@ do not suppress private fallback. When one or more files qualify, the reader
 selects only those sorted shared paths and never combines dual-written private
 copies. Otherwise it reads only the current user's private file.
 
+Finding that first owner/token gate event is capped by
+`SHARED_GATE_SCAN_MAX_BYTES` (64 KiB of physical bytes returned by `os.read`,
+including oversized, unterminated, and invalid content). The budget applies
+only before the first valid owner/token gate during source qualification and
+again on TOCTOU reopen/`_iter_path` re-gating. A file with no schema-valid gate
+event within the budget is rejected and does not qualify. After a successful
+gate, the budget is lifted so the same buffered iterator can stream the rest
+of the file with ordinary per-line 8 KiB limits and malformed-line isolation.
+
 With `--user`, the reader first decides whether any shared file qualifies
 fleet-wide. If so, it stays shared-only and reads the requested user's encoded
 path only when that path itself qualifies (otherwise an empty shared result);
@@ -223,8 +232,9 @@ Implementation follows test-first development. Tests cover:
 - environment opt-out, directory override, shared capability fallback, and
   lazy initialization;
 - strict reader validation, oversized and malformed lines, owner/token
-  mismatch, schema warnings, date/future-skew filtering, source preference,
-  deterministic aggregation, and terminal-safe output;
+  mismatch, pre-gate `SHARED_GATE_SCAN_MAX_BYTES` budget, schema warnings,
+  date/future-skew filtering, source preference, deterministic aggregation,
+  and terminal-safe output;
 - CLI parser behavior and confirmation that telemetry reader commands do not
   initialize the interactive application or writer;
 - CLI and TUI session/action/surface integration without sensitive values.
