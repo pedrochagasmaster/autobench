@@ -73,7 +73,7 @@ def test_shared_writer_supported_true_for_relative_safe_users_path(
     monkeypatch.chdir(tmp_path)
     protected = tmp_path / "protected_hardlinks"
     protected.write_text("1\n", encoding="ascii")
-    users = _make_users_dir(tmp_path / "shared" / "users")
+    _make_users_dir(tmp_path / "shared" / "users")
 
     assert (
         shared_writer_supported(

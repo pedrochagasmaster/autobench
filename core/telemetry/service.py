@@ -21,7 +21,7 @@ from core.telemetry.constants import (
     SHUTDOWN_BUDGET_S,
 )
 from core.telemetry.events import build_record
-from core.telemetry.fs_safety import lexical_absolute_path
+from core.telemetry.fs_safety import LexicalAbsolutePath, lexical_absolute_path
 from core.telemetry.identity import Identity
 from core.telemetry.writer import append_record, paths_for
 
@@ -106,7 +106,7 @@ class TelemetryService:
         self._shutdown_budget_s = shutdown_budget_s
         self._enabled = _env_enabled(self._environ)
         resolved, shared_ok = _resolve_shared_dir(self._environ, shared_dir)
-        self._shared_dir = (
+        self._shared_dir: LexicalAbsolutePath | None = (
             lexical_absolute_path(resolved) if resolved is not None else None
         )
         self._shared_config_ok = shared_ok

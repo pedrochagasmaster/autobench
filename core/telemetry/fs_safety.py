@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import TypeAlias
 
 
 class LexicalAbsolutePath(os.PathLike[str]):
@@ -83,8 +84,12 @@ class LexicalAbsolutePath(os.PathLike[str]):
         return LexicalAbsolutePath(f"{self._raw}/{piece}")
 
 
+# pathlib.Path or uncollapsed absolute lexical path used for shared FS gates/ops.
+TelemetryPath: TypeAlias = Path | LexicalAbsolutePath
+
+
 def lexical_absolute_path(
-    path: Path | str | LexicalAbsolutePath | os.PathLike[str],
+    path: TelemetryPath | str | os.PathLike[str],
     *,
     cwd: Path | str | None = None,
 ) -> LexicalAbsolutePath:
@@ -117,7 +122,7 @@ def lexical_absolute_path(
 
 
 def absolute_path_prefixes(
-    path: Path | LexicalAbsolutePath | str | os.PathLike[str],
+    path: TelemetryPath | str | os.PathLike[str],
 ) -> tuple[LexicalAbsolutePath, ...]:
     """Return lexical absolute prefixes from ``/`` through ``path`` (no resolve)."""
     if isinstance(path, LexicalAbsolutePath):
@@ -137,7 +142,7 @@ def absolute_path_prefixes(
 
 
 def existing_ancestors_are_real_dirs(
-    path: Path | str | LexicalAbsolutePath | os.PathLike[str],
+    path: TelemetryPath | str | os.PathLike[str],
     *,
     cwd: Path | str | None = None,
 ) -> bool:

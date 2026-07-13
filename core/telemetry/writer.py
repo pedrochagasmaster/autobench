@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.telemetry.constants import MAX_RECORD_BYTES
-from core.telemetry.fs_safety import lexical_absolute_path
+from core.telemetry.fs_safety import TelemetryPath, lexical_absolute_path
 from core.telemetry.identity import Identity
 
 _OPEN_FLAGS = (
@@ -30,7 +30,7 @@ _SHARED_FILE_MODE = 0o644
 @dataclass(frozen=True)
 class WriterPaths:
     private_file: Path
-    shared_users_dir: Path
+    shared_users_dir: TelemetryPath
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class AppendResult:
 
 def paths_for(
     identity: Identity,
-    shared_dir: Path,
+    shared_dir: TelemetryPath | str | os.PathLike[str],
     *,
     storage_root: Path = Path("/ads_storage"),
 ) -> WriterPaths:
@@ -155,7 +155,7 @@ def _write_all(fd: int, data: bytes) -> bool:
 
 
 def append_one(
-    path: Path,
+    path: TelemetryPath,
     record: bytes,
     *,
     expected_uid: int,
@@ -173,6 +173,9 @@ def append_one(
         data = bytes(record)
 
         if create_private_parents:
+            # Private parents only apply to pathlib home paths, never lexical shared.
+            if not isinstance(path, Path):
+                return False
             if not _ensure_private_parents(path, expected_uid):
                 return False
 

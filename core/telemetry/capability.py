@@ -8,7 +8,11 @@ import stat
 import sys
 from pathlib import Path
 
-from core.telemetry.fs_safety import existing_ancestors_are_real_dirs, lexical_absolute_path
+from core.telemetry.fs_safety import (
+    TelemetryPath,
+    existing_ancestors_are_real_dirs,
+    lexical_absolute_path,
+)
 
 _REQUIRED_OS_FLAGS = (
     "O_APPEND",
@@ -23,7 +27,7 @@ _STICKY_WORLD_WRITE_SEARCH = stat.S_ISVTX | stat.S_IWOTH | stat.S_IXOTH
 
 
 def shared_writer_supported(
-    users_dir: Path,
+    users_dir: TelemetryPath | str | os.PathLike[str],
     *,
     protected_hardlinks_path: Path = Path("/proc/sys/fs/protected_hardlinks"),
 ) -> bool:

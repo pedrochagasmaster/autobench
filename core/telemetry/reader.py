@@ -23,7 +23,12 @@ from core.telemetry.events import (
     ValidatedEvent,
     decode_record,
 )
-from core.telemetry.fs_safety import existing_ancestors_are_real_dirs, lexical_absolute_path
+from core.telemetry.fs_safety import (
+    LexicalAbsolutePath,
+    TelemetryPath,
+    existing_ancestors_are_real_dirs,
+    lexical_absolute_path,
+)
 from core.telemetry.identity import (
     Identity,
     encode_user_token,
@@ -67,7 +72,7 @@ class SourceKind(Enum):
 @dataclass
 class SourceSelection:
     kind: SourceKind
-    paths: tuple[Path, ...]
+    paths: tuple[TelemetryPath, ...]
 
 
 @dataclass(frozen=True)
@@ -128,12 +133,12 @@ def _resolve_shared_parent(
     return DEFAULT_SHARED_DIR
 
 
-def _list_shared_jsonl(users_dir: Path) -> tuple[Path, ...]:
+def _list_shared_jsonl(users_dir: TelemetryPath) -> tuple[TelemetryPath, ...]:
     try:
         names = os.listdir(users_dir)
     except OSError:
         return ()
-    paths = [
+    paths: list[TelemetryPath] = [
         users_dir / name
         for name in names
         if name.endswith(".jsonl") and "/" not in name and name not in {".", ".."}
@@ -141,7 +146,7 @@ def _list_shared_jsonl(users_dir: Path) -> tuple[Path, ...]:
     return tuple(sorted(paths, key=lambda p: p.name))
 
 
-def _safe_open_regular(path: Path) -> tuple[int, os.stat_result] | None:
+def _safe_open_regular(path: TelemetryPath) -> tuple[int, os.stat_result] | None:
     """Open ``path`` safely; return (fd, fstat) only for regular singly-linked files."""
     fd: int | None = None
     try:
@@ -191,7 +196,7 @@ class TelemetryReader:
         self._storage_root = storage_root
         self._warn = warn if warn is not None else (lambda _msg: None)
         # Capture cwd now so later chdir cannot redirect shared ancestor checks.
-        self._shared_parent = lexical_absolute_path(
+        self._shared_parent: LexicalAbsolutePath = lexical_absolute_path(
             _resolve_shared_parent(shared_dir, os.environ)
         )
         if now is None:
@@ -223,16 +228,16 @@ class TelemetryReader:
         )
         return SourceSelection(kind=SourceKind.PRIVATE, paths=(paths.private_file,))
 
-    def _qualifying_shared_paths(self, users_dir: Path) -> tuple[Path, ...]:
+    def _qualifying_shared_paths(self, users_dir: TelemetryPath) -> tuple[TelemetryPath, ...]:
         if not existing_ancestors_are_real_dirs(users_dir):
             return ()
-        qualified: list[Path] = []
+        qualified: list[TelemetryPath] = []
         for path in _list_shared_jsonl(users_dir):
             if self._shared_path_qualifies(path):
                 qualified.append(path)
         return tuple(qualified)
 
-    def _shared_path_qualifies(self, path: Path) -> bool:
+    def _shared_path_qualifies(self, path: TelemetryPath) -> bool:
         """True when path is a safe expected shared event file (owner/token gate)."""
         opened = _safe_open_regular(path)
         if opened is None:
@@ -342,7 +347,7 @@ class TelemetryReader:
 
     def _iter_path(
         self,
-        path: Path,
+        path: TelemetryPath,
         *,
         kind: SourceKind,
         lower: datetime | None,
@@ -399,7 +404,9 @@ class TelemetryReader:
         finally:
             _close_quiet(fd)
 
-    def _accept_shared_file(self, path: Path, first: ValidatedEvent, file_uid: int) -> bool:
+    def _accept_shared_file(
+        self, path: TelemetryPath, first: ValidatedEvent, file_uid: int
+    ) -> bool:
         try:
             expected_name = f"{encode_user_token(first.user)}.jsonl"
         except ValueError:
