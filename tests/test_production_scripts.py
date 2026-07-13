@@ -234,11 +234,101 @@ def test_provision_telemetry_dirs_rejects_unsafe_roots(tmp_path: Path, bad: str)
     combined = (fail.stderr + fail.stdout).lower()
     assert any(
         token in combined
-        for token in ("refusing", "unsafe", "invalid", "empty", "root")
+        for token in ("refusing", "unsafe", "invalid", "empty", "root", "absolute")
     )
     assert stat.S_IMODE(marker.stat().st_mode) == 0o0700
     if not users_existed_before:
         assert not users_at_root.exists()
+    assert not (tmp_path / "users").exists()
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "{base}/./x",
+        "{base}/x/../y",
+        "{base}/./x/",
+        "{base}/x/../y///",
+        "foo/..",
+        "../",
+        "./.",
+        "relative-telemetry",
+        "./telemetry",
+    ],
+)
+def test_provision_telemetry_dirs_rejects_dot_aliases_without_mutating(
+    tmp_path: Path, alias: str
+) -> None:
+    """Reject relative paths and any lexical '.'/'..' component before mutation."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    base = tmp_path / "base"
+    base.mkdir(mode=0o0700)
+    cwd_mode_before = stat.S_IMODE(tmp_path.stat().st_mode)
+    parent_mode_before = stat.S_IMODE(base.stat().st_mode)
+    target = alias.format(base=str(base))
+
+    maybe_x = base / "x"
+    maybe_y = base / "y"
+    maybe_users_cwd = tmp_path / "users"
+    maybe_users_base = base / "users"
+    maybe_users_x = base / "x" / "users"
+    maybe_users_y = base / "y" / "users"
+
+    fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            target,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(tmp_path),
+    )
+    assert fail.returncode != 0, fail.stdout or fail.stderr
+    combined = (fail.stderr + fail.stdout).lower()
+    assert any(
+        token in combined
+        for token in ("refusing", "unsafe", "invalid", "absolute", "dot")
+    )
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == cwd_mode_before
+    assert stat.S_IMODE(base.stat().st_mode) == parent_mode_before
+    assert not maybe_x.exists()
+    assert not maybe_y.exists()
+    assert not maybe_users_cwd.exists()
+    assert not maybe_users_base.exists()
+    assert not maybe_users_x.exists()
+    assert not maybe_users_y.exists()
+
+
+def test_provision_telemetry_dirs_accepts_absolute_with_repeated_slashes(
+    tmp_path: Path,
+) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telem"
+    weird = str(tmp_path) + "///telem///"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            weird,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert parent.is_dir() and not parent.is_symlink()
+    assert (parent / "users").is_dir()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
 
 
 def test_provision_telemetry_dirs_trailing_slash_override_still_provisions(

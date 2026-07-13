@@ -412,6 +412,7 @@ def test_telemetry_shared_layout_and_validator_are_documented() -> None:
     assert "validate_telemetry_filesystem.py" in combined
     assert "AUTOBENCH_TELEMETRY" in combined
     assert "AUTOBENCH_TELEMETRY_DIR" in combined
+    assert "absolute" in combined.lower()
     assert "world-readable" in combined.lower() or "readable by every local user" in combined.lower()
     assert "protected_hardlinks" in combined
     assert "O_APPEND" in combined

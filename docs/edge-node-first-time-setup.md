@@ -151,10 +151,11 @@ Exact layout and modes:
 | `/ads_storage/autobench/telemetry/users/<token>.jsonl` | `0644` | Per-user shared events (world-readable) |
 | `/ads_storage/<user>/.autobench/telemetry/events.jsonl` | private `0600` under `0700` dirs | Private dual-write destination |
 
-Override the shared parent with `AUTOBENCH_TELEMETRY_DIR` (the directory whose
-direct child is `users/`). Telemetry is default-on; case-insensitive
-`AUTOBENCH_TELEMETRY` values `0`, `false`, `off`, or `no` opt out of future
-private and shared writes without deleting existing records.
+Override the shared parent with an absolute `AUTOBENCH_TELEMETRY_DIR` (the
+directory whose direct child is `users/`). Relative paths and path components
+`.` / `..` are rejected by the trusted provisioner. Telemetry is default-on;
+case-insensitive `AUTOBENCH_TELEMETRY` values `0`, `false`, `off`, or `no`
+opt-out of future private and shared writes without deleting existing records.
 
 The portable profile intentionally discloses usernames and approved event data
 as world-readable local files. Treat telemetry as self-reported product data,
@@ -178,6 +179,9 @@ cd /ads_storage/autobench
 python scripts/validate_telemetry_filesystem.py
 # or: python scripts/validate_telemetry_filesystem.py --dir /ads_storage/autobench/telemetry
 ```
+
+`--dir` / `AUTOBENCH_TELEMETRY_DIR` must name an absolute telemetry parent (the
+directory whose direct child is `users/`).
 
 Expect deterministic `PASS:` lines and exit status `0`. Any `FAIL:` line with
 exit status `1` is actionable; do not treat the run as successful.

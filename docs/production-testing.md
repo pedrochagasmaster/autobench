@@ -96,6 +96,9 @@ python scripts/validate_telemetry_filesystem.py
 python scripts/validate_telemetry_filesystem.py --dir /ads_storage/autobench/telemetry
 ```
 
+Use an absolute `--dir` (and absolute `AUTOBENCH_TELEMETRY_DIR` overrides). Relative
+paths are not valid operator inputs for shared telemetry parents.
+
 Expected status: every line is `PASS: ...` and the process exits `0`. Any
 `FAIL: ...` line with exit `1` means shared telemetry must stay gated off until
 operators repair the mount; do not weaken the runtime capability gate to force

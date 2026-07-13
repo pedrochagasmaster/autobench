@@ -5,9 +5,11 @@
 # mkdir/chmod. Creates the parent with mkdir -p -- and users with mkdir -- when
 # absent, then applies exact portable modes 0755 / 1777.
 #
-# Paths are normalized by stripping one-or-more trailing slashes while preserving
-# a lone root token ("/"). Empty, ".", and "/" are rejected so this helper never
-# chmods root or creates /users.
+# Paths must be absolute. One-or-more trailing slashes are stripped while
+# preserving a lone root token ("/"). Empty, ".", "/", relative paths, and any
+# lexical path component exactly "." or ".." are rejected before filesystem
+# mutation so this helper never chmods an unintended root or creates /users.
+# Repeated internal slashes are allowed (harmless).
 #
 # Usage:
 #   . scripts/provision_telemetry_dirs.sh
@@ -23,6 +25,30 @@ _normalize_telemetry_dir() {
     p="${p%/}"
   done
   printf '%s' "$p"
+}
+
+# Return 0 when any lexical component is exactly "." or "..".
+_telemetry_dir_has_dot_component() {
+  local p="$1"
+  local rest="${p#/}"
+  local comp
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*)
+        comp="${rest%%/*}"
+        rest="${rest#*/}"
+        ;;
+      *)
+        comp="$rest"
+        rest=""
+        ;;
+    esac
+    # Empty components from repeated slashes are harmless.
+    if [ "$comp" = "." ] || [ "$comp" = ".." ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 provision_shared_telemetry_dirs() {
@@ -45,6 +71,19 @@ provision_shared_telemetry_dirs() {
       return 1
       ;;
   esac
+
+  case "$TELEMETRY_DIR" in
+    /*) ;;
+    *)
+      printf 'ERROR: TELEMETRY_DIR must be an absolute path (refusing): %s\n' "$TELEMETRY_DIR" >&2
+      return 1
+      ;;
+  esac
+
+  if _telemetry_dir_has_dot_component "$TELEMETRY_DIR"; then
+    printf 'ERROR: TELEMETRY_DIR contains a "." or ".." dot component (refusing): %s\n' "$TELEMETRY_DIR" >&2
+    return 1
+  fi
 
   # -L/-e inspect the normalized path itself (test(1) has no --); mkdir/chmod use -- below.
   if [ -L "$TELEMETRY_DIR" ]; then
