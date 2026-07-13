@@ -372,6 +372,15 @@ encoding of its user, NSS lookup of that user to equal descriptor `st_uid`,
 and all later records to carry that same user. Reject the whole file when the
 initial owner/token identity check fails.
 
+Shared source preference requires at least one *qualifying* expected event
+file (safe open + first schema-valid owner/token gate + safe ancestors).
+Hostile symlink/FIFO/hardlink/malformed/token-mismatch entries alone must fall
+back to private; when any file qualifies, select only sorted qualifying shared
+paths and never combine private. For `--user`, if any shared file qualifies
+fleet-wide, stay shared-only and include the encoded user path only when it
+qualifies (empty shared otherwise); do not accept a raw filename by token
+grammar alone.
+
 Test the inclusive days boundary, no lower bound when days is `None`, rejection
 beyond five minutes future skew, `--user` validation/token path resolution,
 and terminal-control rejection/sanitization.
@@ -384,9 +393,11 @@ python -m pytest tests/telemetry/test_reader.py -v
 
 - [ ] **Step 3: Implement source selection and streaming**
 
-When direct shared `users/*.jsonl` path entries exist, select only sorted shared
-entries—even if individual entries later fail validation. Otherwise select
-only the current user's private file. Never combine copies.
+When at least one direct shared `users/*.jsonl` candidate *qualifies* as an
+expected event file (safe open/fstat, first schema-valid owner/token gate, safe
+ancestors), select only the sorted qualifying shared paths. Otherwise select
+only the current user's private file. Never combine copies. Hostile non-
+qualifying `*.jsonl` entries must not suppress private fallback.
 
 - [ ] **Step 4: Write aggregation and rendering tests**
 

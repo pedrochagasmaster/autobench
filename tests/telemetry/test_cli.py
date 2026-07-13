@@ -60,7 +60,7 @@ def _write_shared(shared_dir: Path, username: str, *records: bytes) -> Path:
 
 
 def _write_hostile_shared_entry(shared_dir: Path) -> Path:
-    """Create a users/*.jsonl so shared selection wins (no private fallback)."""
+    """Create a non-qualifying users/*.jsonl (must not suppress private fallback)."""
     users = shared_dir / "users"
     users.mkdir(parents=True, exist_ok=True)
     path = users / "hostile.jsonl"
@@ -330,7 +330,7 @@ def test_valid_empty_who_and_summary_never_touch_ads_storage(
 ) -> None:
     shared = tmp_path / "shared-empty"
     shared.mkdir()
-    # Shared users entry forces shared selection; private /ads_storage fallback impossible.
+    # Non-qualifying junk must not force shared selection; private stays under tmp.
     _write_hostile_shared_entry(shared)
     touched = _guard_ads_storage_opens(monkeypatch)
 

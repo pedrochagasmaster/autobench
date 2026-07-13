@@ -172,24 +172,27 @@ count. `benchmark.py telemetry summary [--days N] [--dir PATH]
 outcome. Human-readable output is the initial format.
 
 The reader prefers shared `users/*.jsonl` files when at least one expected
-event file is present; otherwise it reads only the current user's private
-file. It never combines dual-written sources.
+event file qualifies: safe open (`O_RDONLY | O_CLOEXEC | O_NONBLOCK |
+O_NOFOLLOW`), `fstat` regular and singly linked, a first schema-valid event
+whose encoded username matches the filename token, NSS UID matching the file
+owner, and safe shared ancestors. Hostile or malformed `*.jsonl` names alone
+do not suppress private fallback. When one or more files qualify, the reader
+selects only those sorted shared paths and never combines dual-written private
+copies. Otherwise it reads only the current user's private file.
 
-Every file is opened with
-`O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW` and accepted only if `fstat`
-shows a regular singly linked file. Shared files are rejected before
-aggregation unless the filename token matches the encoding of the record user,
-NSS resolves that user, and the file owner matches the resolved UID. Each line
-has a bounded byte length and must pass complete envelope and property-schema
-validation.
+With `--user`, the reader first decides whether any shared file qualifies
+fleet-wide. If so, it stays shared-only and reads the requested user's encoded
+path only when that path itself qualifies (otherwise an empty shared result);
+it does not fall through to private. If none qualify, private fallback remains
+the current user's private file with the user filter applied.
 
-The reader streams lines, isolates malformed lines, warns visibly for
-unsupported schema versions, parses timestamps strictly, applies an inclusive
-`ts >= now - days` boundary, and rejects timestamps beyond a documented
-five-minute future-skew allowance. Sessions are distinct valid
-`(user, session_id)` pairs observed on `session_start`. Last seen is the latest
-accepted event. Output values are enum-controlled or terminal-sanitized and
-sorted deterministically.
+The reader streams lines with a bounded per-line byte length, isolates
+malformed lines, warns visibly for unsupported schema versions, parses
+timestamps strictly, applies an inclusive `ts >= now - days` boundary, and
+rejects timestamps beyond a documented five-minute future-skew allowance.
+Sessions are distinct valid `(user, session_id)` pairs observed on
+`session_start`. Last seen is the latest accepted event. Output values are
+enum-controlled or terminal-sanitized and sorted deterministically.
 
 ## Deployment and operations
 

@@ -203,9 +203,10 @@ def test_select_sources_falls_back_private_when_intermediate_ancestor_is_symlink
     assert all(p != shared_path for p in selection.paths)
 
 
-def test_select_sources_prefers_shared_even_with_hostile_invalid_entry(
+def test_select_sources_hostile_only_falls_back_to_private(
     tmp_path: Path,
 ) -> None:
+    """Junk *.jsonl alone must not suppress private fallback (DoS)."""
     identity = _identity()
     shared = tmp_path / "shared"
     users = shared / "users"
@@ -213,20 +214,73 @@ def test_select_sources_prefers_shared_even_with_hostile_invalid_entry(
     hostile = users / "not-a-valid-token.jsonl"
     hostile.write_bytes(_session_start())
     storage = tmp_path / "ads"
-    _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
 
-    selection = _reader(tmp_path, identity=identity, shared_dir=shared, storage_root=storage).select_sources()
+    reader = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    )
+    selection = reader.select_sources()
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    events = list(reader.iter_events(days=None))
+    assert len(events) == 1
+    assert events[0].session_id == str(SESSION_B)
+
+
+def test_select_sources_mixed_valid_and_hostile_shared_only_no_double_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    (users / "junk.jsonl").write_bytes(b"{not-json\n")
+    valid = _write_shared(shared, "alice", _session_start())
+    storage = tmp_path / "ads"
+    _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    reader = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    )
+    selection = reader.select_sources()
 
     assert selection.kind is SourceKind.SHARED
-    assert selection.paths == (hostile,)
-    assert list(
-        _reader(tmp_path, identity=identity, shared_dir=shared, storage_root=storage).iter_events(
-            days=None
-        )
-    ) == []
+    assert selection.paths == (valid,)
+    events = list(reader.iter_events(days=None))
+    assert len(events) == 1
+    assert events[0].session_id == str(SESSION_A)
 
 
-def test_select_sources_sorted_shared_paths_including_symlinks(tmp_path: Path) -> None:
+def test_select_sources_owner_token_mismatch_alone_falls_back_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    # Filename token for bob, record user alice → fails qualification.
+    path = users / f"{encode_user_token('bob')}.jsonl"
+    path.write_bytes(_session_start(user="alice"))
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    monkeypatch.setattr(
+        "core.telemetry.reader.lookup_uid",
+        lambda username: identity.uid if username == "alice" else identity.uid + 1,
+    )
+
+    selection = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    ).select_sources()
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+
+
+def test_select_sources_sorted_qualifying_shared_excludes_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     identity = _identity()
     shared = tmp_path / "shared"
     users = shared / "users"
@@ -235,22 +289,50 @@ def test_select_sources_sorted_shared_paths_including_symlinks(tmp_path: Path) -
     alice = _write_shared(shared, "alice", _session_start())
     link = users / "zzzz_link.jsonl"
     link.symlink_to(alice)
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
 
     selection = _reader(tmp_path, identity=identity, shared_dir=shared).select_sources()
 
     assert selection.kind is SourceKind.SHARED
-    assert selection.paths == tuple(sorted((alice, bob, link)))
+    assert selection.paths == tuple(sorted((alice, bob)))
+    assert link not in selection.paths
 
 
-def test_select_sources_user_filter_builds_token_path_not_raw_name(
-    tmp_path: Path,
+def test_select_sources_user_absent_in_valid_fleet_returns_empty_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     identity = _identity()
     shared = tmp_path / "shared"
-    (shared / "users").mkdir(parents=True)
-    # Decoy raw-name file must not be selected.
-    (shared / "users" / "alice.jsonl").write_bytes(_session_start())
-    expected = shared / "users" / f"{encode_user_token('alice')}.jsonl"
+    storage = tmp_path / "ads"
+    _write_shared(shared, "bob", _session_start(user="bob"))
+    _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    selection = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    ).select_sources(user="alice")
+
+    assert selection.kind is SourceKind.SHARED
+    assert selection.paths == ()
+    events = list(
+        _reader(
+            tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+        ).iter_events(days=None, user="alice")
+    )
+    assert events == []
+
+
+def test_select_sources_user_filter_only_if_qualifying_not_raw_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    # Raw username filename must never be selected by grammar alone.
+    (users / "alice.jsonl").write_bytes(_session_start())
+    expected = _write_shared(shared, "alice", _session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
 
     selection = _reader(tmp_path, identity=identity, shared_dir=shared).select_sources(
         user="alice"
@@ -258,6 +340,82 @@ def test_select_sources_user_filter_builds_token_path_not_raw_name(
 
     assert selection.kind is SourceKind.SHARED
     assert selection.paths == (expected,)
+    assert (users / "alice.jsonl") not in selection.paths
+
+
+def test_select_sources_user_with_only_raw_name_decoy_falls_back_private(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    (users / "alice.jsonl").write_bytes(_session_start())
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    selection = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    ).select_sources(user="alice")
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+
+
+def test_qualification_closes_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    _write_shared(shared, "alice", _session_start())
+    opened: list[int] = []
+    closed: list[int] = []
+    real_open = os.open
+    real_close = os.close
+
+    def spy_open(
+        p: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *args: Any,
+        **kwargs: Any,
+    ) -> int:
+        fd = real_open(p, flags, mode, *args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def spy_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+    monkeypatch.setattr("core.telemetry.reader.os.open", spy_open)
+    monkeypatch.setattr("core.telemetry.reader.os.close", spy_close)
+
+    _reader(tmp_path, identity=identity, shared_dir=shared).select_sources()
+
+    assert opened
+    assert closed == opened
+
+
+def test_qualification_fifo_does_not_block(tmp_path: Path) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    fifo = users / "junk.jsonl"
+    os.mkfifo(fifo)
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    deadline = _deadline()
+    selection = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    ).select_sources()
+    _assert_before(deadline)
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
 
 
 def test_select_sources_explicit_shared_dir_overrides_env(
@@ -287,6 +445,7 @@ def test_select_sources_uses_env_when_shared_dir_omitted(
     env_dir = tmp_path / "env_shared"
     path = _write_shared(env_dir, "alice", _session_start())
     monkeypatch.setenv("AUTOBENCH_TELEMETRY_DIR", str(env_dir))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
 
     selection = TelemetryReader(
         identity=identity,

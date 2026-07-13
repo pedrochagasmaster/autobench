@@ -140,6 +140,28 @@ def _list_shared_jsonl(users_dir: Path) -> tuple[Path, ...]:
     return tuple(sorted(paths, key=lambda p: p.name))
 
 
+def _safe_open_regular(path: Path) -> tuple[int, os.stat_result] | None:
+    """Open ``path`` safely; return (fd, fstat) only for regular singly-linked files."""
+    fd: int | None = None
+    try:
+        try:
+            fd = os.open(path, _OPEN_FLAGS)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            _close_quiet(fd)
+            return None
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            _close_quiet(fd)
+            return None
+        return fd, st
+    except Exception:
+        _close_quiet(fd)
+        return None
+
+
 class TelemetryReader:
     """Stream and aggregate privacy-aware offline telemetry sources."""
 
@@ -166,19 +188,16 @@ class TelemetryReader:
             token = encode_user_token(user)
 
         users_dir = self._shared_parent / "users"
-        shared_usable = existing_ancestors_are_real_dirs(users_dir)
-        if shared_usable and token is not None:
-            # When shared entries exist, construct only the token path.
-            existing = _list_shared_jsonl(users_dir)
-            if existing:
-                return SourceSelection(
-                    kind=SourceKind.SHARED,
-                    paths=(users_dir / f"{token}.jsonl",),
-                )
-        elif shared_usable:
-            existing = _list_shared_jsonl(users_dir)
-            if existing:
-                return SourceSelection(kind=SourceKind.SHARED, paths=existing)
+        qualifying = self._qualifying_shared_paths(users_dir)
+
+        if qualifying:
+            if token is not None:
+                wanted = users_dir / f"{token}.jsonl"
+                if wanted in qualifying:
+                    return SourceSelection(kind=SourceKind.SHARED, paths=(wanted,))
+                # Fleet has expected event files; stay shared-only (no private leak).
+                return SourceSelection(kind=SourceKind.SHARED, paths=())
+            return SourceSelection(kind=SourceKind.SHARED, paths=qualifying)
 
         paths = paths_for(
             self._identity,
@@ -186,6 +205,38 @@ class TelemetryReader:
             storage_root=self._storage_root,
         )
         return SourceSelection(kind=SourceKind.PRIVATE, paths=(paths.private_file,))
+
+    def _qualifying_shared_paths(self, users_dir: Path) -> tuple[Path, ...]:
+        if not existing_ancestors_are_real_dirs(users_dir):
+            return ()
+        qualified: list[Path] = []
+        for path in _list_shared_jsonl(users_dir):
+            if self._shared_path_qualifies(path):
+                qualified.append(path)
+        return tuple(qualified)
+
+    def _shared_path_qualifies(self, path: Path) -> bool:
+        """True when path is a safe expected shared event file (owner/token gate)."""
+        opened = _safe_open_regular(path)
+        if opened is None:
+            return False
+        fd, st = opened
+        try:
+            first = self._first_schema_valid_event(fd, warn_unsupported=False)
+            if first is None:
+                return False
+            return self._accept_shared_file(path, first, st.st_uid)
+        finally:
+            _close_quiet(fd)
+
+    def _first_schema_valid_event(
+        self, fd: int, *, warn_unsupported: bool
+    ) -> ValidatedEvent | None:
+        for raw_line in _iter_raw_lines(fd):
+            event = self._try_decode_line(raw_line, warn_unsupported=warn_unsupported)
+            if event is not None:
+                return event
+        return None
 
     def iter_events(
         self,
@@ -274,22 +325,11 @@ class TelemetryReader:
         upper: datetime,
         user_filter: str | None,
     ) -> Iterator[ValidatedEvent]:
-        fd: int | None = None
+        opened = _safe_open_regular(path)
+        if opened is None:
+            return
+        fd, st = opened
         try:
-            try:
-                fd = os.open(path, _OPEN_FLAGS)
-            except OSError:
-                return
-
-            try:
-                st = os.fstat(fd)
-            except OSError:
-                return
-
-            if not stat.S_ISREG(st.st_mode):
-                return
-            if st.st_nlink != 1:
-                return
             if kind is SourceKind.PRIVATE and st.st_uid != self._identity.uid:
                 return
 
@@ -298,7 +338,7 @@ class TelemetryReader:
             gated = False
 
             for raw_line in _iter_raw_lines(fd):
-                event = self._decode_line(raw_line)
+                event = self._try_decode_line(raw_line, warn_unsupported=True)
                 if event is None:
                     continue
 
@@ -338,16 +378,22 @@ class TelemetryReader:
             return False
         return owner_uid == file_uid
 
-    def _decode_line(self, raw_line: bytes) -> ValidatedEvent | None:
+    def _try_decode_line(
+        self, raw_line: bytes, *, warn_unsupported: bool
+    ) -> ValidatedEvent | None:
         try:
             return decode_record(raw_line)
         except UnsupportedSchemaVersion as exc:
-            self._warn(str(exc))
+            if warn_unsupported:
+                self._warn(str(exc))
             return None
         except EventValidationError:
             return None
         except Exception:
             return None
+
+    def _decode_line(self, raw_line: bytes) -> ValidatedEvent | None:
+        return self._try_decode_line(raw_line, warn_unsupported=True)
 
 
 def _iter_raw_lines(fd: int) -> Iterator[bytes]:
