@@ -235,7 +235,7 @@ def test_physical_reserved_controls_when_data_queue_full() -> None:
         with svc._lock:
             # Acquiring the lock after shutdown entered closing means the
             # session_end/flush puts under that critical section have finished.
-            if svc._state in {"closing", "closed"}:
+            if svc._state.value in {"closing", "closed"}:
                 saw_closing = True
                 break
         poll.wait(timeout=0.01)

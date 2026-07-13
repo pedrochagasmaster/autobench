@@ -9,6 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Mapping
 from uuid import UUID
@@ -18,36 +19,48 @@ from core.telemetry.constants import (
     DATA_CAPACITY,
     DEFAULT_SHARED_DIR,
     DISABLED_VALUES,
+    ENV_TELEMETRY,
+    ENV_TELEMETRY_DIR,
+    MAX_DURATION_S,
     SHUTDOWN_BUDGET_S,
+    shared_dir_override,
 )
 from core.telemetry.events import build_record
 from core.telemetry.fs_safety import LexicalAbsolutePath, lexical_absolute_path
 from core.telemetry.identity import Identity
-from core.telemetry.writer import append_record, paths_for
+from core.telemetry.writer import WriterPaths, append_record, paths_for
 
 logger = logging.getLogger(__name__)
 
-_MAX_DURATION_S = 31_536_000
-_ENV_ENABLED = "AUTOBENCH_TELEMETRY"
-_ENV_DIR = "AUTOBENCH_TELEMETRY_DIR"
+
+class _State(Enum):
+    ACCEPTING = "accepting"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
+class _ItemKind(Enum):
+    DATA = "data"
+    SESSION_END = "session_end"
+    FLUSH = "flush"
 
 
 @dataclass(frozen=True)
 class _QueueItem:
-    kind: str  # "data" | "session_end" | "flush"
+    kind: _ItemKind
     payload: bytes | None = None
 
 
 def _clamp_duration(seconds: float) -> float:
     if seconds < 0:
         return 0.0
-    if seconds > _MAX_DURATION_S:
-        return float(_MAX_DURATION_S)
+    if seconds > MAX_DURATION_S:
+        return float(MAX_DURATION_S)
     return round(float(seconds), 3)
 
 
 def _env_enabled(environ: Mapping[str, str]) -> bool:
-    raw = environ.get(_ENV_ENABLED)
+    raw = environ.get(ENV_TELEMETRY)
     if raw is None:
         return True
     return raw.strip().lower() not in DISABLED_VALUES
@@ -59,17 +72,13 @@ def _resolve_shared_dir(
 ) -> tuple[Path | None, bool]:
     """Return (shared_dir, shared_config_ok).
 
-    Empty/invalid ``AUTOBENCH_TELEMETRY_DIR`` fails shared closed while leaving
-    private writes eligible.
+    A present-but-blank ``AUTOBENCH_TELEMETRY_DIR`` fails shared writes closed
+    while leaving private writes eligible (the reader, by contrast, falls back
+    to the default shared parent).
     """
-    if _ENV_DIR in environ:
-        override = environ[_ENV_DIR]
-        if not isinstance(override, str):
-            return None, False
-        stripped = override.strip()
-        if not stripped:
-            return None, False
-        return Path(stripped), True
+    if ENV_TELEMETRY_DIR in environ:
+        override = shared_dir_override(environ)
+        return override, override is not None
     if explicit is not None:
         return explicit, True
     return DEFAULT_SHARED_DIR, True
@@ -111,16 +120,16 @@ class TelemetryService:
         )
         self._shared_config_ok = shared_ok
         self._writer_override = writer
-        # Host capability cannot change mid-process; evaluated once by the
-        # consumer thread on first write. None means not yet evaluated.
-        self._shared_gate_cache: bool | None = None
+        # Write paths and host capability cannot change mid-process; resolved
+        # once by the consumer thread on first write. None = not yet resolved.
+        self._write_targets: tuple[WriterPaths, bool] | None = None
 
         physical = data_capacity + 2
         if physical < 2:
             physical = 2
         self._queue: queue.Queue[_QueueItem] = queue.Queue(maxsize=physical)
         self._lock = threading.Lock()
-        self._state = "accepting"
+        self._state = _State.ACCEPTING
         self._queued_data = 0
         self._consumer: threading.Thread | None = None
         self._session_origin: float | None = None
@@ -130,7 +139,7 @@ class TelemetryService:
     @property
     def state(self) -> str:
         with self._lock:
-            return self._state
+            return self._state.value
 
     @property
     def consumer_thread(self) -> threading.Thread | None:
@@ -152,22 +161,7 @@ class TelemetryService:
         except Exception:
             logger.debug("telemetry session_start build failed", exc_info=True)
             return
-        with self._lock:
-            if self._state != "accepting":
-                logger.debug("telemetry drop: service not accepting")
-                return
-            if self._queued_data >= self._data_capacity:
-                logger.debug("telemetry drop: data queue full")
-                return
-            item = _QueueItem(kind="data", payload=record)
-            try:
-                self._queue.put_nowait(item)
-            except queue.Full:
-                logger.debug("telemetry drop: physical queue full", exc_info=True)
-                return
-            self._queued_data += 1
-            self._session_origin = self._monotonic_clock()
-            self._ensure_consumer_locked()
+        self._admit(record, session_origin=True)
 
     def end_session(self) -> None:
         self.shutdown()
@@ -192,13 +186,13 @@ class TelemetryService:
 
     def shutdown(self) -> None:
         with self._lock:
-            if self._state == "closed":
+            if self._state is _State.CLOSED:
                 return
-            if self._state == "closing":
+            if self._state is _State.CLOSING:
                 # Another caller is shutting down; wait out remaining budget.
                 deadline = self._shutdown_deadline
             else:
-                self._state = "closing"
+                self._state = _State.CLOSING
                 deadline = self._monotonic_clock() + self._shutdown_budget_s
                 self._shutdown_deadline = deadline
                 origin = self._session_origin
@@ -222,7 +216,7 @@ class TelemetryService:
                     if record is not None:
                         try:
                             self._queue.put_nowait(
-                                _QueueItem(kind="session_end", payload=record)
+                                _QueueItem(kind=_ItemKind.SESSION_END, payload=record)
                             )
                         except queue.Full:
                             logger.debug(
@@ -230,7 +224,7 @@ class TelemetryService:
                                 exc_info=True,
                             )
                 try:
-                    self._queue.put_nowait(_QueueItem(kind="flush"))
+                    self._queue.put_nowait(_QueueItem(kind=_ItemKind.FLUSH))
                 except queue.Full:
                     logger.debug(
                         "telemetry flush marker enqueue failed",
@@ -247,7 +241,7 @@ class TelemetryService:
         if remaining > 0 and self._enabled:
             self._flush_done.wait(timeout=remaining)
         with self._lock:
-            self._state = "closed"
+            self._state = _State.CLOSED
 
     def _emit(self, event: str, props: Mapping[str, object]) -> None:
         if not self._enabled:
@@ -266,21 +260,24 @@ class TelemetryService:
             return
         self._admit(record)
 
-    def _admit(self, record: bytes) -> None:
+    def _admit(self, record: bytes, *, session_origin: bool = False) -> None:
+        """Enqueue a data record; optionally mark the session origin atomically."""
         with self._lock:
-            if self._state != "accepting":
+            if self._state is not _State.ACCEPTING:
                 logger.debug("telemetry drop: service not accepting")
                 return
             if self._queued_data >= self._data_capacity:
                 logger.debug("telemetry drop: data queue full")
                 return
-            item = _QueueItem(kind="data", payload=record)
+            item = _QueueItem(kind=_ItemKind.DATA, payload=record)
             try:
                 self._queue.put_nowait(item)
             except queue.Full:
                 logger.debug("telemetry drop: physical queue full", exc_info=True)
                 return
             self._queued_data += 1
+            if session_origin:
+                self._session_origin = self._monotonic_clock()
             self._ensure_consumer_locked()
 
     def _ensure_consumer_locked(self) -> None:
@@ -307,14 +304,14 @@ class TelemetryService:
                 item = self._queue.get(timeout=0.05)
             except queue.Empty:
                 with self._lock:
-                    if self._state == "closed" and self._queue.empty():
+                    if self._state is _State.CLOSED and self._queue.empty():
                         return
                 continue
             try:
-                if item.kind == "flush":
+                if item.kind is _ItemKind.FLUSH:
                     self._flush_done.set()
                     continue
-                if item.kind == "data":
+                if item.kind is _ItemKind.DATA:
                     with self._lock:
                         if self._queued_data > 0:
                             self._queued_data -= 1
@@ -334,26 +331,32 @@ class TelemetryService:
         except Exception:
             logger.debug("telemetry writer failed", exc_info=True)
 
-    def _default_write(self, record: bytes) -> None:
-        shared_dir = self._shared_dir if self._shared_dir is not None else DEFAULT_SHARED_DIR
-        paths = paths_for(
-            self._identity,
-            shared_dir,
-            storage_root=self._storage_root,
-        )
-        shared_enabled = False
-        if self._shared_config_ok and self._shared_dir is not None:
-            if self._shared_gate_cache is None:
+    def _resolve_write_targets(self) -> tuple[WriterPaths, bool]:
+        """Resolve (paths, shared_enabled) once; consumer-thread only."""
+        if self._write_targets is None:
+            shared_dir = (
+                self._shared_dir if self._shared_dir is not None else DEFAULT_SHARED_DIR
+            )
+            paths = paths_for(
+                self._identity,
+                shared_dir,
+                storage_root=self._storage_root,
+            )
+            shared_enabled = False
+            if self._shared_config_ok and self._shared_dir is not None:
                 try:
-                    self._shared_gate_cache = bool(
+                    shared_enabled = bool(
                         shared_writer_supported(paths.shared_users_dir)
                     )
                 except Exception:
                     logger.debug(
                         "telemetry shared capability check failed", exc_info=True
                     )
-                    self._shared_gate_cache = False
-            shared_enabled = self._shared_gate_cache
+            self._write_targets = (paths, shared_enabled)
+        return self._write_targets
+
+    def _default_write(self, record: bytes) -> None:
+        paths, shared_enabled = self._resolve_write_targets()
         append_record(
             record,
             identity=self._identity,
