@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -41,16 +42,34 @@ ENVELOPE_KEYS = frozenset(
     }
 )
 
-EVENT_PROP_SCHEMAS: dict[str, frozenset[str]] = {
-    "session_start": frozenset({"launch_context"}),
-    "session_end": frozenset({"duration_s"}),
-    "surface_viewed": frozenset({"surface"}),
-    "action_attempted": frozenset({"action"}),
-    "action_completed": frozenset({"action"}),
-    "action_cancelled": frozenset({"action"}),
-    "action_refused": frozenset({"action", "reason"}),
-    "action_failed": frozenset({"action", "category"}),
-}
+ALLOWED_TRACKED_JSONL = (
+    "qa/features.jsonl",
+    "test_gate/config/cases.jsonl",
+    "test_gate/rate/cases.jsonl",
+    "test_gate/share/cases.jsonl",
+)
+
+# Skip tool/cache/venv/worktree internals when scanning for generated events.jsonl.
+_SCAN_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+        ".cursor",
+        ".idea",
+        ".vscode",
+        "worktrees",
+        ".worktrees",
+        "git-worktrees",
+    }
+)
 
 TELEMETRY_FORBIDDEN_META_KEYS = frozenset(
     {
@@ -68,6 +87,9 @@ INCIDENTAL_META_KEYS = frozenset(
         "observability",
     }
 )
+
+SHARE_ACTION_PROPS = {"action": "share_analysis"}
+EXPECTED_SHARE_EVENTS = ("action_attempted", "action_completed")
 
 
 @pytest.fixture(autouse=True)
@@ -173,6 +195,10 @@ def _publication_decision(artifacts: Any) -> dict[str, Any]:
     }
 
 
+def _assert_stable_result_keys(artifacts: Any, *, expected: list[str] | tuple[str, ...]) -> None:
+    assert list((artifacts.results or {}).keys()) == list(expected)
+
+
 def _assert_analysis_equivalent(left: Any, right: Any) -> None:
     assert left.compliance_summary == right.compliance_summary
     assert left.compliance_summary is not None
@@ -180,11 +206,17 @@ def _assert_analysis_equivalent(left: Any, right: Any) -> None:
     assert left.compliance_summary["posture"] == right.compliance_summary["posture"]
     assert _publication_decision(left) == _publication_decision(right)
 
-    assert set((left.results or {}).keys()) == set((right.results or {}).keys())
-    for key in left.results or {}:
+    _assert_stable_result_keys(left, expected=SHARE_DIMENSIONS)
+    _assert_stable_result_keys(right, expected=SHARE_DIMENSIONS)
+    for key in SHARE_DIMENSIONS:
         pdt.assert_frame_equal(left.results[key], right.results[key])
 
     assert _strip_incidental(left.metadata or {}) == _strip_incidental(right.metadata or {})
+
+
+def _assert_publication_file_exists(artifacts: Any) -> None:
+    assert artifacts.publication_output is not None
+    assert Path(artifacts.publication_output).exists()
 
 
 def _sensitive_markers(tmp_path: Path, *, output_stem: str) -> tuple[str, ...]:
@@ -224,6 +256,28 @@ def _assert_no_telemetry_fields(payload: dict[str, Any]) -> None:
             stack.extend(current)
 
 
+def _patch_helpers_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_always(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("boom-helper")
+
+    for name in (
+        "action_attempted",
+        "action_completed",
+        "action_refused",
+        "action_failed",
+    ):
+        monkeypatch.setattr(analysis_run, name, raise_always)
+
+
+def _iter_untracked_events_jsonl(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in _SCAN_SKIP_DIR_NAMES]
+        if "events.jsonl" in filenames:
+            found.append(Path(dirpath) / "events.jsonl")
+    return found
+
+
 def test_equivalent_share_analysis_telemetry_on_vs_off(tmp_path: Path) -> None:
     df = _representative_df()
     captured: list[bytes] = []
@@ -255,12 +309,14 @@ def test_equivalent_share_analysis_telemetry_on_vs_off(tmp_path: Path) -> None:
         _share_request(tmp_path / "disabled", stem="share", df=df),
         logging.getLogger("privacy_off"),
     )
-    assert disabled_svc.consumer_thread is None or not disabled_svc.consumer_thread.is_alive()
+    assert disabled_svc.consumer_thread is None
     assert list(disabled_root.rglob("*.jsonl")) == []
 
     _assert_analysis_equivalent(enabled, disabled)
     assert enabled.compliance_summary["compliance_verdict"] == "fully_compliant"
     assert _publication_decision(enabled)["publication_written"] is True
+    _assert_publication_file_exists(enabled)
+    _assert_publication_file_exists(disabled)
 
 
 def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> None:
@@ -283,7 +339,7 @@ def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> No
 
     disabled_root = tmp_path / "disabled_ads"
     disabled_root.mkdir()
-    _inject_service(
+    disabled_svc = _inject_service(
         writer=lambda _record: None,
         storage_root=disabled_root,
         environ={"AUTOBENCH_TELEMETRY": "0"},
@@ -292,6 +348,7 @@ def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> No
         _violating_request(tmp_path / "disabled", stem="violating"),
         logging.getLogger("privacy_block_off"),
     )
+    assert disabled_svc.consumer_thread is None
 
     for artifacts in (enabled, disabled):
         assert artifacts.compliance_summary is not None
@@ -325,7 +382,7 @@ def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> No
             ),
             logging.getLogger("blocked_on"),
         )
-    _inject_service(
+    disabled_blocked_svc = _inject_service(
         writer=lambda _record: None,
         storage_root=tmp_path / "blocked_off_ads",
         environ={"AUTOBENCH_TELEMETRY": "0"},
@@ -340,6 +397,7 @@ def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> No
             ),
             logging.getLogger("blocked_off"),
         )
+    assert disabled_blocked_svc.consumer_thread is None
     assert enabled_blocked.value.compliance_summary == disabled_blocked.value.compliance_summary
     assert enabled_blocked.value.compliance_summary["compliance_verdict"] == "blocked"
 
@@ -358,16 +416,7 @@ def test_helper_failures_do_not_alter_compliance_or_outputs(
         logging.getLogger("privacy_baseline"),
     )
 
-    def raise_always(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("boom-helper")
-
-    for name in (
-        "action_attempted",
-        "action_completed",
-        "action_refused",
-        "action_failed",
-    ):
-        monkeypatch.setattr(analysis_run, name, raise_always)
+    _patch_helpers_raise(monkeypatch)
 
     broken = execute_share_run(
         _share_request(tmp_path / "broken", stem="share", df=df),
@@ -375,7 +424,33 @@ def test_helper_failures_do_not_alter_compliance_or_outputs(
     )
     _assert_analysis_equivalent(baseline, broken)
     assert Path(broken.analysis_output_file or "").exists()
-    assert Path(broken.publication_output or "").exists()
+    _assert_publication_file_exists(broken)
+
+    with pytest.raises(RunBlocked) as blocked_info:
+        execute_share_run(
+            _share_request(
+                tmp_path / "refused",
+                stem="refused",
+                df=df,
+                compliance_posture="accuracy_first",
+                acknowledge_accuracy_first=False,
+                preset=None,
+                validate_input=False,
+                output_format="analysis",
+            ),
+            logging.getLogger("privacy_refused"),
+        )
+    assert blocked_info.value.compliance_summary["compliance_verdict"] == "blocked"
+
+    def boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("analysis-boom")
+
+    monkeypatch.setattr(analysis_run, "build_dimensional_analyzer", boom)
+    with pytest.raises(RuntimeError, match="analysis-boom"):
+        execute_share_run(
+            _share_request(tmp_path / "failed", stem="failed", df=df),
+            logging.getLogger("privacy_failed"),
+        )
 
 
 def test_artifacts_metadata_and_audit_model_have_no_telemetry_fields(tmp_path: Path) -> None:
@@ -389,6 +464,8 @@ def test_artifacts_metadata_and_audit_model_have_no_telemetry_fields(tmp_path: P
     assert artifacts.metadata is not None
     _assert_no_telemetry_fields(artifacts.metadata)
     _assert_no_telemetry_fields(artifacts.compliance_summary or {})
+    _assert_stable_result_keys(artifacts, expected=SHARE_DIMENSIONS)
+    _assert_publication_file_exists(artifacts)
 
     audit_model = build_audit_log_model(
         metadata=artifacts.metadata,
@@ -418,17 +495,20 @@ def test_captured_records_use_exact_envelope_and_approved_props_only(tmp_path: P
     artifacts = execute_share_run(request, logging.getLogger("privacy_envelope"))
     assert done.wait(timeout=2.0)
     assert Path(artifacts.analysis_output_file or "").exists()
+    _assert_publication_file_exists(artifacts)
+    _assert_stable_result_keys(artifacts, expected=SHARE_DIMENSIONS)
+
+    decoded_events = [decode_record(raw) for raw in captured]
+    assert [event.event for event in decoded_events] == list(EXPECTED_SHARE_EVENTS)
+    assert len(decoded_events) == 2
+    for event in decoded_events:
+        assert dict(event.props) == SHARE_ACTION_PROPS
 
     markers = _sensitive_markers(tmp_path, output_stem=output_stem)
     for raw in captured:
         text = raw.decode("utf-8")
         payload = json.loads(text)
         assert frozenset(payload.keys()) == ENVELOPE_KEYS
-        assert len(payload.keys()) == 7
-        decoded = decode_record(raw)
-        assert decoded.event in EVENT_PROP_SCHEMAS
-        assert frozenset(decoded.props.keys()) == EVENT_PROP_SCHEMAS[decoded.event]
-        assert frozenset(payload["props"].keys()) == EVENT_PROP_SCHEMAS[decoded.event]
         for marker in markers:
             assert marker not in text
 
@@ -445,30 +525,30 @@ def test_opt_out_starts_no_consumer_and_produces_no_records(tmp_path: Path) -> N
     telemetry.start_session("cli_share")
     telemetry.action_attempted("share_analysis")
     telemetry.action_completed("share_analysis")
-    execute_share_run(
+    artifacts = execute_share_run(
         _share_request(tmp_path, stem="opt_out", df=_representative_df()),
         logging.getLogger("privacy_opt_out"),
     )
     telemetry.end_session()
 
-    assert svc.consumer_thread is None or not svc.consumer_thread.is_alive()
+    assert svc.consumer_thread is None
     assert written == []
     assert list(ads.rglob("*.jsonl")) == []
+    _assert_publication_file_exists(artifacts)
+    _assert_stable_result_keys(artifacts, expected=SHARE_DIMENSIONS)
 
 
 def test_no_tracked_or_generated_telemetry_event_jsonl_under_repo() -> None:
-    allowed_jsonl = {
-        REPO_ROOT / "qa" / "features.jsonl",
-        REPO_ROOT / "test_gate" / "config" / "cases.jsonl",
-        REPO_ROOT / "test_gate" / "rate" / "cases.jsonl",
-        REPO_ROOT / "test_gate" / "share" / "cases.jsonl",
-    }
-    found_events = sorted(REPO_ROOT.rglob("events.jsonl"))
-    assert found_events == [], f"unexpected events.jsonl artifacts: {found_events}"
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.jsonl"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    tracked_paths = tuple(
+        path for path in tracked.stdout.decode("utf-8").split("\0") if path
+    )
+    assert tracked_paths == ALLOWED_TRACKED_JSONL
 
-    for path in REPO_ROOT.rglob("*.jsonl"):
-        if any(part in {".git", "__pycache__", ".venv", "venv", "node_modules"} for part in path.parts):
-            continue
-        assert path.resolve() in {p.resolve() for p in allowed_jsonl}, (
-            f"unexpected jsonl under repo: {path}"
-        )
+    unexpected_events = _iter_untracked_events_jsonl(REPO_ROOT)
+    assert unexpected_events == [], f"unexpected events.jsonl artifacts: {unexpected_events}"
