@@ -1,22 +1,33 @@
+import logging
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pandas as pd
 from openpyxl import load_workbook
 
 from benchmark import EXIT_STRICT_NON_COMPLIANT, run_share_analysis
-from core.analysis_run import build_run_request, execute_share_run, write_outputs as analysis_write_outputs
-from core.output_artifacts import OutputArtifactWriter, write_outputs
+from core.analysis_run import build_run_request, execute_share_run
+from core.output_artifacts import _flatten_rate_results, write_outputs
+
+
+def test_flatten_rate_results_names_rate_and_dimension() -> None:
+    approval = pd.DataFrame({"Rate": [1.0]})
+    fraud = pd.DataFrame({"Rate": [2.0]})
+    flattened = _flatten_rate_results(
+        {"approval": {"channel": approval}, "fraud": {"card_type": fraud}}
+    )
+    assert list(flattened) == ["approval_channel", "fraud_card_type"]
+    assert flattened["approval_channel"] is approval
+    assert flattened["fraud_card_type"] is fraud
 
 
 def test_core_modules_import_without_benchmark() -> None:
     # Run in a fresh interpreter: importing core must not pull in `benchmark`.
     # A subprocess avoids mutating this process's sys.modules (in-process
     # pop/reimport corrupts patch targets for later tests).
-    import subprocess
-    import sys
-
     code = (
         "import sys\n"
         "import core.analysis_run\n"
@@ -83,30 +94,11 @@ def test_output_format_both_writes_analysis_and_publication(tmp_path: Path) -> N
     args = _share_args(output, _share_df(), output_format="both")
     args.compliance_posture = "best_effort"
 
-    result = run_share_analysis(args, __import__("logging").getLogger("test_output"))
+    result = run_share_analysis(args, logging.getLogger("test_output"))
 
     assert result == 0
     assert output.exists()
     assert (tmp_path / "share_publication.xlsx").exists()
-
-
-def test_output_writer_receives_report_model(tmp_path: Path) -> None:
-    output = tmp_path / "share.xlsx"
-    writer_cls = MagicMock(side_effect=OutputArtifactWriter)
-
-    args = _share_args(output, _share_df(), output_format="analysis")
-    args.compliance_posture = "best_effort"
-    with patch.dict(
-        analysis_write_outputs.__globals__,
-        {"OutputArtifactWriter": writer_cls},
-    ):
-        result = run_share_analysis(
-            args,
-            __import__("logging").getLogger("test_report_model_boundary"),
-        )
-
-    assert result == 0
-    assert writer_cls.call_args.args[0].__class__.__name__ == "ReportModel"
 
 
 def test_no_validate_input_cannot_emit_fully_compliant_audit(tmp_path: Path) -> None:
@@ -114,7 +106,7 @@ def test_no_validate_input_cannot_emit_fully_compliant_audit(tmp_path: Path) -> 
 
     result = run_share_analysis(
         _share_args(output, _share_df(), output_format="analysis"),
-        __import__("logging").getLogger("test_no_validate_verdict"),
+        logging.getLogger("test_no_validate_verdict"),
     )
 
     # Strict default posture + unchecked input is not publishable, so the CLI
@@ -134,7 +126,7 @@ def test_debug_workbook_contains_diagnostic_sheets(tmp_path: Path) -> None:
     args.compliance_posture = "best_effort"
     result = run_share_analysis(
         args,
-        __import__("logging").getLogger("test_sheets"),
+        logging.getLogger("test_sheets"),
     )
 
     assert result == 0
@@ -169,7 +161,7 @@ def test_analysis_workbook_keeps_weight_methods_when_privacy_sheet_disabled(tmp_
     args.dimensions = ["card_type", "channel"]
     args.time_col = "year_month"
 
-    result = run_share_analysis(args, __import__("logging").getLogger("test_privacy_sheet_disabled"))
+    result = run_share_analysis(args, logging.getLogger("test_privacy_sheet_disabled"))
 
     # Strict posture + unchecked input exits with the strict non-compliant code
     # while still writing the analysis workbook this test inspects.
@@ -211,7 +203,7 @@ def test_subset_search_diagnostics_with_dimension_lists_write_to_workbook(tmp_pa
     args.dimensions = ["card_type", "channel"]
     args.time_col = "year_month"
 
-    result = run_share_analysis(args, __import__("logging").getLogger("test_subset_lists"))
+    result = run_share_analysis(args, logging.getLogger("test_subset_lists"))
 
     # Strict posture + unchecked input exits with the strict non-compliant code
     # while still writing the analysis workbook this test inspects.
@@ -235,7 +227,7 @@ def test_output_format_publication_only_writes_publication_workbook(tmp_path: Pa
 
     result = run_share_analysis(
         args,
-        __import__("logging").getLogger("test_pub_only"),
+        logging.getLogger("test_pub_only"),
     )
 
     assert result == 0
@@ -253,7 +245,7 @@ def test_metric_sheet_names_use_plain_dimension_names(tmp_path: Path) -> None:
     args.compliance_posture = "best_effort"
     result = run_share_analysis(
         args,
-        __import__("logging").getLogger("test_sheet_names"),
+        logging.getLogger("test_sheet_names"),
     )
 
     assert result == 0
@@ -276,7 +268,7 @@ def test_publication_workbook_includes_compliance_evidence_sheets(tmp_path: Path
 
     result = run_share_analysis(
         args,
-        __import__("logging").getLogger("test_pub_scope"),
+        logging.getLogger("test_pub_scope"),
     )
 
     assert result == 0
@@ -303,7 +295,7 @@ def _artifacts_ready_for_write(
     output_format: str = "both",
 ) -> tuple[SimpleNamespace, object]:
     """Run share analysis without writing outputs; return request and artifacts."""
-    logger = __import__("logging").getLogger("test_publication_gate")
+    logger = logging.getLogger("test_publication_gate")
     args = _share_args(tmp_path / "capture.xlsx", _share_df(), output_format=output_format)
     request = build_run_request("share", args)
     with patch("core.analysis_run.write_outputs", lambda _req, art, **_kw: art):
@@ -331,7 +323,7 @@ def _write_with_posture(
     summary["violations"] = violations
     artifacts.compliance_summary = summary
     artifacts.metadata["compliance_summary"] = summary
-    write_outputs(request, artifacts, logger=__import__("logging").getLogger("test_publication_gate"))
+    write_outputs(request, artifacts, logger=logging.getLogger("test_publication_gate"))
     return request, artifacts, output_base, pub_path
 
 

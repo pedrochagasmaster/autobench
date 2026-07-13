@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -183,6 +184,22 @@ def test_helpers_swallow_all_exceptions(monkeypatch: pytest.MonkeyPatch) -> None
     telemetry.start_session("tui")
     telemetry.surface_viewed("share")
     telemetry.end_session()
+
+
+def test_run_safely_swallows_callback_exceptions(caplog: pytest.LogCaptureFixture) -> None:
+    _inject_service(lambda _record: None)
+    called = False
+
+    def fail(_service: TelemetryService) -> None:
+        nonlocal called
+        called = True
+        raise RuntimeError("boom")
+
+    with caplog.at_level(logging.DEBUG, logger="core.telemetry"):
+        telemetry._run_safely("test", fail)
+
+    assert called
+    assert "telemetry test failed" in caplog.text
 
 
 def test_reset_for_tests_isolates_singleton() -> None:

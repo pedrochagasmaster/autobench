@@ -13,6 +13,8 @@ try:
 except ImportError:
     YAML_AVAILABLE = False
 
+from .validators import ConfigValidator
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,11 +38,6 @@ class PresetManager:
         
         self.preset_dir = Path(preset_dir)
         self._presets: Dict[str, Dict[str, Any]] = {}
-        # Maps preset_name -> "; ".join(validator errors) for any preset that
-        # failed schema validation at load time. Surfaced via `invalid_presets`
-        # so the TUI / `config show` can report the failure rather than silently
-        # dropping the preset.
-        self._invalid_presets: Dict[str, str] = {}
         self._load_presets()
     
     def _load_presets(self) -> None:
@@ -69,17 +66,13 @@ class PresetManager:
                     logger.warning(f"Empty preset file: {preset_file.name}")
                     continue
 
-                from .validators import ConfigValidator
-
                 errors = ConfigValidator.validate(preset_data)
                 if errors:
-                    error_summary = "; ".join(errors)
                     logger.error(
                         "Skipping invalid preset %s: %s",
                         preset_file.name,
-                        error_summary,
+                        "; ".join(errors),
                     )
-                    self._invalid_presets[preset_file.stem] = error_summary
                     continue
                 
                 preset_name = preset_file.stem
@@ -111,23 +104,6 @@ class PresetManager:
             Preset configuration dictionary, or None if not found
         """
         return self._presets.get(name)
-
-    def load_preset(self, name: str) -> Optional[Dict[str, Any]]:
-        """Backward-compatible alias used by shared preset workflows."""
-        return self.get_preset(name)
-
-    @property
-    def invalid_presets(self) -> Dict[str, str]:
-        """Mapping of preset name -> validator-error summary for presets that
-        failed validation at load time. Empty if every preset is valid.
-        """
-        return dict(self._invalid_presets)
-
-    def get_invalid_presets(self) -> Dict[str, str]:
-        """Method-style accessor for ``invalid_presets`` (preferred for older
-        callers that test ``hasattr(pm, 'get_invalid_presets')``).
-        """
-        return self.invalid_presets
     
     def preset_exists(self, name: str) -> bool:
         """Check if preset exists.
@@ -240,11 +216,3 @@ class PresetManager:
         lines.extend(["-" * 80, "", "Usage:", f"  benchmark share --csv data.csv --entity 'BANK' --metric txn_cnt --preset {name}"])
         
         return "\n".join(lines)
-    
-    def get_preset_choices(self) -> List[str]:
-        """Get list of preset names for argparse choices.
-        
-        Returns:
-            List of preset names, or empty list if none available
-        """
-        return self.list_presets()

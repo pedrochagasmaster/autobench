@@ -22,13 +22,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 
-import pandas as pd
-
 # Import core modules
 from core.control3_policy import remediation_hint
-from core.preset_comparison import run_preset_comparison as _run_shared_preset_comparison
 from core.analysis_run import (
-    build_dimensional_analyzer,
     build_run_request,
     execute_rate_run,
     execute_share_run,
@@ -256,14 +252,10 @@ EXAMPLES:
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
-    # Get available preset choices
-    def get_preset_choices():
-        try:
-            return PresetManager().list_presets()
-        except Exception:
-            return []
-    
-    preset_choices = get_preset_choices()
+    try:
+        preset_choices = PresetManager().list_presets()
+    except Exception:
+        preset_choices = []
     
     # ========================================================================
     # SHARE ANALYSIS COMMAND
@@ -615,34 +607,6 @@ def _format_analysis_failure_message(exc: Exception) -> str:
                 return text
 
     return primary
-
-
-def run_preset_comparison(
-    df: pd.DataFrame,
-    metric_col: str,
-    entity_col: str,
-    dimensions: list,
-    target_entity: Optional[str],
-    time_col: Optional[str],
-    analysis_type: str,
-    logger: logging.Logger,
-    total_col: Optional[str] = None,
-    numerator_cols: Optional[Dict[str, str]] = None
-) -> pd.DataFrame:
-    """Compatibility wrapper over the shared preset-comparison seam."""
-    return _run_shared_preset_comparison(
-        df=df,
-        metric_col=metric_col,
-        entity_col=entity_col,
-        dimensions=list(dimensions),
-        target_entity=target_entity,
-        time_col=time_col,
-        analysis_type=analysis_type,
-        logger=logger,
-        analyzer_factory=build_dimensional_analyzer,
-        total_col=total_col,
-        numerator_cols=numerator_cols,
-    )
 
 
 def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
