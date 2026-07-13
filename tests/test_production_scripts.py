@@ -488,6 +488,37 @@ def test_update_sh_idempotently_creates_telemetry_layout(tmp_path: Path) -> None
     assert stat.S_IMODE(users.stat().st_mode) == 0o1777
 
 
+def test_update_sh_completes_when_telemetry_provisioning_fails(tmp_path: Path) -> None:
+    """Telemetry is best-effort: provisioning failure must not abort the sync."""
+    node_checkout = _build_update_repo_scenario(
+        tmp_path / "scenario",
+        "benchmark.py",
+        "print('source-only change')\n",
+    )
+    # A regular-file ancestor makes provisioning fail before any mkdir/chmod.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    telemetry_dir = blocker / "telemetry"
+
+    result = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env={
+            **dict(os.environ),
+            "AUTOBENCH_GIT_REMOTE": "origin",
+            "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "WARNING: shared telemetry provisioning failed" in result.stderr
+    assert "Update complete" in result.stdout
+    assert not telemetry_dir.exists()
+
+
 def test_offline_bundle_targets_python_310_cp310() -> None:
     """deploy_and_install.ps1 and setup_remote_env.sh must agree on Python 3.10."""
     deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
