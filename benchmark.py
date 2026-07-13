@@ -16,6 +16,8 @@ import argparse
 import sys
 import json
 import logging
+import platform
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -32,7 +34,14 @@ from core.analysis_run import (
     execute_share_run,
     RunBlocked,
 )
+from core.telemetry.constants import DEFAULT_DAYS
+from core.telemetry.identity import validate_username
+from core.telemetry.reader import TelemetryReader
+from core.telemetry.render import format_summary, format_who, sanitize_terminal
+from core.telemetry import end_session, start_session
 from utils.logger import setup_logging
+from utils.preset_manager import PresetManager
+from utils.validators import validate_config_file
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -44,7 +53,6 @@ _GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
 def get_presets_help() -> str:
     """Generate help text for available presets."""
     try:
-        from utils.preset_manager import PresetManager
         preset_mgr = PresetManager()
         presets = preset_mgr.list_presets()
         if not presets:
@@ -233,6 +241,10 @@ EXAMPLES:
   # Validate config file
   python benchmark.py config validate my_config.yaml
 
+  # Local telemetry reports (default last 30 days)
+  python benchmark.py telemetry who
+  python benchmark.py telemetry summary --user alice
+
 {get_presets_help()}
         """
     )
@@ -247,9 +259,7 @@ EXAMPLES:
     # Get available preset choices
     def get_preset_choices():
         try:
-            from utils.preset_manager import PresetManager
-            preset_mgr = PresetManager()
-            return preset_mgr.list_presets()
+            return PresetManager().list_presets()
         except Exception:
             return []
     
@@ -324,8 +334,112 @@ EXAMPLES:
                                                    help='Generate config template')
     generate_parser.add_argument('output_file',
                                 help='Output file path')
+
+    # ========================================================================
+    # TELEMETRY REPORT COMMANDS
+    # ========================================================================
+    telemetry_parser = subparsers.add_parser(
+        'telemetry',
+        help='Report local offline telemetry (who / summary)',
+    )
+    telemetry_subparsers = telemetry_parser.add_subparsers(
+        dest='telemetry_command',
+        help='Telemetry report to show',
+    )
+
+    who_parser = telemetry_subparsers.add_parser(
+        'who',
+        help='List users with session and completion counts',
+    )
+    who_parser.add_argument(
+        '--days',
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f'Include events from the last N days (default: {DEFAULT_DAYS})',
+    )
+    who_parser.add_argument(
+        '--dir',
+        default=None,
+        help='Telemetry parent directory whose direct child is users/',
+    )
+
+    summary_parser = telemetry_subparsers.add_parser(
+        'summary',
+        help='Summarize surfaces, actions, and outcomes',
+    )
+    summary_parser.add_argument(
+        '--days',
+        type=int,
+        default=DEFAULT_DAYS,
+        help=f'Include events from the last N days (default: {DEFAULT_DAYS})',
+    )
+    summary_parser.add_argument(
+        '--dir',
+        default=None,
+        help='Telemetry parent directory whose direct child is users/',
+    )
+    summary_parser.add_argument(
+        '--user',
+        default=None,
+        help='Limit summary to one username',
+    )
     
     return parser
+
+
+def _telemetry_warn(message: str) -> None:
+    """Print a visible, terminal-safe schema warning to stderr."""
+    print(f"WARNING: {sanitize_terminal(str(message))}", file=sys.stderr)
+
+
+def handle_telemetry_command(args: argparse.Namespace) -> int:
+    """Handle telemetry who/summary without starting writers or sessions."""
+    command = getattr(args, 'telemetry_command', None)
+    if command not in ('who', 'summary'):
+        print("Usage: benchmark telemetry {who|summary}")
+        print("  who                     List users, sessions, last seen, completions")
+        print("  summary                 Summarize surfaces, actions, and outcomes")
+        return EXIT_FAILURE
+
+    days = getattr(args, 'days', DEFAULT_DAYS)
+    if isinstance(days, bool) or not isinstance(days, int) or days < 0:
+        print("Error: --days must be a nonnegative integer.", file=sys.stderr)
+        return EXIT_FAILURE
+
+    shared_dir: Optional[Path] = None
+    dir_arg = getattr(args, 'dir', None)
+    if dir_arg is not None:
+        path = Path(dir_arg)
+        try:
+            if path.exists() and not path.is_dir():
+                print(
+                    "Error: --dir must name a directory (parent of users/).",
+                    file=sys.stderr,
+                )
+                return EXIT_FAILURE
+        except OSError:
+            print("Error: --dir is not usable.", file=sys.stderr)
+            return EXIT_FAILURE
+        shared_dir = path
+
+    user = getattr(args, 'user', None)
+    if user is not None:
+        try:
+            user = validate_username(user)
+        except ValueError:
+            print("Error: invalid username.", file=sys.stderr)
+            return EXIT_FAILURE
+
+    try:
+        reader = TelemetryReader(shared_dir=shared_dir, warn=_telemetry_warn)
+        if command == 'who':
+            sys.stdout.write(format_who(reader.who(days=days)))
+        else:
+            sys.stdout.write(format_summary(reader.summary(days=days, user=user)))
+        return EXIT_OK
+    except (ValueError, OSError, KeyError):
+        print("Error: unable to read telemetry.", file=sys.stderr)
+        return EXIT_FAILURE
 
 
 def handle_config_command(args: argparse.Namespace) -> int:
@@ -337,10 +451,6 @@ def handle_config_command(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    import shutil
-    from utils.preset_manager import PresetManager
-    from utils.validators import validate_config_file
-    
     preset_mgr = PresetManager()
     
     if args.config_command == 'list':
@@ -417,7 +527,6 @@ def _validate_preset_arg(args: argparse.Namespace) -> Optional[str]:
     preset = getattr(args, 'preset', None)
     if not preset:
         return None
-    from utils.preset_manager import PresetManager
     available = PresetManager().list_presets()
     if preset not in available:
         listing = ', '.join(available) if available else 'none found'
@@ -427,9 +536,6 @@ def _validate_preset_arg(args: argparse.Namespace) -> Optional[str]:
 
 def print_version() -> None:
     """Print version information."""
-    import sys
-    import platform
-    
     print("Privacy-Compliant Peer Benchmark Tool")
     print("Version: 3.0.0")
     print(f"Python: {sys.version.split()[0]}")
@@ -637,6 +743,10 @@ def main() -> int:
     # Handle config command
     if args.command == 'config':
         return handle_config_command(args)
+
+    # Handle telemetry before analysis logging or session startup
+    if args.command == 'telemetry':
+        return handle_telemetry_command(args)
     
     if not args.command:
         parser.print_help()
@@ -653,11 +763,20 @@ def main() -> int:
     log_level = getattr(args, 'log_level', None) or 'INFO'
     logger = setup_logging(log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
-    # Route to appropriate handler
+    # Route to appropriate handler with a CLI session around usable analysis.
+    # Telemetry helpers are best-effort and never raise.
     if args.command == 'share':
-        return run_share_analysis(args, logger)
+        start_session('cli_share')
+        try:
+            return run_share_analysis(args, logger)
+        finally:
+            end_session()
     elif args.command == 'rate':
-        return run_rate_analysis(args, logger)
+        start_session('cli_rate')
+        try:
+            return run_rate_analysis(args, logger)
+        finally:
+            end_session()
     else:
         parser.print_help()
         return 1

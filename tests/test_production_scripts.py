@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 import subprocess
 import sys
-import shutil
-import os
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -91,6 +94,431 @@ def test_update_permissions_do_not_recurse_through_runtime_directories() -> None
     assert "$CHANGED_FILES" in script
 
 
+def test_update_sh_provisions_shared_telemetry_directories() -> None:
+    script = (ROOT / "update.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "scripts" / "provision_telemetry_dirs.sh").read_text(encoding="utf-8")
+
+    assert 'TELEMETRY_DIR="${AUTOBENCH_TELEMETRY_DIR:-/ads_storage/autobench/telemetry}"' in script
+    assert "provision_shared_telemetry_dirs" in script
+    assert "provision_telemetry_dirs.sh" in script
+    assert "Telemetry permission evidence" in script or "telemetry permission" in script.lower()
+    assert script.index("git reset --hard") < script.index("provision_shared_telemetry_dirs")
+
+    assert "mkdir -p --" in helper
+    assert "mkdir --" in helper
+    assert 'chmod -- 0755 "$TELEMETRY_DIR"' in helper
+    assert 'chmod -- 1777 "$USERS_DIR"' in helper
+    assert "-L" in helper
+    # Must not chmod through a users symlink.
+    assert "symlink" in helper.lower()
+
+
+def test_provision_telemetry_dirs_rejects_users_symlink_without_chmodding_victim(
+    tmp_path: Path,
+) -> None:
+    """users -> victim must fail; victim mode must remain 0700."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    assert helper.is_file(), "extract testable scripts/provision_telemetry_dirs.sh"
+
+    parent = tmp_path / "telemetry"
+    parent.mkdir(mode=0o0755)
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0700)
+    users = parent / "users"
+    users.symlink_to(victim)
+
+    before = stat.S_IMODE(victim.stat().st_mode)
+    assert before == 0o0700
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(parent),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    assert users.is_symlink()
+
+
+def test_provision_telemetry_dirs_rejects_telemetry_dir_symlink(
+    tmp_path: Path,
+) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    real = tmp_path / "real"
+    real.mkdir(mode=0o0755)
+    link = tmp_path / "telemetry"
+    link.symlink_to(real)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(link),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(real.stat().st_mode) == 0o0755
+
+
+@pytest.mark.parametrize("suffix", ["/", "////"])
+def test_provision_telemetry_dirs_rejects_trailing_slash_symlink_without_chmodding_victim(
+    tmp_path: Path, suffix: str
+) -> None:
+    """Trailing slashes must not bypass -L; victim mode stays 0700."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0700)
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(link) + suffix,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout or result.stderr
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    assert link.is_symlink()
+
+
+@pytest.mark.parametrize("bad", ["", ".", "/", "///"])
+def test_provision_telemetry_dirs_rejects_unsafe_roots(tmp_path: Path, bad: str) -> None:
+    """Empty, '.', and '/' (incl. slash-only) must never chmod root or create /users."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    marker = tmp_path / "untouched"
+    marker.mkdir(mode=0o0700)
+    users_at_root = Path("/users")
+    users_existed_before = users_at_root.exists()
+
+    fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            bad,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(tmp_path),
+    )
+    assert fail.returncode != 0
+    combined = (fail.stderr + fail.stdout).lower()
+    assert any(
+        token in combined
+        for token in ("refusing", "unsafe", "invalid", "empty", "root", "absolute")
+    )
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o0700
+    if not users_existed_before:
+        assert not users_at_root.exists()
+    assert not (tmp_path / "users").exists()
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "{base}/./x",
+        "{base}/x/../y",
+        "{base}/./x/",
+        "{base}/x/../y///",
+        "foo/..",
+        "../",
+        "./.",
+        "relative-telemetry",
+        "./telemetry",
+    ],
+)
+def test_provision_telemetry_dirs_rejects_dot_aliases_without_mutating(
+    tmp_path: Path, alias: str
+) -> None:
+    """Reject relative paths and any lexical '.'/'..' component before mutation."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    base = tmp_path / "base"
+    base.mkdir(mode=0o0700)
+    cwd_mode_before = stat.S_IMODE(tmp_path.stat().st_mode)
+    parent_mode_before = stat.S_IMODE(base.stat().st_mode)
+    target = alias.format(base=str(base))
+
+    maybe_x = base / "x"
+    maybe_y = base / "y"
+    maybe_users_cwd = tmp_path / "users"
+    maybe_users_base = base / "users"
+    maybe_users_x = base / "x" / "users"
+    maybe_users_y = base / "y" / "users"
+
+    fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            target,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(tmp_path),
+    )
+    assert fail.returncode != 0, fail.stdout or fail.stderr
+    combined = (fail.stderr + fail.stdout).lower()
+    assert any(
+        token in combined
+        for token in ("refusing", "unsafe", "invalid", "absolute", "dot")
+    )
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == cwd_mode_before
+    assert stat.S_IMODE(base.stat().st_mode) == parent_mode_before
+    assert not maybe_x.exists()
+    assert not maybe_y.exists()
+    assert not maybe_users_cwd.exists()
+    assert not maybe_users_base.exists()
+    assert not maybe_users_x.exists()
+    assert not maybe_users_y.exists()
+
+
+def test_provision_telemetry_dirs_accepts_absolute_with_repeated_slashes(
+    tmp_path: Path,
+) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telem"
+    weird = str(tmp_path) + "///telem///"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            weird,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert parent.is_dir() and not parent.is_symlink()
+    assert (parent / "users").is_dir()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
+
+
+def test_provision_telemetry_dirs_trailing_slash_override_still_provisions(
+    tmp_path: Path,
+) -> None:
+    """Harmless trailing slash on a real dir keeps exact override semantics."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telemetry"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(parent) + "///",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert parent.is_dir() and not parent.is_symlink()
+    assert (parent / "users").is_dir()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
+
+
+def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) -> None:
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telemetry"
+
+    def run_once() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+                "provision-test",
+                str(helper),
+                str(parent),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    first = run_once()
+    assert first.returncode == 0, first.stderr or first.stdout
+    users = parent / "users"
+    assert parent.is_dir() and not parent.is_symlink()
+    assert users.is_dir() and not users.is_symlink()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+
+    parent.chmod(0o0700)
+    users.chmod(0o0755)
+    second = run_once()
+    assert second.returncode == 0, second.stderr or second.stdout
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+
+
+def test_provision_telemetry_dirs_rejects_intermediate_symlink_ancestor(
+    tmp_path: Path,
+) -> None:
+    """parent/autobench -> victim must fail before victim mutation or users create."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o0755)
+    victim = parent / "victim"
+    victim.mkdir(mode=0o0700)
+    link = parent / "autobench"
+    link.symlink_to(victim)
+    target = parent / "autobench" / "telemetry"
+
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    before_victim_entries = set(victim.iterdir())
+
+    for suffix in ("", "/", "///"):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; provision_shared_telemetry_dirs "$2"',
+                "provision-test",
+                str(helper),
+                str(target) + suffix,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0, result.stdout or result.stderr
+        combined = (result.stderr + result.stdout).lower()
+        assert "symlink" in combined
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+        assert set(victim.iterdir()) == before_victim_entries
+        assert not (victim / "telemetry").exists()
+        assert not (victim / "users").exists()
+        assert link.is_symlink()
+
+
+def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "/ads_storage/autobench/telemetry" not in script
+    assert "TELEMETRY_DIR" not in script
+    assert "1777" not in script
+    assert 'mkdir -p "$AUTOBENCH_HOME/config"' in script
+
+
+def test_update_sh_idempotently_creates_telemetry_layout(tmp_path: Path) -> None:
+    node_checkout = _build_update_repo_scenario(
+        tmp_path / "scenario",
+        "benchmark.py",
+        "print('source-only change')\n",
+    )
+    telemetry_dir = tmp_path / "telemetry_home"
+
+    env = {
+        **dict(os.environ),
+        "AUTOBENCH_GIT_REMOTE": "origin",
+        "AUTOBENCH_GIT_BRANCH": "main",
+        "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+    }
+    first = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr or first.stdout
+    users = telemetry_dir / "users"
+    assert telemetry_dir.is_dir()
+    assert users.is_dir()
+    assert stat.S_IMODE(telemetry_dir.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+    assert "Permission evidence" in first.stdout or "telemetry" in first.stdout.lower()
+
+    # Corrupt modes then re-run to prove idempotent normalization.
+    telemetry_dir.chmod(0o0700)
+    users.chmod(0o0755)
+    second = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert second.returncode == 0, second.stderr or second.stdout
+    assert stat.S_IMODE(telemetry_dir.stat().st_mode) == 0o0755
+    assert stat.S_IMODE(users.stat().st_mode) == 0o1777
+
+
+def test_update_sh_completes_when_telemetry_provisioning_fails(tmp_path: Path) -> None:
+    """Telemetry is best-effort: provisioning failure must not abort the sync."""
+    node_checkout = _build_update_repo_scenario(
+        tmp_path / "scenario",
+        "benchmark.py",
+        "print('source-only change')\n",
+    )
+    # A regular-file ancestor makes provisioning fail before any mkdir/chmod.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    telemetry_dir = blocker / "telemetry"
+
+    result = subprocess.run(
+        ["bash", "update.sh"],
+        cwd=node_checkout,
+        env={
+            **dict(os.environ),
+            "AUTOBENCH_GIT_REMOTE": "origin",
+            "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "WARNING: shared telemetry provisioning failed" in result.stderr
+    assert "Update complete" in result.stdout
+    assert not telemetry_dir.exists()
+
+
 def test_offline_bundle_targets_python_310_cp310() -> None:
     """deploy_and_install.ps1 and setup_remote_env.sh must agree on Python 3.10."""
     deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
@@ -156,6 +584,9 @@ def _build_update_repo_scenario(tmp_path: Path, changed_path: str, changed_conte
         "update.sh": (ROOT / "update.sh").read_text(encoding="utf-8"),
         "install.sh": (ROOT / "install.sh").read_text(encoding="utf-8"),
         "setup_remote_env.sh": (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8"),
+        "scripts/provision_telemetry_dirs.sh": (
+            ROOT / "scripts" / "provision_telemetry_dirs.sh"
+        ).read_text(encoding="utf-8"),
         "requirements.txt": "pandas==1.0\n",
         "constraints.txt": "pandas==1.0\n",
         "VERSION": "1.0.0\n",
@@ -190,6 +621,7 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
         "benchmark.py",
         "print('source-only change')\n",
     )
+    telemetry_dir = tmp_path / "telemetry_not_required"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -198,6 +630,7 @@ def test_update_sh_reports_install_not_required_for_source_only_changes(tmp_path
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -221,6 +654,7 @@ def test_update_sh_repairs_corrupt_remote_tracking_ref(tmp_path: Path) -> None:
     remote_ref = node_checkout / ".git" / "refs" / "remotes" / "origin" / "main"
     remote_ref.parent.mkdir(parents=True, exist_ok=True)
     remote_ref.write_text("", encoding="utf-8")
+    telemetry_dir = tmp_path / "telemetry_repair"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -229,6 +663,7 @@ def test_update_sh_repairs_corrupt_remote_tracking_ref(tmp_path: Path) -> None:
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -246,6 +681,7 @@ def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(t
         "VERSION",
         "1.0.1\n",
     )
+    telemetry_dir = tmp_path / "telemetry_recommended"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -254,6 +690,7 @@ def test_update_sh_reports_install_recommended_for_version_or_launcher_changes(t
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,
@@ -271,6 +708,7 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
         "requirements.txt",
         "pandas==2.0\n",
     )
+    telemetry_dir = tmp_path / "telemetry_required"
 
     result = subprocess.run(
         ["bash", "update.sh"],
@@ -279,6 +717,7 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
             **dict(os.environ),
             "AUTOBENCH_GIT_REMOTE": "origin",
             "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
         },
         capture_output=True,
         text=True,

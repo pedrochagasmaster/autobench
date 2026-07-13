@@ -136,6 +136,64 @@ orchestrator. If running it manually, record why the default release command was
 not enough, then capture the install decision, dependency signal, drift result,
 and smoke result.
 
+## 7. Shared Offline Telemetry Layout
+
+Trusted `update.sh` (deployment owner) provisions the portable shared telemetry
+tree after each reset. Per-user `install.sh` never creates these shared parents;
+it only prepares the private home under `/ads_storage/$USER/.autobench`.
+
+Exact layout and modes:
+
+| Path | Mode | Role |
+| --- | --- | --- |
+| `/ads_storage/autobench/telemetry` | `0755` | Shared telemetry parent (trusted owner) |
+| `/ads_storage/autobench/telemetry/users` | `1777` | Sticky world-writable per-user JSONL directory |
+| `/ads_storage/autobench/telemetry/users/<token>.jsonl` | `0644` | Per-user shared events (world-readable) |
+| `/ads_storage/<user>/.autobench/telemetry/events.jsonl` | private `0600` under `0700` dirs | Private dual-write destination |
+
+Override the shared parent with an absolute `AUTOBENCH_TELEMETRY_DIR` (the
+directory whose direct child is `users/`). For trusted provisioning
+(`update.sh` / `scripts/provision_telemetry_dirs.sh`) and the filesystem
+validator (`scripts/validate_telemetry_filesystem.py --dir`), relative paths,
+lexical `.` / `..` components, and any symlink path component in the shared
+operator path are rejected before directory mutation or probes. The aggregation
+CLI (`benchmark.py telemetry … --dir`) is separate and is not the enforcement
+surface described here. Telemetry is default-on; case-insensitive
+`AUTOBENCH_TELEMETRY` values `0`, `false`, `off`, or `no` opt-out of future
+private and shared writes without deleting existing records.
+
+The portable profile intentionally discloses usernames and approved event data
+as world-readable local files. Treat telemetry as self-reported product data,
+not an audit record. Retention, rotation, and deletion authorization remain
+operator-owned.
+
+If the shared capability gate fails at runtime, shared writes are disabled and
+private writes continue. A failing operator validator must not be used as a
+reason to weaken the runtime gate. Monitor owner/token mismatches (possible
+username pre-creation denial of service). Sticky cross-user deletion and
+precreation behavior require a separate two-account operational check; the
+filesystem validator does not exercise cross-user sticky deletion.
+
+Validate on the actual edge-node mount (assumptions: Linux,
+`O_APPEND` / `O_NOFOLLOW` / `O_NONBLOCK` / `O_CLOEXEC`, nonblocking `flock`,
+sticky `1777`, `fstat`, same-directory rename, and
+`/proc/sys/fs/protected_hardlinks == 1`):
+
+```bash
+cd /ads_storage/autobench
+python scripts/validate_telemetry_filesystem.py
+# or: python scripts/validate_telemetry_filesystem.py --dir /ads_storage/autobench/telemetry
+```
+
+`--dir` for `scripts/validate_telemetry_filesystem.py` and
+`AUTOBENCH_TELEMETRY_DIR` for trusted provisioning must name an absolute
+telemetry parent (the directory whose direct child is `users/`) with no symlink
+components in the path. This absolute / no-`.` / no-`..` / no-symlink-ancestor
+policy applies to those operator inputs, not to the aggregation CLI's `--dir`.
+
+Expect deterministic `PASS:` lines and exit status `0`. Any `FAIL:` line with
+exit status `1` is actionable; do not treat the run as successful.
+
 ## Troubleshooting
 
 | Issue | Cause | Fix |

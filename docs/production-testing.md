@@ -84,6 +84,53 @@ Adds:
 - runtime home is writable,
 - the deployed path is the expected repo path.
 
+## Shared Telemetry Filesystem Validation
+
+After `update.sh` (or an orchestrated release that runs it), validate the
+portable shared telemetry mount on the actual node. Do not substitute a local
+tmpfs run for edge acceptance of these guarantees.
+
+```bash
+cd /ads_storage/autobench
+python scripts/validate_telemetry_filesystem.py
+python scripts/validate_telemetry_filesystem.py --dir /ads_storage/autobench/telemetry
+```
+
+Use an absolute `--dir` with `scripts/validate_telemetry_filesystem.py` (and
+absolute `AUTOBENCH_TELEMETRY_DIR` for trusted provisioning). Relative paths,
+lexical `.` / `..` components, and symlink ancestors in the shared path are
+rejected before probes. This does not describe `benchmark.py telemetry … --dir`
+aggregation-CLI behavior.
+
+Expected status: every line is `PASS: ...` and the process exits `0`. Any
+`FAIL: ...` line with exit `1` means shared telemetry must stay gated off until
+operators repair the mount; do not weaken the runtime capability gate to force
+shared writes.
+
+The validator checks Linux primitives (`O_APPEND`, `O_NOFOLLOW`, `O_NONBLOCK`,
+`O_CLOEXEC`, nonblocking `flock`), `/proc/sys/fs/protected_hardlinks == 1`,
+parent mode `0755` and `users` mode `1777` (real non-symlink dirs owned by the
+trusted effective uid), safe `O_EXCL|O_NOFOLLOW` probe creation, `fstat`
+owner/nlink reporting, append-despite-seek, final `0644`, contended/released
+child flock behavior, timeout-bounded FIFO `O_NONBLOCK` open, symlink rejection,
+and same-directory rename inode/content preservation. It never reads telemetry
+payloads.
+
+Cross-user sticky deletion is outside this script's scope; perform a separate
+two-account operational check for sticky/precreation behavior. When shared
+capability fails, shared writes stay disabled and private telemetry remains the
+fallback. Flag owner/token mismatches during monitoring. Retention and deletion
+authorization are operator-owned. Telemetry remains self-reported product data,
+not an audit log.
+
+Confirm trusted provisioning evidence from `update.sh` shows:
+
+```text
+Telemetry permission evidence:
+drwxr-xr-x ... /ads_storage/autobench/telemetry
+drwxrwxrwt ... /ads_storage/autobench/telemetry/users
+```
+
 ## Level 3: Controlled Analysis
 
 Use only a known fixture and a scratch output path:

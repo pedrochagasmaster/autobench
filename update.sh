@@ -113,6 +113,25 @@ ls -ld . 2>/dev/null || echo "    unavailable"
 echo "==> Entrypoint permissions:"
 ls -l run_tool.sh install.sh setup_alias.sh 2>/dev/null || echo "    unavailable"
 
+# Trusted deployment owner provisions shared telemetry parents. Runtime/per-user
+# install.sh must not create these directories. Idempotent normalize every sync;
+# reject symlink / non-directory targets before any chmod.
+#
+# Telemetry is best-effort: a provisioning failure (missing mount, read-only
+# storage, refused unsafe path) must not abort the node sync. The runtime
+# capability gate keeps shared telemetry writes disabled until operators repair
+# the layout, so warn loudly and continue.
+echo "==> Provisioning shared telemetry directories ..."
+TELEMETRY_DIR="${AUTOBENCH_TELEMETRY_DIR:-/ads_storage/autobench/telemetry}"
+# shellcheck source=scripts/provision_telemetry_dirs.sh
+. "$(cd "$(dirname "$0")" && pwd)/scripts/provision_telemetry_dirs.sh"
+if ! provision_shared_telemetry_dirs "$TELEMETRY_DIR"; then
+  echo "WARNING: shared telemetry provisioning failed for ${TELEMETRY_DIR};" >&2
+  echo "WARNING: shared telemetry writes stay gated off until operators repair the layout." >&2
+fi
+echo "==> Telemetry permission evidence:"
+ls -ld -- "$TELEMETRY_DIR" "$TELEMETRY_DIR/users" 2>/dev/null || echo "    unavailable"
+
 echo "==> Now at: $(git log -1 --format='%h %s')"
 echo "==> Install decision: ${INSTALL_DECISION}"
 echo "==> Install signal: ${INSTALL_SIGNAL}"

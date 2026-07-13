@@ -44,6 +44,14 @@ from core.privacy_validator import PrivacyValidator
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
 from core.report_artifact_builder import build_analysis_artifacts
 from core.report_generator import ReportGenerator
+from core.telemetry import (
+    Action,
+    FailCategory,
+    action_attempted,
+    action_completed,
+    action_failed,
+    action_refused,
+)
 from core.validation_runner import run_input_validation
 from utils.config_manager import ConfigManager, ResolvedConfig
 
@@ -1315,6 +1323,28 @@ RATE_MODE_SPEC = AnalysisModeSpec(
 )
 
 
+class _PhaseTracker:
+    """Tracks orchestration phase without retaining request fields."""
+
+    __slots__ = ("phase",)
+
+    def __init__(self) -> None:
+        self.phase = "configuration"
+
+    def set(self, phase: str) -> None:
+        self.phase = phase
+
+
+def _failure_category(phase: str) -> FailCategory:
+    if phase == "input":
+        return "input"
+    if phase == "analysis":
+        return "analysis"
+    if phase == "output":
+        return "output"
+    return "unexpected"
+
+
 def _execute_run(
     request: AnalysisRunRequest,
     mode_spec: AnalysisModeSpec,
@@ -1322,6 +1352,48 @@ def _execute_run(
     *,
     extra_config_overrides: Optional[Dict[str, Any]] = None,
 ) -> AnalysisArtifacts:
+    # Telemetry helpers are best-effort and never raise, so the outcome
+    # mapping below cannot alter analysis behavior.
+    action: Action = "share_analysis" if request.is_share else "rate_analysis"
+    tracker = _PhaseTracker()
+    action_attempted(action)
+    try:
+        artifacts = _execute_run_impl(
+            request,
+            mode_spec,
+            logger,
+            extra_config_overrides=extra_config_overrides,
+            phase_tracker=tracker,
+        )
+    except RunBlocked:
+        action_refused(action, "compliance_policy")
+        raise
+    except RunAborted:
+        action_refused(action, "input_validation")
+        raise
+    except ValueError:
+        if tracker.phase == "configuration":
+            action_refused(action, "configuration")
+        else:
+            action_failed(action, _failure_category(tracker.phase))
+        raise
+    except Exception:
+        action_failed(action, _failure_category(tracker.phase))
+        raise
+    action_completed(action)
+    return artifacts
+
+
+def _execute_run_impl(
+    request: AnalysisRunRequest,
+    mode_spec: AnalysisModeSpec,
+    logger: logging.Logger,
+    *,
+    extra_config_overrides: Optional[Dict[str, Any]] = None,
+    phase_tracker: Optional[_PhaseTracker] = None,
+) -> AnalysisArtifacts:
+    tracker = phase_tracker or _PhaseTracker()
+    tracker.set("configuration")
     args = request.to_namespace()
     config_overrides = dict(mode_spec.extra_config_overrides)
     if extra_config_overrides:
@@ -1332,6 +1404,7 @@ def _execute_run(
     observability = RunObservability()
     observability.record(mode_spec.start_event, entity=request.entity, csv=request.csv)
 
+    tracker.set("input")
     preferred_entity_col = mode_spec.resolve_preferred_entity_col(request, config)
     try:
         prepared_loader, prepared_df, prepared_entity_col, prepared_time_col, used_prepared = apply_prepared_dataset(
@@ -1384,6 +1457,7 @@ def _execute_run(
     if dimensions is None:
         raise RunAborted('No dimensions available for analysis')
 
+    tracker.set("analysis")
     resolved = config.resolve()
     debug_mode = config.get('output', 'include_debug_sheets', default=False)
     analyzer, analyzer_settings = build_dimensional_analyzer(
@@ -1597,6 +1671,7 @@ def _execute_run(
         compliance_summary=compliance_summary,
     )
 
+    tracker.set("output")
     artifacts = write_outputs(request, artifacts, config=config, logger=logger)
     if request.export_balanced_csv:
         mode_spec.export_balanced_csv_fn(
