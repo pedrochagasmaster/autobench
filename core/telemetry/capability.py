@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import stat
 import sys
@@ -13,6 +12,11 @@ from core.telemetry.fs_safety import (
     existing_ancestors_are_real_dirs,
     lexical_absolute_path,
 )
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX: the runtime gate below fails closed
+    fcntl = None  # type: ignore[assignment]
 
 _REQUIRED_OS_FLAGS = (
     "O_APPEND",
@@ -41,6 +45,8 @@ def shared_writer_supported(
     """
     try:
         if sys.platform != "linux":
+            return False
+        if fcntl is None:
             return False
         for name in _REQUIRED_OS_FLAGS:
             if not hasattr(os, name):

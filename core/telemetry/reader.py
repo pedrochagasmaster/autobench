@@ -11,21 +11,28 @@ from enum import Enum
 from pathlib import Path
 
 from core.telemetry.constants import (
+    ACTIONS,
     DEFAULT_DAYS,
     DEFAULT_SHARED_DIR,
     FUTURE_SKEW_S,
     MAX_RECORD_BYTES,
+    OUTCOMES,
     SHARED_GATE_SCAN_MAX_BYTES,
+    SURFACES,
+    shared_dir_override,
 )
 from core.telemetry.events import (
     EventValidationError,
     UnsupportedSchemaVersion,
     ValidatedEvent,
     decode_record,
+    require_aware_utc,
 )
 from core.telemetry.fs_safety import (
     LexicalAbsolutePath,
     TelemetryPath,
+    close_quietly,
+    combine_open_flags,
     existing_ancestors_are_real_dirs,
     lexical_absolute_path,
 )
@@ -38,15 +45,11 @@ from core.telemetry.identity import (
 )
 from core.telemetry.writer import paths_for
 
-_ENV_DIR = "AUTOBENCH_TELEMETRY_DIR"
 _READ_CHUNK = 4096
 
-# Require all safe-open flags at import time (AttributeError if any missing).
-_OPEN_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW
+# None on platforms missing any safe-open flag; reads then fail closed.
+_OPEN_FLAGS = combine_open_flags(("O_RDONLY", "O_CLOEXEC", "O_NONBLOCK", "O_NOFOLLOW"))
 
-_SURFACE_ORDER = ("share", "rate")
-_ACTION_ORDER = ("share_analysis", "rate_analysis")
-_OUTCOME_ORDER = ("completed", "cancelled", "refused", "failed")
 _ACTION_EVENTS = frozenset(
     {
         "action_attempted",
@@ -90,16 +93,6 @@ class Summary:
     outcomes: Mapping[str, int]
 
 
-def _require_aware_utc(now: datetime) -> datetime:
-    if not isinstance(now, datetime):
-        raise ValueError("now must be a datetime")
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise ValueError("now must be timezone-aware UTC")
-    if now.utcoffset() != timedelta(0):
-        raise ValueError("now must be timezone-aware UTC")
-    return now.replace(tzinfo=timezone.utc)
-
-
 def _validate_days(days: int | None) -> int | None:
     if days is None:
         return None
@@ -110,27 +103,19 @@ def _validate_days(days: int | None) -> int | None:
     return days
 
 
-def _close_quiet(fd: int | None) -> None:
-    if fd is None:
-        return
-    try:
-        os.close(fd)
-    except OSError:
-        pass
-
-
 def _resolve_shared_parent(
     explicit: Path | None,
     environ: Mapping[str, str],
 ) -> Path:
+    """Explicit ``--dir`` wins; a blank env override falls back to the default.
+
+    Unlike the writer (which fails shared writes closed on a blank override),
+    reports still have a sensible source: the default shared parent.
+    """
     if explicit is not None:
         return explicit
-    raw = environ.get(_ENV_DIR)
-    if isinstance(raw, str):
-        stripped = raw.strip()
-        if stripped:
-            return Path(stripped)
-    return DEFAULT_SHARED_DIR
+    override = shared_dir_override(environ)
+    return override if override is not None else DEFAULT_SHARED_DIR
 
 
 def _list_shared_jsonl(users_dir: TelemetryPath) -> tuple[TelemetryPath, ...]:
@@ -150,6 +135,8 @@ def _safe_open_regular(path: TelemetryPath) -> tuple[int, os.stat_result] | None
     """Open ``path`` safely; return (fd, fstat) only for regular singly-linked files."""
     fd: int | None = None
     try:
+        if _OPEN_FLAGS is None:
+            return None
         try:
             fd = os.open(path, _OPEN_FLAGS)
         except OSError:
@@ -157,14 +144,14 @@ def _safe_open_regular(path: TelemetryPath) -> tuple[int, os.stat_result] | None
         try:
             st = os.fstat(fd)
         except OSError:
-            _close_quiet(fd)
+            close_quietly(fd)
             return None
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-            _close_quiet(fd)
+            close_quietly(fd)
             return None
         return fd, st
     except Exception:
-        _close_quiet(fd)
+        close_quietly(fd)
         return None
 
 
@@ -179,6 +166,14 @@ class _LineScanState:
 
     max_read_bytes: int | None
     bytes_read: int = 0
+
+    def lift_budget(self) -> None:
+        """Remove the read cap mid-iteration (after the shared gate accepts).
+
+        ``_iter_raw_lines`` re-reads this state each chunk, so lifting takes
+        effect immediately without dropping already-buffered data.
+        """
+        self.max_read_bytes = None
 
 
 class TelemetryReader:
@@ -202,7 +197,9 @@ class TelemetryReader:
         if now is None:
             self._now = datetime.now(timezone.utc)
         else:
-            self._now = _require_aware_utc(now)
+            # EventValidationError subclasses ValueError, preserving the
+            # reader's documented raise type.
+            self._now = require_aware_utc(now)
 
     def select_sources(self, *, user: str | None = None) -> SourceSelection:
         token: str | None = None
@@ -252,7 +249,7 @@ class TelemetryReader:
                 return False
             return self._accept_shared_file(path, first, st.st_uid)
         finally:
-            _close_quiet(fd)
+            close_quietly(fd)
 
     def _first_schema_valid_event(
         self,
@@ -333,9 +330,9 @@ class TelemetryReader:
         days: int | None = DEFAULT_DAYS,
         user: str | None = None,
     ) -> Summary:
-        surfaces = {key: 0 for key in _SURFACE_ORDER}
-        actions = {key: 0 for key in _ACTION_ORDER}
-        outcomes = {key: 0 for key in _OUTCOME_ORDER}
+        surfaces = {key: 0 for key in SURFACES}
+        actions = {key: 0 for key in ACTIONS}
+        outcomes = {key: 0 for key in OUTCOMES}
         for event in self.iter_events(days=days, user=user):
             if event.event == "surface_viewed":
                 surface = event.props.get("surface")
@@ -389,9 +386,8 @@ class TelemetryReader:
                             return
                         accepted_user = event.user
                         gated = True
-                        # Lift pre-gate budget; keep the same buffered iterator.
                         if scan is not None:
-                            scan.max_read_bytes = None
+                            scan.lift_budget()
                     elif event.user != accepted_user:
                         continue
                 else:
@@ -407,7 +403,7 @@ class TelemetryReader:
                     continue
                 yield event
         finally:
-            _close_quiet(fd)
+            close_quietly(fd)
 
     def _accept_shared_file(
         self, path: TelemetryPath, first: ValidatedEvent, file_uid: int
@@ -438,9 +434,6 @@ class TelemetryReader:
         except Exception:
             return None
 
-    def _decode_line(self, raw_line: bytes) -> ValidatedEvent | None:
-        return self._try_decode_line(raw_line, warn_unsupported=True)
-
 
 def _iter_raw_lines(
     fd: int, *, scan: _LineScanState | None = None
@@ -448,9 +441,9 @@ def _iter_raw_lines(
     """Yield LF-terminated raw lines with bounded memory; discard incomplete tail.
 
     When ``scan.max_read_bytes`` is set, stop once physical ``os.read`` bytes
-    reach that budget (counts oversized/no-LF/invalid content). Clearing
-    ``scan.max_read_bytes`` to ``None`` mid-iteration lifts the budget without
-    dropping already-buffered chunk data.
+    reach that budget (counts oversized/no-LF/invalid content). Calling
+    ``scan.lift_budget()`` mid-iteration removes the cap without dropping
+    already-buffered chunk data.
     """
     buf = bytearray()
     skipping = False

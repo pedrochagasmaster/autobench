@@ -56,23 +56,6 @@ class LexicalAbsolutePath(os.PathLike[str]):
             return ""
         return self._raw.rsplit("/", 1)[-1]
 
-    def is_absolute(self) -> bool:
-        return True
-
-    def exists(self) -> bool:
-        try:
-            os.stat(self._raw)
-        except OSError:
-            return False
-        return True
-
-    def stat(self) -> os.stat_result:
-        return os.stat(self._raw)
-
-    def read_bytes(self) -> bytes:
-        with open(self._raw, "rb") as handle:
-            return handle.read()
-
     def __truediv__(self, other: str | os.PathLike[str]) -> LexicalAbsolutePath:
         piece = os.fspath(other)
         if piece.startswith("/"):
@@ -86,6 +69,31 @@ class LexicalAbsolutePath(os.PathLike[str]):
 
 # pathlib.Path or uncollapsed absolute lexical path used for shared FS gates/ops.
 TelemetryPath: TypeAlias = Path | LexicalAbsolutePath
+
+
+def combine_open_flags(names: tuple[str, ...]) -> int | None:
+    """Bitwise-OR ``os.O_*`` flags by name; None when any is unavailable.
+
+    A None result means this platform cannot honor the safe-open contract, so
+    callers must fail closed instead of opening with weaker flags.
+    """
+    flags = 0
+    for name in names:
+        value = getattr(os, name, None)
+        if value is None:
+            return None
+        flags |= int(value)
+    return flags
+
+
+def close_quietly(fd: int | None) -> None:
+    """Close a descriptor, swallowing the (unactionable) OSError from close."""
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def lexical_absolute_path(

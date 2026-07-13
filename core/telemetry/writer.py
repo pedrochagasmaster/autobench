@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.telemetry.constants import MAX_RECORD_BYTES
-from core.telemetry.fs_safety import TelemetryPath, lexical_absolute_path
+from core.telemetry.fs_safety import (
+    TelemetryPath,
+    close_quietly,
+    combine_open_flags,
+    lexical_absolute_path,
+)
 from core.telemetry.identity import Identity
 
-_OPEN_FLAGS = (
-    os.O_APPEND
-    | os.O_CREAT
-    | os.O_WRONLY
-    | os.O_CLOEXEC
-    | os.O_NONBLOCK
-    | os.O_NOFOLLOW
+try:
+    import fcntl
+except ImportError:  # non-POSIX: append_one fails closed below
+    fcntl = None  # type: ignore[assignment]
+
+# None on platforms missing any safe-open flag; appends then fail closed.
+_OPEN_FLAGS = combine_open_flags(
+    ("O_APPEND", "O_CREAT", "O_WRONLY", "O_CLOEXEC", "O_NONBLOCK", "O_NOFOLLOW")
 )
 _CREATE_MODE = 0o600
 _PRIVATE_DIR_MODE = 0o700
@@ -127,15 +132,6 @@ def _ensure_private_parents(path: Path, expected_uid: int) -> bool:
         return False
 
 
-def _close_quiet(fd: int | None) -> None:
-    if fd is None:
-        return
-    try:
-        os.close(fd)
-    except OSError:
-        pass
-
-
 def _write_all(fd: int, data: bytes) -> bool:
     offset = 0
     length = len(data)
@@ -168,6 +164,8 @@ def append_one(
     """
     fd: int | None = None
     try:
+        if _OPEN_FLAGS is None or fcntl is None:
+            return False
         if not _validate_record(record):
             return False
         data = bytes(record)
@@ -211,7 +209,7 @@ def append_one(
     except Exception:
         return False
     finally:
-        _close_quiet(fd)
+        close_quietly(fd)
 
 
 def append_record(

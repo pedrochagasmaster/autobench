@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 import os
-import pwd
 import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable
+
+try:
+    import pwd
+except ImportError:  # non-POSIX: identity resolution raises, callers degrade
+    pwd = None  # type: ignore[assignment]
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,172}$")
 _MAX_USERNAME_BYTES = 128
@@ -45,11 +49,21 @@ def encode_user_token(username: str) -> str:
     return token
 
 
+def _require_posix() -> None:
+    if pwd is None or not hasattr(os, "geteuid"):
+        raise OSError("identity resolution requires POSIX pwd/geteuid support")
+
+
 def resolve_identity(
     *,
-    geteuid: Callable[[], int] = os.geteuid,
-    getpwuid: Callable[[int], Any] = pwd.getpwuid,
+    geteuid: Callable[[], int] | None = None,
+    getpwuid: Callable[[int], Any] | None = None,
 ) -> Identity:
+    if geteuid is None or getpwuid is None:
+        _require_posix()
+        assert pwd is not None
+        geteuid = os.geteuid if geteuid is None else geteuid
+        getpwuid = pwd.getpwuid if getpwuid is None else getpwuid
     uid = geteuid()
     pw_entry = getpwuid(uid)
     username = validate_username(pw_entry.pw_name)
@@ -58,4 +72,6 @@ def resolve_identity(
 
 def lookup_uid(username: str) -> int:
     validated = validate_username(username)
+    if pwd is None:
+        raise OSError("username lookup requires POSIX pwd support")
     return pwd.getpwnam(validated).pw_uid
