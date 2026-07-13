@@ -1,61 +1,34 @@
-"""Output artifact writer for analysis runs."""
+"""Write analysis, publication, and JSON artifacts."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Dict, Mapping
 
-if TYPE_CHECKING:
-    from .contracts import AnalysisArtifacts, AnalysisRunRequest
-    from .report_models import ReportModel
+from core.contracts import AnalysisArtifacts, AnalysisRunRequest
+from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
+from core.report_generator import ReportGenerator
+from core.report_models import ReportModel
 
 
-class OutputArtifactWriter:
-    """Adapter boundary for report artifact writing."""
-
-    def __init__(
-        self,
-        report_model: "ReportModel",
-        request: "AnalysisRunRequest",
-        artifacts: "AnalysisArtifacts",
-        config: Any = None,
-    ) -> None:
-        self.report_model = report_model
-        self.request = request
-        self.artifacts = artifacts
-        self.config = config
-
-    @property
-    def output_file(self) -> str:
-        return self.artifacts.analysis_output_file or "benchmark_output.xlsx"
-
-    @property
-    def publication_file(self) -> str:
-        return self.artifacts.publication_output or self.output_file
-
-    @property
-    def output_format(self) -> str:
-        if self.config is None:
-            return self.request.output_format
-        return self.config.get("output", "output_format", default=self.request.output_format)
-
-    @property
-    def write_analysis(self) -> bool:
-        return self.output_format in {"analysis", "both"}
-
-    @property
-    def write_publication(self) -> bool:
-        return self.output_format in {"publication", "both"}
+def _flatten_rate_results(
+    results: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        f"{rate_type}_{dimension}": value
+        for rate_type, rate_results in results.items()
+        for dimension, value in rate_results.items()
+    }
 
 
 def write_outputs(
-    request: "AnalysisRunRequest",
-    artifacts: "AnalysisArtifacts",
+    request: AnalysisRunRequest,
+    artifacts: AnalysisArtifacts,
     *,
     config: Any = None,
     logger: logging.Logger | None = None,
-) -> "AnalysisArtifacts":
+) -> AnalysisArtifacts:
     """Write Excel (and optionally publication) reports, returning updated artifacts."""
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -69,21 +42,21 @@ def write_outputs(
             artifacts.metadata = {}
         artifacts.metadata["publication_withheld_reason"] = "strict_posture_violations"
 
-    from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
-    from core.report_models import ReportModel
-
     report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
-    writer = OutputArtifactWriter(report_model, request, artifacts, config)
-
-    output_file = writer.output_file
-    publication_file = writer.publication_file
+    output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
+    publication_file = artifacts.publication_output or output_file
+    output_format = (
+        request.output_format
+        if config is None
+        else config.get("output", "output_format", default=request.output_format)
+    )
+    write_analysis = output_format in {"analysis", "both"}
+    write_publication = output_format in {"publication", "both"}
     entity_name = request.entity or "PEER_ONLY"
 
     def _write_report(path: str, *, publication: bool) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         if publication:
-            from core.report_generator import ReportGenerator
-
             fraud_in_bps = (
                 config.get("output", "fraud_in_bps", default=getattr(request, "fraud_in_bps", True))
                 if config is not None
@@ -91,11 +64,7 @@ def write_outputs(
             )
             publication_results = artifacts.results
             if request.is_rate and isinstance(artifacts.results, dict):
-                publication_results = {
-                    f"{rate_type}_{dimension}": value
-                    for rate_type, rate_results in artifacts.results.items()
-                    for dimension, value in rate_results.items()
-                }
+                publication_results = _flatten_rate_results(artifacts.results)
             # Merge diagnostic DataFrames into the metadata bag so the
             # publication workbook's allow-list (Q9) can read them via
             # `_write_optional_dataframe_sheet`. The diagnostics live as
@@ -149,7 +118,7 @@ def write_outputs(
             config=config,
         )
 
-    if writer.write_analysis:
+    if write_analysis:
         _write_report(output_file, publication=False)
         logger.info("Analysis report written to %s", output_file)
 
@@ -158,17 +127,11 @@ def write_outputs(
         )
         if report_format == "json":
             json_path = str(Path(output_file).with_suffix(".json"))
-            from core.report_generator import ReportGenerator
-
             json_results = artifacts.results
             if request.is_rate and isinstance(artifacts.results, dict) and all(
                 isinstance(v, dict) for v in artifacts.results.values()
             ):
-                json_results = {
-                    f"{rate_type}_{dimension}": value
-                    for rate_type, rate_results in artifacts.results.items()
-                    for dimension, value in rate_results.items()
-                }
+                json_results = _flatten_rate_results(artifacts.results)
             ReportGenerator(config).generate_report(
                 json_results,
                 json_path,
@@ -178,7 +141,7 @@ def write_outputs(
             )
             artifacts.json_output = json_path
             logger.info("JSON report written to %s", json_path)
-    if writer.write_publication:
+    if write_publication:
         if block_publication:
             artifacts.publication_output = None
             logger.error(

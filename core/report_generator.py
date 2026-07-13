@@ -68,14 +68,6 @@ class ReportGenerator:
             worksheet.column_dimensions[column].width = width
 
     @staticmethod
-    def _resolve_convert_all_rates(metadata: Optional[Dict[str, Any]]) -> bool:
-        return resolve_convert_all_rates(metadata)
-
-    @staticmethod
-    def _should_convert_rate_column(column_name: str, convert_all_rates: bool) -> bool:
-        return should_convert_rate_column(column_name, convert_all_rates)
-
-    @staticmethod
     def _format_privacy_rule_line(metadata: Dict[str, Any]) -> str:
         """Format the Summary-sheet privacy rule from run metadata."""
         rule_name = metadata.get("privacy_rule")
@@ -953,11 +945,11 @@ class ReportGenerator:
             # Apply fraud BPS conversion for rate analysis (copy to avoid mutation)
             df = df.copy(deep=True)
             if analysis_type == 'rate':
-                convert_all_rates = self._resolve_convert_all_rates(metadata)
+                convert_all_rates = resolve_convert_all_rates(metadata)
                 for col in df.columns:
                     if not pd.api.types.is_numeric_dtype(df[col]):
                         continue
-                    if fraud_in_bps and self._should_convert_rate_column(col, convert_all_rates):
+                    if fraud_in_bps and should_convert_rate_column(col, convert_all_rates):
                         df[col] = df[col] * 100
                 if fraud_in_bps:
                     df.columns = [

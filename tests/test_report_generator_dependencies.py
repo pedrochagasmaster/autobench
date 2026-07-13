@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from openpyxl import Workbook
 
 from core.data_loader import ValidationIssue, ValidationSeverity
+from core.report_content import should_convert_rate_column
 from core.report_generator import ReportGenerator
 
 
@@ -41,8 +42,8 @@ class TestReportGeneratorDependencies(unittest.TestCase):
         self.assertLessEqual(len(name), 31)
 
     def test_rate_column_conversion_detection(self) -> None:
-        self.assertTrue(ReportGenerator._should_convert_rate_column("fraud_Raw_%", convert_all_rates=False))
-        self.assertFalse(ReportGenerator._should_convert_rate_column("approval_Impact_PP", convert_all_rates=True))
+        self.assertTrue(should_convert_rate_column("fraud_Raw_%", convert_all_rates=False))
+        self.assertFalse(should_convert_rate_column("approval_Impact_PP", convert_all_rates=True))
 
     def test_data_quality_sheet_renders_structured_issue_details(self) -> None:
         workbook = Workbook()
