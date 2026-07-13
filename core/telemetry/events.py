@@ -9,14 +9,22 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 from uuid import UUID
 
-from core.telemetry.constants import MAX_RECORD_BYTES, SCHEMA_VERSION
+from core.telemetry.constants import (
+    ACTIONS,
+    FAILURE_CATEGORIES,
+    LAUNCH_CONTEXTS,
+    MAX_DURATION_S,
+    MAX_RECORD_BYTES,
+    REFUSAL_REASONS,
+    SCHEMA_VERSION,
+    SURFACES,
+)
 from core.telemetry.identity import validate_username
 
 MAX_APP_VERSION_BYTES = 64
-_MAX_DURATION_S = 31_536_000
 _TS_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})"
     r"(?:\.(?P<frac>\d{1,6}))?Z$"
@@ -33,23 +41,6 @@ _ENVELOPE_KEYS = frozenset(
         "props",
     }
 )
-
-_LAUNCH_CONTEXTS = frozenset({"cli_share", "cli_rate", "tui"})
-_SURFACES = frozenset({"share", "rate"})
-_ACTIONS = frozenset({"share_analysis", "rate_analysis"})
-_REFUSAL_REASONS = frozenset({"configuration", "input_validation", "compliance_policy"})
-_FAILURE_CATEGORIES = frozenset({"input", "analysis", "output", "unexpected"})
-
-_EVENT_SCHEMAS: dict[str, frozenset[str]] = {
-    "session_start": frozenset({"launch_context"}),
-    "session_end": frozenset({"duration_s"}),
-    "surface_viewed": frozenset({"surface"}),
-    "action_attempted": frozenset({"action"}),
-    "action_completed": frozenset({"action"}),
-    "action_cancelled": frozenset({"action"}),
-    "action_refused": frozenset({"action", "reason"}),
-    "action_failed": frozenset({"action", "category"}),
-}
 
 
 class EventValidationError(ValueError):
@@ -97,12 +88,6 @@ def _validate_app_version(app_version: str) -> str:
     return app_version
 
 
-def _validate_enum(value: object, allowed: frozenset[str], *, label: str) -> str:
-    if not isinstance(value, str) or value not in allowed:
-        raise EventValidationError(f"invalid {label}")
-    return value
-
-
 def _validate_duration(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EventValidationError("duration_s must be a finite number")
@@ -112,50 +97,60 @@ def _validate_duration(value: object) -> float:
     if number < 0:
         raise EventValidationError("duration_s out of range")
     rounded = round(number, 3)
-    if rounded > _MAX_DURATION_S:
+    if rounded > MAX_DURATION_S:
         raise EventValidationError("duration_s out of range")
     if rounded == 0:
         return 0.0
     return rounded
 
 
+_PropValidator = Callable[[object], object]
+
+
+def _enum_prop(allowed: tuple[str, ...], label: str) -> _PropValidator:
+    values = frozenset(allowed)
+
+    def validate(value: object) -> str:
+        if not isinstance(value, str) or value not in values:
+            raise EventValidationError(f"invalid {label}")
+        return value
+
+    return validate
+
+
+_ACTION_PROP = _enum_prop(ACTIONS, "action")
+
+# Closed catalog: exact prop keys and their validators, per event.
+_EVENT_SCHEMAS: dict[str, dict[str, _PropValidator]] = {
+    "session_start": {"launch_context": _enum_prop(LAUNCH_CONTEXTS, "launch_context")},
+    "session_end": {"duration_s": _validate_duration},
+    "surface_viewed": {"surface": _enum_prop(SURFACES, "surface")},
+    "action_attempted": {"action": _ACTION_PROP},
+    "action_completed": {"action": _ACTION_PROP},
+    "action_cancelled": {"action": _ACTION_PROP},
+    "action_refused": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(REFUSAL_REASONS, "reason"),
+    },
+    "action_failed": {
+        "action": _ACTION_PROP,
+        "category": _enum_prop(FAILURE_CATEGORIES, "category"),
+    },
+}
+
+
 def _normalize_props(event: str, props: Mapping[str, object]) -> dict[str, object]:
-    if event not in _EVENT_SCHEMAS:
+    schema = _EVENT_SCHEMAS.get(event)
+    if schema is None:
         raise EventValidationError(f"unknown event: {event}")
     props_map = _require_mapping(props, label="props")
-    expected = _EVENT_SCHEMAS[event]
-    keys = frozenset(props_map)
-    if keys != expected:
-        raise EventValidationError(f"props keys must be exactly {sorted(expected)}")
-
-    if event == "session_start":
-        return {
-            "launch_context": _validate_enum(
-                props_map["launch_context"], _LAUNCH_CONTEXTS, label="launch_context"
-            )
-        }
-    if event == "session_end":
-        return {"duration_s": _validate_duration(props_map["duration_s"])}
-    if event == "surface_viewed":
-        return {"surface": _validate_enum(props_map["surface"], _SURFACES, label="surface")}
-    if event in {"action_attempted", "action_completed", "action_cancelled"}:
-        return {"action": _validate_enum(props_map["action"], _ACTIONS, label="action")}
-    if event == "action_refused":
-        return {
-            "action": _validate_enum(props_map["action"], _ACTIONS, label="action"),
-            "reason": _validate_enum(props_map["reason"], _REFUSAL_REASONS, label="reason"),
-        }
-    if event == "action_failed":
-        return {
-            "action": _validate_enum(props_map["action"], _ACTIONS, label="action"),
-            "category": _validate_enum(
-                props_map["category"], _FAILURE_CATEGORIES, label="category"
-            ),
-        }
-    raise EventValidationError(f"unknown event: {event}")
+    if frozenset(props_map) != frozenset(schema):
+        raise EventValidationError(f"props keys must be exactly {sorted(schema)}")
+    return {key: validate(props_map[key]) for key, validate in schema.items()}
 
 
-def _require_aware_utc(now: datetime) -> datetime:
+def require_aware_utc(now: datetime) -> datetime:
+    """Validate an already-UTC aware datetime; shared by encoder and reader."""
     if not isinstance(now, datetime):
         raise EventValidationError("now must be a datetime")
     if now.tzinfo is None or now.utcoffset() is None:
@@ -166,7 +161,7 @@ def _require_aware_utc(now: datetime) -> datetime:
 
 
 def _format_ts(now: datetime) -> str:
-    utc = _require_aware_utc(now)
+    utc = require_aware_utc(now)
     if utc.microsecond:
         return utc.strftime("%Y-%m-%dT%H:%M:%S.%f").rstrip("0").rstrip(".") + "Z"
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")

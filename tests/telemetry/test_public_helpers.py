@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 
 import core.telemetry as telemetry
+from core.telemetry import constants
 from core.telemetry.events import build_record
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.service import TelemetryService
@@ -85,21 +86,13 @@ def test_public_surface_has_no_generic_emit() -> None:
         assert hasattr(telemetry, name)
 
 
-def test_typed_aliases_match_catalog() -> None:
-    assert set(get_args(telemetry.LaunchContext)) == {"cli_share", "cli_rate", "tui"}
-    assert set(get_args(telemetry.Surface)) == {"share", "rate"}
-    assert set(get_args(telemetry.Action)) == {"share_analysis", "rate_analysis"}
-    assert set(get_args(telemetry.RefuseReason)) == {
-        "configuration",
-        "input_validation",
-        "compliance_policy",
-    }
-    assert set(get_args(telemetry.FailCategory)) == {
-        "input",
-        "analysis",
-        "output",
-        "unexpected",
-    }
+def test_typed_aliases_match_canonical_vocabulary() -> None:
+    """Literal aliases must mirror the constants tuples, order included."""
+    assert get_args(telemetry.LaunchContext) == constants.LAUNCH_CONTEXTS
+    assert get_args(telemetry.Surface) == constants.SURFACES
+    assert get_args(telemetry.Action) == constants.ACTIONS
+    assert get_args(telemetry.RefuseReason) == constants.REFUSAL_REASONS
+    assert get_args(telemetry.FailCategory) == constants.FAILURE_CATEGORIES
 
 
 def test_helpers_delegate_and_never_raise_on_invalid() -> None:

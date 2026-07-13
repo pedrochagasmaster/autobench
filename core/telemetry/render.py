@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from core.telemetry.constants import ACTIONS, OUTCOMES, SURFACES
 from core.telemetry.reader import Summary, WhoRow
 
 # CSI: ESC [ params final; OSC: ESC ] ... BEL or ST (ESC \)
@@ -15,10 +16,6 @@ _ANSI_RE = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
     r")"
 )
-
-_SURFACE_ORDER = ("share", "rate")
-_ACTION_ORDER = ("share_analysis", "rate_analysis")
-_OUTCOME_ORDER = ("completed", "cancelled", "refused", "failed")
 
 
 def sanitize_terminal(text: str) -> str:
@@ -68,17 +65,17 @@ def format_summary(summary: Summary) -> str:
     sections: list[str] = []
 
     surface_lines = ["Surfaces"]
-    for key in _SURFACE_ORDER:
+    for key in SURFACES:
         surface_lines.append(f"{key}  {int(summary.surfaces.get(key, 0))}")
     sections.append("\n".join(surface_lines))
 
     action_lines = ["Actions"]
-    for key in _ACTION_ORDER:
+    for key in ACTIONS:
         action_lines.append(f"{key}  {int(summary.actions.get(key, 0))}")
     sections.append("\n".join(action_lines))
 
     outcome_lines = ["Outcomes"]
-    for key in _OUTCOME_ORDER:
+    for key in OUTCOMES:
         outcome_lines.append(f"{key}  {int(summary.outcomes.get(key, 0))}")
     sections.append("\n".join(outcome_lines))
 

@@ -15,6 +15,9 @@ from core.telemetry.service import TelemetryService
 
 logger = logging.getLogger(__name__)
 
+# Static mirrors of the canonical vocabulary tuples in
+# core.telemetry.constants (Literal needs literal strings); a test asserts
+# they stay identical.
 LaunchContext = Literal["cli_share", "cli_rate", "tui"]
 Surface = Literal["share", "rate"]
 Action = Literal["share_analysis", "rate_analysis"]
