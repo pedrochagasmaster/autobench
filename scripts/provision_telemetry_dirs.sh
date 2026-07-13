@@ -5,6 +5,10 @@
 # mkdir/chmod. Creates the parent with mkdir -p -- and users with mkdir -- when
 # absent, then applies exact portable modes 0755 / 1777.
 #
+# Paths are normalized by stripping one-or-more trailing slashes while preserving
+# a lone root token ("/"). Empty, ".", and "/" are rejected so this helper never
+# chmods root or creates /users.
+#
 # Usage:
 #   . scripts/provision_telemetry_dirs.sh
 #   provision_shared_telemetry_dirs "/ads_storage/autobench/telemetry"
@@ -12,11 +16,37 @@
 # Or as a script:
 #   scripts/provision_telemetry_dirs.sh [/path/to/telemetry]
 
+# Strip trailing slashes but keep a legitimate root token as "/".
+_normalize_telemetry_dir() {
+  local p="${1-}"
+  while [ "$p" != "/" ] && [ "$p" != "${p%/}" ]; do
+    p="${p%/}"
+  done
+  printf '%s' "$p"
+}
+
 provision_shared_telemetry_dirs() {
-  local TELEMETRY_DIR="${1:?telemetry directory required}"
+  local raw="${1-}"
+  local TELEMETRY_DIR
+  TELEMETRY_DIR="$(_normalize_telemetry_dir "$raw")"
   local USERS_DIR="${TELEMETRY_DIR}/users"
 
-  # -L/-e inspect the path itself (test(1) has no --); mkdir/chmod use -- below.
+  case "$TELEMETRY_DIR" in
+    "" )
+      printf 'ERROR: TELEMETRY_DIR is empty (refusing unsafe root)\n' >&2
+      return 1
+      ;;
+    "." )
+      printf 'ERROR: TELEMETRY_DIR is "." (refusing unsafe root)\n' >&2
+      return 1
+      ;;
+    "/" )
+      printf 'ERROR: TELEMETRY_DIR is "/" (refusing unsafe root; would create /users)\n' >&2
+      return 1
+      ;;
+  esac
+
+  # -L/-e inspect the normalized path itself (test(1) has no --); mkdir/chmod use -- below.
   if [ -L "$TELEMETRY_DIR" ]; then
     printf 'ERROR: TELEMETRY_DIR is a symlink (refusing): %s\n' "$TELEMETRY_DIR" >&2
     return 1

@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -172,6 +174,98 @@ def test_provision_telemetry_dirs_rejects_telemetry_dir_symlink(
     assert result.returncode != 0
     assert "symlink" in (result.stderr + result.stdout).lower()
     assert stat.S_IMODE(real.stat().st_mode) == 0o0755
+
+
+@pytest.mark.parametrize("suffix", ["/", "////"])
+def test_provision_telemetry_dirs_rejects_trailing_slash_symlink_without_chmodding_victim(
+    tmp_path: Path, suffix: str
+) -> None:
+    """Trailing slashes must not bypass -L; victim mode stays 0700."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0700)
+    link = tmp_path / "link"
+    link.symlink_to(victim)
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(link) + suffix,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout or result.stderr
+    assert "symlink" in (result.stderr + result.stdout).lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    assert link.is_symlink()
+
+
+@pytest.mark.parametrize("bad", ["", ".", "/", "///"])
+def test_provision_telemetry_dirs_rejects_unsafe_roots(tmp_path: Path, bad: str) -> None:
+    """Empty, '.', and '/' (incl. slash-only) must never chmod root or create /users."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    marker = tmp_path / "untouched"
+    marker.mkdir(mode=0o0700)
+    users_at_root = Path("/users")
+    users_existed_before = users_at_root.exists()
+
+    fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            bad,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(tmp_path),
+    )
+    assert fail.returncode != 0
+    combined = (fail.stderr + fail.stdout).lower()
+    assert any(
+        token in combined
+        for token in ("refusing", "unsafe", "invalid", "empty", "root")
+    )
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o0700
+    if not users_existed_before:
+        assert not users_at_root.exists()
+
+
+def test_provision_telemetry_dirs_trailing_slash_override_still_provisions(
+    tmp_path: Path,
+) -> None:
+    """Harmless trailing slash on a real dir keeps exact override semantics."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "telemetry"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail; . "$1"; provision_shared_telemetry_dirs "$2"',
+            "provision-test",
+            str(helper),
+            str(parent) + "///",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert parent.is_dir() and not parent.is_symlink()
+    assert (parent / "users").is_dir()
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o0755
+    assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
 
 
 def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) -> None:
