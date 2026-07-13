@@ -9,10 +9,15 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable
 
+_pwd: Any
 try:
-    import pwd
+    import pwd as _pwd
 except ImportError:  # non-POSIX: identity resolution raises, callers degrade
-    pwd = None  # type: ignore[assignment]
+    _pwd = None
+
+# The module and its public members are platform-dependent in typeshed. Keep
+# that dynamic boundary explicit; callers below still fail closed when absent.
+pwd: Any = _pwd
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,172}$")
 _MAX_USERNAME_BYTES = 128
@@ -50,7 +55,7 @@ def encode_user_token(username: str) -> str:
 
 
 def _require_posix() -> None:
-    if pwd is None or not hasattr(os, "geteuid"):
+    if pwd is None or not callable(getattr(os, "geteuid", None)):
         raise OSError("identity resolution requires POSIX pwd/geteuid support")
 
 
@@ -62,7 +67,7 @@ def resolve_identity(
     if geteuid is None or getpwuid is None:
         _require_posix()
         assert pwd is not None
-        geteuid = os.geteuid if geteuid is None else geteuid
+        geteuid = getattr(os, "geteuid") if geteuid is None else geteuid
         getpwuid = pwd.getpwuid if getpwuid is None else getpwuid
     uid = geteuid()
     pw_entry = getpwuid(uid)

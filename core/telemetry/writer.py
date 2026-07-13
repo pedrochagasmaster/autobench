@@ -7,6 +7,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from core.telemetry.constants import MAX_RECORD_BYTES
 from core.telemetry.fs_safety import (
@@ -17,10 +18,15 @@ from core.telemetry.fs_safety import (
 )
 from core.telemetry.identity import Identity
 
+_fcntl: Any
 try:
-    import fcntl
+    import fcntl as _fcntl
 except ImportError:  # non-POSIX: append_one fails closed below
-    fcntl = None  # type: ignore[assignment]
+    _fcntl = None
+
+# ``fcntl`` is absent on Windows and has platform-conditional stubs. Runtime
+# capability checks below remain authoritative and fail closed when unavailable.
+fcntl: Any = _fcntl
 
 # None on platforms missing any safe-open flag; appends then fail closed.
 _OPEN_FLAGS = combine_open_flags(
@@ -164,7 +170,8 @@ def append_one(
     """
     fd: int | None = None
     try:
-        if _OPEN_FLAGS is None or fcntl is None:
+        fchmod = getattr(os, "fchmod", None)
+        if _OPEN_FLAGS is None or fcntl is None or not callable(fchmod):
             return False
         if not _validate_record(record):
             return False
@@ -194,7 +201,7 @@ def append_one(
             return False
 
         try:
-            os.fchmod(fd, final_mode)
+            fchmod(fd, final_mode)
         except OSError:
             return False
 

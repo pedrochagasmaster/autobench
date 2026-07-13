@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+requires_linux_filesystem = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="requires Linux paths, mode bits, and unprivileged symlink semantics",
+)
 
 
 def _powershell_command() -> list[str]:
@@ -113,6 +117,7 @@ def test_update_sh_provisions_shared_telemetry_directories() -> None:
     assert "symlink" in helper.lower()
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_rejects_users_symlink_without_chmodding_victim(
     tmp_path: Path,
 ) -> None:
@@ -149,6 +154,7 @@ def test_provision_telemetry_dirs_rejects_users_symlink_without_chmodding_victim
     assert users.is_symlink()
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_rejects_telemetry_dir_symlink(
     tmp_path: Path,
 ) -> None:
@@ -176,6 +182,7 @@ def test_provision_telemetry_dirs_rejects_telemetry_dir_symlink(
     assert stat.S_IMODE(real.stat().st_mode) == 0o0755
 
 
+@requires_linux_filesystem
 @pytest.mark.parametrize("suffix", ["/", "////"])
 def test_provision_telemetry_dirs_rejects_trailing_slash_symlink_without_chmodding_victim(
     tmp_path: Path, suffix: str
@@ -207,6 +214,7 @@ def test_provision_telemetry_dirs_rejects_trailing_slash_symlink_without_chmoddi
     assert link.is_symlink()
 
 
+@requires_linux_filesystem
 @pytest.mark.parametrize("bad", ["", ".", "/", "///"])
 def test_provision_telemetry_dirs_rejects_unsafe_roots(tmp_path: Path, bad: str) -> None:
     """Empty, '.', and '/' (incl. slash-only) must never chmod root or create /users."""
@@ -304,6 +312,7 @@ def test_provision_telemetry_dirs_rejects_dot_aliases_without_mutating(
     assert not maybe_users_y.exists()
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_accepts_absolute_with_repeated_slashes(
     tmp_path: Path,
 ) -> None:
@@ -331,6 +340,7 @@ def test_provision_telemetry_dirs_accepts_absolute_with_repeated_slashes(
     assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_trailing_slash_override_still_provisions(
     tmp_path: Path,
 ) -> None:
@@ -358,6 +368,7 @@ def test_provision_telemetry_dirs_trailing_slash_override_still_provisions(
     assert stat.S_IMODE((parent / "users").stat().st_mode) == 0o1777
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) -> None:
     helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
     parent = tmp_path / "telemetry"
@@ -393,6 +404,7 @@ def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) ->
     assert stat.S_IMODE(users.stat().st_mode) == 0o1777
 
 
+@requires_linux_filesystem
 def test_provision_telemetry_dirs_rejects_intermediate_symlink_ancestor(
     tmp_path: Path,
 ) -> None:
@@ -442,6 +454,7 @@ def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
     assert 'mkdir -p "$AUTOBENCH_HOME/config"' in script
 
 
+@requires_linux_filesystem
 def test_update_sh_idempotently_creates_telemetry_layout(tmp_path: Path) -> None:
     node_checkout = _build_update_repo_scenario(
         tmp_path / "scenario",
