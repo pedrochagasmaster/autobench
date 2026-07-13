@@ -6,7 +6,7 @@ import ast
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Tuple
 from unittest.mock import MagicMock
 
 import pytest

@@ -2038,7 +2038,6 @@ class BenchmarkApp(App):
 
         if confirmed and saved_request:
             request = saved_request
-            logger = logging.getLogger("benchmark")
             # Restart the run clock so the elapsed time reflects execution,
             # not how long a validation modal sat open.
             self.call_from_thread(self._begin_run_ui)
