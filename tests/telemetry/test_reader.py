@@ -257,6 +257,59 @@ def test_select_sources_relative_symlink_ancestor_falls_back_private(
     assert shared_path.exists()
 
 
+def test_select_sources_escape_symlink_dotdot_falls_back_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "escape").symlink_to(elsewhere)
+    shared_path = _write_shared(tmp_path / "shared", "alice", _session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    reader = _reader(
+        tmp_path,
+        identity=identity,
+        shared_dir=Path("escape/../shared"),
+        storage_root=storage,
+    )
+    selection = reader.select_sources()
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert shared_path.exists()
+    # Captured absolute parent keeps escape; later chdir must not redirect.
+    other = tmp_path / "othercwd"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    assert reader.select_sources().kind is SourceKind.PRIVATE
+
+
+def test_select_sources_dotdot_through_real_dir_selects_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a").mkdir()
+    storage = tmp_path / "ads"
+    shared_path = _write_shared(tmp_path / "shared", "alice", _session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    selection = _reader(
+        tmp_path,
+        identity=identity,
+        shared_dir=Path("a/../shared"),
+        storage_root=storage,
+    ).select_sources()
+
+    assert selection.kind is SourceKind.SHARED
+    assert len(selection.paths) == 1
+    assert os.path.samefile(selection.paths[0], shared_path)
+
+
 def test_select_sources_hostile_only_falls_back_to_private(
     tmp_path: Path,
 ) -> None:

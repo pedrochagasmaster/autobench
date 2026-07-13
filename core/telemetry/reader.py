@@ -23,7 +23,7 @@ from core.telemetry.events import (
     ValidatedEvent,
     decode_record,
 )
-from core.telemetry.fs_safety import existing_ancestors_are_real_dirs
+from core.telemetry.fs_safety import existing_ancestors_are_real_dirs, lexical_absolute_path
 from core.telemetry.identity import (
     Identity,
     encode_user_token,
@@ -190,7 +190,10 @@ class TelemetryReader:
         self._identity = identity if identity is not None else resolve_identity()
         self._storage_root = storage_root
         self._warn = warn if warn is not None else (lambda _msg: None)
-        self._shared_parent = _resolve_shared_parent(shared_dir, os.environ)
+        # Capture cwd now so later chdir cannot redirect shared ancestor checks.
+        self._shared_parent = lexical_absolute_path(
+            _resolve_shared_parent(shared_dir, os.environ)
+        )
         if now is None:
             self._now = datetime.now(timezone.utc)
         else:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.telemetry.constants import MAX_RECORD_BYTES
+from core.telemetry.fs_safety import lexical_absolute_path
 from core.telemetry.identity import Identity
 
 _OPEN_FLAGS = (
@@ -52,7 +53,9 @@ def paths_for(
         / "telemetry"
         / "events.jsonl"
     )
-    shared_users_dir = shared_dir / "users"
+    # Same uncollapsed absolute shared path the capability gate inspects.
+    shared_abs = lexical_absolute_path(shared_dir)
+    shared_users_dir = shared_abs / "users"
     return WriterPaths(private_file=private_file, shared_users_dir=shared_users_dir)
 
 

@@ -83,20 +83,42 @@ def test_shared_writer_supported_true_for_relative_safe_users_path(
     )
 
 
-def test_shared_writer_supported_normalizes_relative_dotdot(
+def test_shared_writer_supported_dotdot_through_real_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
     monkeypatch.chdir(tmp_path)
     protected = tmp_path / "protected_hardlinks"
     protected.write_text("1\n", encoding="ascii")
-    _make_users_dir(tmp_path / "telem" / "users")
+    (tmp_path / "a").mkdir()
+    _make_users_dir(tmp_path / "shared" / "users")
 
     assert (
         shared_writer_supported(
-            Path("telem/./x/../users"), protected_hardlinks_path=protected
+            Path("a/../shared/users"), protected_hardlinks_path=protected
         )
         is True
+    )
+
+
+def test_shared_writer_supported_false_escape_symlink_before_dotdot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "escape").symlink_to(elsewhere)
+    _make_users_dir(tmp_path / "shared" / "users")
+
+    assert (
+        shared_writer_supported(
+            Path("escape/../shared/users"),
+            protected_hardlinks_path=protected,
+        )
+        is False
     )
 
 

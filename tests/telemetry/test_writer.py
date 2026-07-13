@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from core.telemetry.capability import shared_writer_supported
 from core.telemetry.constants import MAX_RECORD_BYTES
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.writer import (
@@ -81,6 +82,61 @@ def test_paths_for_builds_exact_private_and_shared_paths(tmp_path: Path) -> None
         storage_root / "bob" / ".autobench" / "telemetry" / "events.jsonl"
     )
     assert paths.shared_users_dir == shared_dir / "users"
+
+
+def test_paths_for_absolutizes_relative_shared_without_collapsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "shared").mkdir()
+
+    paths = paths_for(identity, Path("a/../shared"), storage_root=tmp_path / "ads")
+
+    assert paths.shared_users_dir.is_absolute()
+    assert "a" in paths.shared_users_dir.parts
+    assert ".." in paths.shared_users_dir.parts
+    assert paths.shared_users_dir.name == "users"
+
+
+def test_paths_for_and_gate_reject_escape_symlink_dotdot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """escape/../shared must not gate or write; kernel target differs from lexical."""
+    identity = _identity()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "escape").symlink_to(elsewhere)
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    users.chmod(0o1777)
+
+    rel_shared = Path("escape/../shared")
+    paths = paths_for(identity, rel_shared, storage_root=tmp_path / "ads")
+    assert "escape" in paths.shared_users_dir.parts
+    assert (
+        shared_writer_supported(
+            paths.shared_users_dir, protected_hardlinks_path=protected
+        )
+        is False
+    )
+
+    result = append_record(
+        RECORD,
+        identity=identity,
+        paths=paths,
+        shared_enabled=False,
+    )
+    assert result.shared_attempted is False
+    assert list(users.iterdir()) == []
+    assert "escape" in str(paths.shared_users_dir)
     assert isinstance(paths, WriterPaths)
 
 
