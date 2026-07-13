@@ -26,7 +26,7 @@ def test_lexical_absolute_path_joins_cwd_without_resolve(
     abs_path = lexical_absolute_path(Path("link/users"))
     assert abs_path == tmp_path / "link" / "users"
     assert "link" in abs_path.parts
-    assert abs_path.is_absolute()
+    assert os.fspath(abs_path).startswith("/")
 
 
 def test_lexical_absolute_path_preserves_dot_and_dotdot_components(
