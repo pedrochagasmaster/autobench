@@ -413,25 +413,3 @@ def weighting_result_from_analyzer(analyzer: Any) -> WeightingResult:
             ),
         ),
     )
-
-
-def apply_weighting_result_to_analyzer(analyzer: Any, result: WeightingResult) -> None:
-    """Apply WeightingResult fields onto analyzer for backward-compatible readers."""
-    analyzer.global_weights = dict(result.global_weights)
-    analyzer.per_dimension_weights = {
-        dim: dict(weights) for dim, weights in result.per_dimension_weights.items()
-    }
-    analyzer.weight_methods = dict(result.weight_methods)
-    analyzer.last_lp_stats = dict(result.last_lp_stats)
-    analyzer.privacy_rule_name = result.privacy_rule_name
-    analyzer.removed_dimensions = list(result.removed_dimensions)
-    analyzer.global_dimensions_used = list(result.global_dimensions_used)
-    analyzer.rank_changes_df = result.rank_changes_df
-    analyzer.structural_summary_df = result.structural_summary_df
-    analyzer.structural_detail_df = result.structural_detail_df
-    analyzer.subset_search_results = list(result.subset_search_results)
-    analyzer.compliance_blocked_reason = result.compliance_blocked_reason
-    analyzer.compliance_blocked_peer_count = result.compliance_blocked_peer_count
-    analyzer.additional_constraint_violations = list(result.additional_constraint_violations)
-    analyzer.slack_subset_triggered = result.slack_subset_triggered
-    analyzer.weighting_compliance_state = result.compliance_state

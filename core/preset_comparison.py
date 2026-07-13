@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from utils.config_manager import ConfigManager
+from utils.preset_manager import PresetManager
+
+AnalyzerFactory = Callable[..., tuple[Any, Any]]
 
 
 def _mean_abs_impact(results: Dict[str, pd.DataFrame]) -> tuple[float, float]:
@@ -27,6 +30,7 @@ def _mean_abs_impact(results: Dict[str, pd.DataFrame]) -> tuple[float, float]:
 
 def _run_single_preset_variant(
     *,
+    analyzer_factory: AnalyzerFactory,
     preset_name: str,
     variant_name: str,
     consistent_weights: bool,
@@ -39,20 +43,18 @@ def _run_single_preset_variant(
     analysis_type: str,
     total_col: Optional[str],
     numerator_cols: Optional[Dict[str, str]],
+    logger: logging.Logger,
 ) -> Dict[str, Any]:
-    from core.analysis_run import build_dimensional_analyzer
-    from utils.config_manager import ConfigManager
-
     preset_config = ConfigManager(preset=preset_name)
     resolved = preset_config.resolve()
-    analyzer, _ = build_dimensional_analyzer(
+    analyzer, _ = analyzer_factory(
         target_entity=target_entity,
         entity_col=entity_col,
         resolved=resolved,
         time_col=time_col,
         debug_mode=False,
         bic_percentile=resolved.analysis.best_in_class_percentile,
-        logger=logging.getLogger(__name__),
+        logger=logger,
         consistent_weights=consistent_weights,
     )
 
@@ -95,9 +97,13 @@ def run_preset_comparison(
     entity_col: str,
     target_entity: Optional[str],
     time_col: Optional[str] = None,
-    config: Any = None,
     logger: Optional[logging.Logger] = None,
-    **kwargs: Any,
+    *,
+    analyzer_factory: AnalyzerFactory,
+    analysis_type: str = "share",
+    total_col: Optional[str] = None,
+    numerator_cols: Optional[Dict[str, str]] = None,
+    acknowledge_accuracy_first: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Run analysis across all presets and return a comparison DataFrame."""
     if logger is None:
@@ -107,18 +113,12 @@ def run_preset_comparison(
         return pd.DataFrame(columns=["Preset", "Mode", "Mean_Impact_PP", "Max_Impact_PP", "Status"])
 
     try:
-        from utils.preset_manager import PresetManager
-
         pm = PresetManager()
         presets = pm.list_presets()
         if not presets:
             logger.warning("No presets found for comparison")
             return None
 
-        analysis_type = str(kwargs.get("analysis_type", "share"))
-        total_col = kwargs.get("total_col")
-        numerator_cols = kwargs.get("numerator_cols")
-        acknowledge_accuracy_first = bool(kwargs.get("acknowledge_accuracy_first", False))
         rows: List[Dict[str, Any]] = []
         for preset_name in presets:
             preset_data = pm.get_preset(preset_name) or {}
@@ -133,6 +133,7 @@ def run_preset_comparison(
                 try:
                     rows.append(
                         _run_single_preset_variant(
+                            analyzer_factory=analyzer_factory,
                             preset_name=preset_name,
                             variant_name=variant_name,
                             consistent_weights=consistent_weights,
@@ -145,6 +146,7 @@ def run_preset_comparison(
                             analysis_type=analysis_type,
                             total_col=total_col,
                             numerator_cols=numerator_cols,
+                            logger=logger,
                         )
                     )
                 except Exception as exc:

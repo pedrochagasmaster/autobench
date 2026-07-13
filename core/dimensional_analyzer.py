@@ -409,26 +409,6 @@ class DimensionalAnalyzer:
         warnings.warn(message, DeprecationWarning, stacklevel=2)
         logger.warning(message)
     
-    def calculate_global_weights(self, df: pd.DataFrame, metric_col: str) -> None:
-        """
-        DEPRECATED: Use calculate_global_privacy_weights instead.
-        This method is kept for backward compatibility.
-        """
-        self._warn_deprecated("calculate_global_weights", "calculate_global_privacy_weights")
-        # Aggregate total volume by entity
-        entity_totals = df.groupby(self.entity_column)[metric_col].sum()
-        peer_totals = entity_totals[entity_totals.index != self.target_entity]
-        total_peer_volume = peer_totals.sum()
-        
-        for entity, volume in peer_totals.items():
-            weight_pct = (volume / total_peer_volume * 100) if total_peer_volume > 0 else 0
-            self.global_weights[entity] = {
-                'volume': volume,
-                'weight': weight_pct,
-                'multiplier': 1.0
-            }
-
-
     def _build_categories(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
         """Aggregate by entity and dimension categories for the given dimensions."""
         return self.category_builder.build_categories(df, metric_col, dimensions)

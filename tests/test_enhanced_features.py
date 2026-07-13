@@ -10,6 +10,7 @@ Covers:
 - Exhaustive preset comparison (+ per-dimension variants)
 """
 
+import logging
 import os
 import sys
 import tempfile
@@ -24,8 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.data_loader import DataLoader, ValidationSeverity
-from benchmark import run_share_analysis, run_rate_analysis, run_preset_comparison
+from core.analysis_run import build_dimensional_analyzer
+from core.preset_comparison import run_preset_comparison
+from benchmark import run_share_analysis, run_rate_analysis
 from utils.config_manager import ConfigManager
+from utils.preset_manager import PresetManager
 
 
 class TestImpactMath(unittest.TestCase):
@@ -150,7 +154,6 @@ class TestValidationAndOutputs(unittest.TestCase):
             trigger_subset_on_slack=None,
             max_cap_slack=None,
         )
-        import logging
         logger = logging.getLogger("test_validation")
         result = run_share_analysis(args, logger)
         self.assertEqual(result, 1, "Validation should hard-fail on insufficient peers")
@@ -198,7 +201,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 last_privacy_recheck_date=None,
                 peer_group_altered=False,
             )
-            import logging
             logger = logging.getLogger("test_publication")
             result = run_share_analysis(args, logger)
             self.assertEqual(result, 0)
@@ -254,7 +256,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 last_privacy_recheck_date=None,
                 peer_group_altered=False,
             )
-            import logging
             logger = logging.getLogger("test_publication_rate")
             result = run_rate_analysis(args, logger)
             self.assertEqual(result, 0)
@@ -268,7 +269,6 @@ class TestValidationAndOutputs(unittest.TestCase):
             'card_type': ['A', 'A', 'A', 'A', 'A', 'A'],
             'txn_cnt': [100, 200, 300, 150, 120, 130],
         })
-        from utils.preset_manager import PresetManager
         preset_mgr = PresetManager()
         presets = preset_mgr.list_presets()
         comparison_df = run_preset_comparison(
@@ -279,7 +279,8 @@ class TestValidationAndOutputs(unittest.TestCase):
             target_entity='Target',
             time_col=None,
             analysis_type='share',
-            logger=__import__("logging").getLogger("test_presets")
+            logger=__import__("logging").getLogger("test_presets"),
+            analyzer_factory=build_dimensional_analyzer,
         )
         expected = set()
         for preset in presets:
@@ -435,8 +436,6 @@ class TestPresetComparison:
 
     def test_empty_dimensions_list(self):
         """Test preset comparison with no dimensions."""
-        import logging
-
         df = pd.DataFrame({
             'issuer_name': ['A', 'B', 'C', 'D', 'E'],
             'metric': [100, 200, 150, 180, 90]
@@ -450,7 +449,8 @@ class TestPresetComparison:
             target_entity='A',
             time_col=None,
             analysis_type='share',
-            logger=logging.getLogger()
+            logger=logging.getLogger(),
+            analyzer_factory=build_dimensional_analyzer,
         )
 
         assert result.empty, "Empty dimensions should return empty DataFrame"
