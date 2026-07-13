@@ -103,14 +103,15 @@ def test_end_session_runs_even_when_handler_raises(
     assert calls == [("start", ("cli_share",)), ("end", ())]
 
 
-def test_helper_failure_does_not_change_cli_exit(
+def test_telemetry_service_failure_does_not_change_cli_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def boom(*_a: Any, **_k: Any) -> None:
-        raise RuntimeError("session helper boom")
+    """The helpers' never-raise guarantee must protect the CLI exit code."""
 
-    monkeypatch.setattr(benchmark, "start_session", boom)
-    monkeypatch.setattr(benchmark, "end_session", boom)
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("session service boom")
+
+    monkeypatch.setattr("core.telemetry._get_service", boom)
     monkeypatch.setattr(benchmark, "setup_logging", lambda *_a, **_k: MagicMock())
     monkeypatch.setattr(benchmark, "run_share_analysis", lambda *_a, **_k: 0)
     monkeypatch.setattr(benchmark, "_validate_preset_arg", lambda _args: None)

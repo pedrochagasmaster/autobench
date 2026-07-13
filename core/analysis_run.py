@@ -45,6 +45,8 @@ from core.preset_comparison import run_preset_comparison as execute_preset_compa
 from core.report_artifact_builder import build_analysis_artifacts
 from core.report_generator import ReportGenerator
 from core.telemetry import (
+    Action,
+    FailCategory,
     action_attempted,
     action_completed,
     action_failed,
@@ -1333,12 +1335,14 @@ class _PhaseTracker:
         self.phase = phase
 
 
-def _safe_telemetry_call(fn: Callable[..., Any], *args: Any) -> None:
-    """Invoke a telemetry helper; never let helper failures escape."""
-    try:
-        fn(*args)
-    except Exception:
-        pass
+def _failure_category(phase: str) -> FailCategory:
+    if phase == "input":
+        return "input"
+    if phase == "analysis":
+        return "analysis"
+    if phase == "output":
+        return "output"
+    return "unexpected"
 
 
 def _execute_run(
@@ -1348,10 +1352,11 @@ def _execute_run(
     *,
     extra_config_overrides: Optional[Dict[str, Any]] = None,
 ) -> AnalysisArtifacts:
-    action = "share_analysis" if request.is_share else "rate_analysis"
+    # Telemetry helpers are best-effort and never raise, so the outcome
+    # mapping below cannot alter analysis behavior.
+    action: Action = "share_analysis" if request.is_share else "rate_analysis"
     tracker = _PhaseTracker()
-    _safe_telemetry_call(action_attempted, action)
-    terminal_emitted = False
+    action_attempted(action)
     try:
         artifacts = _execute_run_impl(
             request,
@@ -1360,42 +1365,23 @@ def _execute_run(
             extra_config_overrides=extra_config_overrides,
             phase_tracker=tracker,
         )
-        _safe_telemetry_call(action_completed, action)
-        terminal_emitted = True
-        return artifacts
     except RunBlocked:
-        if not terminal_emitted:
-            _safe_telemetry_call(action_refused, action, "compliance_policy")
-            terminal_emitted = True
+        action_refused(action, "compliance_policy")
         raise
     except RunAborted:
-        if not terminal_emitted:
-            _safe_telemetry_call(action_refused, action, "input_validation")
-            terminal_emitted = True
+        action_refused(action, "input_validation")
         raise
     except ValueError:
-        if not terminal_emitted:
-            if tracker.phase == "configuration":
-                _safe_telemetry_call(action_refused, action, "configuration")
-            else:
-                category = (
-                    tracker.phase
-                    if tracker.phase in ("input", "analysis", "output")
-                    else "unexpected"
-                )
-                _safe_telemetry_call(action_failed, action, category)
-            terminal_emitted = True
+        if tracker.phase == "configuration":
+            action_refused(action, "configuration")
+        else:
+            action_failed(action, _failure_category(tracker.phase))
         raise
     except Exception:
-        if not terminal_emitted:
-            category = (
-                tracker.phase
-                if tracker.phase in ("input", "analysis", "output")
-                else "unexpected"
-            )
-            _safe_telemetry_call(action_failed, action, category)
-            terminal_emitted = True
+        action_failed(action, _failure_category(tracker.phase))
         raise
+    action_completed(action)
+    return artifacts
 
 
 def _execute_run_impl(

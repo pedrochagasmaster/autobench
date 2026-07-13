@@ -50,14 +50,6 @@ EXIT_STRICT_NON_COMPLIANT = 2
 _GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
 
 
-def _safe_telemetry_call(fn, *args) -> None:
-    """Best-effort telemetry; never alter CLI outcomes."""
-    try:
-        fn(*args)
-    except Exception:
-        pass
-
-
 def get_presets_help() -> str:
     """Generate help text for available presets."""
     try:
@@ -446,10 +438,7 @@ def handle_telemetry_command(args: argparse.Namespace) -> int:
             sys.stdout.write(format_summary(reader.summary(days=days, user=user)))
         return EXIT_OK
     except (ValueError, OSError, KeyError):
-        print(
-            sanitize_terminal("Error: unable to read telemetry."),
-            file=sys.stderr,
-        )
+        print("Error: unable to read telemetry.", file=sys.stderr)
         return EXIT_FAILURE
 
 
@@ -775,18 +764,19 @@ def main() -> int:
     logger = setup_logging(log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
     # Route to appropriate handler with a CLI session around usable analysis.
+    # Telemetry helpers are best-effort and never raise.
     if args.command == 'share':
-        _safe_telemetry_call(start_session, 'cli_share')
+        start_session('cli_share')
         try:
             return run_share_analysis(args, logger)
         finally:
-            _safe_telemetry_call(end_session)
+            end_session()
     elif args.command == 'rate':
-        _safe_telemetry_call(start_session, 'cli_rate')
+        start_session('cli_rate')
         try:
             return run_rate_analysis(args, logger)
         finally:
-            _safe_telemetry_call(end_session)
+            end_session()
     else:
         parser.print_help()
         return 1

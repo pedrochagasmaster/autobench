@@ -261,20 +261,16 @@ def test_configuration_non_value_error_is_unexpected(
     ]
 
 
-def test_helper_exception_does_not_alter_successful_run(
+def test_telemetry_service_failure_does_not_alter_successful_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def raise_always(*_a: Any, **_k: Any) -> None:
-        raise RuntimeError("telemetry helper boom")
+    """The helpers' own never-raise guarantee must protect the analysis run."""
 
-    for name in (
-        "action_attempted",
-        "action_completed",
-        "action_refused",
-        "action_failed",
-    ):
-        monkeypatch.setattr(analysis_run, name, raise_always)
+    def raise_always(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("telemetry service boom")
+
+    monkeypatch.setattr("core.telemetry._get_service", raise_always)
 
     artifacts = execute_share_run(_share_request(tmp_path), logging.getLogger("test"))
     assert Path(artifacts.analysis_output_file).exists()

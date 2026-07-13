@@ -257,16 +257,12 @@ def _assert_no_telemetry_fields(payload: dict[str, Any]) -> None:
 
 
 def _patch_helpers_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break the telemetry service under the helpers' never-raise wrappers."""
+
     def raise_always(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("boom-helper")
 
-    for name in (
-        "action_attempted",
-        "action_completed",
-        "action_refused",
-        "action_failed",
-    ):
-        monkeypatch.setattr(analysis_run, name, raise_always)
+    monkeypatch.setattr("core.telemetry._get_service", raise_always)
 
 
 def _iter_untracked_events_jsonl(root: Path) -> list[Path]:

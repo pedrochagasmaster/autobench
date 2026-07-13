@@ -222,16 +222,15 @@ def test_csv_picker_cancel_and_quit_confirm_emit_no_cancel(
     assert not any(name == "action_cancelled" for name, _args in calls)
 
 
-def test_helper_failure_does_not_crash_lifecycle(
+def test_telemetry_service_failure_does_not_crash_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The helpers' never-raise guarantee must protect the TUI lifecycle."""
+
     def boom(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("tui telemetry boom")
 
-    monkeypatch.setattr(tui_app, "start_session", boom)
-    monkeypatch.setattr(tui_app, "end_session", boom)
-    monkeypatch.setattr(tui_app, "surface_viewed", boom)
-    monkeypatch.setattr(tui_app, "action_cancelled", boom)
+    monkeypatch.setattr("core.telemetry._get_service", boom)
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:

@@ -96,14 +96,6 @@ LOG_DIR = Path("outputs") / "logs"
 SESSION_FILE = Path.home() / ".benchmark_tui" / "session.yaml"
 
 
-def _safe_telemetry_call(fn, *args) -> None:
-    """Best-effort telemetry; never alter TUI lifecycle outcomes."""
-    try:
-        fn(*args)
-    except Exception:
-        pass
-
-
 SESSION_INPUT_IDS = ("csv_path", "output_file")
 SESSION_SELECT_IDS = (
     "entity_col",
@@ -1044,14 +1036,14 @@ class BenchmarkApp(App):
             timeout=6,
         )
         # Session starts once the TUI is mounted and usable.
-        _safe_telemetry_call(start_session, "tui")
+        start_session("tui")
         self._telemetry_session_started = True
         self._emit_surface_if_changed(self._analysis_mode())
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
         if getattr(self, "_telemetry_session_started", False):
-            _safe_telemetry_call(end_session)
+            end_session()
             self._telemetry_session_started = False
         root_logger = logging.getLogger()
         for handler in list(root_logger.handlers):
@@ -1064,7 +1056,7 @@ class BenchmarkApp(App):
             return
         if surface == getattr(self, "_last_telemetry_surface", None):
             return
-        _safe_telemetry_call(surface_viewed, surface)
+        surface_viewed(surface)
         self._last_telemetry_surface = surface
 
     def _handle_validation_modal_result(
@@ -1083,7 +1075,7 @@ class BenchmarkApp(App):
             return
         if result is False:
             action = "share_analysis" if request.is_share else "rate_analysis"
-            _safe_telemetry_call(action_cancelled, action)
+            action_cancelled(action)
         write_log_message(log_widget, "Analysis cancelled by user.")
         self._reset_run_ui()
 
