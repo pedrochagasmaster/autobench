@@ -281,7 +281,12 @@ class TelemetryReader:
 
         lower: datetime | None = None
         if days is not None:
-            lower = self._now - timedelta(days=days)
+            try:
+                lower = self._now - timedelta(days=days)
+            except OverflowError:
+                # A window larger than the representable datetime range bounds
+                # nothing; treat it as unlimited instead of crashing.
+                lower = None
         upper = self._now + timedelta(seconds=FUTURE_SKEW_S)
 
         selection = self.select_sources(user=user)

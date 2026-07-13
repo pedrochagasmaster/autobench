@@ -264,8 +264,40 @@ def test_days_zero_accepted(
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert "  1  " in out
+    assert "\t1\t" in out
     assert user in out
+
+
+@pytest.mark.parametrize("huge_days", ["999999999", "999999999999"])
+def test_huge_days_reports_all_events_without_traceback(
+    isolate_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    huge_days: str,
+) -> None:
+    """Windows beyond the datetime range mean unlimited, not an OverflowError."""
+    user = _nss_username()
+    shared = tmp_path / "shared-huge-days"
+    _write_shared(
+        shared,
+        user,
+        _record(
+            "session_start",
+            {"launch_context": "tui"},
+            user=user,
+            now=FIXED_NOW - timedelta(days=400),
+        ),
+    )
+
+    code = _run_main(
+        ["telemetry", "who", "--dir", str(shared), "--days", huge_days],
+        monkeypatch,
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "Traceback" not in captured.err
+    assert user in captured.out
 
 
 def test_invalid_user_generic_safe_error(
@@ -364,7 +396,7 @@ def test_relative_dir_symlink_ancestor_falls_back_private(
     assert code == 0
     # Private fallback: SESSION_B only (shared SESSION_A must not be selected).
     assert user in out
-    assert "  1  " in out
+    assert "\t1\t" in out
 
 
 def test_nss_keyerror_returns_safe_error(
@@ -464,9 +496,9 @@ def test_populated_shared_who_summary_deterministic(
     code = _run_main(["telemetry", "who", "--dir", str(shared)], monkeypatch)
     who_out = capsys.readouterr().out
     assert code == 0
-    assert who_out.startswith("USER  SESSIONS  LAST_SEEN  COMPLETED\n")
+    assert who_out.startswith("USER\tSESSIONS\tLAST_SEEN\tCOMPLETED\n")
     assert user in who_out
-    assert "  2  " in who_out
+    assert "\t2\t" in who_out
     assert who_out.rstrip().endswith("1")
 
     code2 = _run_main(
@@ -525,7 +557,7 @@ def test_days_filtering(
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert "  1  " in out
+    assert "\t1\t" in out
 
 
 def test_summary_user_filter(

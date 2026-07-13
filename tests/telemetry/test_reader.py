@@ -1296,6 +1296,30 @@ def test_invalid_days_rejected(tmp_path: Path) -> None:
         list(reader.iter_events(days=1.5))  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "huge_days",
+    [
+        999_999_999,  # timedelta accepts it; datetime subtraction overflows
+        999_999_999_999,  # timedelta construction itself overflows
+    ],
+)
+def test_huge_days_treated_as_unlimited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, huge_days: int
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    old = FIXED_NOW - timedelta(days=400)
+    _write_shared(shared, "alice", _session_start(now=old))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    events = list(
+        _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(
+            days=huge_days
+        )
+    )
+    assert len(events) == 1
+
+
 def test_now_must_be_aware_utc(tmp_path: Path) -> None:
     identity = _identity()
     with pytest.raises(ValueError):
