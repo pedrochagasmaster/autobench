@@ -154,12 +154,13 @@ Exact layout and modes:
 Override the shared parent with an absolute `AUTOBENCH_TELEMETRY_DIR` (the
 directory whose direct child is `users/`). For trusted provisioning
 (`update.sh` / `scripts/provision_telemetry_dirs.sh`) and the filesystem
-validator (`scripts/validate_telemetry_filesystem.py --dir`), relative paths and
-lexical `.` / `..` components are rejected before any directory mutation or
-probe. The aggregation CLI (`benchmark.py telemetry … --dir`) is separate and
-is not the enforcement surface described here. Telemetry is default-on;
-case-insensitive `AUTOBENCH_TELEMETRY` values `0`, `false`, `off`, or `no`
-opt-out of future private and shared writes without deleting existing records.
+validator (`scripts/validate_telemetry_filesystem.py --dir`), relative paths,
+lexical `.` / `..` components, and any symlink path component in the shared
+operator path are rejected before directory mutation or probes. The aggregation
+CLI (`benchmark.py telemetry … --dir`) is separate and is not the enforcement
+surface described here. Telemetry is default-on; case-insensitive
+`AUTOBENCH_TELEMETRY` values `0`, `false`, `off`, or `no` opt-out of future
+private and shared writes without deleting existing records.
 
 The portable profile intentionally discloses usernames and approved event data
 as world-readable local files. Treat telemetry as self-reported product data,
@@ -186,9 +187,9 @@ python scripts/validate_telemetry_filesystem.py
 
 `--dir` for `scripts/validate_telemetry_filesystem.py` and
 `AUTOBENCH_TELEMETRY_DIR` for trusted provisioning must name an absolute
-telemetry parent (the directory whose direct child is `users/`). This absolute /
-no-`.` / no-`..` policy applies to those operator inputs, not to the aggregation
-CLI's `--dir`.
+telemetry parent (the directory whose direct child is `users/`) with no symlink
+components in the path. This absolute / no-`.` / no-`..` / no-symlink-ancestor
+policy applies to those operator inputs, not to the aggregation CLI's `--dir`.
 
 Expect deterministic `PASS:` lines and exit status `0`. Any `FAIL:` line with
 exit status `1` is actionable; do not treat the run as successful.

@@ -393,6 +393,46 @@ def test_provision_telemetry_dirs_creates_layout_idempotently(tmp_path: Path) ->
     assert stat.S_IMODE(users.stat().st_mode) == 0o1777
 
 
+def test_provision_telemetry_dirs_rejects_intermediate_symlink_ancestor(
+    tmp_path: Path,
+) -> None:
+    """parent/autobench -> victim must fail before victim mutation or users create."""
+    helper = ROOT / "scripts" / "provision_telemetry_dirs.sh"
+    parent = tmp_path / "parent"
+    parent.mkdir(mode=0o0755)
+    victim = parent / "victim"
+    victim.mkdir(mode=0o0700)
+    link = parent / "autobench"
+    link.symlink_to(victim)
+    target = parent / "autobench" / "telemetry"
+
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+    before_victim_entries = set(victim.iterdir())
+
+    for suffix in ("", "/", "///"):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; provision_shared_telemetry_dirs "$2"',
+                "provision-test",
+                str(helper),
+                str(target) + suffix,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0, result.stdout or result.stderr
+        combined = (result.stderr + result.stdout).lower()
+        assert "symlink" in combined
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o0700
+        assert set(victim.iterdir()) == before_victim_entries
+        assert not (victim / "telemetry").exists()
+        assert not (victim / "users").exists()
+        assert link.is_symlink()
+
+
 def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
     script = (ROOT / "install.sh").read_text(encoding="utf-8")
 

@@ -22,6 +22,7 @@ from core.telemetry.events import (
     ValidatedEvent,
     decode_record,
 )
+from core.telemetry.fs_safety import existing_ancestors_are_real_dirs
 from core.telemetry.identity import (
     Identity,
     encode_user_token,
@@ -165,7 +166,8 @@ class TelemetryReader:
             token = encode_user_token(user)
 
         users_dir = self._shared_parent / "users"
-        if token is not None:
+        shared_usable = existing_ancestors_are_real_dirs(users_dir)
+        if shared_usable and token is not None:
             # When shared entries exist, construct only the token path.
             existing = _list_shared_jsonl(users_dir)
             if existing:
@@ -173,7 +175,7 @@ class TelemetryReader:
                     kind=SourceKind.SHARED,
                     paths=(users_dir / f"{token}.jsonl",),
                 )
-        else:
+        elif shared_usable:
             existing = _list_shared_jsonl(users_dir)
             if existing:
                 return SourceSelection(kind=SourceKind.SHARED, paths=existing)

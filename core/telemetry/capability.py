@@ -8,6 +8,8 @@ import stat
 import sys
 from pathlib import Path
 
+from core.telemetry.fs_safety import existing_ancestors_are_real_dirs
+
 _REQUIRED_OS_FLAGS = (
     "O_APPEND",
     "O_CREAT",
@@ -28,8 +30,10 @@ def shared_writer_supported(
     """Return whether shared telemetry append is safe on this host.
 
     Never raises. Returns False unless Linux, required open/lock primitives
-    exist, protected_hardlinks is enabled, and ``users_dir`` is an existing
-    non-symlink directory with sticky + world-write + world-search mode.
+    exist, protected_hardlinks is enabled, every existing ancestor through
+    ``users_dir`` is a real non-symlink directory, and ``users_dir`` itself is
+    an existing non-symlink directory with sticky + world-write + world-search
+    mode.
     """
     try:
         if sys.platform != "linux":
@@ -43,7 +47,10 @@ def shared_writer_supported(
         raw = protected_hardlinks_path.read_text(encoding="ascii")
         if raw.strip() != "1":
             return False
-        st = os.lstat(users_dir)
+        users_path = Path(users_dir)
+        if not existing_ancestors_are_real_dirs(users_path):
+            return False
+        st = os.lstat(users_path)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
             return False
         if (stat.S_IMODE(st.st_mode) & _STICKY_WORLD_WRITE_SEARCH) != (

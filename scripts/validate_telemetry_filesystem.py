@@ -23,6 +23,12 @@ import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from core.telemetry.fs_safety import existing_ancestors_are_real_dirs  # noqa: E402
+
 DEFAULT_PARENT = Path("/ads_storage/autobench/telemetry")
 DEFAULT_PROTECTED_HARDLINKS = Path("/proc/sys/fs/protected_hardlinks")
 PARENT_MODE = 0o0755
@@ -538,13 +544,26 @@ def validate_filesystem(
             _fail(lines, str(exc))
             return (1, lines)
 
+        users = parent / "users"
+        if not existing_ancestors_are_real_dirs(parent):
+            _fail(
+                lines,
+                f"telemetry parent has a symlink or non-directory ancestor (refusing): {parent}",
+            )
+            return (1, lines)
+        if not existing_ancestors_are_real_dirs(users):
+            _fail(
+                lines,
+                f"users path has a symlink or non-directory ancestor (refusing): {users}",
+            )
+            return (1, lines)
+
         euid = geteuid()
         ok = True
         ok = _check_platform(lines) and ok
         ok = _check_primitives(lines) and ok
         ok = _check_protected_hardlinks(protected_hardlinks_path, lines) and ok
 
-        users = parent / "users"
         parent_ok = _owned_non_symlink_dir(parent, euid, PARENT_MODE, "telemetry parent", lines)
         users_ok = _owned_non_symlink_dir(users, euid, USERS_MODE, "users", lines)
         ok = parent_ok and users_ok and ok

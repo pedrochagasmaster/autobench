@@ -173,6 +173,36 @@ def test_select_sources_prefers_shared_and_never_combines_private(
     assert events[0].session_id == str(SESSION_A)
 
 
+def test_select_sources_falls_back_private_when_intermediate_ancestor_is_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0755)
+    link = tmp_path / "autobench"
+    link.symlink_to(victim)
+    shared = link / "telemetry"
+    shared_path = _write_shared(shared, "alice", _session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    reader = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    )
+    selection = reader.select_sources()
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    events = list(reader.iter_events(days=None))
+    assert len(events) == 1
+    assert events[0].session_id == str(SESSION_B)
+    # Shared content must not be selected/read via the intermediate symlink path.
+    assert shared_path.exists()
+    assert all(p != shared_path for p in selection.paths)
+
+
 def test_select_sources_prefers_shared_even_with_hostile_invalid_entry(
     tmp_path: Path,
 ) -> None:

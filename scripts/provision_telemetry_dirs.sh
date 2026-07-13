@@ -51,6 +51,39 @@ _telemetry_dir_has_dot_component() {
   return 1
 }
 
+# Walk every lexical absolute prefix from / to target. Reject symlink or
+# non-directory ancestors. Missing components are allowed. Does not chmod
+# ancestors and does not require deploy-uid ownership of system parents.
+_reject_symlink_or_nondir_ancestors() {
+  local target="$1"
+  local rest="${target#/}"
+  local cur=""
+  local comp
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*)
+        comp="${rest%%/*}"
+        rest="${rest#*/}"
+        ;;
+      *)
+        comp="$rest"
+        rest=""
+        ;;
+    esac
+    [ -n "$comp" ] || continue
+    cur="${cur}/${comp}"
+    if [ -L "$cur" ]; then
+      printf 'ERROR: path component is a symlink (refusing): %s\n' "$cur" >&2
+      return 1
+    fi
+    if [ -e "$cur" ] && [ ! -d "$cur" ]; then
+      printf 'ERROR: path component is not a directory (refusing): %s\n' "$cur" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 provision_shared_telemetry_dirs() {
   local raw="${1-}"
   local TELEMETRY_DIR
@@ -85,6 +118,9 @@ provision_shared_telemetry_dirs() {
     return 1
   fi
 
+  # Reject intermediate symlink/non-dir ancestors before any mkdir/chmod.
+  _reject_symlink_or_nondir_ancestors "$TELEMETRY_DIR" || return 1
+
   # -L/-e inspect the normalized path itself (test(1) has no --); mkdir/chmod use -- below.
   if [ -L "$TELEMETRY_DIR" ]; then
     printf 'ERROR: TELEMETRY_DIR is a symlink (refusing): %s\n' "$TELEMETRY_DIR" >&2
@@ -100,6 +136,8 @@ provision_shared_telemetry_dirs() {
       return 1
     }
   fi
+  # Re-walk after create to close simple create races (symlink swapped in).
+  _reject_symlink_or_nondir_ancestors "$TELEMETRY_DIR" || return 1
   if [ -L "$TELEMETRY_DIR" ] || [ ! -d "$TELEMETRY_DIR" ]; then
     printf 'ERROR: TELEMETRY_DIR must be a real directory after create: %s\n' "$TELEMETRY_DIR" >&2
     return 1
@@ -119,6 +157,7 @@ provision_shared_telemetry_dirs() {
       return 1
     }
   fi
+  _reject_symlink_or_nondir_ancestors "$USERS_DIR" || return 1
   if [ -L "$USERS_DIR" ] || [ ! -d "$USERS_DIR" ]; then
     printf 'ERROR: users must be a real directory after create: %s\n' "$USERS_DIR" >&2
     return 1

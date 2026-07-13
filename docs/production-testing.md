@@ -97,9 +97,10 @@ python scripts/validate_telemetry_filesystem.py --dir /ads_storage/autobench/tel
 ```
 
 Use an absolute `--dir` with `scripts/validate_telemetry_filesystem.py` (and
-absolute `AUTOBENCH_TELEMETRY_DIR` for trusted provisioning). Relative paths and
-lexical `.` / `..` components are rejected before probes. This does not describe
-`benchmark.py telemetry … --dir` aggregation-CLI behavior.
+absolute `AUTOBENCH_TELEMETRY_DIR` for trusted provisioning). Relative paths,
+lexical `.` / `..` components, and symlink ancestors in the shared path are
+rejected before probes. This does not describe `benchmark.py telemetry … --dir`
+aggregation-CLI behavior.
 
 Expected status: every line is `PASS: ...` and the process exits `0`. Any
 `FAIL: ...` line with exit `1` means shared telemetry must stay gated off until

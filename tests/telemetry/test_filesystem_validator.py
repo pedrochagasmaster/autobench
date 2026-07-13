@@ -389,6 +389,47 @@ def test_validator_accepts_absolute_trailing_and_repeated_slashes(
     assert "FAIL:" not in out
 
 
+@pytest.mark.parametrize("suffix", ["", "/", "///"])
+def test_validator_rejects_intermediate_symlink_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validator_mod,
+    suffix: str,
+    capsys,
+) -> None:
+    protected = _protected(tmp_path)
+    monkeypatch.setattr(validator_mod.sys, "platform", "linux")
+    monkeypatch.setattr(validator_mod, "DEFAULT_PROTECTED_HARDLINKS", protected)
+
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0755)
+    link = tmp_path / "autobench"
+    link.symlink_to(victim)
+    parent = _provision_layout(link / "telemetry")
+    before_victim = stat.S_IMODE(victim.stat().st_mode)
+    before_users = set((parent / "users").iterdir())
+
+    probed: list[object] = []
+    real_probe = validator_mod._probe_file_ops
+
+    def tracking_probe(*args, **kwargs):
+        probed.append(True)
+        return real_probe(*args, **kwargs)
+
+    monkeypatch.setattr(validator_mod, "_probe_file_ops", tracking_probe)
+
+    code = validator_mod.main(["--dir", str(parent) + suffix])
+    out = capsys.readouterr()
+    combined = (out.out + out.err).lower()
+    assert code == 1
+    assert "FAIL:" in (out.out + out.err)
+    assert "symlink" in combined
+    assert "traceback" not in combined
+    assert probed == []
+    assert stat.S_IMODE(victim.stat().st_mode) == before_victim
+    assert set((parent / "users").iterdir()) == before_users
+
+
 def test_run_internal_child_timeout_kills_process_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod
 ) -> None:

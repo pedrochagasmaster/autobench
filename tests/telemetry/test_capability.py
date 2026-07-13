@@ -30,6 +30,42 @@ def test_shared_writer_supported_true_when_all_conditions_met(
     )
 
 
+def test_shared_writer_supported_false_when_intermediate_ancestor_is_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o0755)
+    link = tmp_path / "autobench"
+    link.symlink_to(victim)
+    users = link / "telemetry" / "users"
+    users.mkdir(parents=True)
+    users.chmod(0o1777)
+
+    assert (
+        shared_writer_supported(users, protected_hardlinks_path=protected) is False
+    )
+
+
+def test_shared_writer_supported_false_when_ancestor_is_nondirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("core.telemetry.capability.sys.platform", "linux")
+    protected = tmp_path / "protected_hardlinks"
+    protected.write_text("1\n", encoding="ascii")
+
+    file_ancestor = tmp_path / "notadir"
+    file_ancestor.write_text("x", encoding="utf-8")
+    users = file_ancestor / "telemetry" / "users"
+
+    assert (
+        shared_writer_supported(users, protected_hardlinks_path=protected) is False
+    )
+
+
 def test_shared_writer_supported_false_on_non_linux(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
