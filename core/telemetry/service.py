@@ -111,6 +111,9 @@ class TelemetryService:
         )
         self._shared_config_ok = shared_ok
         self._writer_override = writer
+        # Host capability cannot change mid-process; evaluated once by the
+        # consumer thread on first write. None means not yet evaluated.
+        self._shared_gate_cache: bool | None = None
 
         physical = data_capacity + 2
         if physical < 2:
@@ -306,12 +309,6 @@ class TelemetryService:
                 with self._lock:
                     if self._state == "closed" and self._queue.empty():
                         return
-                    if (
-                        self._state == "closed"
-                        and self._flush_done.is_set()
-                        and self._queue.empty()
-                    ):
-                        return
                 continue
             try:
                 if item.kind == "flush":
@@ -346,13 +343,17 @@ class TelemetryService:
         )
         shared_enabled = False
         if self._shared_config_ok and self._shared_dir is not None:
-            try:
-                shared_enabled = bool(
-                    shared_writer_supported(paths.shared_users_dir)
-                )
-            except Exception:
-                logger.debug("telemetry shared capability check failed", exc_info=True)
-                shared_enabled = False
+            if self._shared_gate_cache is None:
+                try:
+                    self._shared_gate_cache = bool(
+                        shared_writer_supported(paths.shared_users_dir)
+                    )
+                except Exception:
+                    logger.debug(
+                        "telemetry shared capability check failed", exc_info=True
+                    )
+                    self._shared_gate_cache = False
+            shared_enabled = self._shared_gate_cache
         append_record(
             record,
             identity=self._identity,

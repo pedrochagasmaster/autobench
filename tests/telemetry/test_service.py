@@ -775,6 +775,49 @@ def test_override_path_used_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert all(p == override / "users" for p in seen)
 
 
+def test_shared_capability_gate_evaluated_once_per_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host capability is static; the gate must not be re-probed per record."""
+    calls: list[Path] = []
+
+    def fake_gate(users_dir: Path, **kwargs: object) -> bool:
+        calls.append(users_dir)
+        return False
+
+    monkeypatch.setattr("core.telemetry.service.shared_writer_supported", fake_gate)
+    storage_root = tmp_path / "ads"
+    (storage_root / "alice").mkdir(parents=True)
+    shared_dir = tmp_path / "shared"
+    (shared_dir / "users").mkdir(parents=True)
+
+    svc = TelemetryService(
+        identity=_identity("alice"),
+        session_id=SESSION_ID,
+        app_version=APP_VERSION,
+        utc_clock=lambda: FIXED_UTC,
+        monotonic_clock=time.monotonic,
+        environ={},
+        shared_dir=shared_dir,
+        storage_root=storage_root,
+        shutdown_budget_s=1.0,
+    )
+    svc.start_session("tui")
+    svc.surface_viewed("share")
+    svc.action_attempted("share_analysis")
+    svc.action_completed("share_analysis")
+    private = storage_root / "alice" / ".autobench" / "telemetry" / "events.jsonl"
+    deadline = _deadline()
+    while (
+        not private.exists() or private.read_bytes().count(b"\n") < 4
+    ) and time.monotonic() < deadline:
+        time.sleep(0.001)
+    _assert_before(deadline)
+    svc.shutdown()
+    assert private.read_bytes().count(b"\n") >= 4
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("value", sorted(DISABLED_VALUES))
 def test_disabled_values_constant_covers_opt_out(value: str) -> None:
     assert value in {"0", "false", "off", "no"}
