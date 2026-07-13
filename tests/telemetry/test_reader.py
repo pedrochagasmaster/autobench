@@ -14,7 +14,11 @@ from uuid import UUID
 
 import pytest
 
-from core.telemetry.constants import DEFAULT_DAYS, MAX_RECORD_BYTES
+from core.telemetry.constants import (
+    DEFAULT_DAYS,
+    MAX_RECORD_BYTES,
+    SHARED_GATE_SCAN_MAX_BYTES,
+)
 from core.telemetry.events import build_record
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.reader import (
@@ -771,6 +775,165 @@ def test_skips_multi_megabyte_incomplete_line_without_unbounded_buffers(
     )
     assert len(events) == 1
     assert events[0].session_id == str(SESSION_A)
+
+
+def test_pre_gate_budget_stops_multi_mib_invalid_lf_and_falls_back_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    # Token-shaped name but only invalid LF lines (never a schema-valid gate event).
+    path = users / f"{encode_user_token('alice')}.jsonl"
+    junk_line = b"x" * 100 + b"\n"
+    with path.open("wb") as fh:
+        for _ in range((2 * 1024 * 1024) // len(junk_line)):
+            fh.write(junk_line)
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    read_total = {"n": 0}
+    real_read = os.read
+
+    def spy_read(fd: int, n: int) -> bytes:
+        data = real_read(fd, n)
+        read_total["n"] += len(data)
+        return data
+
+    monkeypatch.setattr("core.telemetry.reader.os.read", spy_read)
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    deadline = _deadline(2.0)
+    reader = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    )
+    selection = reader.select_sources()
+    _assert_before(deadline)
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert read_total["n"] <= SHARED_GATE_SCAN_MAX_BYTES
+    assert path.stat().st_size > 2 * SHARED_GATE_SCAN_MAX_BYTES
+
+
+def test_pre_gate_budget_stops_multi_mib_no_lf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    path = users / f"{encode_user_token('alice')}.jsonl"
+    chunk = b"y" * 65_536
+    with path.open("wb") as fh:
+        for _ in range((2 * 1024 * 1024) // len(chunk)):
+            fh.write(chunk)
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+
+    read_total = {"n": 0}
+    real_read = os.read
+
+    def spy_read(fd: int, n: int) -> bytes:
+        data = real_read(fd, n)
+        read_total["n"] += len(data)
+        return data
+
+    monkeypatch.setattr("core.telemetry.reader.os.read", spy_read)
+
+    deadline = _deadline(2.0)
+    selection = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage
+    ).select_sources()
+    _assert_before(deadline)
+
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert read_total["n"] <= SHARED_GATE_SCAN_MAX_BYTES
+
+
+def test_iter_path_pre_gate_budget_on_replaced_junk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-gate after reopen must also stop within the physical byte budget."""
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    path = users / f"{encode_user_token('alice')}.jsonl"
+    junk_line = b"z" * 80 + b"\n"
+    with path.open("wb") as fh:
+        for _ in range((3 * 1024 * 1024) // len(junk_line)):
+            fh.write(junk_line)
+
+    read_total = {"n": 0}
+    real_read = os.read
+
+    def spy_read(fd: int, n: int) -> bytes:
+        data = real_read(fd, n)
+        read_total["n"] += len(data)
+        return data
+
+    monkeypatch.setattr("core.telemetry.reader.os.read", spy_read)
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    reader = _reader(tmp_path, identity=identity, shared_dir=shared)
+    deadline = _deadline(2.0)
+    events = list(
+        reader._iter_path(
+            path,
+            kind=SourceKind.SHARED,
+            lower=None,
+            upper=FIXED_NOW + timedelta(seconds=300),
+            user_filter=None,
+        )
+    )
+    _assert_before(deadline)
+
+    assert events == []
+    assert read_total["n"] <= SHARED_GATE_SCAN_MAX_BYTES
+
+
+def test_gate_budget_lifts_after_valid_event_preserves_later_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valid gate near (but inside) budget; later events beyond budget still yield."""
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    path = users / f"{encode_user_token('alice')}.jsonl"
+
+    pad_line = b"{not-json}\n"
+    pad_count = (SHARED_GATE_SCAN_MAX_BYTES - 512) // len(pad_line)
+    assert pad_count > 0
+    gate = _session_start(session_id=SESSION_A)
+    later = _session_start(session_id=SESSION_B)
+    # Extra padding after gate so post-gate content exceeds the original budget.
+    post_pad = pad_line * ((SHARED_GATE_SCAN_MAX_BYTES // len(pad_line)) + 10)
+
+    with path.open("wb") as fh:
+        for _ in range(pad_count):
+            fh.write(pad_line)
+        fh.write(gate)
+        fh.write(post_pad)
+        fh.write(later)
+
+    pre_gate_bytes = pad_count * len(pad_line) + len(gate)
+    assert pre_gate_bytes <= SHARED_GATE_SCAN_MAX_BYTES
+    assert path.stat().st_size > SHARED_GATE_SCAN_MAX_BYTES
+
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+
+    events = list(
+        _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(days=None)
+    )
+    assert [e.session_id for e in events] == [str(SESSION_A), str(SESSION_B)]
+
+
+def test_shared_gate_scan_max_bytes_constant() -> None:
+    assert SHARED_GATE_SCAN_MAX_BYTES == 64 * 1024
 
 
 def test_discards_incomplete_final_line(

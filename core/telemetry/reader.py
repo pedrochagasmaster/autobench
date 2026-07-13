@@ -15,6 +15,7 @@ from core.telemetry.constants import (
     DEFAULT_SHARED_DIR,
     FUTURE_SKEW_S,
     MAX_RECORD_BYTES,
+    SHARED_GATE_SCAN_MAX_BYTES,
 )
 from core.telemetry.events import (
     EventValidationError,
@@ -162,6 +163,19 @@ def _safe_open_regular(path: Path) -> tuple[int, os.stat_result] | None:
         return None
 
 
+@dataclass
+class _LineScanState:
+    """Mutable physical-read budget for shared pre-gate scans.
+
+    ``max_read_bytes`` of ``None`` means unlimited (post-gate / private).
+    ``bytes_read`` counts every byte returned by ``os.read``, including
+    oversized, no-LF, and invalid content.
+    """
+
+    max_read_bytes: int | None
+    bytes_read: int = 0
+
+
 class TelemetryReader:
     """Stream and aggregate privacy-aware offline telemetry sources."""
 
@@ -222,7 +236,10 @@ class TelemetryReader:
             return False
         fd, st = opened
         try:
-            first = self._first_schema_valid_event(fd, warn_unsupported=False)
+            scan = _LineScanState(max_read_bytes=SHARED_GATE_SCAN_MAX_BYTES)
+            first = self._first_schema_valid_event(
+                fd, warn_unsupported=False, scan=scan
+            )
             if first is None:
                 return False
             return self._accept_shared_file(path, first, st.st_uid)
@@ -230,9 +247,13 @@ class TelemetryReader:
             _close_quiet(fd)
 
     def _first_schema_valid_event(
-        self, fd: int, *, warn_unsupported: bool
+        self,
+        fd: int,
+        *,
+        warn_unsupported: bool,
+        scan: _LineScanState | None = None,
     ) -> ValidatedEvent | None:
-        for raw_line in _iter_raw_lines(fd):
+        for raw_line in _iter_raw_lines(fd, scan=scan):
             event = self._try_decode_line(raw_line, warn_unsupported=warn_unsupported)
             if event is not None:
                 return event
@@ -336,8 +357,15 @@ class TelemetryReader:
             file_uid = st.st_uid
             accepted_user: str | None = None
             gated = False
+            # Shared re-gate after reopen/TOCTOU uses the same physical budget;
+            # private and post-gate shared streaming are unlimited.
+            scan = (
+                _LineScanState(max_read_bytes=SHARED_GATE_SCAN_MAX_BYTES)
+                if kind is SourceKind.SHARED
+                else None
+            )
 
-            for raw_line in _iter_raw_lines(fd):
+            for raw_line in _iter_raw_lines(fd, scan=scan):
                 event = self._try_decode_line(raw_line, warn_unsupported=True)
                 if event is None:
                     continue
@@ -348,6 +376,9 @@ class TelemetryReader:
                             return
                         accepted_user = event.user
                         gated = True
+                        # Lift pre-gate budget; keep the same buffered iterator.
+                        if scan is not None:
+                            scan.max_read_bytes = None
                     elif event.user != accepted_user:
                         continue
                 else:
@@ -396,19 +427,36 @@ class TelemetryReader:
         return self._try_decode_line(raw_line, warn_unsupported=True)
 
 
-def _iter_raw_lines(fd: int) -> Iterator[bytes]:
-    """Yield LF-terminated raw lines with bounded memory; discard incomplete tail."""
+def _iter_raw_lines(
+    fd: int, *, scan: _LineScanState | None = None
+) -> Iterator[bytes]:
+    """Yield LF-terminated raw lines with bounded memory; discard incomplete tail.
+
+    When ``scan.max_read_bytes`` is set, stop once physical ``os.read`` bytes
+    reach that budget (counts oversized/no-LF/invalid content). Clearing
+    ``scan.max_read_bytes`` to ``None`` mid-iteration lifts the budget without
+    dropping already-buffered chunk data.
+    """
     buf = bytearray()
     skipping = False
     while True:
+        if scan is not None and scan.max_read_bytes is not None:
+            remaining = scan.max_read_bytes - scan.bytes_read
+            if remaining <= 0:
+                return
+            to_read = min(_READ_CHUNK, remaining)
+        else:
+            to_read = _READ_CHUNK
         try:
-            chunk = os.read(fd, _READ_CHUNK)
+            chunk = os.read(fd, to_read)
         except InterruptedError:
             continue
         except OSError:
             return
         if not chunk:
             return
+        if scan is not None:
+            scan.bytes_read += len(chunk)
         offset = 0
         while offset < len(chunk):
             if skipping:
@@ -422,13 +470,13 @@ def _iter_raw_lines(fd: int) -> Iterator[bytes]:
 
             nl = chunk.find(b"\n", offset)
             if nl < 0:
-                remaining = chunk[offset:]
-                if len(buf) + len(remaining) >= MAX_RECORD_BYTES:
+                remaining_bytes = chunk[offset:]
+                if len(buf) + len(remaining_bytes) >= MAX_RECORD_BYTES:
                     # Would exceed limit even before LF; enter skip mode.
                     skipping = True
                     buf.clear()
                     break
-                buf.extend(remaining)
+                buf.extend(remaining_bytes)
                 break
 
             piece = chunk[offset : nl + 1]
