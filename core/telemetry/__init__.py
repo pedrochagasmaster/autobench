@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -34,7 +35,10 @@ def _read_app_version() -> str:
             return _FALLBACK_VERSION
         if len(text.encode("utf-8")) > MAX_APP_VERSION_BYTES:
             return _FALLBACK_VERSION
-        if any(ord(ch) < 32 for ch in text):
+        # Match _validate_app_version's category-C rejection (DEL, C1, format
+        # chars); a weaker check here would make every build_record fail
+        # instead of falling back.
+        if any(unicodedata.category(ch).startswith("C") for ch in text):
             return _FALLBACK_VERSION
         return text
     except Exception:

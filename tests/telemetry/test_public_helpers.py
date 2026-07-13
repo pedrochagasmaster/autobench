@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 
 import core.telemetry as telemetry
+from core.telemetry.events import build_record
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.service import TelemetryService
 
@@ -263,6 +264,34 @@ def test_app_version_from_repository_version(tmp_path: Path, monkeypatch: pytest
     payload = json.loads(written[0].decode("utf-8"))
     assert payload["app_version"] == expected
     telemetry.end_session()
+
+
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        "3.0\x7f",  # DEL: category Cc but ord >= 32
+        "3.0\u200b",  # zero-width space: category Cf
+        "3.0\x01",  # C0 control
+    ],
+)
+def test_read_app_version_falls_back_on_any_category_c_char(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_version: str
+) -> None:
+    """A VERSION build_record would reject must fall back, not poison all events."""
+    version_path = tmp_path / "VERSION"
+    version_path.write_text(bad_version, encoding="utf-8")
+    monkeypatch.setattr(telemetry, "_VERSION_PATH", version_path)
+    resolved = telemetry._read_app_version()
+    assert resolved == "0"
+    # The fallback must itself be accepted by record building.
+    build_record(
+        "session_start",
+        {"launch_context": "tui"},
+        user="alice",
+        session_id=SESSION_ID,
+        app_version=resolved,
+        now=FIXED_UTC,
+    )
 
 
 def test_end_session_public_is_idempotent() -> None:
