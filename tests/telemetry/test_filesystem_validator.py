@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -286,6 +287,106 @@ def test_cli_exit_codes_are_exact(
     )
     assert bad_args.returncode != 0
     assert "Traceback" not in (bad_args.stderr or "")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "relative-telemetry",
+        "./telemetry",
+        "/",
+        "///",
+        "{base}/./telem",
+        "{base}/other/../telem",
+        "{base}/./telem/",
+        "{base}/other/../telem///",
+    ],
+)
+def test_validator_rejects_unsafe_dir_before_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    validator_mod,
+    raw: str,
+    capsys,
+) -> None:
+    """Absolute/no-dot/non-root policy must fail before any filesystem probe."""
+    protected = _protected(tmp_path)
+    monkeypatch.setattr(validator_mod.sys, "platform", "linux")
+    monkeypatch.setattr(validator_mod, "DEFAULT_PROTECTED_HARDLINKS", protected)
+
+    base = tmp_path / "base"
+    base.mkdir(mode=0o0700)
+    # Real layout at the resolved destination so a missing lexical check would probe.
+    real = _provision_layout(base / "telem")
+    (base / "other").mkdir(mode=0o0700)
+    target = raw.format(base=str(base))
+    before_mode = stat.S_IMODE(base.stat().st_mode)
+    before_real_mode = stat.S_IMODE(real.stat().st_mode)
+    before_users = set((real / "users").iterdir())
+
+    probed: list[object] = []
+
+    real_probe = validator_mod._probe_file_ops
+
+    def tracking_probe(*args, **kwargs):
+        probed.append(True)
+        return real_probe(*args, **kwargs)
+
+    monkeypatch.setattr(validator_mod, "_probe_file_ops", tracking_probe)
+
+    code = validator_mod.main(["--dir", target])
+    out = capsys.readouterr()
+    combined = (out.out + out.err).lower()
+    assert code == 1
+    assert "FAIL:" in (out.out + out.err)
+    assert "traceback" not in combined
+    assert probed == [], "filesystem probe must not run for unsafe --dir"
+    assert stat.S_IMODE(base.stat().st_mode) == before_mode
+    assert stat.S_IMODE(real.stat().st_mode) == before_real_mode
+    assert set((real / "users").iterdir()) == before_users
+    assert not (tmp_path / "users").exists()
+    assert any(
+        token in combined
+        for token in ("absolute", "unsafe", "refusing", "dot", "root", "empty", "invalid")
+    )
+
+
+def test_normalize_operator_dir_preserves_lexical_dots_from_raw_string(
+    validator_mod,
+) -> None:
+    with pytest.raises(validator_mod.InvalidTelemetryDirError) as excinfo:
+        validator_mod.normalize_operator_telemetry_dir("/tmp/./x")
+    assert "dot" in str(excinfo.value).lower() or "." in str(excinfo.value)
+
+    with pytest.raises(validator_mod.InvalidTelemetryDirError):
+        validator_mod.normalize_operator_telemetry_dir("/tmp/x/../y")
+
+    with pytest.raises(validator_mod.InvalidTelemetryDirError):
+        validator_mod.normalize_operator_telemetry_dir("relative")
+
+    with pytest.raises(validator_mod.InvalidTelemetryDirError):
+        validator_mod.normalize_operator_telemetry_dir("/")
+
+
+def test_validator_accepts_absolute_trailing_and_repeated_slashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validator_mod, capsys
+) -> None:
+    parent = _provision_layout(tmp_path / "telem")
+    protected = _protected(tmp_path)
+    monkeypatch.setattr(validator_mod.sys, "platform", "linux")
+    monkeypatch.setattr(validator_mod, "DEFAULT_PROTECTED_HARDLINKS", protected)
+
+    weird = str(tmp_path) + "///telem///"
+    normalized = validator_mod.normalize_operator_telemetry_dir(weird)
+    assert normalized == parent
+    assert ".." not in normalized.parts
+    assert "." not in normalized.parts
+
+    code = validator_mod.main(["--dir", weird])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "PASS:" in out
+    assert "FAIL:" not in out
 
 
 def test_run_internal_child_timeout_kills_process_group(

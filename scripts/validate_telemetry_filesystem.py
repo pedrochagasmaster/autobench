@@ -44,6 +44,54 @@ _INTERNAL_LOCK = "lock-contend"
 _INTERNAL_FIFO = "fifo-open"
 
 
+class InvalidTelemetryDirError(ValueError):
+    """Operator --dir / telemetry parent path violates the absolute path policy."""
+
+
+def normalize_operator_telemetry_dir(raw: str | os.PathLike[str]) -> Path:
+    """Validate operator telemetry parent path before any filesystem probe.
+
+    Preserves the raw string long enough to detect lexical ``.`` / ``..``
+    components (``pathlib.Path`` may otherwise obscure them). Strips one or more
+    trailing slashes while preserving a lone ``/``, collapses repeated internal
+    slashes, requires an absolute non-root path, and returns a ``Path``.
+    """
+    text = os.fsdecode(raw)
+    while len(text) > 1 and text.endswith("/"):
+        text = text[:-1]
+
+    if text == "":
+        raise InvalidTelemetryDirError(
+            "telemetry --dir is empty (refusing unsafe root)"
+        )
+    if text == ".":
+        raise InvalidTelemetryDirError(
+            "telemetry --dir is '.' (refusing unsafe root)"
+        )
+    if text == "/":
+        raise InvalidTelemetryDirError(
+            "telemetry --dir is '/' (refusing unsafe root)"
+        )
+    if not text.startswith("/"):
+        raise InvalidTelemetryDirError(
+            f"telemetry --dir must be an absolute path (refusing): {text}"
+        )
+
+    components = text.split("/")
+    for comp in components:
+        if comp in (".", ".."):
+            raise InvalidTelemetryDirError(
+                f"telemetry --dir contains a '.' or '..' dot component (refusing): {text}"
+            )
+
+    cleaned = "/" + "/".join(comp for comp in components if comp)
+    if cleaned == "/":
+        raise InvalidTelemetryDirError(
+            "telemetry --dir is '/' (refusing unsafe root)"
+        )
+    return Path(cleaned)
+
+
 def _pass(lines: List[str], message: str) -> None:
     lines.append(f"PASS: {message}")
 
@@ -472,7 +520,7 @@ def _probe_file_ops(
 
 
 def validate_filesystem(
-    parent_dir: Path,
+    parent_dir: str | os.PathLike[str],
     *,
     protected_hardlinks_path: Path = DEFAULT_PROTECTED_HARDLINKS,
     geteuid: Callable[[], int] = os.geteuid,
@@ -484,13 +532,18 @@ def validate_filesystem(
     """
     lines: List[str] = []
     try:
+        try:
+            parent = normalize_operator_telemetry_dir(parent_dir)
+        except InvalidTelemetryDirError as exc:
+            _fail(lines, str(exc))
+            return (1, lines)
+
         euid = geteuid()
         ok = True
         ok = _check_platform(lines) and ok
         ok = _check_primitives(lines) and ok
         ok = _check_protected_hardlinks(protected_hardlinks_path, lines) and ok
 
-        parent = Path(parent_dir)
         users = parent / "users"
         parent_ok = _owned_non_symlink_dir(parent, euid, PARENT_MODE, "telemetry parent", lines)
         users_ok = _owned_non_symlink_dir(users, euid, USERS_MODE, "users", lines)
@@ -532,10 +585,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dir",
-        type=Path,
-        default=DEFAULT_PARENT,
+        type=str,
+        default=str(DEFAULT_PARENT),
         help=(
-            "Telemetry parent directory whose direct child is users/ "
+            "Absolute telemetry parent directory whose direct child is users/ "
             f"(default: {DEFAULT_PARENT})"
         ),
     )
