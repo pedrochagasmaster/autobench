@@ -85,3 +85,24 @@ def test_stale_personal_runtime_is_diagnosed() -> None:
         )
         == ""
     )
+
+
+def test_stale_runtime_diagnostic_degrades_on_resolution_error(
+    monkeypatch,
+) -> None:
+    original_resolve = Path.resolve
+
+    def fail_personal_runtime(path: Path, *args, **kwargs):
+        if path.name == "venv":
+            raise RuntimeError("symlink loop")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_personal_runtime)
+
+    assert (
+        stale_personal_runtime_warning(
+            executable=Path("/shared/runtime/bin/python"),
+            environ={"AUTOBENCH_DATA_ROOT": "/ads_storage/alice"},
+        )
+        == ""
+    )

@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - Windows never installs the runtime
     fcntl = None  # type: ignore[assignment]
 
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+REQUIREMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?")
 REQUIRED_IMPORTS = ("pandas", "numpy", "openpyxl", "yaml", "scipy", "textual")
 COMPLETE_MARKER = ".complete.json"
 
@@ -33,7 +34,48 @@ class RuntimeInstallError(RuntimeError):
     """An expected shared-runtime validation or construction failure."""
 
 
+def _reject_linked_bundle_paths(bundle_dir: Path) -> None:
+    if bundle_dir.is_symlink():
+        raise RuntimeInstallError("Dependency bundle root must not be a symlink")
+    try:
+        for directory, dirnames, filenames in os.walk(bundle_dir, followlinks=False):
+            parent = Path(directory)
+            for name in [*dirnames, *filenames]:
+                if (parent / name).is_symlink():
+                    raise RuntimeInstallError(
+                        f"Dependency bundle contains a linked path: "
+                        f"{(parent / name).relative_to(bundle_dir).as_posix()}"
+                    )
+    except OSError as exc:
+        raise RuntimeInstallError(f"Could not inspect dependency bundle paths: {exc}") from exc
+
+
+def _validate_requirements_file(requirements: Path) -> None:
+    try:
+        lines = requirements.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeInstallError(f"Could not read dependency requirements: {exc}") from exc
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if (
+            line.startswith("-")
+            or line.endswith("\\")
+            or "://" in line
+            or "@" in line
+            or line.lower().startswith("file:")
+            or line.startswith(("/", "./", "../", "~"))
+            or REQUIREMENT_NAME_RE.match(line) is None
+        ):
+            raise RuntimeInstallError(
+                "Dependency requirements may contain package specifications only; "
+                f"unsafe directive or path at line {line_number}"
+            )
+
+
 def _load_manifest(bundle_dir: Path) -> tuple[dict[str, object], str]:
+    _reject_linked_bundle_paths(bundle_dir)
     manifest_path = bundle_dir / "manifest.json"
     requirements = bundle_dir / "requirements" / "requirements.txt"
     wheels = bundle_dir / "wheels"
@@ -103,6 +145,7 @@ def _load_manifest(bundle_dir: Path) -> tuple[dict[str, object], str]:
     actual = {PurePosixPath(path.relative_to(bundle_dir).as_posix()) for path in actual_files}
     if actual != declared:
         raise RuntimeInstallError("Dependency bundle contents do not match the manifest")
+    _validate_requirements_file(requirements)
     return manifest, digest
 
 
@@ -117,9 +160,16 @@ def _complete_metadata(runtime: Path, digest: str) -> dict[str, object] | None:
         or metadata.get("bundle_digest") != digest
         or metadata.get("pip_check") != "passed"
         or metadata.get("required_imports") != list(REQUIRED_IMPORTS)
+        or not isinstance(metadata.get("approved_python"), str)
+        or not metadata.get("approved_python")
+        or metadata.get("runtime_python") != str((runtime / "bin" / "python").absolute())
+        or not isinstance(metadata.get("python_version"), str)
+        or not metadata.get("python_version")
     ):
         return None
-    if not (runtime / "bin" / "python").is_file():
+    if not (runtime / "bin" / "python").is_file() or not os.access(
+        runtime / "bin" / "python", os.X_OK
+    ):
         return None
     return metadata
 
@@ -204,10 +254,14 @@ def _make_owner_writable_only(runtime: Path) -> None:
             )
             path.chmod(readable & ~(stat.S_IWGRP | stat.S_IWOTH))
         else:
-            path.chmod(
-                (mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-                & ~(stat.S_IWGRP | stat.S_IWOTH)
-            )
+            repaired = mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
+            try:
+                relative = path.relative_to(runtime)
+            except ValueError:
+                relative = Path()
+            if relative.parts and relative.parts[0] == "bin":
+                repaired |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            path.chmod(repaired & ~(stat.S_IWGRP | stat.S_IWOTH))
 
 
 def _major_minor(version: str) -> str:
@@ -231,7 +285,13 @@ def _build_runtime(
 ) -> None:
     if runtime.exists():
         shutil.rmtree(runtime)
-    _run([str(approved_python), "-m", "venv", str(runtime)])
+    runtime.mkdir(parents=True, mode=0o700)
+    runtime.chmod(0o700)
+    previous_umask = os.umask(0o077)
+    try:
+        _run([str(approved_python), "-m", "venv", str(runtime)])
+    finally:
+        os.umask(previous_umask)
     runtime.chmod(0o700)
     runtime_python = runtime / "bin" / "python"
     version = _runtime_python_version(runtime_python)
@@ -296,18 +356,31 @@ def _activate(runtime_root: Path, runtime: Path) -> None:
 def _snapshot_bundle(bundle_dir: Path, runtime_root: Path) -> Path:
     if not bundle_dir.is_dir():
         raise RuntimeInstallError(f"Verified dependency bundle is incomplete: {bundle_dir}")
+    _reject_linked_bundle_paths(bundle_dir)
     snapshot = runtime_root / f".bundle.tmp.{os.getpid()}"
     if snapshot.exists():
         shutil.rmtree(snapshot)
-    shutil.copytree(bundle_dir, snapshot)
+    shutil.copytree(bundle_dir, snapshot, symlinks=True)
     snapshot.chmod(0o700)
     return snapshot
 
 
-def install(bundle_dir: Path, approved_python: Path, root: Path) -> tuple[str, bool]:
+def _prepare_runtime_root(root: Path) -> tuple[Path, Path]:
+    root = root.resolve()
     runtime_root = root / ".venv"
+    if runtime_root.is_symlink():
+        raise RuntimeInstallError(f"Shared runtime root must not be a symlink: {runtime_root}")
     releases = runtime_root / "releases"
+    if releases.is_symlink():
+        raise RuntimeInstallError(f"Runtime releases path must not be a symlink: {releases}")
     releases.mkdir(parents=True, exist_ok=True)
+    if runtime_root.resolve() != runtime_root or releases.resolve() != releases:
+        raise RuntimeInstallError("Shared runtime paths resolve outside the repository root")
+    return runtime_root, releases
+
+
+def install(bundle_dir: Path, approved_python: Path, root: Path) -> tuple[str, bool]:
+    runtime_root, releases = _prepare_runtime_root(root)
     runtime_root.chmod(0o755)
     releases.chmod(0o755)
     with _install_lock(runtime_root / "install.lock"):

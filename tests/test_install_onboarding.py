@@ -133,6 +133,95 @@ def test_release_install_builds_offline_runtime_without_user_state(tmp_path: Pat
     assert not (tmp_path / ".autobench").exists()
 
 
+def test_failed_release_install_preserves_active_runtime(tmp_path: Path) -> None:
+    if shutil.which("sh") is None or os.name == "nt":
+        pytest.skip("Linux install smoke requires POSIX executables and symlinks")
+    root = _install_root(tmp_path)
+    approved = _approved_python(tmp_path)
+    calls = tmp_path / "runtime-calls"
+    first, first_digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==1.0\n",
+            "wheels/demo.whl": b"first",
+        },
+    )
+    assert _install(root, first, approved, calls).returncode == 0
+    second, second_digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==2.0\n",
+            "wheels/demo.whl": b"second",
+        },
+    )
+    (second / "wheels" / "demo.whl").write_bytes(b"tampered")
+
+    result = _install(root, second, approved, calls)
+
+    assert result.returncode != 0
+    assert (root / ".venv" / "current").resolve().name == first_digest
+    assert not (root / ".venv" / "releases" / second_digest).exists()
+
+
+def test_release_install_rejects_wrong_interpreter_target_before_pip(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("sh") is None or os.name == "nt":
+        pytest.skip("Linux install smoke requires POSIX executables and symlinks")
+    root = _install_root(tmp_path)
+    calls = tmp_path / "runtime-calls"
+    bundle, digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==1.0\n",
+            "wheels/demo.whl": b"wheel",
+        },
+        target_python="3.11",
+    )
+
+    result = _install(root, bundle, _approved_python(tmp_path), calls)
+
+    assert result.returncode != 0
+    assert "targets Python 3.11" in result.stderr
+    assert "pip install" not in calls.read_text(encoding="utf-8")
+    assert not (root / ".venv" / "releases" / digest).exists()
+
+
+def test_install_reuse_upgrade_and_rollback_do_not_reinstall_old_digest(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("sh") is None or os.name == "nt":
+        pytest.skip("Linux install smoke requires POSIX executables and symlinks")
+    root = _install_root(tmp_path)
+    approved = _approved_python(tmp_path)
+    calls = tmp_path / "runtime-calls"
+    first, first_digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==1.0\n",
+            "wheels/demo.whl": b"first",
+        },
+    )
+    second, second_digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==2.0\n",
+            "wheels/demo.whl": b"second",
+        },
+    )
+
+    assert _install(root, first, approved, calls).returncode == 0
+    first_call_count = len(calls.read_text(encoding="utf-8").splitlines())
+    assert _install(root, first, approved, calls).returncode == 0
+    assert len(calls.read_text(encoding="utf-8").splitlines()) == first_call_count
+    assert _install(root, second, approved, calls).returncode == 0
+    assert (root / ".venv" / "current").resolve().name == second_digest
+    upgraded_call_count = len(calls.read_text(encoding="utf-8").splitlines())
+    assert _install(root, first, approved, calls).returncode == 0
+    assert (root / ".venv" / "current").resolve().name == first_digest
+    assert len(calls.read_text(encoding="utf-8").splitlines()) == upgraded_call_count
+
+
 def _prepare_onboarding_root(tmp_path: Path) -> tuple[Path, Path]:
     root = _install_root(tmp_path)
     runtime = root / ".venv" / "releases" / ("b" * 64)
@@ -141,6 +230,9 @@ def _prepare_onboarding_root(tmp_path: Path) -> tuple[Path, Path]:
         json.dumps(
             {
                 "bundle_digest": runtime.name,
+                "approved_python": "/approved/python3.10",
+                "runtime_python": str((runtime / "bin" / "python").absolute()),
+                "python_version": "3.10.99",
                 "pip_check": "passed",
                 "required_imports": [
                     "pandas",
@@ -253,3 +345,24 @@ def test_onboarding_fails_before_state_changes_without_active_runtime(
     assert result.returncode != 0
     assert "shared runtime is not active" in result.stderr
     assert not (data_root / ".autobench").exists()
+
+
+def test_onboarding_refuses_non_file_launcher_before_replacing_either(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("sh") is None:
+        pytest.skip("onboarding smoke requires sh")
+    root, _runtime = _prepare_onboarding_root(tmp_path)
+    home = tmp_path / "home"
+    data_root = tmp_path / "ads_storage" / "alice"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    existing = local_bin / "autobench"
+    existing.write_text("kept\n", encoding="utf-8")
+    (local_bin / "autobench-cli").mkdir()
+
+    result = _onboard(root, home, data_root)
+
+    assert result.returncode != 0
+    assert "Cannot replace non-file launcher target" in result.stderr
+    assert existing.read_text(encoding="utf-8") == "kept\n"

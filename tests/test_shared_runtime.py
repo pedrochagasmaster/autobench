@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -19,9 +20,12 @@ import shared_runtime
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _metadata(digest: str) -> dict[str, object]:
+def _metadata(runtime: Path) -> dict[str, object]:
     return {
-        "bundle_digest": digest,
+        "bundle_digest": runtime.name,
+        "approved_python": "/approved/python3.10",
+        "runtime_python": str((runtime / "bin" / "python").absolute()),
+        "python_version": "3.10.99",
         "pip_check": "passed",
         "required_imports": list(shared_runtime.REQUIRED_IMPORTS),
     }
@@ -33,12 +37,13 @@ def test_manifest_digest_drives_release_path_and_completed_reuse(tmp_path: Path)
     runtime = tmp_path / ".venv" / "releases" / digest
     (runtime / "bin").mkdir(parents=True)
     (runtime / "bin" / "python").write_text("", encoding="utf-8")
+    (runtime / "bin" / "python").chmod(0o755)
     (runtime / shared_runtime.COMPLETE_MARKER).write_text(
-        json.dumps(_metadata(digest)), encoding="utf-8"
+        json.dumps(_metadata(runtime)), encoding="utf-8"
     )
 
     assert loaded_digest == digest
-    assert shared_runtime._complete_metadata(runtime, digest) == _metadata(digest)
+    assert shared_runtime._complete_metadata(runtime, digest) == _metadata(runtime)
 
 
 @pytest.mark.parametrize("unsafe_path", ["../escape", "/absolute", "other/file.txt"])
@@ -100,6 +105,62 @@ def test_manifest_rejects_malformed_digest_and_wrong_tool(tmp_path: Path) -> Non
         shared_runtime._load_manifest(bundle)
 
 
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        b"--find-links /tmp/evil\ndemo==1.0\n",
+        b"-r /tmp/other.txt\n",
+        b"demo @ file:///tmp/demo.whl\n",
+        b"../demo.whl\n",
+    ],
+)
+def test_manifest_rejects_requirements_that_escape_verified_bundle(
+    tmp_path: Path, requirements: bytes
+) -> None:
+    bundle, _digest = make_bundle(
+        tmp_path, {"requirements/requirements.txt": requirements}
+    )
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="package specifications only"):
+        shared_runtime._load_manifest(bundle)
+
+
+def test_snapshot_rejects_symlinked_bundle_file(tmp_path: Path) -> None:
+    bundle, _digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo==1.0\n",
+            "wheels/demo.whl": b"external wheel",
+        },
+    )
+    external = tmp_path / "external.whl"
+    external.write_bytes(b"external wheel")
+    wheel = bundle / "wheels" / "demo.whl"
+    wheel.unlink()
+    try:
+        wheel.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="linked path"):
+        shared_runtime._snapshot_bundle(bundle, tmp_path / "runtime-root")
+
+
+def test_incomplete_completion_metadata_is_not_reusable(tmp_path: Path) -> None:
+    runtime = tmp_path / ("a" * 64)
+    (runtime / "bin").mkdir(parents=True)
+    python = runtime / "bin" / "python"
+    python.write_text("", encoding="utf-8")
+    python.chmod(0o755)
+    metadata = _metadata(runtime)
+    metadata.pop("python_version")
+    (runtime / shared_runtime.COMPLETE_MARKER).write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+
+    assert shared_runtime._complete_metadata(runtime, runtime.name) is None
+
+
 def _copy_launchers(root: Path) -> tuple[Path, Path]:
     target_bin = root / "bin"
     target_bin.mkdir(parents=True)
@@ -113,12 +174,13 @@ def _active_runtime(root: Path, tmp_path: Path) -> tuple[Path, Path]:
     runtime = root / ".venv" / "releases" / ("a" * 64)
     (runtime / "bin").mkdir(parents=True)
     (runtime / ".complete.json").write_text(
-        json.dumps(_metadata(runtime.name)), encoding="utf-8"
+        json.dumps(_metadata(runtime)), encoding="utf-8"
     )
     capture = tmp_path / "capture.txt"
     fake_python = runtime / "bin" / "python"
     fake_python.write_text(
         "#!/usr/bin/env sh\n"
+        'if [ "${1:-}" = "-" ]; then exec "$VALIDATOR_PYTHON" "$@"; fi\n'
         'printf \'%s\\n\' "$PWD" "$PYTHONPATH" "$AUTOBENCH_RUNTIME" "$@" > "$CAPTURE"\n',
         encoding="utf-8",
     )
@@ -148,6 +210,7 @@ def test_shared_launchers_forward_arguments_preserve_cwd_and_resolve_runtime(
     launch_cwd.mkdir()
     env = os.environ.copy()
     env["CAPTURE"] = capture.resolve().as_posix()
+    env["VALIDATOR_PYTHON"] = Path(sys.executable).resolve().as_posix()
 
     result = subprocess.run(
         ["sh", launchers[launcher_name].resolve().as_posix(), "--help", "two words"],
@@ -190,7 +253,9 @@ def test_shared_launcher_rejects_corrupt_completion_metadata(tmp_path: Path) -> 
     launcher, _cli = _copy_launchers(root)
     runtime = root / ".venv" / "releases" / ("c" * 64)
     (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "python").write_text("", encoding="utf-8")
+    (runtime / "bin" / "python").write_text(
+        '#!/usr/bin/env sh\nexec "$VALIDATOR_PYTHON" "$@"\n', encoding="utf-8"
+    )
     (runtime / "bin" / "python").chmod(0o755)
     (runtime / ".complete.json").write_text("{}\n", encoding="utf-8")
     try:
@@ -202,6 +267,7 @@ def test_shared_launcher_rejects_corrupt_completion_metadata(tmp_path: Path) -> 
 
     result = subprocess.run(
         ["sh", launcher.resolve().as_posix()],
+        env={**os.environ, "VALIDATOR_PYTHON": Path(sys.executable).resolve().as_posix()},
         text=True,
         capture_output=True,
         check=False,
@@ -221,7 +287,7 @@ def test_shared_launcher_rejects_runtime_outside_release_root(tmp_path: Path) ->
     (rogue / "bin" / "python").write_text("", encoding="utf-8")
     (rogue / "bin" / "python").chmod(0o755)
     (rogue / ".complete.json").write_text(
-        json.dumps(_metadata(rogue.name)), encoding="utf-8"
+        json.dumps(_metadata(rogue)), encoding="utf-8"
     )
     (root / ".venv").mkdir(parents=True)
     try:
@@ -240,13 +306,51 @@ def test_shared_launcher_rejects_runtime_outside_release_root(tmp_path: Path) ->
     assert "resolves outside the release root" in result.stderr
 
 
+def test_shared_launcher_rejects_malformed_json_with_matching_strings(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("sh") is None:
+        pytest.skip("shared launcher smoke requires sh")
+    root = tmp_path / "root"
+    launcher, _cli = _copy_launchers(root)
+    runtime = root / ".venv" / "releases" / ("d" * 64)
+    (runtime / "bin").mkdir(parents=True)
+    python = runtime / "bin" / "python"
+    python.write_text(
+        '#!/usr/bin/env sh\nexec "$VALIDATOR_PYTHON" "$@"\n', encoding="utf-8"
+    )
+    python.chmod(0o755)
+    (runtime / ".complete.json").write_text(
+        f'not-json "bundle_digest": "{runtime.name}" "pip_check": "passed"',
+        encoding="utf-8",
+    )
+    try:
+        (root / ".venv" / "current").symlink_to(
+            Path("releases") / runtime.name, target_is_directory=True
+        )
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = subprocess.run(
+        ["sh", launcher.resolve().as_posix()],
+        env={**os.environ, "VALIDATOR_PYTHON": Path(sys.executable).resolve().as_posix()},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "completion metadata is corrupt" in result.stderr
+
+
 def _fake_completed_build(
     runtime: Path, _bundle: Path, digest: str, _python: Path, _target: str | None
 ) -> None:
     (runtime / "bin").mkdir(parents=True)
     (runtime / "bin" / "python").write_text("", encoding="utf-8")
+    (runtime / "bin" / "python").chmod(0o755)
     (runtime / shared_runtime.COMPLETE_MARKER).write_text(
-        json.dumps(_metadata(digest)), encoding="utf-8"
+        json.dumps(_metadata(runtime)), encoding="utf-8"
     )
 
 
@@ -267,6 +371,9 @@ def test_build_validates_in_order_and_records_completion(
     def fake_run(command: list[str]) -> None:
         calls.append(command)
         if command[1:3] == ["-m", "venv"]:
+            assert runtime.is_dir()
+            if os.name != "nt":
+                assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
             (runtime / "bin").mkdir(parents=True)
             (runtime / "bin" / "python").write_text("", encoding="utf-8")
 
@@ -509,3 +616,31 @@ def test_completed_runtime_permissions_are_not_publicly_writable(tmp_path: Path)
     assert package.stat().st_mode & 0o044 == 0o044
     assert executable.stat().st_mode & 0o055 == 0o055
     assert stat.S_IMODE(approved.stat().st_mode) == 0o755
+
+
+def test_completed_runtime_permissions_restore_bin_execution(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX modes are validated on Linux")
+    runtime = tmp_path / "runtime"
+    python = runtime / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    python.chmod(0o600)
+
+    shared_runtime._make_owner_writable_only(runtime)
+
+    assert python.stat().st_mode & 0o055 == 0o055
+
+
+def test_install_rejects_symlinked_runtime_root(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("runtime-root symlinks are validated on Linux")
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".venv").symlink_to(outside, target_is_directory=True)
+    bundle, _digest = make_bundle(tmp_path)
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="must not be a symlink"):
+        shared_runtime.install(bundle, Path("/python"), root)

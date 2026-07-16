@@ -17,10 +17,10 @@ def stale_personal_runtime_warning(
     user = env.get("USER") or env.get("USERNAME") or ""
     data_root = Path(env.get("AUTOBENCH_DATA_ROOT", f"/ads_storage/{user}"))
     personal_runtime = data_root / ".autobench" / "venv"
-    running = (Path(sys.executable) if executable is None else executable).resolve()
     try:
+        running = (Path(sys.executable) if executable is None else executable).resolve()
         running.relative_to(personal_runtime.resolve())
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return ""
     return (
         "Autobench is running from an unsupported personal virtual environment. "

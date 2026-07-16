@@ -25,13 +25,44 @@ autobench_active_runtime() {
       ;;
   esac
   _digest=$(basename "$_runtime")
-  if ! grep -Eq '"bundle_digest"[[:space:]]*:[[:space:]]*"'"$_digest"'"' "$_runtime/.complete.json" ||
-     ! grep -Eq '"pip_check"[[:space:]]*:[[:space:]]*"passed"' "$_runtime/.complete.json"; then
-    echo "Autobench shared runtime completion metadata is corrupt: $_runtime/.complete.json." >&2
+  case "$_digest" in
+    *[!0-9a-f]*|"") echo "Autobench runtime directory has an invalid digest: $_digest." >&2; return 1 ;;
+  esac
+  if [ "${#_digest}" -ne 64 ]; then
+    echo "Autobench runtime directory has an invalid digest: $_digest." >&2
     return 1
   fi
   if [ ! -x "$_runtime/bin/python" ]; then
     echo "Autobench shared runtime has no executable Python at $_runtime/bin/python." >&2
+    return 1
+  fi
+  if ! "$_runtime/bin/python" - "$_runtime/.complete.json" "$_digest" "$_runtime/bin/python" <<'PY'
+import json
+import os
+import sys
+
+marker, digest, runtime_python = sys.argv[1:]
+required_imports = ["pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"]
+try:
+    with open(marker, encoding="utf-8") as marker_file:
+        metadata = json.load(marker_file)
+except (OSError, ValueError):
+    raise SystemExit(1)
+valid = (
+    isinstance(metadata, dict)
+    and metadata.get("bundle_digest") == digest
+    and metadata.get("pip_check") == "passed"
+    and metadata.get("required_imports") == required_imports
+    and isinstance(metadata.get("approved_python"), str)
+    and bool(metadata.get("approved_python"))
+    and metadata.get("runtime_python") == os.path.abspath(runtime_python)
+    and isinstance(metadata.get("python_version"), str)
+    and bool(metadata.get("python_version"))
+)
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    echo "Autobench shared runtime completion metadata is corrupt: $_runtime/.complete.json." >&2
     return 1
   fi
   printf '%s\n' "$_runtime"

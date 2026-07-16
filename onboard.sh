@@ -34,16 +34,52 @@ chmod 700 \
 
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$LOCAL_BIN"
-for _name in autobench autobench-cli; do
-  _temporary="$LOCAL_BIN/.$_name.tmp.$$"
-  trap 'rm -f "$LOCAL_BIN/.autobench.tmp.$$" "$LOCAL_BIN/.autobench-cli.tmp.$$"' 0
-  cat >"$_temporary" <<EOF
-#!/usr/bin/env sh
-exec "$ROOT_DIR/bin/$_name" "\$@"
-EOF
-  chmod 755 "$_temporary"
-  mv "$_temporary" "$LOCAL_BIN/$_name"
+for _target in "$LOCAL_BIN/autobench" "$LOCAL_BIN/autobench-cli"; do
+  if [ -e "$_target" ] && [ ! -f "$_target" ] && [ ! -L "$_target" ]; then
+    echo "Cannot replace non-file launcher target: $_target" >&2
+    exit 1
+  fi
 done
+
+AUTOBENCH_TMP="$LOCAL_BIN/.autobench.tmp.$$"
+CLI_TMP="$LOCAL_BIN/.autobench-cli.tmp.$$"
+AUTOBENCH_BACKUP="$LOCAL_BIN/.autobench.backup.$$"
+CLI_BACKUP="$LOCAL_BIN/.autobench-cli.backup.$$"
+trap 'rm -f "$AUTOBENCH_TMP" "$CLI_TMP" "$AUTOBENCH_BACKUP" "$CLI_BACKUP"' 0
+
+cat >"$AUTOBENCH_TMP" <<EOF
+#!/usr/bin/env sh
+exec "$ROOT_DIR/bin/autobench" "\$@"
+EOF
+cat >"$CLI_TMP" <<EOF
+#!/usr/bin/env sh
+exec "$ROOT_DIR/bin/autobench-cli" "\$@"
+EOF
+chmod 755 "$AUTOBENCH_TMP" "$CLI_TMP"
+
+[ ! -e "$LOCAL_BIN/autobench" ] && [ ! -L "$LOCAL_BIN/autobench" ] ||
+  mv "$LOCAL_BIN/autobench" "$AUTOBENCH_BACKUP"
+if ! {
+  [ ! -e "$LOCAL_BIN/autobench-cli" ] && [ ! -L "$LOCAL_BIN/autobench-cli" ]
+} then
+  if ! mv "$LOCAL_BIN/autobench-cli" "$CLI_BACKUP"; then
+    [ ! -e "$AUTOBENCH_BACKUP" ] || mv "$AUTOBENCH_BACKUP" "$LOCAL_BIN/autobench"
+    exit 1
+  fi
+fi
+
+if ! mv "$AUTOBENCH_TMP" "$LOCAL_BIN/autobench"; then
+  [ ! -e "$AUTOBENCH_BACKUP" ] || mv "$AUTOBENCH_BACKUP" "$LOCAL_BIN/autobench"
+  [ ! -e "$CLI_BACKUP" ] || mv "$CLI_BACKUP" "$LOCAL_BIN/autobench-cli"
+  exit 1
+fi
+if ! mv "$CLI_TMP" "$LOCAL_BIN/autobench-cli"; then
+  rm -f "$LOCAL_BIN/autobench"
+  [ ! -e "$AUTOBENCH_BACKUP" ] || mv "$AUTOBENCH_BACKUP" "$LOCAL_BIN/autobench"
+  [ ! -e "$CLI_BACKUP" ] || mv "$CLI_BACKUP" "$LOCAL_BIN/autobench-cli"
+  exit 1
+fi
+rm -f "$AUTOBENCH_BACKUP" "$CLI_BACKUP"
 trap - 0
 
 SHELL_RC="$HOME/.bashrc"
