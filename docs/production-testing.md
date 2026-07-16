@@ -37,7 +37,9 @@ Set `host`, `repo_path`, `session_name`, terminal size, and any SSH options.
 Populate the report-contract fields in the node config as needed:
 `source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
 `runtime_python_path`, `runtime_python_version`, `update_method`,
-`install_decision`, `dependency_signal`, and `permission_evidence`. Do not
+`active_runtime_path`, `runtime_digest`, `delivered_bundle_digest`,
+`runtime_pip_check`, `install_decision`, `dependency_signal`, and
+`permission_evidence`. Do not
 commit personal credentials or passcodes. Prefer copying `permission_evidence`
 from the `update.sh` or `setup_remote_env.sh` output instead of typing it by
 hand.
@@ -78,11 +80,20 @@ py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 2 
 
 Adds:
 
-- `./install.sh` can run,
-- `autobench` and `autobench-cli` resolve,
-- `/ads_storage/$USER/.autobench/installed_version` matches `VERSION`,
-- runtime home is writable,
-- the deployed path is the expected repo path.
+- `.venv/current` resolves physically under `.venv/releases/`,
+- completion metadata and delivered bundle digests agree,
+- prior `pip check` passed and all required imports succeed,
+- both shared CLI smoke commands exit zero,
+- runtime-critical files are readable and shared launchers are executable,
+- no runtime entry is group- or world-writable.
+
+Exact operator checks:
+
+```bash
+readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/bin/autobench-cli config list
+/ads_storage/autobench/bin/autobench-cli share --help
+```
 
 ## Shared Telemetry Filesystem Validation
 
@@ -179,8 +190,8 @@ The JSON report uses these failure classes:
 Generated reports redact common token, password, and passcode patterns before
 writing output. The smoke report can carry source/snapshot/deployed commit
 metadata, runtime Python, update method, install decision, dependency signal,
-drift and smoke blocks, wrapper checks, permission evidence, and auth handoff
-state.
+runtime/bundle digest evidence, prior `pip check`, drift and smoke blocks,
+wrapper checks, permission evidence, and auth handoff state.
 
 ## Human-Gated Edge Acceptance
 
@@ -191,3 +202,10 @@ SHA), smoke level, and wrapper checks in the acceptance note or handoff.
 Use local verification to qualify code before deployment, but local verification
 is not a substitute for real Edge acceptance when SSH, Kerberos, storage,
 permissions, tmux, or launcher behavior are in scope.
+
+On node03 and then node04, also verify two analysts resolve the same physical
+runtime while their `.autobench` homes remain separate. Start a long-lived
+process, activate another completed digest, and confirm the old process remains
+bound to its original runtime. Test rollback by reactivating the retained prior
+digest. Personal virtual environments and old shared runtimes remain on disk
+until separately approved cleanup.

@@ -22,6 +22,12 @@ When `requirements.txt` or `constraints.txt` changes, edge-deploy-core v1.1.0
 builds, transfers, verifies, and installs a content-addressed offline bundle before
 updating the checkout. `deploy_and_install.ps1` is bootstrap/recovery only.
 
+The bundle digest names the immutable runtime under
+`/ads_storage/autobench/.venv/releases/`. Source-only releases reuse a complete
+runtime. Dependency changes build a new candidate privately; failed validation
+preserves the previous `.venv/current`. Activation is atomic, and rollback
+reactivates a retained complete runtime without download or pip.
+
 Successful verification creates the same immutable release tag on GitHub and
 Bitbucket. Redacted evidence is appended to the Bitbucket-only `release-log`
 branch in `edge-deploy-core`.
@@ -31,6 +37,17 @@ Rollback is a separate tagged operation:
 ```powershell
 python -m edge_deploy rollback --tag release-<UTC>-<short-sha>
 ```
+
+After deployment, verify:
+
+```bash
+readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/bin/autobench-cli config list
+/ads_storage/autobench/bin/autobench-cli share --help
+```
+
+Runtime deletion and personal-environment cleanup are separate operator
+decisions and never part of release installation.
 
 Real operator configuration lives at
 `%APPDATA%\edge-deploy\config.yaml`. Bootstrap and recovery procedures remain

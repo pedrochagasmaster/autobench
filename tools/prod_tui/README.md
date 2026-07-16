@@ -31,8 +31,10 @@ Copy-Item tools/prod_tui/config-template.yaml tools/prod_tui/config-node04.yaml
 Set `host`, `repo_path`, `session_name`, terminal size, SSH options, and the
 deployment metadata fields you need for the final report contract:
 `source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
-`runtime_python_*`, `update_method`, `install_decision`, `dependency_signal`,
-and `permission_evidence`. Copy the permission evidence from the live
+`runtime_python_*`, `active_runtime_path`, `runtime_digest`,
+`delivered_bundle_digest`, `runtime_pip_check`, `update_method`,
+`install_decision`, `dependency_signal`, and `permission_evidence`. Copy the
+runtime and permission evidence from the live
 the release report, `update.sh`, or `setup_remote_env.sh` output; do not invent it in chat. Do not
 store passcodes, passwords, or tokens in config files.
 
@@ -58,8 +60,9 @@ py -m tools.prod_tui drift --local . --remote /ads_storage/autobench
 
 `smoke` writes JSON reports under `tools/prod_tui/reports/`. The report schema
 can now carry the source commit, Bitbucket snapshot SHA, deployed commit,
-runtime Python, update method, install decision and signal, drift block, smoke
-block, wrapper checks, permission evidence, and auth handoff state. `drift`
+runtime Python, active and delivered bundle digests, prior `pip check`, update
+method, install decision and signal, drift block, smoke block, wrapper checks,
+permission evidence, and auth handoff state. `drift`
 builds a runtime-file manifest that excludes generated reports, screens, logs,
 caches, data, and outputs. When `--remote` is provided, the path is recorded in
 the report and summary line, but live remote filesystem comparison is not yet

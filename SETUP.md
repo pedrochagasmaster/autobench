@@ -1,102 +1,34 @@
-# Offline Environment Setup
+# Edge Node Setup
 
-Since the remote server (`/ads_storage/autobench`) has **no internet access**, you must follow this workflow to prepare dependencies on your local machine and deploy them to the server.
+Autobench uses one immutable shared runtime per Edge Node. The runtime lives at
+`/ads_storage/autobench/.venv/releases/<bundle-digest>` and is activated through
+the `.venv/current` symlink.
 
-## Prerequisites
+Normal releases use:
 
-1.  **Local Machine (Windows):** Internet access, PowerShell, and Python 3.10+ installed.
-2.  **Remote Server (Linux):** Python 3.10 installed at `/sys_apps_01/python/python310/bin/python3.10`.
-    The offline bundle contains prebuilt **CPython 3.10 (`cp310`)** wheels for
-    `numpy`/`pandas`/`scipy`, so the remote venv must be built with Python 3.10.
-    `deploy_and_install.ps1`, `setup_remote_env.sh`, and `install.sh` all target
-    3.10; a 3.11 interpreter cannot install these wheels.
-3.  **Repository:** Cloned on *both* your local machine and the remote server.
-
-## Automated Deployment (Dependencies)
-
-This workflow is for **installing dependencies** (Python packages). You only need to run this when `requirements.txt` changes.
-
-1.  Open PowerShell in the project root.
-2.  Run:
-    ```powershell
-    .\deploy_and_install.ps1
-    ```
-3.  Follow the prompts:
-    *   **Remote User:** Defaults to `e176097` (press Enter to accept).
-    *   **Host Suffix:** Enter the numeric suffix of your server (e.g., `04` for `hde2stl020004.mastercard.int`).
-4.  The deployment bundle includes `SHA256SUMS`; the remote setup script verifies
-    package checksums before installing dependencies.
-
-## Keeping the Code Up-to-Date
-
-To update the **source code** (scripts, logic) on the server, use standard `git` commands.
-
-### Initial Git Setup (Run Once)
-If you see "not a git repository" or branch errors:
-
-```bash
-cd /ads_storage/autobench && git init && git remote add origin https://e176097@scm.mastercard.int/stash/scm/~e176097/autobench.git && git fetch origin && git checkout -f -b main origin/main
+```powershell
+python -m edge_deploy release
 ```
 
-### Routine Updates
-To pull the latest changes from the repository:
+edge-deploy builds and verifies the Linux CPython 3.10 (`cp310`) dependency
+bundle. The Release Operator then installs or reuses that digest-addressed
+runtime:
 
 ```bash
 cd /ads_storage/autobench
-git pull
-```
-*(You will be asked for your password).*
-
-## Verification
-
-Once installed, verify the tool works by running (on the server):
-
-```bash
-cd /ads_storage/autobench
-./run_tool.sh share --help
-./run_tool.sh config list
-./run_tool.sh share \
-  --csv tests/fixtures/gate_demo.csv \
-  --entity Target \
-  --metric txn_cnt \
-  --dimensions card_type channel \
-  --time-col year_month \
-  --preset balanced_default \
-  --export-balanced-csv \
-  --audit-package \
-  --output /tmp/setup_smoke.xlsx
+./install.sh
+readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/bin/autobench-cli config list
+/ads_storage/autobench/bin/autobench-cli share --help
 ```
 
-The smoke workbook should show `Input Validation: pass` and a publishable
-compliance verdict. It should also produce `/tmp/setup_smoke_balanced.csv`,
-`/tmp/setup_smoke_audit.log`, and `/tmp/setup_smoke_audit_package.zip`. Use
-`--no-validate-input` only for diagnostic runs where the result is not intended
-for publication.
+Analysts run `./onboard.sh` once. They do not receive the bundle, create a
+virtual environment, or install packages.
 
-For contribution setup, see `CONTRIBUTING.md`. Release Operators use
-`docs/release-workflow.md`.
+`deploy_and_install.ps1` and `setup_remote_env.sh` are recovery entrypoints
+only. They require the verified edge-deploy bundle to exist and converge on
+`install.sh`; checksum-only `offline_packages` archives are unsupported.
 
-## Manual Alternative (Dependencies)
-
-If the automated `deploy_and_install.ps1` script fails, you can perform the steps manually:
-
-1.  **Download & Bundle (Local):**
-    *   Review `deploy_and_install.ps1` to see how dependencies are downloaded (some as binaries, some as source).
-    *   Run:
-        ```bash
-        py scripts/offline_bundle_checksums.py write offline_packages requirements.txt --output SHA256SUMS
-        ```
-    *   Zip the resulting `offline_packages/` folder, `requirements.txt`,
-        `SHA256SUMS`, and `scripts/offline_bundle_checksums.py`.
-2.  **Transfer:** Use `scp` (port 2222) to send the zip to `/ads_storage/autobench`.
-3.  **Install (Remote):**
-    *   SSH into the server.
-    *   Unzip: 
-        ```bash
-        /sys_apps_01/python/python310/bin/python3.10 -m zipfile -e autobench_deploy.zip .
-        ```
-    *   Run Setup: 
-        ```bash
-        chmod +x setup_remote_env.sh
-        ./setup_remote_env.sh
-        ```
+See [docs/edge-node-first-time-setup.md](docs/edge-node-first-time-setup.md),
+[onboarding.md](onboarding.md), and
+[docs/release-workflow.md](docs/release-workflow.md).

@@ -10,6 +10,8 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
 - Development ends with a GitHub pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Release Operators use [docs/release-workflow.md](docs/release-workflow.md).
+- On Edge Nodes, operators install one shared runtime and analysts run
+  [`onboard.sh`](onboarding.md); analysts never install production dependencies.
 
 ## Table of Contents
 
@@ -71,6 +73,19 @@ py benchmark.py rate --help
 
 Contributors should use [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
 validation, and the GitHub pull-request handoff.
+
+On a deployed Edge Node:
+
+```bash
+cd /ads_storage/autobench
+./onboard.sh
+cd /path/to/my/work
+autobench
+autobench-cli share --help
+```
+
+Both commands use the same physical, digest-addressed shared runtime while
+private state remains under `/ads_storage/$USER/.autobench`.
 
 ## First Successful Run (Copy/Paste)
 
