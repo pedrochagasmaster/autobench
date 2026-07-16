@@ -7,9 +7,9 @@
 # .gitattributes). This is the supported way to update the node: never copy or
 # scp individual files onto the node, as that reintroduces CRLF and drift.
 #
-# Untracked files (e.g. .venv/, offline_packages/, SHA256SUMS) are preserved,
-# so the installed environment is left intact. If dependencies changed, refresh
-# the offline bundle and re-run setup_remote_env.sh afterwards.
+# Untracked shared runtime releases are preserved. If dependencies changed,
+# edge-deploy delivers a verified bundle and the Release Operator runs
+# install.sh; analysts never mutate the runtime.
 #
 # Overridable via environment (EDGE_DEPLOY_* takes precedence; the AUTOBENCH_*
 # names remain as fallback aliases for one release, per ADR-0004):
@@ -39,10 +39,10 @@ classify_install_decision() {
   while IFS= read -r _path; do
     [ -n "$_path" ] || continue
     case "$_path" in
-      requirements.txt|constraints.txt|setup_remote_env.sh|SHA256SUMS|scripts/offline_bundle_checksums.py|offline_packages/*|vendor/*)
+      requirements.txt|constraints.txt|shared_runtime.py|install.sh|bin/autobench|bin/autobench-cli|bin/runtime_check.sh)
         _required_hits="${_required_hits}${_required_hits:+, }$_path"
         ;;
-      VERSION|install.sh)
+      VERSION|onboard.sh|run_tool.sh|setup_alias.sh)
         _recommended_hits="${_recommended_hits}${_recommended_hits:+, }$_path"
         ;;
     esac
@@ -106,12 +106,13 @@ while IFS= read -r _path; do
 done <<EOF
 $CHANGED_FILES
 EOF
-chmod a+rx . run_tool.sh install.sh setup_alias.sh update.sh 2>/dev/null || true
+chmod a+rx . run_tool.sh install.sh onboard.sh setup_alias.sh update.sh bin 2>/dev/null || true
+chmod a+rx bin/autobench bin/autobench-cli bin/runtime_check.sh 2>/dev/null || true
 echo "==> Permission evidence: reported"
 echo "==> Repo root permissions:"
 ls -ld . 2>/dev/null || echo "    unavailable"
 echo "==> Entrypoint permissions:"
-ls -l run_tool.sh install.sh setup_alias.sh 2>/dev/null || echo "    unavailable"
+ls -l run_tool.sh install.sh onboard.sh setup_alias.sh bin/autobench bin/autobench-cli bin/runtime_check.sh 2>/dev/null || echo "    unavailable"
 
 # Trusted deployment owner provisions shared telemetry parents. Runtime/per-user
 # install.sh must not create these directories. Idempotent normalize every sync;
@@ -135,4 +136,4 @@ ls -ld -- "$TELEMETRY_DIR" "$TELEMETRY_DIR/users" 2>/dev/null || echo "    unava
 echo "==> Now at: $(git log -1 --format='%h %s')"
 echo "==> Install decision: ${INSTALL_DECISION}"
 echo "==> Install signal: ${INSTALL_SIGNAL}"
-echo "==> Update complete (.venv/ and offline_packages/ preserved)."
+echo "==> Update complete (shared runtime releases preserved)."

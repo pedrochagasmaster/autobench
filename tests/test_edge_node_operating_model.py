@@ -55,12 +55,14 @@ def test_generated_prod_tui_artifacts_are_ignored() -> None:
 
 def test_installer_contract_is_autobench_specific() -> None:
     install = (ROOT / "install.sh").read_text(encoding="utf-8")
+    onboard = (ROOT / "onboard.sh").read_text(encoding="utf-8")
 
-    assert "AUTOBENCH_DATA_ROOT" in install
-    assert 'AUTOBENCH_HOME="$DATA_ROOT/.autobench"' in install
-    assert 'cat > "$LOCAL_BIN/autobench"' in install
-    assert "exec \"$AUTOBENCH_HOME/venv/bin/python\" \"$ROOT_DIR/tui_app.py\"" in install
-    assert "cp \"$ROOT_DIR/VERSION\" \"$AUTOBENCH_HOME/installed_version\"" in install
+    assert "AUTOBENCH_DATA_ROOT" not in install
+    assert "shared_runtime.py" in install
+    assert "AUTOBENCH_DATA_ROOT" in onboard
+    assert 'AUTOBENCH_HOME="$DATA_ROOT/.autobench"' in onboard
+    assert '"$ROOT_DIR/bin/autobench"' in onboard
+    assert "installed_version" not in install + onboard
 
 
 def test_production_harness_help_runs() -> None:
@@ -296,8 +298,9 @@ def test_smoke_uses_configured_report_contract_fields(
     assert payload["drift"]["remote_path"] == "/ads_storage/autobench"
     assert payload["checks"][0]["failure_class"] == "deployment"
     assert payload["checks"][1]["failure_class"] == "deployment"
-    assert payload["checks"][2]["failure_class"] == "environment"
+    assert payload["checks"][5]["failure_class"] == "environment"
     assert payload["wrapper_checks"]["config_list"] == "pass"
+    assert "runtime_evidence" in payload
     assert payload["permission_evidence"][0].startswith("ls -ld /ads_storage/autobench")
     assert "source=abc1234" in captured.out
     assert "snapshot=def5678" in captured.out

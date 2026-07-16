@@ -140,6 +140,7 @@ def write_report(
     smoke: dict[str, object] | None = None,
     wrapper_checks: dict[str, str] | None = None,
     permission_evidence: list[str] | None = None,
+    runtime_evidence: dict[str, object] | None = None,
     summary_line: str = "",
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +172,7 @@ def write_report(
         "smoke": smoke or {},
         "wrapper_checks": wrapper_checks or {},
         "permission_evidence": permission_evidence or [],
+        "runtime_evidence": runtime_evidence or {},
         "checks": redacted_checks,
         "status": "pass" if all(item["status"] == "pass" for item in redacted_checks) else "fail",
         "summary_line": summary_line,
@@ -199,12 +201,48 @@ def smoke(args: argparse.Namespace) -> int:
     install_decision = str(config.get("install_decision", "install not required"))
     dependency_signal = str(config.get("dependency_signal", ""))
     permission_evidence = list(config.get("permission_evidence", []))
+    runtime_evidence = {
+        "active_runtime": str(config.get("active_runtime_path", "")),
+        "runtime_digest": str(config.get("runtime_digest", "")),
+        "bundle_digest": str(config.get("delivered_bundle_digest", "")),
+        "digest_match": bool(
+            config.get("runtime_digest")
+            and config.get("runtime_digest") == config.get("delivered_bundle_digest")
+        ),
+        "pip_check": str(config.get("runtime_pip_check", "")),
+    }
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = Path(args.json_report) if args.json_report else REPORT_DIR / f"smoke_{timestamp}.json"
     drift_manifest_path = report_path.with_name(f"drift_{report_path.name}")
     checks = [
         run_classified_command(
             ["py", "-m", "compileall", "benchmark.py", "tui_app.py", "core", "utils", "tools"],
+            failure_class="deployment",
+            timeout=120,
+        ),
+        run_classified_command(
+            [
+                "sh",
+                "-c",
+                (
+                    f'. "{repo_path}/bin/runtime_check.sh"; '
+                    f'RUNTIME=$(autobench_active_runtime "{repo_path}"); '
+                    '"$RUNTIME/bin/python" -c '
+                    '"import pandas; import numpy; import openpyxl; import yaml; '
+                    'import scipy; import textual"; '
+                    'test -z "$(find "$RUNTIME" -xdev ! -type l -perm /022 -print -quit)"'
+                ),
+            ],
+            failure_class="deployment",
+            timeout=120,
+        ),
+        run_classified_command(
+            [f"{repo_path}/bin/autobench-cli", "config", "list"],
+            failure_class="deployment",
+            timeout=120,
+        ),
+        run_classified_command(
+            [f"{repo_path}/bin/autobench-cli", "share", "--help"],
             failure_class="deployment",
             timeout=120,
         ),
@@ -237,8 +275,7 @@ def smoke(args: argparse.Namespace) -> int:
         checks.append(
             run_classified_command(
                 [
-                    "py",
-                    "benchmark.py",
+                    f"{repo_path}/bin/autobench-cli",
                     "share",
                     "--csv",
                     "tests/fixtures/gate_demo.csv",
@@ -262,11 +299,11 @@ def smoke(args: argparse.Namespace) -> int:
         )
     status = "pass" if all(check.status == "pass" for check in checks) else "fail"
     wrapper_checks = {
-        "config_list": "pass" if all(check.status == "pass" for check in checks if "compileall" not in check.name) else "unknown",
-        "share_help": "pass" if status == "pass" else "unknown",
+        "config_list": checks[2].status,
+        "share_help": checks[3].status,
     }
     drift_block = {
-        "status": "recorded" if checks[1].status == "pass" else "failed",
+        "status": "recorded" if checks[4].status == "pass" else "failed",
         "manifest_path": str(drift_manifest_path),
         "remote_path": repo_path,
     }
@@ -304,6 +341,7 @@ def smoke(args: argparse.Namespace) -> int:
         smoke=smoke_block,
         wrapper_checks=wrapper_checks,
         permission_evidence=permission_evidence,
+        runtime_evidence=runtime_evidence,
         summary_line=summary_line,
     )
     print(f"Report: {report_path}")
