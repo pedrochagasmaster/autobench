@@ -19,15 +19,16 @@ cd /ads_storage/autobench
 git remote -v
 ```
 
-If the node cannot reach Git, use the existing offline bundle workflow:
+If the node needs recovery after the verified edge-deploy dependency bundle has
+already been delivered:
 
 ```powershell
 .\deploy_and_install.ps1
 ```
 
-The bundle path remains a fallback for first-time setup, dependency refresh, and
-recovery. A Git-backed shared tree is preferred for bootstrap because the
-default `edge_deploy release` workflow can then manage repeatable updates.
+The recovery script rejects legacy checksum-only package archives. A Git-backed
+shared tree and edge-deploy manifest are required so all paths use the same
+runtime architecture.
 
 ## Release and Bootstrap Decision Table
 
@@ -35,7 +36,7 @@ default `edge_deploy release` workflow can then manage repeatable updates.
 | --- | --- | --- |
 | Normal operator release | `python -m edge_deploy release` | Default release path after the node is bootstrapped. |
 | First-time Git tree setup | `git clone -o bitbucket ... /ads_storage/autobench` | Creates the shared tree the orchestrator updates. |
-| Git unavailable, offline dependency refresh, or recovery | `deploy_and_install.ps1`, `setup_remote_env.sh`, `install.sh` | Bootstrap/recovery only. |
+| Node recovery with a delivered verified bundle | `deploy_and_install.ps1`, `setup_remote_env.sh`, `install.sh` | Bootstrap/recovery only. |
 | Node-specific diagnosis | `update.sh`, `tools.prod_tui`, tmux/SSH inspection | Deep troubleshooting after reviewing the release report. |
 
 ## 2. Verify Prerequisites
@@ -58,7 +59,7 @@ kinit
 klist
 ```
 
-## 3. Install for the Current User
+## 3. Install the Shared Runtime as Release Operator
 
 ```bash
 cd /ads_storage/autobench
@@ -66,27 +67,28 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer reads the CPython ABI tag of the bundled offline wheels (currently
-`cp310`) and automatically selects a matching `python3.10` interpreter, so you do
-not normally set `AUTOBENCH_PYTHON_BIN`. If the node has only a mismatched
-interpreter (for example `python3.11`), the installer stops with a clear message
-rather than failing later inside pip; install Python 3.10 or point it at one:
+The verified manifest targets Python 3.10. If the approved interpreter is at a
+non-default location:
 
 ```bash
 AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh
 ```
 
-The installer creates `/ads_storage/$USER/.autobench`, installs dependencies
-into that user's virtualenv, writes `~/.local/bin/autobench` and
-`~/.local/bin/autobench-cli`, and records `/ads_storage/$USER/.autobench/installed_version`.
+The installer creates or reuses
+`/ads_storage/autobench/.venv/releases/<bundle-digest>`, validates it with
+`pip check` and required imports, and atomically activates `.venv/current`. It
+does not create analyst state or launchers.
 
 ## 4. Post-Install Checks
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
+./onboard.sh
 which autobench
 which autobench-cli
-autobench-cli config list
+readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/bin/autobench-cli config list
+/ads_storage/autobench/bin/autobench-cli share --help
 ```
 
 Run a small share smoke:
@@ -138,9 +140,9 @@ and smoke result.
 
 ## 7. Shared Offline Telemetry Layout
 
-Trusted `update.sh` (deployment owner) provisions the portable shared telemetry
-tree after each reset. Per-user `install.sh` never creates these shared parents;
-it only prepares the private home under `/ads_storage/$USER/.autobench`.
+Trusted `update.sh` provisions the portable shared telemetry tree after each
+reset. `install.sh` never creates telemetry or user state; `onboard.sh` prepares
+only private directories under `/ads_storage/$USER/.autobench`.
 
 Exact layout and modes:
 
@@ -199,6 +201,7 @@ exit status `1` is actionable; do not treat the run as successful.
 | Issue | Cause | Fix |
 |---|---|---|
 | `autobench: command not found` | Shell has not picked up `~/.local/bin` | Run `export PATH="$HOME/.local/bin:$PATH"` or open a new SSH session. |
-| Dependency install fails | No internet and no offline wheels | Refresh `offline_packages/` with `deploy_and_install.ps1`. |
+| Shared runtime install fails | Bundle/interpreter/validation mismatch | Redeliver the verified edge-deploy bundle; the prior active runtime remains unchanged. |
+| Stale personal launcher warning | Launcher still points at the retired per-user runtime | Rerun `/ads_storage/autobench/onboard.sh`; the old environment is retained. |
 | Output write fails | Working directory not writable | Run from a writable directory or choose an output path under `/tmp` or `/ads_storage/$USER`. |
 | Git prompts during pull | Remote credentials not cached/configured | Configure an approved read-only credential strategy before automating pulls. |

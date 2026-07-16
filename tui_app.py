@@ -75,6 +75,7 @@ try:
         surface_viewed,
     )
     from utils.logger import setup_logging
+    from utils.runtime_environment import warn_if_personal_runtime
     from utils.config_manager import ConfigManager
     from utils.config_overrides import (
         ADVANCED_FIELD_SPECS,
@@ -2103,5 +2104,6 @@ class BenchmarkApp(App):
 
 
 if __name__ == "__main__":
+    warn_if_personal_runtime()
     app = BenchmarkApp()
     app.run()

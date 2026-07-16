@@ -1,14 +1,13 @@
 # Autobench Production Testing
 
-Autobench production validation uses the same operating model as Dispatch:
+Autobench production validation runs commands on the configured Edge Node over
+SSH. tmux/psmux remains the operator preflight and human-authentication surface:
 
 ```text
 local machine
-  tmux or psmux session
-    pane: ssh -p 2222 <user>@<edge-node>
-      remote shell
-        cd /ads_storage/autobench
-        autobench
+  ssh -p 2222 <user>@<edge-node>
+    remote shell
+      /ads_storage/autobench/bin/autobench-cli ...
 ```
 
 The harness lives in `tools/prod_tui/`. It records JSON reports under
@@ -35,12 +34,11 @@ Copy-Item tools/prod_tui/config-template.yaml tools/prod_tui/config-node04.yaml
 
 Set `host`, `repo_path`, `session_name`, terminal size, and any SSH options.
 Populate the report-contract fields in the node config as needed:
-`source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
-`runtime_python_path`, `runtime_python_version`, `update_method`,
-`install_decision`, `dependency_signal`, and `permission_evidence`. Do not
-commit personal credentials or passcodes. Prefer copying `permission_evidence`
-from the `update.sh` or `setup_remote_env.sh` output instead of typing it by
-hand.
+`source_commit`, `bitbucket_snapshot_sha`, `update_method`,
+`install_decision`, and `dependency_signal`. Do not commit personal credentials
+or passcodes. The harness collects the deployed commit, active runtime,
+completion metadata, delivered bundle digest, imports, and permission evidence
+live from the node.
 
 Before sending commands to any session, prove you are targeting the intended
 remote shell:
@@ -56,7 +54,7 @@ human operator. Agents may prepare SSH commands and record auth state in the
 report, but humans enter credentials. A blocked auth flow should end in a ready
 human takeover, not repeated retries.
 
-## Level 1: Safe TUI Smoke
+## Level 1: Remote Runtime Smoke
 
 ```powershell
 py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 1 --save-screens
@@ -64,11 +62,16 @@ py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 1 
 
 Checks:
 
-- tmux/SSH session is alive,
-- terminal geometry is recorded,
-- `py -m compileall benchmark.py tui_app.py core utils` succeeds remotely,
-- TUI launch command starts,
-- help and quit paths are exercised when a terminal session is available.
+- SSH reaches the configured node,
+- the deployed commit matches the expected source commit,
+- compileall runs through the physical active runtime Python,
+- completion metadata matches the delivered dependency bundle,
+- required imports and runtime permissions pass,
+- both shared CLI launcher contracts exit zero.
+
+This command does not claim automated Textual interaction. Inspect the TUI
+manually in the authenticated tmux/psmux pane when terminal rendering is part
+of acceptance.
 
 ## Level 2: Environment Checks
 
@@ -78,11 +81,20 @@ py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 2 
 
 Adds:
 
-- `./install.sh` can run,
-- `autobench` and `autobench-cli` resolve,
-- `/ads_storage/$USER/.autobench/installed_version` matches `VERSION`,
-- runtime home is writable,
-- the deployed path is the expected repo path.
+- `.venv/current` resolves physically under `.venv/releases/`,
+- completion metadata and delivered bundle digests agree,
+- prior `pip check` passed and all required imports succeed,
+- both shared CLI smoke commands exit zero,
+- runtime-critical files are readable and shared launchers are executable,
+- no runtime entry is group- or world-writable.
+
+Exact operator checks:
+
+```bash
+readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/bin/autobench-cli config list
+/ads_storage/autobench/bin/autobench-cli share --help
+```
 
 ## Shared Telemetry Filesystem Validation
 
@@ -177,10 +189,10 @@ The JSON report uses these failure classes:
 - `workflow`: controlled fixture analysis failure.
 
 Generated reports redact common token, password, and passcode patterns before
-writing output. The smoke report can carry source/snapshot/deployed commit
-metadata, runtime Python, update method, install decision, dependency signal,
-drift and smoke blocks, wrapper checks, permission evidence, and auth handoff
-state.
+writing output. The smoke report carries expected source and snapshot metadata
+plus the live deployed commit, runtime Python, runtime/bundle digest evidence,
+prior `pip check`, imports, permissions, launcher results, update/install
+context, and auth handoff state.
 
 ## Human-Gated Edge Acceptance
 
@@ -191,3 +203,10 @@ SHA), smoke level, and wrapper checks in the acceptance note or handoff.
 Use local verification to qualify code before deployment, but local verification
 is not a substitute for real Edge acceptance when SSH, Kerberos, storage,
 permissions, tmux, or launcher behavior are in scope.
+
+On node03 and then node04, also verify two analysts resolve the same physical
+runtime while their `.autobench` homes remain separate. Start a long-lived
+process, activate another completed digest, and confirm the old process remains
+bound to its original runtime. Test rollback by reactivating the retained prior
+digest. Personal virtual environments and old shared runtimes remain on disk
+until separately approved cleanup.

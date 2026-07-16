@@ -1,63 +1,54 @@
 # Autobench Onboarding
 
-After the operator deploys the shared `/ads_storage/autobench` tree, each user
-runs the installer once. The installer keeps your personal runtime under
-`/ads_storage/$USER/.autobench`.
+The Release Operator installs one shared runtime per Edge Node. Analysts do not
+need a dependency bundle and never run pip.
 
-## Install
+## Onboard
 
 ```bash
 cd /ads_storage/autobench
-./install.sh
+./onboard.sh
 ```
 
-Do not run it with `source`. If the installer prints this command, run it in the
-current shell or open a new SSH session:
+Onboarding validates the active shared runtime, creates or repairs private
+state under `/ads_storage/$USER/.autobench`, and atomically installs thin
+`autobench` and `autobench-cli` launchers in `~/.local/bin`. Existing config,
+logs, cache, telemetry, and old personal virtual environments are retained.
 
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-## Launch
-
-Start the guided terminal UI from the directory where you keep inputs and
-outputs:
-
-```bash
-cd /path/to/my/work
-autobench
-```
-
-The CLI is available as `autobench-cli`:
-
-```bash
-autobench-cli config list
-autobench-cli share --help
-```
-
-## Quick Checks
-
-If `autobench` is not found:
+If the commands are not available in the current shell:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 which autobench
+which autobench-cli
 ```
 
-If the TUI opens but file paths fail, confirm the CSV path is readable from the
-Edge Node session and rerun from a working directory where you can write output
+## Launch
+
+Run from the directory containing your inputs and desired outputs:
+
+```bash
+cd /path/to/my/work
+autobench
+autobench-cli config list
+autobench-cli share --help
+```
+
+The launchers preserve the current working directory. Relative input and output
+paths remain relative to where you launched Autobench.
+
+## Troubleshooting
+
+If onboarding reports that the shared runtime is missing or invalid, ask the
+Release Operator to run `/ads_storage/autobench/install.sh`. Analysts cannot
+repair or replace the shared runtime.
+
+If Autobench warns that it is running from an unsupported personal virtual
+environment, rerun:
+
+```bash
+/ads_storage/autobench/onboard.sh
+```
+
+This replaces stale launchers without deleting the old environment or private
 files.
-
-If `./install.sh` stops with a message about a Python version / interpreter
-mismatch (for example it found `python3.11` but the packages need Python 3.10),
-the node is missing the expected interpreter. The bundled packages are built for
-Python 3.10; ask your operator to make Python 3.10 available, or run
-`AUTOBENCH_PYTHON_BIN=/sys_apps_01/python/python310/bin/python3.10 ./install.sh`.
-
-If `./install.sh` stops during offline dependency installation, the shared
-`offline_packages/` bundle is stale or incomplete for the checked-out
-`requirements.txt`. Ask the operator to rebuild and redeploy the bundle with
-`deploy_and_install.ps1`, then rerun `./install.sh`.
-
-If setup still fails, send the installer output and the result of
-`which autobench` to the tool owner.

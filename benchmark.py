@@ -36,6 +36,7 @@ from core.telemetry.reader import TelemetryReader
 from core.telemetry.render import format_summary, format_who, sanitize_terminal
 from core.telemetry import end_session, start_session
 from utils.logger import setup_logging
+from utils.runtime_environment import warn_if_personal_runtime
 from utils.preset_manager import PresetManager
 from utils.validators import validate_config_file
 
@@ -691,6 +692,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
 
 def main() -> int:
     """Main entry point."""
+    warn_if_personal_runtime()
     parser = create_parser()
     
     if len(sys.argv) == 1:

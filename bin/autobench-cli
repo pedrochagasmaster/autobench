@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+. "$ROOT_DIR/bin/runtime_check.sh"
+RUNTIME=$(autobench_active_runtime "$ROOT_DIR")
+
+export PYTHONPATH="$ROOT_DIR"
+export AUTOBENCH_RUNTIME="$RUNTIME"
+exec "$RUNTIME/bin/python" "$ROOT_DIR/benchmark.py" "$@"

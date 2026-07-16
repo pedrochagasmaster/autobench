@@ -1,177 +1,43 @@
-# deploy_and_install.ps1
-# Bootstrap/recovery only. Normal releases build and deliver verified dependency
-# bundles through edge-deploy-core v1.1.0.
+# Bootstrap/recovery only. Normal releases use edge-deploy-core.
+$ErrorActionPreference = "Stop"
 
-# --- Configuration ---
-Write-Host "=== Configuration ===" -ForegroundColor Cyan
+Write-Host "=== Autobench shared-runtime recovery ===" -ForegroundColor Cyan
 $RemoteUserInput = Read-Host "Enter Remote User [default: e176097]"
-$RemoteUser = if ([string]::IsNullOrWhiteSpace($RemoteUserInput)) { "e176097" } else { $RemoteUserInput }
-
-$HostSuffix = Read-Host "Enter Host Suffix (e.g., '04' for hde2stl020004)"
+$RemoteUser = if ([string]::IsNullOrWhiteSpace($RemoteUserInput)) {
+    "e176097"
+} else {
+    $RemoteUserInput
+}
+$HostSuffix = Read-Host "Enter Host Suffix (for example 04)"
 if ([string]::IsNullOrWhiteSpace($HostSuffix)) {
-    Write-Error "Host Suffix is required."
-    exit 1
+    throw "Host Suffix is required."
 }
 
 $RemoteServer = "hde2stl0200${HostSuffix}.mastercard.int"
 $RemotePort = 2222
 $RemotePath = "/ads_storage/autobench"
-$ZipName = "autobench_deploy.zip"
-$SetupScript = "setup_remote_env.sh"
-$OfflineDir = "offline_packages"
-$ChecksumManifest = "SHA256SUMS"
-$TargetConstraints = "constraints-linux-py310.generated.txt"
-$PythonRemote = "/sys_apps_01/python/python310/bin/python3.10"
-$SourceCommit = (git rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($SourceCommit)) {
-    Write-Error "Could not resolve the local source commit."
-    exit 1
+
+Write-Host @"
+This recovery path does not build or upload a legacy checksum-only package set.
+The normal edge-deploy dependency delivery phase must already have created:
+  /ads_storage/<operator>/.edge-deploy/bundles/autobench/current/manifest.json
+"@ -ForegroundColor Yellow
+
+$RemoteCommand = @"
+set -eu
+cd $RemotePath
+BUNDLE_DIR="/ads_storage/`$USER/.edge-deploy/bundles/autobench/current"
+test -f "`$BUNDLE_DIR/manifest.json" || {
+  echo "Verified Autobench bundle is missing; run edge-deploy dependency delivery first." >&2
+  exit 1
 }
-
-# --- Step 1: Create Offline Bundle ---
-Write-Host "`n=== Step 1: Creating Offline Bundle ===" -ForegroundColor Cyan
-
-if (!(Test-Path -Path $OfflineDir)) {
-    New-Item -ItemType Directory -Path $OfflineDir | Out-Null
-    Write-Host "Created directory: $OfflineDir"
-}
-
-# Clean previous packages to ensure fresh download
-Remove-Item -Path "$OfflineDir\*" -Force -Recurse -ErrorAction SilentlyContinue
-
-if (!(Test-Path requirements.txt)) {
-    Write-Error "requirements.txt not found!"
-    exit 1
-}
-
-Write-Host "Downloading binary packages for Linux (Python 3.10)..."
-$constraintsForTarget = Get-Content constraints.txt | ForEach-Object {
-    if ($_ -match 'python_version\s*>=\s*["'']3\.11["'']') {
-        return
-    }
-    $_ -replace '\s*;\s*python_version\s*<\s*["'']3\.11["'']\s*$', ''
-}
-Set-Content -Path $TargetConstraints -Value $constraintsForTarget -Encoding UTF8
-
-py -m pip download -r requirements.txt -c $TargetConstraints --dest $OfflineDir --platform manylinux2014_x86_64 --python-version 3.10 --implementation cp --abi cp310 --only-binary=:all:
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Download failed."
-    Write-Host "Hint: If this failed, a package in requirements.txt might not have a Linux binary wheel." -ForegroundColor Yellow
-    exit 1
-}
-
-# Verify files exist
-if ((Get-ChildItem $OfflineDir).Count -eq 0) {
-    Write-Error "Offline packages directory is empty! Something went wrong with the download."
-    exit 1
-}
-
-Write-Host "Writing SHA-256 checksum manifest..."
-py scripts/offline_bundle_checksums.py write $OfflineDir requirements.txt --output $ChecksumManifest
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Checksum manifest generation failed."
-    exit 1
-}
-
-# --- Step 2: Compress Artifacts ---
-Write-Host "`n=== Step 2: Compressing Artifacts (Python) ===" -ForegroundColor Cyan
-if (Test-Path $ZipName) { Remove-Item $ZipName -Force }
-
-# We use Python to zip because Compress-Archive uses Windows backslashes,
-# which breaks directory structure when unzipped on Linux.
-$PyScript = @"
-import zipfile, os, sys
-
-zip_name = '$ZipName'
-items = ['offline_packages', 'requirements.txt', 'constraints.txt', '$TargetConstraints', 'SHA256SUMS', 'scripts/offline_bundle_checksums.py']
-
-print(f'Creating {zip_name}...')
-with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zf:
-    for item in items:
-        if not os.path.exists(item):
-            continue
-        if os.path.isfile(item):
-            print(f'  Adding {item}')
-            zf.write(item, item.replace(os.sep, '/'))
-        elif os.path.isdir(item):
-            print(f'  Adding {item} (recursive)')
-            for root, dirs, files in os.walk(item):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    # Create relative path for archive (e.g., offline_packages/file.whl)
-                    # We assume we are running from project root
-                    arcname = os.path.relpath(file_path, os.getcwd())
-                    # FORCE forward slashes for Linux compatibility
-                    arcname = arcname.replace(os.sep, '/')
-                    zf.write(file_path, arcname)
-print('Compression complete.')
+chmod +x install.sh setup_remote_env.sh bin/autobench bin/autobench-cli bin/runtime_check.sh
+EDGE_DEPLOY_BUNDLE_DIR="`$BUNDLE_DIR" ./setup_remote_env.sh
 "@
 
-# Run the python script
-py -c $PyScript
-
+ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" $RemoteCommand
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Compression failed."
-    exit 1
+    throw "Remote shared-runtime recovery failed."
 }
 
-$BundleHash = (Get-FileHash -Algorithm SHA256 $ZipName).Hash
-Write-Host "Source commit: $SourceCommit"
-Write-Host "Bundle SHA256: $BundleHash"
-Write-Host "Extraction path: $RemotePath"
-Write-Host "Runtime Python: $PythonRemote"
-Write-Host "Drift result: remote setup will emit the drift artifact path and status."
-Write-Host "Smoke level: 1"
-Write-Host "Permission evidence: remote setup will emit repo-root and entrypoint listings."
-
-# --- Step 3: Transfer to Server ---
-Write-Host "`n=== Step 3: Transferring to Server ===" -ForegroundColor Cyan
-$Destination = "${RemoteUser}@${RemoteServer}:${RemotePath}"
-Write-Host "Uploading $ZipName to $Destination on port $RemotePort..."
-
-# Ensure remote directory exists
-ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" "mkdir -p $RemotePath"
-
-# SCP the file
-scp -P $RemotePort $ZipName "$Destination/$ZipName"
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Transfer failed."
-    exit 1
-}
-
-# --- Step 4: Remote Installation ---
-Write-Host "`n=== Step 4: Remote Installation ===" -ForegroundColor Cyan
-
-# We add 'ls -F' to debug if the folder was created correctly
-$RemoteCommand = "cd $RemotePath && " +
-                 "echo '--- Unzipping artifacts ---' && " +
-                 "$PythonRemote -m zipfile -e $ZipName . && " +
-                 "echo '--- Verifying extraction ---' && " +
-                 "ls -F && " +
-                 "echo '--- Running Setup ---' && " +
-                 "chmod +x $SetupScript && " +
-                 "./$SetupScript && " +
-                 "echo '--- Wrapper smoke ---' && " +
-                 "./run_tool.sh config list && " +
-                 "./run_tool.sh share --help && " +
-                  "echo 'Wrapper smoke: passed' && " +
-                 "echo 'Drift result: reported' && " +
-                 "echo 'Smoke level: 1' && " +
-                 "echo 'Permission evidence (repo root):' && " +
-                 "ls -ld . && " +
-                 "echo 'Permission evidence (entrypoints):' && " +
-                 "ls -l run_tool.sh setup_alias.sh && " +
-                 "echo 'SUMMARY bundle=$ZipName checksum=$BundleHash source_commit=$SourceCommit extraction_path=$RemotePath runtime_python=$PythonRemote wrapper_checks=passed drift_result=reported smoke_level=1 permission_evidence=reported'"
-
-Write-Host "Executing setup on remote server..."
-ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" "$RemoteCommand"
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "`n=== SUCCESS! ===" -ForegroundColor Green
-    Write-Host "The tool is deployed and installed."
-    Write-Host "You can verify by running: ssh -p $RemotePort ${RemoteUser}@${RemoteServer} 'cd $RemotePath && ./run_tool.sh share --help'"
-} else {
-    Write-Error "Remote installation failed."
-}
+Write-Host "Recovery completed. Review the emitted digest, metadata, smoke, drift, and permission evidence." -ForegroundColor Green

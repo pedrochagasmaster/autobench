@@ -27,9 +27,9 @@ def _powershell_command() -> list[str]:
 def test_run_tool_routes_cli_subcommands_to_benchmark() -> None:
     script = (ROOT / "run_tool.sh").read_text(encoding="utf-8")
 
-    assert "BENCHMARK_APP=" in script
-    assert "share|rate|config" in script
-    assert 'python "$BENCHMARK_APP"' in script
+    assert "share|rate|config|telemetry" in script
+    assert 'exec "$ROOT_DIR/bin/autobench-cli" "$@"' in script
+    assert "activate" not in script
 
 
 def test_run_tool_shell_syntax_is_valid() -> None:
@@ -55,21 +55,14 @@ def test_install_and_setup_shell_syntax_is_valid() -> None:
         assert result.returncode == 0, f"{name}: {result.stderr}"
 
 
-def test_installer_matches_interpreter_to_offline_wheel_abi() -> None:
-    """Guards the cp310-wheels-vs-python3.11 deployment break.
+def test_installer_uses_manifest_target_and_approved_python_310() -> None:
+    install = (ROOT / "install.sh").read_text(encoding="utf-8")
+    runtime = (ROOT / "shared_runtime.py").read_text(encoding="utf-8")
 
-    install.sh must derive the required CPython version from the bundled wheel
-    ABI tag and refuse a mismatched interpreter, rather than preferring 3.11
-    unconditionally and failing later inside pip.
-    """
-    script = (ROOT / "install.sh").read_text(encoding="utf-8")
-
-    assert "required_wheel_python" in script
-    assert "cp3" in script
-    assert "REQUIRED_PY" in script
-    # The wheel-ABI detection must come before the online python3.11 fallback,
-    # so bundled binary wheels dictate the interpreter version.
-    assert script.index("required_wheel_python") < script.index("python3.11")
+    assert "python3.10" in install
+    assert "python3.11" not in install
+    assert "_target_python" in runtime
+    assert "Dependency bundle targets Python" in runtime
 
 
 def test_textual_75_node_bundle_is_supported() -> None:
@@ -83,12 +76,13 @@ def test_textual_75_node_bundle_is_supported() -> None:
 
 
 def test_installer_requires_core_verified_dependency_bundle() -> None:
-    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    install = (ROOT / "install.sh").read_text(encoding="utf-8")
+    runtime = (ROOT / "shared_runtime.py").read_text(encoding="utf-8")
 
-    assert "EDGE_DEPLOY_BUNDLE_DIR" in script
-    assert "manifest.json" in script
-    assert "--no-index" in script
-    assert "AUTOBENCH_PIP_INDEX_URL" not in script
+    assert "EDGE_DEPLOY_BUNDLE_DIR" in install
+    assert "manifest.json" in install
+    assert "--no-index" in runtime
+    assert "AUTOBENCH_PIP_INDEX_URL" not in runtime
 
 
 def test_update_permissions_do_not_recurse_through_runtime_directories() -> None:
@@ -446,12 +440,13 @@ def test_provision_telemetry_dirs_rejects_intermediate_symlink_ancestor(
 
 
 def test_install_sh_does_not_provision_shared_telemetry_parents() -> None:
-    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    install = (ROOT / "install.sh").read_text(encoding="utf-8")
+    onboard = (ROOT / "onboard.sh").read_text(encoding="utf-8")
 
-    assert "/ads_storage/autobench/telemetry" not in script
-    assert "TELEMETRY_DIR" not in script
-    assert "1777" not in script
-    assert 'mkdir -p "$AUTOBENCH_HOME/config"' in script
+    assert "/ads_storage/autobench/telemetry" not in install
+    assert "TELEMETRY_DIR" not in install
+    assert "1777" not in install
+    assert '"$AUTOBENCH_HOME/config"' in onboard
 
 
 @requires_linux_filesystem
@@ -532,52 +527,56 @@ def test_update_sh_completes_when_telemetry_provisioning_fails(tmp_path: Path) -
     assert not telemetry_dir.exists()
 
 
-def test_offline_bundle_targets_python_310_cp310() -> None:
-    """deploy_and_install.ps1 and setup_remote_env.sh must agree on Python 3.10."""
-    deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
-    setup = (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8")
-
-    assert "--abi cp310" in deploy
-    assert "--python-version 3.10" in deploy
-    assert "/sys_apps_01/python/python310/bin/python3.10" in setup
-
-
-def test_deploy_and_install_script_records_bundle_report_contract() -> None:
+def test_offline_bundle_profile_targets_python_310_cp310() -> None:
+    """The canonical edge-deploy profile remains authoritative for the ABI."""
+    profile = (ROOT / "edge_deploy.yaml").read_text(encoding="utf-8")
     deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
 
-    assert "Source commit" in deploy
-    assert "Bundle SHA256" in deploy
-    assert "Extraction path" in deploy
-    assert "Runtime Python" in deploy
-    assert "Wrapper smoke" in deploy
-    assert "Drift result" in deploy
-    assert "Smoke level" in deploy
-    assert "Permission evidence" in deploy
-    assert "ls -ld ." in deploy
-    assert "ls -l run_tool.sh setup_alias.sh" in deploy
-    assert "./run_tool.sh config list" in deploy
-    assert "./run_tool.sh share --help" in deploy
-    assert "permission_evidence=reported" in deploy
-    assert "SUMMARY bundle=" in deploy
+    assert 'python_version: "3.10"' in profile
+    assert "abi: cp310" in profile
+    assert "legacy checksum-only" in deploy
+
+
+def test_deploy_and_install_script_routes_recovery_to_shared_installer() -> None:
+    deploy = (ROOT / "deploy_and_install.ps1").read_text(encoding="utf-8")
+
+    assert "manifest.json" in deploy
+    assert "edge-deploy dependency delivery" in deploy
+    assert "./setup_remote_env.sh" in deploy
+    assert "/ads_storage/`$USER/.edge-deploy/bundles/autobench/current" in deploy
+    assert 'EDGE_DEPLOY_BUNDLE_DIR="`$BUNDLE_DIR"' in deploy
+    assert "pip download" not in deploy
+    assert "offline_packages" not in deploy
+    assert "SHA256SUMS" not in deploy
+
+
+def test_edge_deploy_profile_covers_runtime_operational_paths() -> None:
+    profile = (ROOT / "edge_deploy.yaml").read_text(encoding="utf-8")
+
+    for path in (
+        "update.sh",
+        "setup_remote_env.sh",
+        "setup_alias.sh",
+        '"tools/prod_tui/**/*.py"',
+        '"scripts/**/*.py"',
+    ):
+        assert path in profile
 
 
 def test_setup_remote_env_runs_wrapper_checks_and_emits_summary_contract() -> None:
     setup = (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8")
 
+    assert "./install.sh" in setup
     assert "-m compileall benchmark.py tui_app.py core utils scripts tools" in setup
-    assert "-m tools.prod_tui drift --local . --remote /ads_storage/autobench" in setup
-    assert "./run_tool.sh config list" in setup
-    assert "./run_tool.sh share --help" in setup
-    assert "INSTALL_RESULT=" in setup
-    assert "WRAPPER_CHECKS=" in setup
-    assert "DRIFT_RESULT=" in setup
-    assert "SMOKE_LEVEL=" in setup
-    assert "PERMISSION_EVIDENCE=" in setup
-    assert 'ls -ld "$BUNDLE_PATH"' in setup
-    assert "ls -l run_tool.sh setup_alias.sh" in setup
-    assert "bundle rebuild" in setup.lower() or "interpreter mismatch" in setup.lower()
-    assert "permission_evidence=$PERMISSION_EVIDENCE" in setup
-    assert "SUMMARY bundle_path=" in setup
+    assert "-m tools.prod_tui drift" in setup
+    assert '"$ROOT_DIR/bin/autobench-cli" config list' in setup
+    assert '"$ROOT_DIR/bin/autobench-cli" share --help' in setup
+    assert "Active runtime:" in setup
+    assert "Completion metadata:" in setup
+    assert "Runtime permission evidence" in setup
+    assert "SUMMARY runtime=" in setup
+    assert "source " not in setup
+    assert ".venv/bin/pip" not in setup
 
 
 def _build_update_repo_scenario(tmp_path: Path, changed_path: str, changed_contents: str) -> Path:
@@ -740,6 +739,51 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
     assert result.returncode == 0, result.stderr or result.stdout
     assert "Install decision: install required" in result.stdout
     assert "requirements.txt" in result.stdout
+
+
+def test_update_sh_fetches_requested_tag_when_not_present_locally(tmp_path: Path) -> None:
+    node_checkout = _build_update_repo_scenario(
+        tmp_path,
+        "benchmark.py",
+        "print('tagged change')\n",
+    )
+    seed_repo = tmp_path / "seed"
+    subprocess.run(["git", "-C", str(seed_repo), "tag", "recovery-target"], check=True)
+    subprocess.run(
+        ["git", "-C", str(seed_repo), "push", "origin", "recovery-target"],
+        check=True,
+    )
+    telemetry_dir = tmp_path / "telemetry_tag"
+
+    result = subprocess.run(
+        ["bash", "update.sh", "recovery-target"],
+        cwd=node_checkout,
+        env={
+            **dict(os.environ),
+            "AUTOBENCH_GIT_REMOTE": "origin",
+            "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Fetching requested target recovery-target" in result.stdout
+    head = subprocess.run(
+        ["git", "-C", str(node_checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    target = subprocess.run(
+        ["git", "-C", str(seed_repo), "rev-parse", "recovery-target"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head == target
 
 
 def test_publish_snapshot_script_has_safe_remote_and_auth_defaults() -> None:
