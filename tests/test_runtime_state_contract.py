@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from core.telemetry.constants import DEFAULT_SHARED_DIR
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.writer import paths_for
+from utils.runtime_environment import stale_personal_runtime_warning
 
 
 def _identity(username: str, uid: int) -> Identity:
@@ -65,4 +67,21 @@ def test_application_code_does_not_require_a_personal_virtualenv() -> None:
     assert all(
         ".autobench/venv" not in path.read_text(encoding="utf-8")
         for path in production_python
+    )
+
+
+def test_stale_personal_runtime_is_diagnosed() -> None:
+    warning = stale_personal_runtime_warning(
+        executable=Path("/ads_storage/alice/.autobench/venv/bin/python"),
+        environ={"USER": "alice"},
+    )
+
+    assert "onboard.sh" in warning
+    assert "unsupported personal virtual environment" in warning
+    assert (
+        stale_personal_runtime_warning(
+            executable=Path(sys.executable),
+            environ={"AUTOBENCH_DATA_ROOT": "/ads_storage/alice"},
+        )
+        == ""
     )
