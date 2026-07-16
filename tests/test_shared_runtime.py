@@ -3,18 +3,101 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
+import stat
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
+from bundle_helpers import make_bundle
+
+import shared_runtime
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _metadata(digest: str) -> dict[str, object]:
-    return {"bundle_digest": digest, "pip_check": "passed"}
+    return {
+        "bundle_digest": digest,
+        "pip_check": "passed",
+        "required_imports": list(shared_runtime.REQUIRED_IMPORTS),
+    }
+
+
+def test_manifest_digest_drives_release_path_and_completed_reuse(tmp_path: Path) -> None:
+    bundle, digest = make_bundle(tmp_path)
+    _manifest, loaded_digest = shared_runtime._load_manifest(bundle)
+    runtime = tmp_path / ".venv" / "releases" / digest
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin" / "python").write_text("", encoding="utf-8")
+    (runtime / shared_runtime.COMPLETE_MARKER).write_text(
+        json.dumps(_metadata(digest)), encoding="utf-8"
+    )
+
+    assert loaded_digest == digest
+    assert shared_runtime._complete_metadata(runtime, digest) == _metadata(digest)
+
+
+@pytest.mark.parametrize("unsafe_path", ["../escape", "/absolute", "other/file.txt"])
+def test_manifest_rejects_unsafe_paths(tmp_path: Path, unsafe_path: str) -> None:
+    bundle, _digest = make_bundle(tmp_path)
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["path"] = unsafe_path
+    identity = {key: value for key, value in manifest.items() if key != "bundle_digest"}
+    canonical = (
+        json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    manifest["bundle_digest"] = hashlib.sha256(canonical).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="unsafe path"):
+        shared_runtime._load_manifest(bundle)
+
+
+def test_manifest_rejects_tampered_bundle_file(tmp_path: Path) -> None:
+    bundle, _digest = make_bundle(tmp_path)
+    (bundle / "requirements" / "requirements.txt").write_text(
+        "changed\n", encoding="utf-8"
+    )
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="failed verification"):
+        shared_runtime._load_manifest(bundle)
+
+
+def test_manifest_rejects_undeclared_extra_file(tmp_path: Path) -> None:
+    bundle, _digest = make_bundle(tmp_path)
+    (bundle / "wheels" / "smuggled.whl").write_bytes(b"undeclared")
+
+    with pytest.raises(
+        shared_runtime.RuntimeInstallError, match="do not match the manifest"
+    ):
+        shared_runtime._load_manifest(bundle)
+
+
+def test_manifest_rejects_malformed_digest_and_wrong_tool(tmp_path: Path) -> None:
+    bundle, _digest = make_bundle(tmp_path)
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["bundle_digest"] = "not-a-digest"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="invalid bundle_digest"):
+        shared_runtime._load_manifest(bundle)
+
+    bundle, _digest = make_bundle(tmp_path, {"requirements/requirements.txt": b"x\n"})
+    manifest_path = bundle / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tool"] = "robocop"
+    identity = {key: value for key, value in manifest.items() if key != "bundle_digest"}
+    manifest["bundle_digest"] = hashlib.sha256(
+        (json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="different tool"):
+        shared_runtime._load_manifest(bundle)
 
 
 def _copy_launchers(root: Path) -> tuple[Path, Path]:
@@ -155,3 +238,274 @@ def test_shared_launcher_rejects_runtime_outside_release_root(tmp_path: Path) ->
 
     assert result.returncode != 0
     assert "resolves outside the release root" in result.stderr
+
+
+def _fake_completed_build(
+    runtime: Path, _bundle: Path, digest: str, _python: Path, _target: str | None
+) -> None:
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin" / "python").write_text("", encoding="utf-8")
+    (runtime / shared_runtime.COMPLETE_MARKER).write_text(
+        json.dumps(_metadata(digest)), encoding="utf-8"
+    )
+
+
+def test_build_validates_in_order_and_records_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    bundle, digest = make_bundle(
+        tmp_path,
+        {
+            "requirements/requirements.txt": b"demo\n",
+            "wheels/demo.whl": b"wheel",
+        },
+    )
+    approved = tmp_path / "python3.10"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        calls.append(command)
+        if command[1:3] == ["-m", "venv"]:
+            (runtime / "bin").mkdir(parents=True)
+            (runtime / "bin" / "python").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(shared_runtime, "_run", fake_run)
+    monkeypatch.setattr(shared_runtime, "_runtime_python_version", lambda _p: "3.10.99")
+
+    shared_runtime._build_runtime(runtime, bundle, digest, approved, "3.10")
+
+    assert calls[0] == [str(approved), "-m", "venv", str(runtime)]
+    assert calls[1][1:5] == ["-m", "pip", "install", "--no-index"]
+    assert calls[2][1:] == ["-m", "pip", "check"]
+    assert calls[3][1:] == [
+        "-c",
+        "import pandas; import numpy; import openpyxl; import yaml; import scipy; import textual",
+    ]
+    metadata = json.loads(
+        (runtime / shared_runtime.COMPLETE_MARKER).read_text(encoding="utf-8")
+    )
+    assert metadata["bundle_digest"] == digest
+    assert metadata["python_version"] == "3.10.99"
+    assert metadata["required_imports"] == list(shared_runtime.REQUIRED_IMPORTS)
+
+
+@pytest.mark.parametrize("failure_index", [1, 2, 3])
+def test_failed_validation_never_writes_completion_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_index: int
+) -> None:
+    runtime = tmp_path / "runtime"
+    bundle, digest = make_bundle(tmp_path)
+    calls = 0
+
+    def fake_run(command: list[str]) -> None:
+        nonlocal calls
+        current = calls
+        calls += 1
+        if current == 0:
+            (runtime / "bin").mkdir(parents=True)
+            (runtime / "bin" / "python").write_text("", encoding="utf-8")
+        if current == failure_index:
+            raise shared_runtime.RuntimeInstallError("simulated failure")
+
+    monkeypatch.setattr(shared_runtime, "_run", fake_run)
+    monkeypatch.setattr(shared_runtime, "_runtime_python_version", lambda _p: "3.10.1")
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="simulated"):
+        shared_runtime._build_runtime(runtime, bundle, digest, Path("/python"), "3.10")
+
+    assert not (runtime / shared_runtime.COMPLETE_MARKER).exists()
+
+
+def test_python_target_mismatch_fails_before_pip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    bundle, digest = make_bundle(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        calls.append(command)
+        (runtime / "bin").mkdir(parents=True, exist_ok=True)
+        (runtime / "bin" / "python").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(shared_runtime, "_run", fake_run)
+    monkeypatch.setattr(shared_runtime, "_runtime_python_version", lambda _p: "3.11.0")
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="targets Python 3.10"):
+        shared_runtime._build_runtime(runtime, bundle, digest, Path("/python"), "3.10")
+
+    assert len(calls) == 1
+    assert not (runtime / shared_runtime.COMPLETE_MARKER).exists()
+
+
+def test_activation_reuse_switch_and_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("activation symlinks are validated on Linux")
+    root = tmp_path / "root"
+    first_bundle, first_digest = make_bundle(
+        tmp_path, {"requirements/requirements.txt": b"first\n"}
+    )
+    second_bundle, second_digest = make_bundle(
+        tmp_path, {"requirements/requirements.txt": b"second\n"}
+    )
+    monkeypatch.setattr(shared_runtime, "_build_runtime", _fake_completed_build)
+
+    assert shared_runtime.install(first_bundle, Path("/python"), root) == (
+        first_digest,
+        False,
+    )
+    assert shared_runtime.install(first_bundle, Path("/python"), root) == (
+        first_digest,
+        True,
+    )
+    assert shared_runtime.install(second_bundle, Path("/python"), root) == (
+        second_digest,
+        False,
+    )
+    assert (root / ".venv" / "current").resolve().name == second_digest
+    assert shared_runtime.install(first_bundle, Path("/python"), root) == (
+        first_digest,
+        True,
+    )
+    assert (root / ".venv" / "current").resolve().name == first_digest
+
+
+def test_failed_candidate_preserves_current_and_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("activation symlinks are validated on Linux")
+    root = tmp_path / "root"
+    first, first_digest = make_bundle(
+        tmp_path, {"requirements/requirements.txt": b"first\n"}
+    )
+    second, second_digest = make_bundle(
+        tmp_path, {"requirements/requirements.txt": b"second\n"}
+    )
+    monkeypatch.setattr(shared_runtime, "_build_runtime", _fake_completed_build)
+    shared_runtime.install(first, Path("/python"), root)
+
+    def fail(runtime: Path, *_args: object) -> None:
+        runtime.mkdir(parents=True)
+        raise shared_runtime.RuntimeInstallError("simulated failure")
+
+    monkeypatch.setattr(shared_runtime, "_build_runtime", fail)
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="simulated"):
+        shared_runtime.install(second, Path("/python"), root)
+
+    assert (root / ".venv" / "current").resolve().name == first_digest
+    assert not (root / ".venv" / "releases" / second_digest).exists()
+
+
+def test_corrupt_active_runtime_is_never_rebuilt_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("activation symlinks are validated on Linux")
+    root = tmp_path / "root"
+    bundle, digest = make_bundle(tmp_path)
+    monkeypatch.setattr(shared_runtime, "_build_runtime", _fake_completed_build)
+    shared_runtime.install(bundle, Path("/python"), root)
+    runtime = root / ".venv" / "releases" / digest
+    (runtime / shared_runtime.COMPLETE_MARKER).write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(shared_runtime.RuntimeInstallError, match="rebuilt in place"):
+        shared_runtime.install(bundle, Path("/python"), root)
+
+    assert (runtime / "bin" / "python").exists()
+
+
+def test_incomplete_inactive_runtime_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("activation symlinks are validated on Linux")
+    root = tmp_path / "root"
+    bundle, digest = make_bundle(tmp_path)
+    partial = root / ".venv" / "releases" / digest
+    partial.mkdir(parents=True)
+    (partial / "partial").write_text("incomplete", encoding="utf-8")
+
+    def rebuild(runtime: Path, *args: object) -> None:
+        shutil.rmtree(runtime)
+        _fake_completed_build(runtime, *args)
+
+    monkeypatch.setattr(shared_runtime, "_build_runtime", rebuild)
+    assert shared_runtime.install(bundle, Path("/python"), root) == (digest, False)
+    assert not (partial / "partial").exists()
+
+
+def test_activation_cleans_stale_temporary_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name == "nt":
+        pytest.skip("activation symlinks are validated on Linux")
+    root = tmp_path / "root"
+    bundle, _digest = make_bundle(tmp_path)
+    runtime_root = root / ".venv"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / ".current.tmp.999").symlink_to(
+        Path("releases") / ("d" * 64), target_is_directory=True
+    )
+    monkeypatch.setattr(shared_runtime, "_build_runtime", _fake_completed_build)
+
+    shared_runtime.install(bundle, Path("/python"), root)
+
+    assert not list(runtime_root.glob(".current.tmp.*"))
+
+
+def test_install_lock_excludes_concurrent_installer(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("flock concurrency is validated on Linux")
+    lock_path = tmp_path / "install.lock"
+    first_acquired = threading.Event()
+    release_first = threading.Event()
+    second_acquired = threading.Event()
+
+    def first() -> None:
+        with shared_runtime._install_lock(lock_path):
+            first_acquired.set()
+            release_first.wait(timeout=5)
+
+    def second() -> None:
+        first_acquired.wait(timeout=5)
+        with shared_runtime._install_lock(lock_path):
+            second_acquired.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    second_thread.start()
+    assert first_acquired.wait(timeout=5)
+    assert not second_acquired.wait(timeout=0.1)
+    release_first.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert second_acquired.is_set()
+
+
+def test_completed_runtime_permissions_are_not_publicly_writable(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX modes are validated on Linux")
+    runtime = tmp_path / "runtime"
+    package = runtime / "lib" / "package.py"
+    executable = runtime / "bin" / "python"
+    package.parent.mkdir(parents=True)
+    executable.parent.mkdir(parents=True)
+    package.write_text("", encoding="utf-8")
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    approved = tmp_path / "approved"
+    approved.write_text("", encoding="utf-8")
+    approved.chmod(0o755)
+    (runtime / "bin" / "python3").symlink_to(approved)
+
+    shared_runtime._make_owner_writable_only(runtime)
+
+    assert runtime.stat().st_mode & 0o022 == 0
+    assert package.stat().st_mode & 0o044 == 0o044
+    assert executable.stat().st_mode & 0o055 == 0o055
+    assert stat.S_IMODE(approved.stat().st_mode) == 0o755
