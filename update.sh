@@ -26,6 +26,7 @@ REMOTE="${EDGE_DEPLOY_REMOTE:-${AUTOBENCH_GIT_REMOTE:-bitbucket}}"
 BRANCH="${EDGE_DEPLOY_BRANCH:-${AUTOBENCH_GIT_BRANCH:-main}}"
 REMOTE_REF="refs/remotes/$REMOTE/$BRANCH"
 TARGET_REF="${1:-$REMOTE/$BRANCH}"
+RESOLVED_TARGET="$TARGET_REF"
 
 cd "$(dirname "$0")"
 
@@ -79,8 +80,14 @@ FETCH_OUTPUT="$(git fetch --prune "$REMOTE" "$BRANCH" 2>&1)" || {
   esac
 }
 
-if [ -n "$CURRENT_HEAD" ] && git rev-parse --verify "${TARGET_REF}" >/dev/null 2>&1; then
-  CHANGED_FILES="$(git diff --name-only "$CURRENT_HEAD" "${TARGET_REF}" 2>/dev/null || true)"
+if ! git rev-parse --verify "${RESOLVED_TARGET}^{commit}" >/dev/null 2>&1; then
+  echo "==> Fetching requested target ${TARGET_REF} ..."
+  git fetch "$REMOTE" "$TARGET_REF"
+  RESOLVED_TARGET="FETCH_HEAD"
+fi
+
+if [ -n "$CURRENT_HEAD" ] && git rev-parse --verify "${RESOLVED_TARGET}^{commit}" >/dev/null 2>&1; then
+  CHANGED_FILES="$(git diff --name-only "$CURRENT_HEAD" "${RESOLVED_TARGET}" 2>/dev/null || true)"
   classify_install_decision "$CHANGED_FILES"
 else
   INSTALL_DECISION="install recommended"
@@ -88,7 +95,7 @@ else
 fi
 
 echo "==> Resetting working tree to ${TARGET_REF} ..."
-git reset --hard "${TARGET_REF}"
+git reset --hard "${RESOLVED_TARGET}"
 
 # git reset rewrites files with umask-default permissions, which drops the
 # shared read/execute access other analysts need. Re-apply it every sync so

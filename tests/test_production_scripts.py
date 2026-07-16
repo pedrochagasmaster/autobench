@@ -543,9 +543,24 @@ def test_deploy_and_install_script_routes_recovery_to_shared_installer() -> None
     assert "manifest.json" in deploy
     assert "edge-deploy dependency delivery" in deploy
     assert "./setup_remote_env.sh" in deploy
+    assert "/ads_storage/`$USER/.edge-deploy/bundles/autobench/current" in deploy
+    assert 'EDGE_DEPLOY_BUNDLE_DIR="`$BUNDLE_DIR"' in deploy
     assert "pip download" not in deploy
     assert "offline_packages" not in deploy
     assert "SHA256SUMS" not in deploy
+
+
+def test_edge_deploy_profile_covers_runtime_operational_paths() -> None:
+    profile = (ROOT / "edge_deploy.yaml").read_text(encoding="utf-8")
+
+    for path in (
+        "update.sh",
+        "setup_remote_env.sh",
+        "setup_alias.sh",
+        '"tools/prod_tui/**/*.py"',
+        '"scripts/**/*.py"',
+    ):
+        assert path in profile
 
 
 def test_setup_remote_env_runs_wrapper_checks_and_emits_summary_contract() -> None:
@@ -724,6 +739,51 @@ def test_update_sh_reports_install_required_for_dependency_inputs(tmp_path: Path
     assert result.returncode == 0, result.stderr or result.stdout
     assert "Install decision: install required" in result.stdout
     assert "requirements.txt" in result.stdout
+
+
+def test_update_sh_fetches_requested_tag_when_not_present_locally(tmp_path: Path) -> None:
+    node_checkout = _build_update_repo_scenario(
+        tmp_path,
+        "benchmark.py",
+        "print('tagged change')\n",
+    )
+    seed_repo = tmp_path / "seed"
+    subprocess.run(["git", "-C", str(seed_repo), "tag", "recovery-target"], check=True)
+    subprocess.run(
+        ["git", "-C", str(seed_repo), "push", "origin", "recovery-target"],
+        check=True,
+    )
+    telemetry_dir = tmp_path / "telemetry_tag"
+
+    result = subprocess.run(
+        ["bash", "update.sh", "recovery-target"],
+        cwd=node_checkout,
+        env={
+            **dict(os.environ),
+            "AUTOBENCH_GIT_REMOTE": "origin",
+            "AUTOBENCH_GIT_BRANCH": "main",
+            "AUTOBENCH_TELEMETRY_DIR": str(telemetry_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "Fetching requested target recovery-target" in result.stdout
+    head = subprocess.run(
+        ["git", "-C", str(node_checkout), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    target = subprocess.run(
+        ["git", "-C", str(seed_repo), "rev-parse", "recovery-target"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert head == target
 
 
 def test_publish_snapshot_script_has_safe_remote_and_auth_defaults() -> None:

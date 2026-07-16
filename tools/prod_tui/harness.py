@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -36,6 +38,16 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)(passcode\s*=\s*)\S+"),
     re.compile(r"(?i)(token\s*=\s*)\S+"),
 ]
+RUNTIME_CRITICAL_PATHS = (
+    "benchmark.py",
+    "tui_app.py",
+    "shared_runtime.py",
+    "install.sh",
+    "onboard.sh",
+    "bin/autobench",
+    "bin/autobench-cli",
+    "bin/runtime_check.sh",
+)
 
 
 @dataclass
@@ -83,6 +95,100 @@ def run_classified_command(
     result = run_command(args, cwd=cwd, timeout=timeout)
     result.failure_class = failure_class
     return result
+
+
+def _ssh_args(config: dict[str, object], command: str) -> list[str]:
+    host = str(config.get("host", "")).strip()
+    if not host:
+        raise ValueError("production smoke config requires host")
+    options = shlex.split(str(config.get("ssh_options", "")), posix=True)
+    return ["ssh", *options, host, command]
+
+
+def _run_remote(
+    config: dict[str, object],
+    command: str,
+    *,
+    failure_class: str,
+    timeout: int = 120,
+) -> CheckResult:
+    return run_classified_command(
+        _ssh_args(config, command),
+        failure_class=failure_class,
+        timeout=timeout,
+    )
+
+
+def _extract_json_payload(output: str, marker: str) -> dict[str, object]:
+    prefix = f"{marker}="
+    for line in output.splitlines():
+        if line.startswith(prefix):
+            payload = json.loads(line[len(prefix) :])
+            if not isinstance(payload, dict):
+                raise ValueError(f"{marker} payload must be a JSON object")
+            return payload
+    raise ValueError(f"{marker} payload was not present")
+
+
+def _runtime_probe_command(repo_path: str) -> str:
+    probe = f"""
+import importlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+runtime = Path(sys.argv[1]).resolve(strict=True)
+manifest_path = Path(sys.argv[2])
+root = Path(sys.argv[3]).resolve(strict=True)
+metadata = json.loads((runtime / ".complete.json").read_text(encoding="utf-8"))
+bundle = json.loads(manifest_path.read_text(encoding="utf-8"))
+import_errors = {{}}
+for name in {list(("pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"))!r}:
+    try:
+        importlib.import_module(name)
+    except Exception as exc:
+        import_errors[name] = type(exc).__name__
+publicly_writable = []
+for path in [runtime, *runtime.rglob("*")]:
+    if not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) & 0o022:
+        publicly_writable.append(str(path.relative_to(runtime)))
+missing = []
+unreadable = []
+for relative in {list(RUNTIME_CRITICAL_PATHS)!r}:
+    path = root / relative
+    if not path.is_file():
+        missing.append(relative)
+    elif not os.access(path, os.R_OK):
+        unreadable.append(relative)
+payload = {{
+    "active_runtime": str(runtime),
+    "runtime_digest": metadata.get("bundle_digest"),
+    "bundle_digest": bundle.get("bundle_digest"),
+    "digest_match": metadata.get("bundle_digest") == bundle.get("bundle_digest"),
+    "pip_check": metadata.get("pip_check"),
+    "required_imports": metadata.get("required_imports"),
+    "import_errors": import_errors,
+    "runtime_python": metadata.get("runtime_python"),
+    "python_version": metadata.get("python_version"),
+    "publicly_writable": publicly_writable,
+    "missing_runtime_files": missing,
+    "unreadable_runtime_files": unreadable,
+    "autobench_executable": os.access(root / "bin" / "autobench", os.X_OK),
+    "autobench_cli_executable": os.access(root / "bin" / "autobench-cli", os.X_OK),
+}}
+print("AUTOBENCH_RUNTIME_EVIDENCE=" + json.dumps(payload, sort_keys=True))
+"""
+    encoded = base64.b64encode(probe.encode("utf-8")).decode("ascii")
+    quoted_root = shlex.quote(repo_path)
+    return (
+        f"cd {quoted_root} && . {quoted_root}/bin/runtime_check.sh && "
+        f"RUNTIME=$(autobench_active_runtime {quoted_root}) && "
+        'BUNDLE_DIR=${EDGE_DEPLOY_BUNDLE_DIR:-/ads_storage/$USER/.edge-deploy/bundles/autobench/current} && '
+        f'printf %s {encoded} | base64 -d | "$RUNTIME/bin/python" - '
+        f'"$RUNTIME" "$BUNDLE_DIR/manifest.json" {quoted_root}'
+    )
 
 
 def _is_runtime_file(path: Path, root: Path) -> bool:
@@ -190,120 +296,108 @@ def smoke(args: argparse.Namespace) -> int:
     pane_target = str(config.get("pane_target", ""))
     auth_state = str(config.get("auth_state", "ready"))
     human_takeover_required = bool(config.get("human_takeover_required", False))
-    source_commit = str(config.get("source_commit", current_commit()))
+    source_commit = str(config.get("source_commit", "")).strip() or current_commit()
     bitbucket_snapshot_sha = str(config.get("bitbucket_snapshot_sha", ""))
-    deployed_commit = str(config.get("deployed_commit", current_commit()))
-    runtime_python = {
-        "path": str(config.get("runtime_python_path", "")),
-        "version": str(config.get("runtime_python_version", "")),
-    }
     update_method = str(config.get("update_method", "update.sh"))
     install_decision = str(config.get("install_decision", "install not required"))
     dependency_signal = str(config.get("dependency_signal", ""))
-    permission_evidence = list(config.get("permission_evidence", []))
-    runtime_evidence = {
-        "active_runtime": str(config.get("active_runtime_path", "")),
-        "runtime_digest": str(config.get("runtime_digest", "")),
-        "bundle_digest": str(config.get("delivered_bundle_digest", "")),
-        "digest_match": bool(
-            config.get("runtime_digest")
-            and config.get("runtime_digest") == config.get("delivered_bundle_digest")
-        ),
-        "pip_check": str(config.get("runtime_pip_check", "")),
-    }
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = Path(args.json_report) if args.json_report else REPORT_DIR / f"smoke_{timestamp}.json"
     drift_manifest_path = report_path.with_name(f"drift_{report_path.name}")
-    checks = [
-        run_classified_command(
-            ["py", "-m", "compileall", "benchmark.py", "tui_app.py", "core", "utils", "tools"],
-            failure_class="deployment",
-            timeout=120,
+    quoted_root = shlex.quote(repo_path)
+    commit_result = _run_remote(
+        config,
+        f"cd {quoted_root} && git rev-parse HEAD",
+        failure_class="deployment",
+        timeout=30,
+    )
+    deployed_commit = commit_result.output.strip().splitlines()[-1] if commit_result.output.strip() else ""
+    commit_matches = bool(deployed_commit) and (
+        deployed_commit == source_commit
+        or deployed_commit.startswith(source_commit)
+        or source_commit.startswith(deployed_commit)
+    )
+    commit_result.status = "pass" if commit_result.status == "pass" and commit_matches else "fail"
+    commit_result.name = "remote deployed commit"
+
+    compile_result = _run_remote(
+        config,
+        (
+            f"cd {quoted_root} && . {quoted_root}/bin/runtime_check.sh && "
+            f"RUNTIME=$(autobench_active_runtime {quoted_root}) && "
+            '"$RUNTIME/bin/python" -m compileall benchmark.py tui_app.py core utils scripts tools'
         ),
-        run_classified_command(
-            [
-                "sh",
-                "-c",
-                (
-                    f'. "{repo_path}/bin/runtime_check.sh"; '
-                    f'RUNTIME=$(autobench_active_runtime "{repo_path}"); '
-                    '"$RUNTIME/bin/python" -c '
-                    '"import pandas; import numpy; import openpyxl; import yaml; '
-                    'import scipy; import textual"; '
-                    'test -z "$(find "$RUNTIME" -xdev ! -type l -perm /022 -print -quit)"'
-                ),
-            ],
-            failure_class="deployment",
-            timeout=120,
-        ),
-        run_classified_command(
-            [f"{repo_path}/bin/autobench-cli", "config", "list"],
-            failure_class="deployment",
-            timeout=120,
-        ),
-        run_classified_command(
-            [f"{repo_path}/bin/autobench-cli", "share", "--help"],
-            failure_class="deployment",
-            timeout=120,
-        ),
-        run_classified_command(
-            [
-                "py",
-                "-m",
-                "tools.prod_tui",
-                "drift",
-                "--local",
-                ".",
-                "--remote",
-                repo_path,
-                "--output",
-                str(drift_manifest_path),
-            ],
-            failure_class="deployment",
-            timeout=120,
-        ),
-    ]
-    if args.level in {"2", "3", "all"}:
-        checks.append(
-            run_classified_command(
-                ["py", "-m", "pytest", "tests/test_edge_node_operating_model.py", "-q"],
-                failure_class="environment",
-                timeout=120,
-            )
+        failure_class="deployment",
+        timeout=120,
+    )
+    runtime_probe = _run_remote(
+        config,
+        _runtime_probe_command(repo_path),
+        failure_class="environment",
+        timeout=120,
+    )
+    try:
+        runtime_evidence = _extract_json_payload(
+            runtime_probe.output, "AUTOBENCH_RUNTIME_EVIDENCE"
         )
+    except (json.JSONDecodeError, ValueError):
+        runtime_evidence = {}
+    runtime_ok = (
+        runtime_probe.status == "pass"
+        and runtime_evidence.get("digest_match") is True
+        and runtime_evidence.get("pip_check") == "passed"
+        and runtime_evidence.get("required_imports")
+        == ["pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"]
+        and runtime_evidence.get("import_errors") == {}
+        and runtime_evidence.get("publicly_writable") == []
+        and runtime_evidence.get("missing_runtime_files") == []
+        and runtime_evidence.get("unreadable_runtime_files") == []
+        and runtime_evidence.get("autobench_executable") is True
+        and runtime_evidence.get("autobench_cli_executable") is True
+    )
+    runtime_probe.status = "pass" if runtime_ok else "fail"
+    runtime_probe.name = "remote shared runtime evidence"
+
+    config_result = _run_remote(
+        config,
+        f"{quoted_root}/bin/autobench-cli config list",
+        failure_class="environment",
+        timeout=120,
+    )
+    share_result = _run_remote(
+        config,
+        f"{quoted_root}/bin/autobench-cli share --help",
+        failure_class="environment",
+        timeout=120,
+    )
+    checks = [
+        commit_result,
+        compile_result,
+        runtime_probe,
+        config_result,
+        share_result,
+    ]
     if args.level in {"3", "all"}:
         checks.append(
-            run_classified_command(
-                [
-                    f"{repo_path}/bin/autobench-cli",
-                    "share",
-                    "--csv",
-                    "tests/fixtures/gate_demo.csv",
-                    "--entity",
-                    "Target",
-                    "--metric",
-                    "txn_cnt",
-                    "--dimensions",
-                    "card_type",
-                    "channel",
-                    "--time-col",
-                    "year_month",
-                    "--preset",
-                    "balanced_default",
-                    "--output",
-                    str(Path(os.environ.get("TEMP", "/tmp")) / "autobench_prod_smoke.xlsx"),
-                ],
+            _run_remote(
+                config,
+                (
+                    f"cd {quoted_root} && {quoted_root}/bin/autobench-cli share "
+                    "--csv tests/fixtures/gate_demo.csv --entity Target --metric txn_cnt "
+                    "--dimensions card_type channel --time-col year_month "
+                    "--preset balanced_default --output /tmp/autobench_prod_smoke.xlsx"
+                ),
                 failure_class="workflow",
                 timeout=180,
             )
         )
     status = "pass" if all(check.status == "pass" for check in checks) else "fail"
     wrapper_checks = {
-        "config_list": checks[2].status,
-        "share_help": checks[3].status,
+        "config_list": config_result.status,
+        "share_help": share_result.status,
     }
     drift_block = {
-        "status": "recorded" if checks[4].status == "pass" else "failed",
+        "status": "not_implemented",
         "manifest_path": str(drift_manifest_path),
         "remote_path": repo_path,
     }
@@ -318,6 +412,15 @@ def smoke(args: argparse.Namespace) -> int:
         f"install={install_decision} "
         f"handoff={'yes' if human_takeover_required else 'no'} report={report_path}"
     )
+    runtime_python = {
+        "path": str(runtime_evidence.get("runtime_python", "")),
+        "version": str(runtime_evidence.get("python_version", "")),
+    }
+    permission_evidence = [
+        f"publicly_writable={runtime_evidence.get('publicly_writable', [])}",
+        f"missing_runtime_files={runtime_evidence.get('missing_runtime_files', [])}",
+        f"unreadable_runtime_files={runtime_evidence.get('unreadable_runtime_files', [])}",
+    ]
     write_report(
         report_path,
         node=node,

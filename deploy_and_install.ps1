@@ -20,18 +20,19 @@ $RemotePath = "/ads_storage/autobench"
 Write-Host @"
 This recovery path does not build or upload a legacy checksum-only package set.
 The normal edge-deploy dependency delivery phase must already have created:
-  ~/.edge-deploy/bundles/autobench/current/manifest.json
+  /ads_storage/<operator>/.edge-deploy/bundles/autobench/current/manifest.json
 "@ -ForegroundColor Yellow
 
 $RemoteCommand = @"
 set -eu
 cd $RemotePath
-test -f "`$HOME/.edge-deploy/bundles/autobench/current/manifest.json" || {
+BUNDLE_DIR="/ads_storage/`$USER/.edge-deploy/bundles/autobench/current"
+test -f "`$BUNDLE_DIR/manifest.json" || {
   echo "Verified Autobench bundle is missing; run edge-deploy dependency delivery first." >&2
   exit 1
 }
 chmod +x install.sh setup_remote_env.sh bin/autobench bin/autobench-cli bin/runtime_check.sh
-./setup_remote_env.sh
+EDGE_DEPLOY_BUNDLE_DIR="`$BUNDLE_DIR" ./setup_remote_env.sh
 "@
 
 ssh -p $RemotePort "${RemoteUser}@${RemoteServer}" $RemoteCommand

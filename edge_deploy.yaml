@@ -4,10 +4,10 @@ repo_path: /ads_storage/autobench
 github_url: https://github.com/pedrochagasmaster/autobench.git
 bitbucket_url: https://scm.mastercard.int/stash/scm/~e176097/autobench.git
 release_branch: main
-runtime_paths: [benchmark.py, tui_app.py, shared_runtime.py, install.sh, onboard.sh, run_tool.sh, bin/autobench, bin/autobench-cli, bin/runtime_check.sh, "core/**/*.py", "utils/**/*.py", "scripts/**/*.py"]
+runtime_paths: [benchmark.py, tui_app.py, shared_runtime.py, install.sh, onboard.sh, run_tool.sh, setup_alias.sh, setup_remote_env.sh, update.sh, bin/autobench, bin/autobench-cli, bin/runtime_check.sh, "core/**/*.py", "utils/**/*.py", "scripts/**/*.py", "tools/prod_tui/**/*.py"]
 compile_targets: "benchmark.py tui_app.py core utils scripts tools"
 version_files: [VERSION, pyproject.toml]
-install_trigger_paths: [shared_runtime.py, install.sh, bin/autobench, bin/autobench-cli, bin/runtime_check.sh, requirements.txt, constraints.txt, pyproject.toml]
+install_trigger_paths: [shared_runtime.py, install.sh, setup_remote_env.sh, bin/autobench, bin/autobench-cli, bin/runtime_check.sh, requirements.txt, constraints.txt, pyproject.toml]
 dependency_paths: [requirements.txt, constraints.txt]
 dependency_bundle:
   requirements_file: requirements.txt

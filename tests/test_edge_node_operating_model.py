@@ -133,7 +133,7 @@ def test_prod_tui_config_template_includes_session_and_auth_fields() -> None:
     assert 'update_method: "update.sh"' in template
     assert 'install_decision: "install not required"' in template
     assert 'dependency_signal: ""' in template
-    assert 'permission_evidence: []' in template
+    assert 'ssh_options: "-p 2222' in template
 
 
 def test_prod_tui_docs_cover_tmux_preflight_and_passcode_boundary() -> None:
@@ -253,21 +253,53 @@ def test_smoke_uses_configured_report_contract_fields(
                 'human_takeover_required: true',
                 'source_commit: "abc1234"',
                 'bitbucket_snapshot_sha: "def5678"',
-                'deployed_commit: "fedcba9"',
-                'runtime_python_path: "/sys_apps_01/python/python310/bin/python3.10"',
-                'runtime_python_version: "Python 3.10.14"',
                 'update_method: "update.sh"',
                 'install_decision: "install recommended"',
                 'dependency_signal: "VERSION changed"',
-                'permission_evidence:',
-                '  - "ls -ld /ads_storage/autobench -> drwxr-xr-x"',
+                'ssh_options: "-p 2222"',
             ]
         ),
         encoding="utf-8",
     )
 
+    seen_args: list[list[str]] = []
+
     def fake_run_command(args: list[str], cwd: Path = ROOT, timeout: int = 120) -> harness.CheckResult:
-        return harness.CheckResult(name=" ".join(args), status="pass", output="ok")
+        seen_args.append(args)
+        command = args[-1]
+        if "git rev-parse HEAD" in command:
+            output = "abc1234\n"
+        elif "base64 -d" in command:
+            output = "AUTOBENCH_RUNTIME_EVIDENCE=" + json.dumps(
+                {
+                    "active_runtime": "/ads_storage/autobench/.venv/releases/" + "a" * 64,
+                    "runtime_digest": "a" * 64,
+                    "bundle_digest": "a" * 64,
+                    "digest_match": True,
+                    "pip_check": "passed",
+                    "required_imports": [
+                        "pandas",
+                        "numpy",
+                        "openpyxl",
+                        "yaml",
+                        "scipy",
+                        "textual",
+                    ],
+                    "import_errors": {},
+                    "runtime_python": "/ads_storage/autobench/.venv/releases/"
+                    + "a" * 64
+                    + "/bin/python",
+                    "python_version": "3.10.14",
+                    "publicly_writable": [],
+                    "missing_runtime_files": [],
+                    "unreadable_runtime_files": [],
+                    "autobench_executable": True,
+                    "autobench_cli_executable": True,
+                }
+            )
+        else:
+            output = "ok"
+        return harness.CheckResult(name=" ".join(args), status="pass", output=output)
 
     monkeypatch.setattr(harness, "run_command", fake_run_command)
     monkeypatch.setattr(harness, "current_commit", lambda root=ROOT: "deadbeef")
@@ -288,7 +320,7 @@ def test_smoke_uses_configured_report_contract_fields(
     assert exit_code == 0
     assert payload["source_commit"] == "abc1234"
     assert payload["bitbucket_snapshot_sha"] == "def5678"
-    assert payload["deployed_commit"] == "fedcba9"
+    assert payload["deployed_commit"] == "abc1234"
     assert payload["update_method"] == "update.sh"
     assert payload["install_decision"] == "install recommended"
     assert payload["dependency_signal"] == "VERSION changed"
@@ -298,10 +330,15 @@ def test_smoke_uses_configured_report_contract_fields(
     assert payload["drift"]["remote_path"] == "/ads_storage/autobench"
     assert payload["checks"][0]["failure_class"] == "deployment"
     assert payload["checks"][1]["failure_class"] == "deployment"
-    assert payload["checks"][5]["failure_class"] == "environment"
+    assert payload["checks"][2]["failure_class"] == "environment"
     assert payload["wrapper_checks"]["config_list"] == "pass"
-    assert "runtime_evidence" in payload
-    assert payload["permission_evidence"][0].startswith("ls -ld /ads_storage/autobench")
+    assert payload["runtime_evidence"]["digest_match"] is True
+    assert payload["runtime_evidence"]["pip_check"] == "passed"
+    assert payload["permission_evidence"][0] == "publicly_writable=[]"
+    assert seen_args and all(args[0] == "ssh" for args in seen_args)
+    assert any(
+        '"$RUNTIME/bin/python" -m compileall' in args[-1] for args in seen_args
+    )
     assert "source=abc1234" in captured.out
     assert "snapshot=def5678" in captured.out
     assert "install=install recommended" in captured.out
@@ -318,7 +355,33 @@ def test_level3_smoke_marks_controlled_analysis_as_workflow_failure_class(
     config_path.write_text('host: "node04"\nrepo_path: "/ads_storage/autobench"\n', encoding="utf-8")
 
     def fake_run_command(args: list[str], cwd: Path = ROOT, timeout: int = 120) -> harness.CheckResult:
-        return harness.CheckResult(name=" ".join(args), status="pass", output="ok")
+        command = args[-1]
+        if "git rev-parse HEAD" in command:
+            output = "deadbeef\n"
+        elif "base64 -d" in command:
+            output = "AUTOBENCH_RUNTIME_EVIDENCE=" + json.dumps(
+                {
+                    "digest_match": True,
+                    "pip_check": "passed",
+                    "required_imports": [
+                        "pandas",
+                        "numpy",
+                        "openpyxl",
+                        "yaml",
+                        "scipy",
+                        "textual",
+                    ],
+                    "import_errors": {},
+                    "publicly_writable": [],
+                    "missing_runtime_files": [],
+                    "unreadable_runtime_files": [],
+                    "autobench_executable": True,
+                    "autobench_cli_executable": True,
+                }
+            )
+        else:
+            output = "ok"
+        return harness.CheckResult(name=" ".join(args), status="pass", output=output)
 
     monkeypatch.setattr(harness, "run_command", fake_run_command)
     monkeypatch.setattr(harness, "current_commit", lambda root=ROOT: "deadbeef")
@@ -337,6 +400,43 @@ def test_level3_smoke_marks_controlled_analysis_as_workflow_failure_class(
 
     assert exit_code == 0
     assert payload["checks"][-1]["failure_class"] == "workflow"
+
+
+def test_level2_smoke_fails_when_runtime_evidence_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.prod_tui import harness
+
+    config_path = tmp_path / "config.yaml"
+    report_path = tmp_path / "smoke.json"
+    config_path.write_text(
+        'host: "node04"\nrepo_path: "/ads_storage/autobench"\nsource_commit: "deadbeef"\n',
+        encoding="utf-8",
+    )
+
+    def fake_run_command(
+        args: list[str], cwd: Path = ROOT, timeout: int = 120
+    ) -> harness.CheckResult:
+        output = "deadbeef\n" if "git rev-parse HEAD" in args[-1] else "ok"
+        return harness.CheckResult(name=" ".join(args), status="pass", output=output)
+
+    monkeypatch.setattr(harness, "run_command", fake_run_command)
+
+    exit_code = harness.smoke(
+        SimpleNamespace(
+            config=str(config_path),
+            level="2",
+            json_report=str(report_path),
+            save_screens=False,
+        )
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert payload["status"] == "fail"
+    assert payload["checks"][2]["name"] == "remote shared runtime evidence"
+    assert payload["checks"][2]["status"] == "fail"
 
 
 def test_local_check_references_repo_gate_commands() -> None:
