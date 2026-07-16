@@ -8,7 +8,7 @@ when finished.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | DONE |
+| 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | IN PROGRESS |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.

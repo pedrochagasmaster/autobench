@@ -1,7 +1,8 @@
-# Autobench Production TUI Harness
+# Autobench Production Validation Harness
 
-This directory contains the local tmux/psmux + SSH harness for validating and
-diagnosing the real Autobench Textual TUI on a Hadoop Edge Node.
+This directory contains the SSH harness for validating the deployed Autobench
+runtime on a Hadoop Edge Node. tmux/psmux remains the preflight and human
+authentication surface for interactive or manual Textual checks.
 
 The default release workflow is not this harness directly. For normal
 production releases, run the shared orchestrator:
@@ -15,7 +16,6 @@ when a controlled manual recovery needs extra smoke/drift evidence.
 
 ## Prerequisites
 
-- `tmux` on Linux/macOS, or `psmux` on Windows.
 - `ssh` available locally.
 - Autobench deployed at `repo_path` on the Edge Node.
 - Python 3.10+ available on the Edge Node.
@@ -30,13 +30,10 @@ Copy-Item tools/prod_tui/config-template.yaml tools/prod_tui/config-node04.yaml
 
 Set `host`, `repo_path`, `session_name`, terminal size, SSH options, and the
 deployment metadata fields you need for the final report contract:
-`source_commit`, `bitbucket_snapshot_sha`, `deployed_commit`,
-`runtime_python_*`, `active_runtime_path`, `runtime_digest`,
-`delivered_bundle_digest`, `runtime_pip_check`, `update_method`,
-`install_decision`, `dependency_signal`, and `permission_evidence`. Copy the
-runtime and permission evidence from the live
-the release report, `update.sh`, or `setup_remote_env.sh` output; do not invent it in chat. Do not
-store passcodes, passwords, or tokens in config files.
+`source_commit`, `bitbucket_snapshot_sha`, `update_method`,
+`install_decision`, and `dependency_signal`. Runtime, bundle, import,
+permission, launcher, and deployed-commit evidence is collected live over SSH.
+Do not store passcodes, passwords, or tokens in config files.
 
 Before sending commands to a live node, inspect the tmux session first:
 
@@ -60,9 +57,9 @@ py -m tools.prod_tui drift --local . --remote /ads_storage/autobench
 
 `smoke` writes JSON reports under `tools/prod_tui/reports/`. The report schema
 can now carry the source commit, Bitbucket snapshot SHA, deployed commit,
-runtime Python, active and delivered bundle digests, prior `pip check`, update
-method, install decision and signal, drift block, smoke block, wrapper checks,
-permission evidence, and auth handoff state. `drift`
+runtime Python, active and delivered bundle digests, prior `pip check` and
+import results, update method, install decision and signal, drift and smoke
+blocks, wrapper checks, permission evidence, and auth handoff state. `drift`
 builds a runtime-file manifest that excludes generated reports, screens, logs,
 caches, data, and outputs. When `--remote` is provided, the path is recorded in
 the report and summary line, but live remote filesystem comparison is not yet

@@ -18,7 +18,7 @@ successful post-merge GitHub CI for that SHA, the configured `bitbucket`
 remote, available centralized audit storage, and interactive Edge
 authentication. It publishes and deploys one tool only.
 
-When `requirements.txt` or `constraints.txt` changes, edge-deploy-core v1.1.0
+When `requirements.txt` or `constraints.txt` changes, edge-deploy-core v1.5.2
 builds, transfers, verifies, and installs a content-addressed offline bundle before
 updating the checkout. `deploy_and_install.ps1` is bootstrap/recovery only.
 

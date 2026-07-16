@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -366,3 +367,81 @@ def test_onboarding_refuses_non_file_launcher_before_replacing_either(
     assert result.returncode != 0
     assert "Cannot replace non-file launcher target" in result.stderr
     assert existing.read_text(encoding="utf-8") == "kept\n"
+
+
+def test_running_process_remains_pinned_to_resolved_runtime_after_activation_switch(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("sh") is None or os.name == "nt":
+        pytest.skip("process pinning requires POSIX symlinks and executables")
+    root = _install_root(tmp_path)
+    runtimes = []
+    for digest in ("a" * 64, "b" * 64):
+        runtime = root / ".venv" / "releases" / digest
+        (runtime / "bin").mkdir(parents=True)
+        python = runtime / "bin" / "python"
+        python.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+        python.chmod(0o755)
+        (runtime / ".complete.json").write_text(
+            json.dumps(
+                {
+                    "bundle_digest": digest,
+                    "approved_python": "/approved/python3.10",
+                    "runtime_python": str(python.absolute()),
+                    "python_version": "3.10.99",
+                    "pip_check": "passed",
+                    "required_imports": [
+                        "pandas",
+                        "numpy",
+                        "openpyxl",
+                        "yaml",
+                        "scipy",
+                        "textual",
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtimes.append(runtime)
+    current = root / ".venv" / "current"
+    current.symlink_to(Path("releases") / runtimes[0].name, target_is_directory=True)
+    capture = tmp_path / "pinned-runtime.txt"
+    release = tmp_path / "release-process"
+    runtimes[0].joinpath("bin", "python").write_text(
+        "#!/usr/bin/env sh\n"
+        'if [ "${1:-}" = "-" ]; then exec "$VALIDATOR_PYTHON" "$@"; fi\n'
+        'printf \'%s\\n\' "$0" > "$PIN_CAPTURE"\n'
+        'while [ ! -e "$PIN_RELEASE" ]; do sleep 0.05; done\n',
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "VALIDATOR_PYTHON": _path(Path(sys.executable)),
+        "PIN_CAPTURE": _path(capture),
+        "PIN_RELEASE": _path(release),
+    }
+
+    process = subprocess.Popen(
+        ["sh", _path(root / "bin" / "autobench-cli")],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 5
+    while not capture.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert capture.exists()
+
+    temporary = root / ".venv" / ".current.test"
+    temporary.symlink_to(Path("releases") / runtimes[1].name, target_is_directory=True)
+    os.replace(temporary, current)
+    release.touch()
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 0, stderr or stdout
+    assert Path(capture.read_text(encoding="utf-8").strip()).resolve() == (
+        runtimes[0] / "bin" / "python"
+    ).resolve()
+    assert current.resolve() == runtimes[1].resolve()

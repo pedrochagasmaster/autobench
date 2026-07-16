@@ -16,6 +16,8 @@
 
 ## Status
 
+- **Execution**: implementation and local validation complete; controlled
+  node03/node04 acceptance remains pending, so the plan stays `IN PROGRESS`.
 - **Priority**: P1
 - **Effort**: L, multi-day
 - **Risk**: HIGH
