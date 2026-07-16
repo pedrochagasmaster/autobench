@@ -81,6 +81,8 @@ def test_installer_requires_core_verified_dependency_bundle() -> None:
 
     assert "EDGE_DEPLOY_BUNDLE_DIR" in install
     assert "manifest.json" in install
+    assert 'RESOLVED_BUNDLE_DIR=$(CDPATH= cd -- "$BUNDLE_DIR" && pwd -P)' in install
+    assert "BUNDLE_DIR=$RESOLVED_BUNDLE_DIR" in install
     assert "--no-index" in runtime
     assert "AUTOBENCH_PIP_INDEX_URL" not in runtime
 

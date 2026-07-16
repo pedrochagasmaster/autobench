@@ -29,6 +29,11 @@ if [ ! -f "$BUNDLE_DIR/manifest.json" ] ||
   echo "Run the edge-deploy dependency delivery phase before installing." >&2
   exit 1
 fi
+if ! RESOLVED_BUNDLE_DIR=$(CDPATH= cd -- "$BUNDLE_DIR" && pwd -P); then
+  echo "Could not resolve verified dependency bundle: $BUNDLE_DIR" >&2
+  exit 1
+fi
+BUNDLE_DIR=$RESOLVED_BUNDLE_DIR
 
 "$PYTHON_BIN" "$ROOT_DIR/shared_runtime.py" \
   --bundle "$BUNDLE_DIR" \
