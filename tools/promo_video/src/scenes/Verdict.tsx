@@ -32,12 +32,30 @@ export const Verdict: React.FC = () => {
     durationInFrames: 40,
   });
 
+  // Bloom pulse behind the check as the text pops in, synced to the chime.
+  const bloom =
+    interpolate(frame, [44, 58], [0, 1], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    }) *
+    interpolate(frame, [58, 110], [1, 0.45], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    });
+
   const R = 96;
   const CIRC = 2 * Math.PI * R;
 
   return (
     <AbsoluteFill>
       <Backdrop glow={0.5} />
+      <AbsoluteFill
+        style={{
+          background: `radial-gradient(ellipse 46% 40% at 50% 44%, rgba(48, 209, 88, ${
+            0.16 * bloom
+          }), transparent 70%)`,
+        }}
+      />
       <Centered>
         <svg width={260} height={260} viewBox="0 0 260 260">
           <circle

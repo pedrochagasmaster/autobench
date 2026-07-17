@@ -1,7 +1,14 @@
-"""Synthesize the promo soundtrack: a minimal ambient pad with a soft pulse.
+"""Synthesize the promo soundtrack: ambient pads, a pulse, and cue hits.
 
 Deterministic, dependency-light (numpy only). Writes a 16-bit stereo WAV to
 public/audio/soundtrack.wav. Regenerate with: python3 scripts/make_soundtrack.py
+
+Cue map (matches the Remotion timeline in src/Root.tsx, 30 fps, 15-frame
+crossfades):
+  8.83 s  wordmark reveal   -> riser resolves into a sub boom
+  9.5  s  pulse enters      -> heartbeat sub every 2 beats
+  47.2 s  compliance verdict -> soft bell chime
+  51.1 s  outro             -> pulse stops, pads breathe out
 """
 
 import wave
@@ -10,7 +17,13 @@ from pathlib import Path
 import numpy as np
 
 SR = 44100
-DURATION = 63.0
+DURATION = 59.5
+BPM = 82
+BEAT = 60 / BPM
+BOOM_AT = 8.83
+PULSE_FROM = 9.5
+PULSE_TO = 51.1
+CHIME_AT = 47.2
 OUT = Path(__file__).resolve().parent.parent / "public" / "audio" / "soundtrack.wav"
 
 rng = np.random.default_rng(7)
@@ -65,6 +78,50 @@ def sub_pulse(midi: float, seconds: float = 0.55) -> np.ndarray:
     return np.sin(2 * np.pi * np.cumsum(sweep) / SR) * env
 
 
+def boom(seconds: float = 1.6) -> np.ndarray:
+    """Deep cinematic hit: sub sweep plus a filtered noise thump."""
+    n = int(seconds * SR)
+    t = np.arange(n) / SR
+    sweep = 72 * np.exp(-t * 2.2) + 30
+    body = np.sin(2 * np.pi * np.cumsum(sweep) / SR) * np.exp(-t * 3.2)
+    noise = rng.normal(0, 1, n) * np.exp(-t * 14)
+    alpha = 1 - np.exp(-2 * np.pi * 260 / SR)
+    acc = 0.0
+    thump = np.empty(n)
+    for k in range(n):
+        acc += alpha * (noise[k] - acc)
+        thump[k] = acc
+    return body + thump * 0.7
+
+
+def riser(seconds: float = 2.6) -> np.ndarray:
+    """Swelling noise plus a rising tone, leading into the boom."""
+    n = int(seconds * SR)
+    t = np.arange(n) / SR
+    swell = (t / seconds) ** 2.4
+    noise = rng.normal(0, 1, n)
+    alpha = 1 - np.exp(-2 * np.pi * 1900 / SR)
+    acc = 0.0
+    hiss = np.empty(n)
+    for k in range(n):
+        acc += alpha * (noise[k] - acc)
+        hiss[k] = acc
+    tone_freq = 180 * 2 ** (t / seconds * 1.8)
+    tone = np.sin(2 * np.pi * np.cumsum(tone_freq) / SR)
+    return (hiss * 0.75 + tone * 0.3) * swell
+
+
+def chime(midi: float = 81, seconds: float = 2.6) -> np.ndarray:
+    """Bell-like additive tone for the verdict moment."""
+    n = int(seconds * SR)
+    t = np.arange(n) / SR
+    f = note_hz(midi)
+    out = np.zeros(n)
+    for ratio, amp, decay in ((1.0, 1.0, 2.2), (2.76, 0.4, 4.5), (5.4, 0.18, 7.0)):
+        out += amp * np.sin(2 * np.pi * f * ratio * t) * np.exp(-t * decay)
+    return out * 0.5
+
+
 def place(buf: np.ndarray, clip: np.ndarray, at: float, gain: float = 1.0) -> None:
     i = int(at * SR)
     j = min(i + len(clip), len(buf))
@@ -89,7 +146,7 @@ def lowpass(x: np.ndarray, cutoff: float) -> np.ndarray:
 N = int(DURATION * SR)
 mix = np.zeros(N)
 
-# A-minor ambient progression, 7s per chord: Am9, Fmaj7, Cmaj7, G6 — twice.
+# A-minor ambient progression, 7s per chord: Am9, Fmaj7, Cmaj7add9, G6.
 CHORDS = [
     [57, 64, 67, 71, 76],   # Am9
     [53, 60, 64, 69, 76],   # Fmaj7
@@ -104,27 +161,33 @@ for rep in range(2):
             break
         place(mix, pad_chord(chord, CHORD_LEN + 2.0), at, gain=0.62)
 
-# Loose pentatonic plucks for sparkle, sparse in the intro, denser later.
-PLUCK_NOTES = [76, 79, 81, 84, 88]
-beat = 60 / 82  # 82 bpm feel
-k = 0
+# A composed pentatonic motif on the beat grid (kept sparse before the boom).
+MOTIF = [76, 81, 79, 84, 81, 76, 79, 88]
+step = 0
 t_cursor = 4.0
-while t_cursor < DURATION - 3:
-    density = 0.35 if t_cursor < 14 else 0.62
-    if rng.random() < density:
-        midi = PLUCK_NOTES[k % len(PLUCK_NOTES)] + (12 if rng.random() < 0.12 else 0)
-        place(mix, pluck(midi), t_cursor, gain=0.30 * rng.uniform(0.6, 1.0))
-        k += 1
-    t_cursor += beat * rng.choice([1.0, 1.0, 1.5, 2.0])
-
-# Sub pulse enters with the title reveal (~9.3s) and holds a heartbeat pattern.
-t_cursor = 9.3
 while t_cursor < DURATION - 4:
+    sparse = t_cursor < BOOM_AT
+    if not sparse or step % 2 == 0:
+        midi = MOTIF[step % len(MOTIF)]
+        gain = 0.26 if sparse else 0.32
+        place(mix, pluck(midi), t_cursor, gain=gain * rng.uniform(0.85, 1.0))
+    step += 1
+    t_cursor += BEAT * (2.0 if sparse else rng.choice([1.0, 1.0, 1.5]))
+
+# Cues.
+place(mix, riser(2.6), BOOM_AT - 2.6, gain=0.5)
+place(mix, boom(), BOOM_AT, gain=0.95)
+place(mix, chime(81), CHIME_AT, gain=0.55)
+place(mix, chime(88), CHIME_AT + 0.12, gain=0.3)
+
+# Heartbeat sub, entering after the boom and resting for the outro.
+t_cursor = PULSE_FROM
+while t_cursor < min(PULSE_TO, DURATION - 4):
     place(mix, sub_pulse(33), t_cursor, gain=0.5)
-    t_cursor += beat * 2
+    t_cursor += BEAT * 2
 
 # Gentle glue: soften highs, then normalize with headroom.
-mix = lowpass(mix, cutoff=5200)
+mix = lowpass(mix, cutoff=5600)
 
 # Stereo width via a tiny delay on the right channel.
 delay = int(0.011 * SR)
@@ -134,7 +197,7 @@ stereo = np.stack([left, right], axis=1)
 
 # Master fade in/out.
 fade_in = int(1.2 * SR)
-fade_out = int(3.2 * SR)
+fade_out = int(3.4 * SR)
 stereo[:fade_in] *= np.linspace(0, 1, fade_in)[:, None]
 stereo[-fade_out:] *= np.linspace(1, 0, fade_out)[:, None] ** 1.4
 

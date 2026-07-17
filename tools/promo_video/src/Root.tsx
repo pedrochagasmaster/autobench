@@ -3,13 +3,14 @@ import {
   AbsoluteFill,
   Audio,
   Composition,
-  Sequence,
   interpolate,
   staticFile,
   useCurrentFrame,
 } from "remotion";
+import { TransitionSeries, linearTiming } from "@remotion/transitions";
+import { fade } from "@remotion/transitions/fade";
 
-import { SceneFade } from "./components";
+import { FilmGrain, Vignette } from "./components";
 import { fontsReady } from "./fonts";
 import { COLORS } from "./theme";
 import { FeatureTriptych } from "./scenes/FeatureTriptych";
@@ -24,6 +25,7 @@ import { Verdict } from "./scenes/Verdict";
 void fontsReady;
 
 const FPS = 30;
+const CROSSFADE = 15;
 
 const TIMELINE = [
   { component: Hook, duration: 280 },
@@ -33,33 +35,57 @@ const TIMELINE = [
   { component: PrivacyRules, duration: 200 },
   { component: FeatureTriptych, duration: 168 },
   { component: Verdict, duration: 175 },
-  { component: Outro, duration: 220 },
+  { component: Outro, duration: 230 },
 ] as const;
 
-const TOTAL = TIMELINE.reduce((sum, s) => sum + s.duration, 0);
+// Scenes overlap by CROSSFADE frames, so the total is shorter than the sum.
+const TOTAL =
+  TIMELINE.reduce((sum, s) => sum + s.duration, 0) -
+  CROSSFADE * (TIMELINE.length - 1);
+
+/** Frame at which each scene starts, accounting for crossfade overlap. */
+export const sceneStartFrame = (index: number): number =>
+  TIMELINE.slice(0, index).reduce((sum, s) => sum + s.duration, 0) -
+  CROSSFADE * index;
 
 const Promo: React.FC = () => {
   const frame = useCurrentFrame();
-  const masterFade = interpolate(frame, [TOTAL - 30, TOTAL - 4], [1, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-  let offset = 0;
+  const masterFade =
+    interpolate(frame, [0, 10], [0, 1], {
+      extrapolateRight: "clamp",
+    }) *
+    interpolate(frame, [TOTAL - 28, TOTAL - 4], [1, 0], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    });
   return (
     <AbsoluteFill style={{ backgroundColor: COLORS.bg }}>
       <AbsoluteFill style={{ opacity: masterFade }}>
-        {TIMELINE.map((scene, i) => {
-          const from = offset;
-          offset += scene.duration;
-          const Component = scene.component;
-          return (
-            <Sequence key={i} from={from} durationInFrames={scene.duration}>
-              <SceneFade durationInFrames={scene.duration}>
+        <TransitionSeries>
+          {TIMELINE.flatMap((scene, i) => {
+            const Component = scene.component;
+            const parts = [
+              <TransitionSeries.Sequence
+                key={`scene-${i}`}
+                durationInFrames={scene.duration}
+              >
                 <Component />
-              </SceneFade>
-            </Sequence>
-          );
-        })}
+              </TransitionSeries.Sequence>,
+            ];
+            if (i < TIMELINE.length - 1) {
+              parts.push(
+                <TransitionSeries.Transition
+                  key={`transition-${i}`}
+                  presentation={fade()}
+                  timing={linearTiming({ durationInFrames: CROSSFADE })}
+                />
+              );
+            }
+            return parts;
+          })}
+        </TransitionSeries>
+        <Vignette />
+        <FilmGrain />
       </AbsoluteFill>
       <Audio src={staticFile("audio/soundtrack.wav")} volume={0.85} />
     </AbsoluteFill>

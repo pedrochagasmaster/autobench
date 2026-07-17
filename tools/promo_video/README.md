@@ -6,11 +6,14 @@ is real: the TUI frames are captured from the live application driven by
 Textual's Pilot, and the terminal output comes from an actual
 `benchmark.py share` run on `tests/fixtures/gate_demo.csv`.
 
-The video is ~62 s, 1920x1080 at 30 fps: cold open → wordmark reveal → real
+The video is ~59 s, 1920x1080 at 30 fps: cold open → wordmark reveal → real
 CLI run → real TUI walkthrough → Control 3.2 privacy caps → feature beats →
-`fully_compliant` verdict → closing lockup. The ambient soundtrack is
-synthesized deterministically by `scripts/make_soundtrack.py` (numpy only, no
-licensed audio).
+`fully_compliant` verdict → closing lockup. Scenes crossfade into each other
+and the whole frame carries a subtle vignette and animated film grain. The
+ambient soundtrack is synthesized deterministically by
+`scripts/make_soundtrack.py` (numpy only, no licensed audio) with cue hits —
+a riser/boom under the wordmark reveal and a bell chime on the verdict —
+aligned to the Remotion timeline.
 
 ## Rendering
 

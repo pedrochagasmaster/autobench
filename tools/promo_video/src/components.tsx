@@ -30,22 +30,79 @@ export const Backdrop: React.FC<{ glow?: number }> = ({ glow = 0.5 }) => {
   );
 };
 
-/** Fades the scene in and out at its edges. */
-export const SceneFade: React.FC<{
-  children: React.ReactNode;
-  fadeIn?: number;
-  fadeOut?: number;
-  durationInFrames: number;
-}> = ({ children, fadeIn = 12, fadeOut = 12, durationInFrames }) => {
+/** Subtle animated film grain for a cinematic finish. */
+export const FilmGrain: React.FC<{ opacity?: number }> = ({
+  opacity = 0.05,
+}) => {
   const frame = useCurrentFrame();
-  const opacity =
-    interpolate(frame, [0, fadeIn], [0, 1], {
-      extrapolateRight: "clamp",
-    }) *
-    interpolate(frame, [durationInFrames - fadeOut, durationInFrames], [1, 0], {
-      extrapolateLeft: "clamp",
-    });
-  return <AbsoluteFill style={{ opacity }}>{children}</AbsoluteFill>;
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none", opacity, mixBlendMode: "overlay" }}>
+      <svg width="100%" height="100%">
+        <filter id="promo-grain">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="0.9"
+            numOctaves="2"
+            seed={frame % 200}
+            stitchTiles="stitch"
+          />
+          <feColorMatrix type="saturate" values="0" />
+        </filter>
+        <rect width="100%" height="100%" filter="url(#promo-grain)" />
+      </svg>
+    </AbsoluteFill>
+  );
+};
+
+/** Darkened corners to focus the eye center-frame. */
+export const Vignette: React.FC<{ strength?: number }> = ({
+  strength = 0.42,
+}) => (
+  <AbsoluteFill
+    style={{
+      pointerEvents: "none",
+      background: `radial-gradient(ellipse 78% 68% at 50% 48%, transparent 58%, rgba(0,0,0,${strength}) 100%)`,
+    }}
+  />
+);
+
+/** One word of a headline, rising and un-blurring with a stagger. */
+export const WordRise: React.FC<{
+  words: string;
+  delay?: number;
+  stagger?: number;
+  duration?: number;
+  render?: (word: string, index: number) => React.CSSProperties;
+}> = ({ words, delay = 0, stagger = 4, duration = 22, render }) => {
+  const frame = useCurrentFrame();
+  return (
+    <span style={{ display: "inline" }}>
+      {words.split(" ").map((word, i) => {
+        const start = delay + i * stagger;
+        const p = interpolate(frame, [start, start + duration], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+          easing: (v) => 1 - Math.pow(1 - v, 3.4),
+        });
+        return (
+          <span
+            key={`${word}-${i}`}
+            style={{
+              display: "inline-block",
+              whiteSpace: "pre",
+              opacity: p,
+              transform: `translateY(${(1 - p) * 42}px)`,
+              filter: `blur(${(1 - p) * 12}px)`,
+              ...(render ? render(word, i) : undefined),
+            }}
+          >
+            {word}
+            {"\u00a0"}
+          </span>
+        );
+      })}
+    </span>
+  );
 };
 
 /** Apple-style headline: rises a few px while fading in, with a soft blur settle. */

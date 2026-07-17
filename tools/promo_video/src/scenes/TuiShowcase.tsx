@@ -7,10 +7,13 @@ import {
   useCurrentFrame,
 } from "remotion";
 
-import { Backdrop } from "../components";
+import { Backdrop, WordRise } from "../components";
 import { COLORS, FONTS } from "../theme";
 
 const BEAT = 105;
+// Adjacent beats overlap by this many frames and crossfade, so the scene
+// never dips to black between shots.
+const OVERLAP = 12;
 
 const SHOTS: Array<{ src: string; caption: string; sub: string }> = [
   {
@@ -30,7 +33,7 @@ const SHOTS: Array<{ src: string; caption: string; sub: string }> = [
   },
 ];
 
-/** Real TUI footage floating with slow zoom, Apple product-shot style. */
+/** Real TUI footage as a floating 3D product shot with a sheen sweep. */
 export const TuiShowcase: React.FC = () => {
   const frame = useCurrentFrame();
 
@@ -39,22 +42,28 @@ export const TuiShowcase: React.FC = () => {
       <Backdrop glow={0.6} />
       {SHOTS.map((shot, i) => {
         const start = i * BEAT;
-        const end = start + BEAT;
         const local = frame - start;
-        if (frame < start - 14 || frame > end + 14) {
+        if (local < 0 || local > BEAT + OVERLAP) {
           return null;
         }
         const opacity =
-          interpolate(local, [0, 9], [0, 1], {
+          interpolate(local, [0, OVERLAP], [i === 0 ? 1 : 0, 1], {
             extrapolateLeft: "clamp",
             extrapolateRight: "clamp",
           }) *
-          interpolate(local, [BEAT - 8, BEAT], [1, 0], {
+          interpolate(local, [BEAT, BEAT + OVERLAP], [1, 0], {
             extrapolateLeft: "clamp",
             extrapolateRight: "clamp",
           });
-        const zoom = interpolate(local, [0, BEAT], [1.0, 1.055]);
-        const pan = interpolate(local, [0, BEAT], [10, -10]);
+        const zoom = interpolate(local, [0, BEAT + OVERLAP], [1.0, 1.05]);
+        const pan = interpolate(local, [0, BEAT + OVERLAP], [12, -12]);
+        const tilt = interpolate(local, [0, BEAT + OVERLAP], [7, 2.5], {
+          easing: (v) => 1 - Math.pow(1 - v, 2),
+        });
+        const sheen = interpolate(local, [8, BEAT - 14], [-35, 135], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
         return (
           <AbsoluteFill key={shot.src} style={{ opacity }}>
             <AbsoluteFill
@@ -70,7 +79,7 @@ export const TuiShowcase: React.FC = () => {
                     letterSpacing: "-0.03em",
                   }}
                 >
-                  {shot.caption}
+                  <WordRise words={shot.caption} delay={3} stagger={3} />
                 </div>
                 <div
                   style={{
@@ -79,6 +88,10 @@ export const TuiShowcase: React.FC = () => {
                     fontSize: 33,
                     color: COLORS.textDim,
                     marginTop: 14,
+                    opacity: interpolate(local, [14, 30], [0, 1], {
+                      extrapolateLeft: "clamp",
+                      extrapolateRight: "clamp",
+                    }),
                   }}
                 >
                   {shot.sub}
@@ -89,20 +102,34 @@ export const TuiShowcase: React.FC = () => {
               style={{
                 justifyContent: "flex-end",
                 alignItems: "center",
-                paddingBottom: 0,
+                perspective: 1500,
               }}
             >
               <div
                 style={{
                   width: 1290,
-                  transform: `translateY(${64 + pan}px) scale(${zoom})`,
-                  transformOrigin: "center 20%",
-                  filter: "drop-shadow(0 50px 90px rgba(0,0,0,0.6))",
+                  position: "relative",
+                  transform: `translateY(${64 + pan}px) rotateX(${tilt}deg) scale(${zoom})`,
+                  transformOrigin: "center 18%",
+                  filter: "drop-shadow(0 50px 90px rgba(0,0,0,0.62))",
                 }}
               >
                 <Img
                   src={staticFile(shot.src)}
                   style={{ width: "100%", display: "block" }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    borderRadius: 18,
+                    background: `linear-gradient(115deg, transparent ${
+                      sheen - 14
+                    }%, rgba(255,255,255,0.09) ${sheen}%, transparent ${
+                      sheen + 14
+                    }%)`,
+                    mixBlendMode: "screen",
+                  }}
                 />
               </div>
             </AbsoluteFill>

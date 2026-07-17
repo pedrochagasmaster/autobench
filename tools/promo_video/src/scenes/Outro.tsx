@@ -24,23 +24,41 @@ export const Outro: React.FC = () => {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
+  const breathe = 0.75 + 0.25 * Math.sin(frame / 20);
+  const tracking = interpolate(frame, [0, 90], [-0.02, -0.045], {
+    extrapolateRight: "clamp",
+    easing: (v) => 1 - Math.pow(1 - v, 2),
+  });
 
   return (
     <AbsoluteFill>
       <Backdrop glow={0.8} />
       <Centered>
-        <div
-          style={{
-            fontFamily: FONTS.display,
-            fontWeight: 700,
-            fontSize: 148,
-            letterSpacing: "-0.045em",
-            ...GRADIENT_TEXT,
-            opacity: pop,
-            transform: `scale(${0.9 + pop * 0.1})`,
-          }}
-        >
-          Autobench
+        <div style={{ position: "relative" }}>
+          <div
+            style={{
+              position: "absolute",
+              inset: -70,
+              background: `radial-gradient(closest-side, rgba(120, 92, 255, ${
+                0.2 * breathe
+              }), transparent)`,
+              filter: "blur(32px)",
+            }}
+          />
+          <div
+            style={{
+              fontFamily: FONTS.display,
+              fontWeight: 700,
+              fontSize: 148,
+              letterSpacing: `${tracking}em`,
+              ...GRADIENT_TEXT,
+              opacity: pop,
+              transform: `scale(${0.9 + pop * 0.1})`,
+              position: "relative",
+            }}
+          >
+            Autobench
+          </div>
         </div>
         <RiseIn delay={22} duration={24}>
           <div
