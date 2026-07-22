@@ -9,9 +9,11 @@ logger = logging.getLogger(__name__)
 
 try:
     from scipy.optimize import linprog  # type: ignore
+    from scipy.sparse import csr_matrix, eye, hstack, vstack  # type: ignore
     _SCIPY_AVAILABLE = True
 except ImportError:
     linprog = None
+    csr_matrix = eye = hstack = vstack = None
     _SCIPY_AVAILABLE = False
 
 class LPSolver(PrivacySolver):
@@ -64,24 +66,18 @@ class LPSolver(PrivacySolver):
             return None
         peer_index = {p: i for i, p in enumerate(peers)}
 
-        # Build category vectors v_c in R^P
-        cat_vectors: List[np.ndarray] = []
-        cat_seen = set()
+        # Build category vectors v_c in R^P in one pass. The previous nested
+        # scan was quadratic in the number of peer/category records.
+        cat_vectors_by_key = {}
         for cat in categories:
             key = (cat['dimension'], cat['category'])
-            if key in cat_seen:
+            if cat['peer'] not in peer_index:
                 continue
-            cat_seen.add(key)
-            # Assemble vector for this category
-            v = np.zeros(P, dtype=float)
-            for c in categories:
-                if c['dimension'] == key[0] and c['category'] == key[1]:
-                    # Safer lookup in case peer not in list (shouldn't happen)
-                    if c['peer'] in peer_index:
-                        idx = peer_index[c['peer']]
-                        v[idx] = float(c['category_volume'])
-            if v.sum() > 0:
-                cat_vectors.append(v)
+            vector = cat_vectors_by_key.setdefault(key, np.zeros(P, dtype=float))
+            vector[peer_index[cat['peer']]] += float(cat['category_volume'])
+        cat_vectors: List[np.ndarray] = [
+            vector for vector in cat_vectors_by_key.values() if vector.sum() > 0
+        ]
 
         if not cat_vectors:
             logger.warning("No category volumes found for LP solver.")
@@ -113,8 +109,11 @@ class LPSolver(PrivacySolver):
                     pair_indices.append((i, j))
         K = len(pair_indices)
 
-        # Number of share-cap constraints (one per category per peer)
-        num_cap_constraints = len(cat_vectors) * P
+        category_matrix = np.vstack(cat_vectors)
+        # A zero-volume peer's cap row is always satisfied, so only create the
+        # mathematically active peer/category inequalities.
+        cap_category_indices, cap_peer_indices = np.nonzero(category_matrix > 0)
+        num_cap_constraints = len(cap_category_indices)
 
         # Variables: [m (P), t_plus (P), t_minus (P), s_cap (num_cap_constraints), s_rank (K)]
         n_vars = 3 * P + num_cap_constraints + K
@@ -127,18 +126,15 @@ class LPSolver(PrivacySolver):
         
         # Calculate volume-weighted slack penalties if enabled
         if volume_weighted_penalties:
-            category_volumes = []
-            for v in cat_vectors:
-                cat_vol = float(v.sum())
-                category_volumes.append(cat_vol)
-            
-            total_category_vol = sum(category_volumes)
-            slack_penalties = []
-            for cat_idx, cat_vol in enumerate(category_volumes):
-                vol_weight = (cat_vol / total_category_vol) ** volume_weighting_exponent if total_category_vol > 0 else 1.0
-                for p_idx in range(P):
-                    slack_penalties.append(base_lambda_cap * vol_weight)
-            slack_penalty_array = np.array(slack_penalties, dtype=float)
+            category_volumes = category_matrix.sum(axis=1)
+            total_category_vol = float(category_volumes.sum())
+            if total_category_vol > 0:
+                category_penalties = base_lambda_cap * (
+                    category_volumes / total_category_vol
+                ) ** volume_weighting_exponent
+                slack_penalty_array = category_penalties[cap_category_indices]
+            else:
+                slack_penalty_array = np.full(num_cap_constraints, base_lambda_cap, dtype=float)
         else:
             slack_penalty_array = np.full(num_cap_constraints, base_lambda_cap, dtype=float)
         
@@ -150,50 +146,54 @@ class LPSolver(PrivacySolver):
             np.full(K, rank_preservation_strength, dtype=float)  # s_rank
         ])
 
-        A_ub_rows: List[np.ndarray] = []
-        b_ub: List[float] = []
-
         # This LP encodes max-concentration caps. Tier participant requirements
         # are evaluated after solving because they are count-based, non-linear
         # constraints in the current solver architecture.
         # Share cap constraints
-        cap_idx = 0
-        for v in cat_vectors:
-            for p_idx in range(P):
-                coeff_m = (-cap) * v.copy()
-                coeff_m[p_idx] += v[p_idx]  # (1-cap) * v_p
-                row = np.zeros(n_vars, dtype=float)
-                row[0:P] = coeff_m
-                row[3 * P + cap_idx] = -1.0
-                A_ub_rows.append(row)
-                b_ub.append(0.0)
-                cap_idx += 1
+        cap_coefficients = -cap * category_matrix[cap_category_indices].copy()
+        cap_coefficients[
+            np.arange(num_cap_constraints), cap_peer_indices
+        ] += category_matrix[cap_category_indices, cap_peer_indices]
+        zero_cap_deviation = csr_matrix((num_cap_constraints, 2 * P))
+        zero_cap_rank = csr_matrix((num_cap_constraints, K))
+        cap_rows = hstack(
+            [
+                csr_matrix(cap_coefficients),
+                zero_cap_deviation,
+                -eye(num_cap_constraints, format='csr'),
+                zero_cap_rank,
+            ],
+            format='csr',
+        )
+        cap_rhs = np.zeros(num_cap_constraints, dtype=float)
 
         # Deviation constraints
+        deviation_rows_dense = np.zeros((2 * P, n_vars), dtype=float)
+        deviation_rhs = np.empty(2 * P, dtype=float)
         for p_idx in range(P):
-            row = np.zeros(n_vars, dtype=float)
-            row[p_idx] = 1.0
-            row[P + p_idx] = -1.0
-            A_ub_rows.append(row)
-            b_ub.append(1.0)
-            
-            row = np.zeros(n_vars, dtype=float)
-            row[p_idx] = -1.0
-            row[2 * P + p_idx] = -1.0
-            A_ub_rows.append(row)
-            b_ub.append(-1.0)
+            positive_row = 2 * p_idx
+            negative_row = positive_row + 1
+            deviation_rows_dense[positive_row, p_idx] = 1.0
+            deviation_rows_dense[positive_row, P + p_idx] = -1.0
+            deviation_rhs[positive_row] = 1.0
+            deviation_rows_dense[negative_row, p_idx] = -1.0
+            deviation_rows_dense[negative_row, 2 * P + p_idx] = -1.0
+            deviation_rhs[negative_row] = -1.0
 
         # Rank preservation
+        rank_rows_dense = np.zeros((K, n_vars), dtype=float)
         for k, (i, j) in enumerate(pair_indices):
-            row = np.zeros(n_vars, dtype=float)
-            row[i] = -peer_vol_arr[i]
-            row[j] = peer_vol_arr[j]
-            row[3 * P + num_cap_constraints + k] = 1.0
-            A_ub_rows.append(row)
-            b_ub.append(0.0)
+            rank_rows_dense[k, i] = -peer_vol_arr[i]
+            rank_rows_dense[k, j] = peer_vol_arr[j]
+            rank_rows_dense[k, 3 * P + num_cap_constraints + k] = 1.0
 
-        A_ub = np.vstack(A_ub_rows) if A_ub_rows else None
-        b_ub_arr = np.array(b_ub, dtype=float) if b_ub else None
+        A_ub = vstack(
+            [cap_rows, csr_matrix(deviation_rows_dense), csr_matrix(rank_rows_dense)],
+            format='csr',
+        )
+        b_ub_arr = np.concatenate(
+            [cap_rhs, deviation_rhs, np.zeros(K, dtype=float)]
+        )
 
         # Bounds
         bounds: List[Tuple[float, Optional[float]]] = []
@@ -256,7 +256,7 @@ class LPSolver(PrivacySolver):
             'lambda_cap': base_lambda_cap,
             'volume_weighted': volume_weighted_penalties,
             'num_vars': n_vars,
-            'num_constraints': len(b_ub)
+            'num_constraints': int(A_ub.shape[0])
         }
 
         # Final rescale

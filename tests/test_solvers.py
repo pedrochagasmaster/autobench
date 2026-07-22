@@ -38,6 +38,27 @@ def _weighted_shares(volumes_by_peer: Dict[str, float], weights: Dict[str, float
 
 @unittest.skipUnless(_SCIPY_AVAILABLE, "SciPy required for LP solver")
 class TestLPSolver(unittest.TestCase):
+    def test_lp_omits_inactive_zero_volume_cap_rows(self) -> None:
+        peers = ["A", "B", "C"]
+        categories = _build_categories("dim1", "cat1", {"A": 40.0, "B": 60.0})
+        result = LPSolver().solve(
+            SolverRequest(
+                peers=peers,
+                categories=categories,
+                max_concentration=60.0,
+                peer_volumes={"A": 40.0, "B": 60.0, "C": 10.0},
+                tolerance=0.0,
+                rank_preservation_strength=0.0,
+                min_weight=0.5,
+                max_weight=2.0,
+            )
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        # 2 active cap rows + 6 deviation rows + 3 all-pairs rank rows.
+        self.assertEqual(result.stats["num_constraints"], 11)
+
     def test_lp_solver_respects_caps(self) -> None:
         peers = ["A", "B", "C"]
         peer_volumes = {"A": 100.0, "B": 80.0, "C": 60.0}
