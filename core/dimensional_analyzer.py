@@ -670,27 +670,25 @@ class DimensionalAnalyzer:
 
         constraint_stats = self._build_constraint_stats(dim_categories, peers, peer_volumes)
 
-        # Build unique constraint keys (dimension, category, time_period)
-        unique_keys = set()
+        # Build every constraint in one pass. Re-filtering the complete list
+        # for every key is quadratic for time-aware production datasets.
+        constraints: Dict[Tuple[str, Any, Optional[Any]], Dict[str, float]] = {}
         for cat in dim_categories:
             key = (cat['dimension'], cat['category'], cat.get('time_period'))
-            unique_keys.add(key)
+            peer_map = constraints.get(key)
+            if peer_map is None:
+                peer_map = {peer: 0.0 for peer in peers}
+                constraints[key] = peer_map
+            if cat['peer'] in peer_map:
+                # Preserve the existing last-record-wins behavior.
+                peer_map[cat['peer']] = float(cat.get('category_volume', 0.0))
 
-        for key in unique_keys:
+        for key, category_peer_volumes in constraints.items():
             dim, category, time_period = key
-            matching_cats = [
-                c for c in dim_categories
-                if c['dimension'] == dim
-                and c['category'] == category
-                and c.get('time_period') == time_period
-            ]
-            peer_volumes = {p: 0.0 for p in peers}
-            for cat in matching_cats:
-                peer_volumes[cat['peer']] = float(cat.get('category_volume', 0.0))
 
             stats = constraint_stats.get(key)
             enforce, reason, thresholds, relaxed = self._assess_additional_constraints_applicability(
-                rule_name, dim, peer_volumes, stats
+                rule_name, dim, category_peer_volumes, stats
             )
             if not enforce:
                 if reason == 'low_peers':
@@ -706,18 +704,25 @@ class DimensionalAnalyzer:
             if relaxed:
                 self.dynamic_constraint_stats['relaxed'] += 1
 
-            total_weighted = sum(peer_volumes[p] * weights.get(p, 1.0) for p in peers)
+            total_weighted = sum(
+                category_peer_volumes[p] * weights.get(p, 1.0) for p in peers
+            )
             if total_weighted <= 0:
                 shares = [0.0 for _ in peers]
             else:
                 shares = [
-                    (peer_volumes[p] * weights.get(p, 1.0) / total_weighted * 100.0)
+                    (
+                        category_peer_volumes[p]
+                        * weights.get(p, 1.0)
+                        / total_weighted
+                        * 100.0
+                    )
                     for p in peers
                 ]
 
             passed, details = self._evaluate_additional_constraints(shares, rule_name, thresholds)
             if not passed:
-                participant_count = self._participant_count(peer_volumes)
+                participant_count = self._participant_count(category_peer_volumes)
                 top_shares = sorted(shares, reverse=True)[:3]
                 violations.append({
                     'Dimension': dim,

@@ -71,23 +71,25 @@ class HeuristicSolver(PrivacySolver):
         # Build constraint stats
         constraint_stats = DiagnosticsEngine.build_constraint_stats(categories, peers, peer_volumes)
         
-        # Identify unique constraints
-        unique_keys = set()
+        # Build each constraint once.  The former implementation rescanned the
+        # complete category list for every unique key, which is quadratic and
+        # makes production-sized time-aware analyses appear to hang before the
+        # optimizer even starts.
+        constraint_volumes: Dict[Any, np.ndarray] = {}
         for cat in categories:
             key = (cat['dimension'], cat['category'], cat.get('time_period'))
-            unique_keys.add(key)
-        unique_keys_list = list(unique_keys)
-        
-        # Map constraints
-        constraint_map = {}
-        for key in unique_keys_list:
-            dim, category, time_period = key
-            constraint_map[key] = [
-                i for i, c in enumerate(categories)
-                if c['dimension'] == dim 
-                and c['category'] == category 
-                and c.get('time_period') == time_period
-            ]
+            row = constraint_volumes.get(key)
+            if row is None:
+                row = np.zeros(len(peers), dtype=float)
+                constraint_volumes[key] = row
+            peer_pos = peer_index.get(cat['peer'])
+            if peer_pos is not None:
+                # Preserve the previous last-record-wins behavior for duplicate
+                # peer/key records.
+                row[peer_pos] = float(cat.get('category_volume', 0.0))
+
+        unique_keys_list = list(constraint_volumes)
+        volume_matrix = np.vstack([constraint_volumes[key] for key in unique_keys_list])
 
         if not rule_name:
             rule_name = PrivacyValidator.select_rule(len(peers), merchant_mode=merchant_mode)
@@ -107,17 +109,21 @@ class HeuristicSolver(PrivacySolver):
             shortfall = max(min_entities - len(peers), 0)
             shortfall_penalty = float(shortfall * shortfall * 100.0)
 
-        # Pre-calculate constraint data
-        constraint_data: Dict[Any, Dict[str, Any]] = {}
-        for key, cat_indices in constraint_map.items():
+        # Pre-calculate constraint data and encode it as arrays so every
+        # L-BFGS-B objective evaluation is vectorized across constraints.
+        rep_weights = np.ones(len(unique_keys_list), dtype=float)
+        enforce_mask = np.zeros(len(unique_keys_list), dtype=bool)
+        thresholds_by_row: List[List[Tuple[int, float]]] = []
+        for row_idx, key in enumerate(unique_keys_list):
             dim, _, _ = key
-            matching_cats = [categories[i] for i in cat_indices]
-            peer_cat_vols = {p: 0.0 for p in peers}
-            for cat in matching_cats:
-                peer_cat_vols[cat['peer']] = float(cat.get('category_volume', 0.0))
+            peer_cat_vols = {
+                peer: float(volume_matrix[row_idx, peer_index[peer]])
+                for peer in peers
+            }
 
             stats = constraint_stats.get(key)
             rep_weight = self._representativeness_weight(stats)
+            rep_weights[row_idx] = rep_weight
 
             enforce = False
             thresholds = None
@@ -126,43 +132,70 @@ class HeuristicSolver(PrivacySolver):
                     rule_name, dim, peer_cat_vols, stats, enforce_additional, dynamic_enabled, time_column
                 )
 
-            constraint_data[key] = {
-                'peer_cat_vols': peer_cat_vols,
-                'rep_weight': rep_weight,
-                'enforce': enforce,
-                'thresholds': thresholds
-            }
+            enforce_mask[row_idx] = enforce
+            if enforce:
+                if thresholds is None:
+                    thresholds = PrivacyValidator.get_penalty_thresholds(rule_name)
+                tiers = sorted((thresholds or {}).items(), key=lambda item: item[1][1], reverse=True)
+                cumulative_count = 0
+                row_thresholds: List[Tuple[int, float]] = []
+                for _tier_name, (min_count, threshold) in tiers:
+                    ordinal_idx = cumulative_count + int(min_count) - 1
+                    row_thresholds.append((ordinal_idx, float(threshold)))
+                    cumulative_count += int(min_count)
+                thresholds_by_row.append(row_thresholds)
+            else:
+                thresholds_by_row.append([])
+
+        # Group each tier ordinal into vector lookups. Rules currently expose
+        # at most two tiers, but this representation remains generic.
+        tier_lookups: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        max_tiers = max((len(tiers) for tiers in thresholds_by_row), default=0)
+        for tier_pos in range(max_tiers):
+            rows: List[int] = []
+            ordinals: List[int] = []
+            thresholds: List[float] = []
+            for row_idx, tiers in enumerate(thresholds_by_row):
+                if tier_pos < len(tiers):
+                    ordinal_idx, threshold = tiers[tier_pos]
+                    rows.append(row_idx)
+                    ordinals.append(ordinal_idx)
+                    thresholds.append(threshold)
+            tier_lookups.append(
+                (
+                    np.asarray(rows, dtype=int),
+                    np.asarray(ordinals, dtype=int),
+                    np.asarray(thresholds, dtype=float),
+                )
+            )
 
         def objective(weight_array):
-            violation_penalty = 0.0
-            additional_penalty = 0.0
             max_share = max_concentration + tolerance
-            
-            for key in constraint_map.keys():
-                data = constraint_data[key]
-                peer_cat_vols = data['peer_cat_vols']
-                rep_weight = data['rep_weight']
+            weighted = volume_matrix * np.asarray(weight_array, dtype=float)
+            totals = weighted.sum(axis=1)
+            shares = np.divide(
+                weighted * 100.0,
+                totals[:, None],
+                out=np.zeros_like(weighted),
+                where=totals[:, None] > 0,
+            )
 
-                total_weighted = sum(peer_cat_vols[p] * weight_array[peer_index[p]] for p in peers)
-                shares = []
+            excess = np.maximum(shares - max_share, 0.0)
+            violation_penalty = float(np.sum(rep_weights[:, None] * excess * excess))
 
-                if total_weighted > 0:
-                    for p in peers:
-                        cat_vol_weighted = peer_cat_vols[p] * weight_array[peer_index[p]]
-                        adjusted_share = (cat_vol_weighted / total_weighted * 100.0)
-                        shares.append(adjusted_share)
-                        if adjusted_share > max_share: # Simple violation check
-                            excess = adjusted_share - max_share
-                            violation_penalty += rep_weight * (excess ** 2)
-                else:
-                    shares = [0.0 for _ in peers]
-
-                if enforce_additional and rule_name:
-                    if not min_entities_check:
-                        additional_penalty += shortfall_penalty
-                    elif data['enforce']:
-                        additional_penalty += rep_weight * self._additional_constraints_penalty(
-                            shares, rule_name, data['thresholds']
+            additional_penalty = 0.0
+            if enforce_additional and rule_name:
+                if not min_entities_check:
+                    additional_penalty = shortfall_penalty * len(unique_keys_list)
+                elif tier_lookups:
+                    shares_desc = np.sort(shares, axis=1)[:, ::-1]
+                    for rows, ordinals, thresholds in tier_lookups:
+                        if rows.size == 0:
+                            continue
+                        observed = shares_desc[rows, ordinals]
+                        shortfalls = np.maximum(thresholds - observed, 0.0)
+                        additional_penalty += float(
+                            np.sum(rep_weights[rows] * shortfalls * shortfalls)
                         )
             
             deviation_penalty = 0.0
@@ -238,24 +271,27 @@ class HeuristicSolver(PrivacySolver):
         residual_cap_violation = False
         residual_additional_violation = False
         max_share = max_concentration + tolerance
-        for key in constraint_map.keys():
-            data = constraint_data[key]
-            peer_cat_vols = data['peer_cat_vols']
-            total_weighted = sum(peer_cat_vols[p] * optimized_weights[p] for p in peers)
-            shares = []
-            if total_weighted > 0:
-                for p in peers:
-                    adjusted_share = (peer_cat_vols[p] * optimized_weights[p] / total_weighted) * 100.0
-                    shares.append(adjusted_share)
-                    if adjusted_share > max_share + 1e-9:
-                        residual_cap_violation = True
-            if enforce_additional and rule_name:
-                if not min_entities_check:
-                    residual_additional_violation = True
-                elif data['enforce']:
-                    passed, _details = PrivacyValidator.evaluate_additional_constraints(shares, rule_name)
+        optimized_array = np.asarray([optimized_weights[p] for p in peers], dtype=float)
+        weighted = volume_matrix * optimized_array
+        totals = weighted.sum(axis=1)
+        shares = np.divide(
+            weighted * 100.0,
+            totals[:, None],
+            out=np.zeros_like(weighted),
+            where=totals[:, None] > 0,
+        )
+        residual_cap_violation = bool(np.any(shares > max_share + 1e-9))
+        if enforce_additional and rule_name:
+            if not min_entities_check:
+                residual_additional_violation = True
+            else:
+                for row_idx in np.flatnonzero(enforce_mask):
+                    passed, _details = PrivacyValidator.evaluate_additional_constraints(
+                        shares[row_idx].tolist(), rule_name
+                    )
                     if not passed:
                         residual_additional_violation = True
+                        break
 
         success = bool(result.success)
         if residual_cap_violation or residual_additional_violation:

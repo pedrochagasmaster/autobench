@@ -488,12 +488,29 @@ class GlobalWeightOptimizer:
 
         dimensions_with_violations: List[str] = []
 
+        # Precompute denominators once. The previous validation rescanned all
+        # categories for each peer/category record, which is quadratic and can
+        # dominate the complete solve after weights have already converged.
+        broad_totals: Dict[Tuple[Any, Any], float] = {}
+        timed_totals: Dict[Tuple[Any, Any, Any], float] = {}
+        categories_by_peer: Dict[str, List[Dict[str, Any]]] = {
+            peer: [] for peer in problem.peers
+        }
+        for cat in all_categories:
+            peer = cat["peer"]
+            weighted_volume = cat["category_volume"] * weights[peer]
+            broad_key = (cat["dimension"], cat["category"])
+            broad_totals[broad_key] = broad_totals.get(broad_key, 0.0) + weighted_volume
+            if "time_period" in cat:
+                timed_key = (cat["dimension"], cat["category"], cat.get("time_period"))
+                timed_totals[timed_key] = timed_totals.get(timed_key, 0.0) + weighted_volume
+            if peer in categories_by_peer:
+                categories_by_peer[peer].append(cat)
+
         for peer in sorted(problem.peers, key=lambda peer_name: weights[peer_name], reverse=True):
             peer_max_share = 0.0
             peer_violation_dims: List[str] = []
-            for cat in all_categories:
-                if cat["peer"] != peer:
-                    continue
+            for cat in categories_by_peer.get(peer, []):
 
                 if analyzer.time_column and analyzer.consistent_weights:
                     dim_name = cat["dimension"]
@@ -515,24 +532,15 @@ class GlobalWeightOptimizer:
 
                 category_vol_weighted = cat["category_volume"] * weights[peer]
                 if "time_period" in cat:
-                    matching_cats = [
-                        candidate
-                        for candidate in all_categories
-                        if candidate["dimension"] == cat["dimension"]
-                        and candidate["category"] == cat["category"]
-                        and candidate.get("time_period") == cat.get("time_period")
-                    ]
+                    total_weighted = timed_totals.get(
+                        (cat["dimension"], cat["category"], cat.get("time_period")),
+                        0.0,
+                    )
                 else:
-                    matching_cats = [
-                        candidate
-                        for candidate in all_categories
-                        if candidate["dimension"] == cat["dimension"]
-                        and candidate["category"] == cat["category"]
-                    ]
-
-                total_weighted = sum(
-                    candidate["category_volume"] * weights[candidate["peer"]] for candidate in matching_cats
-                )
+                    total_weighted = broad_totals.get(
+                        (cat["dimension"], cat["category"]),
+                        0.0,
+                    )
                 adjusted_share = (category_vol_weighted / total_weighted * 100) if total_weighted > 0 else 0.0
                 peer_max_share = max(peer_max_share, adjusted_share)
 
