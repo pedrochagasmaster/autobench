@@ -230,6 +230,7 @@
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { padding: 10px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { background: var(--surface-soft); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); }
+    th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
     tr:last-child td { border-bottom: 0; }
 
     .checks { list-style: none; padding: 0; }
@@ -520,6 +521,99 @@ print(artifacts.analysis_output_file)</code></pre></div>
 Target,2026-01,CREDIT,POS,120000,120000,112800,84
 Peer A,2026-01,CREDIT,POS,98000,98000,91630,71
 Peer B,2026-01,CREDIT,POS,105000,105000,98700,76</code></pre></div>
+
+        <h3>Example input table</h3>
+        <p>
+          You can also include combined dimension columns in the same file.
+          Here is a small Share-mode example with a <code>card_type_channel</code> break:
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>issuer_name</th>
+                <th>year_month</th>
+                <th>card_type</th>
+                <th>channel</th>
+                <th>card_type_channel</th>
+                <th class="num">txn_cnt</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Target</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>POS</td>
+                <td>CREDIT + POS</td>
+                <td class="num">120000</td>
+              </tr>
+              <tr>
+                <td>Target</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>ONLINE</td>
+                <td>CREDIT + ONLINE</td>
+                <td class="num">80000</td>
+              </tr>
+              <tr>
+                <td>Peer A</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>POS</td>
+                <td>CREDIT + POS</td>
+                <td class="num">98000</td>
+              </tr>
+              <tr>
+                <td>Peer A</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>ONLINE</td>
+                <td>CREDIT + ONLINE</td>
+                <td class="num">72000</td>
+              </tr>
+              <tr>
+                <td>Peer B</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>POS</td>
+                <td>CREDIT + POS</td>
+                <td class="num">105000</td>
+              </tr>
+              <tr>
+                <td>Peer B</td>
+                <td>2026-01</td>
+                <td>CREDIT</td>
+                <td>ONLINE</td>
+                <td>CREDIT + ONLINE</td>
+                <td class="num">76000</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>One way to build that shape from row-level (or finer) data:</p>
+        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>SELECT
+    issuer_name,
+    year_month,
+    card_type,
+    channel,
+    CONCAT(card_type, ' + ', channel) AS card_type_channel,
+    SUM(txn_cnt) AS txn_cnt
+FROM dados
+GROUP BY
+    issuer_name,
+    year_month,
+    card_type,
+    channel;</code></pre></div>
+        <div class="note">
+          <p>
+            The <code>card_type_channel</code> column is a combined break. It enters the same
+            optimization as the other dimensions and uses the same weight for each player.
+            Pass it as an extra dimension (for example
+            <code>--dimensions card_type channel card_type_channel</code>).
+          </p>
+        </div>
+
         <p>Rules that cause most first failures:</p>
         <ul>
           <li><strong>Entity names are case-sensitive.</strong> <code>Target</code> and <code>target</code> are different entities.</li>
