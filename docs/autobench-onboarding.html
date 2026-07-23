@@ -3,1037 +3,477 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Autobench onboarding, feature guide, use cases, and first successful run.">
-  <title>Autobench — Start Here</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <meta name="description" content="Autobench onboarding: what it does, how to run the demo, and how to use your own data.">
+  <title>Autobench — Getting Started</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f1e7;
-      --bg-grid: rgba(30, 58, 95, .045);
-      --surface: #fffdf8;
-      --surface-soft: #f0eadf;
-      --surface-recessed: #e9e2d6;
-      --border: rgba(34, 45, 56, .14);
-      --border-strong: rgba(34, 45, 56, .25);
-      --text: #202a31;
-      --text-dim: #617078;
-      --navy: #1e3a5f;
-      --navy-soft: #dfe8ef;
-      --gold: #c38a19;
-      --gold-soft: #f4e8c9;
-      --sage: #54765d;
-      --sage-soft: #e0e9df;
-      --terracotta: #a94d2e;
-      --terracotta-soft: #f4dfd6;
-      --danger: #9b3a30;
-      --danger-soft: #f6dfdc;
-      --shadow: 0 18px 60px rgba(46, 39, 27, .10);
-      --font-display: "Fraunces", Georgia, serif;
-      --font-body: "DM Sans", "Segoe UI", sans-serif;
-      --font-mono: "Fira Code", Consolas, monospace;
+      --bg: #f7f5f0;
+      --surface: #ffffff;
+      --surface-soft: #f0ede6;
+      --code-bg: #eceae3;
+      --border: rgba(35, 45, 55, .16);
+      --border-strong: rgba(35, 45, 55, .30);
+      --text: #21292f;
+      --text-dim: #5d6b73;
+      --accent: #1e3a5f;
+      --accent-soft: #e2e9ef;
+      --good: #47684f;
+      --good-soft: #e3ebe2;
+      --warn: #9b3a30;
+      --warn-soft: #f6e2df;
+      --font-body: system-ui, -apple-system, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, "Cascadia Code", Consolas, Menlo, monospace;
     }
 
     [data-theme="dark"] {
       color-scheme: dark;
-      --bg: #151a1e;
-      --bg-grid: rgba(255, 255, 255, .035);
-      --surface: #1d2429;
-      --surface-soft: #242d32;
-      --surface-recessed: #12171a;
-      --border: rgba(255, 255, 255, .10);
-      --border-strong: rgba(255, 255, 255, .20);
-      --text: #edf0e9;
-      --text-dim: #a8b1b3;
-      --navy: #8eb0d0;
-      --navy-soft: #223442;
-      --gold: #e6b950;
-      --gold-soft: #403722;
-      --sage: #9abc9e;
-      --sage-soft: #26372d;
-      --terracotta: #e48e6e;
-      --terracotta-soft: #402b25;
-      --danger: #ed9488;
-      --danger-soft: #422a29;
-      --shadow: 0 18px 60px rgba(0, 0, 0, .28);
+      --bg: #171c20;
+      --surface: #1e262b;
+      --surface-soft: #242e34;
+      --code-bg: #12181c;
+      --border: rgba(255, 255, 255, .12);
+      --border-strong: rgba(255, 255, 255, .24);
+      --text: #e8ecee;
+      --text-dim: #a3aeb4;
+      --accent: #8fb3d4;
+      --accent-soft: #22343f;
+      --good: #97bb9d;
+      --good-soft: #263630;
+      --warn: #e69488;
+      --warn-soft: #402b28;
     }
 
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      min-height: 100vh;
+      background: var(--bg);
       color: var(--text);
       font-family: var(--font-body);
-      line-height: 1.65;
-      background:
-        linear-gradient(var(--bg-grid) 1px, transparent 1px),
-        linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px),
-        radial-gradient(circle at 82% 8%, var(--gold-soft), transparent 24rem),
-        var(--bg);
-      background-size: 32px 32px, 32px 32px, auto, auto;
-      transition: background-color .2s ease, color .2s ease;
+      font-size: 16px;
+      line-height: 1.6;
     }
 
-    a { color: var(--navy); }
+    a { color: var(--accent); }
     button { font: inherit; }
-    code, pre { font-family: var(--font-mono); }
-    :focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+    code { font-family: var(--font-mono); font-size: .92em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+    pre code { background: none; padding: 0; }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 
     .page {
-      width: min(1440px, 100%);
+      width: min(1080px, 100%);
       margin: 0 auto;
       display: grid;
-      grid-template-columns: 196px minmax(0, 1fr);
-      gap: 0 46px;
-      padding: 0 44px 80px;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 0 40px;
+      padding: 0 28px 72px;
     }
 
     .toc {
       position: sticky;
-      top: 24px;
+      top: 0;
       align-self: start;
-      grid-row: 1 / -1;
-      max-height: calc(100dvh - 48px);
+      max-height: 100dvh;
       overflow-y: auto;
-      padding: 25px 0;
+      padding: 28px 0;
+      font-size: 13px;
     }
 
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 24px;
+    .toc-brand {
+      display: block;
+      margin-bottom: 16px;
+      font-weight: 700;
+      font-size: 15px;
       color: var(--text);
       text-decoration: none;
-      font-weight: 700;
-      letter-spacing: -.02em;
     }
 
-    .brand-mark {
-      width: 32px;
-      height: 32px;
-      display: grid;
-      place-items: center;
-      border: 1px solid var(--border-strong);
-      border-radius: 9px;
-      background: var(--navy);
-      color: var(--surface);
-      font: 600 13px/1 var(--font-mono);
-      box-shadow: 4px 4px 0 var(--gold);
-    }
-
-    .toc-title {
-      padding: 0 0 10px;
-      margin: 0 0 8px;
-      color: var(--text-dim);
-      border-bottom: 1px solid var(--border);
-      font: 600 9px/1.4 var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 1.8px;
-    }
-
-    .toc a:not(.brand) {
+    .toc a:not(.toc-brand) {
       display: block;
-      margin-bottom: 2px;
-      padding: 6px 9px;
+      padding: 5px 8px;
+      margin-left: -8px;
       color: var(--text-dim);
-      border-left: 2px solid transparent;
-      border-radius: 0 6px 6px 0;
-      font-size: 12px;
-      line-height: 1.35;
+      border-radius: 6px;
       text-decoration: none;
-      transition: color .15s, background .15s, border-color .15s;
     }
 
-    .toc a:hover { color: var(--text); background: var(--surface-soft); }
-    .toc a.active { color: var(--text); border-left-color: var(--gold); background: var(--gold-soft); }
+    .toc a:not(.toc-brand):hover { color: var(--text); background: var(--surface-soft); }
 
     .theme-toggle {
-      width: 100%;
-      margin-top: 20px;
-      padding: 8px 10px;
+      margin-top: 18px;
+      padding: 6px 10px;
       color: var(--text-dim);
       background: transparent;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       cursor: pointer;
-      font: 500 11px/1.3 var(--font-mono);
-      text-align: left;
+      font-size: 12px;
     }
 
-    .theme-toggle:hover { color: var(--text); background: var(--surface-soft); }
-    main { min-width: 0; }
+    .theme-toggle:hover { color: var(--text); }
 
-    .hero {
+    main { min-width: 0; padding-top: 40px; }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(30px, 5vw, 40px);
+      line-height: 1.15;
+      letter-spacing: -.02em;
+    }
+
+    .lead { margin: 0 0 8px; font-size: 18px; color: var(--text-dim); max-width: 640px; }
+
+    section { margin-top: 56px; scroll-margin-top: 20px; }
+    h2 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      letter-spacing: -.01em;
+    }
+    .section-note { margin: 0 0 18px; color: var(--text-dim); }
+
+    h3 { margin: 22px 0 8px; font-size: 17px; }
+
+    ul, ol { margin: 0 0 14px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+    p { margin: 0 0 14px; }
+
+    .code-wrap {
       position: relative;
-      min-height: 690px;
-      display: grid;
-      align-content: center;
-      padding: 90px 5vw 72px;
-      overflow: hidden;
+      margin: 10px 0 16px;
       border: 1px solid var(--border);
-      border-top: 0;
-      border-radius: 0 0 28px 28px;
-      background:
-        linear-gradient(135deg, color-mix(in srgb, var(--surface) 88%, var(--navy) 12%), var(--surface) 55%);
-      box-shadow: var(--shadow);
+      border-radius: 8px;
+      background: var(--code-bg);
+      overflow: hidden;
     }
 
-    .hero::after {
-      content: "";
-      position: absolute;
-      width: 330px;
-      height: 330px;
-      right: -120px;
-      top: -100px;
-      border: 56px solid var(--gold-soft);
-      border-radius: 50%;
-      opacity: .72;
-    }
-
-    .eyebrow, .section-kicker {
-      color: var(--terracotta);
-      font: 600 11px/1.4 var(--font-mono);
-      letter-spacing: 1.7px;
-      text-transform: uppercase;
-    }
-
-    .hero h1 {
-      max-width: 860px;
-      margin: 22px 0 24px;
-      font: 700 clamp(52px, 7vw, 104px)/.92 var(--font-display);
-      letter-spacing: -.055em;
-    }
-
-    .hero h1 em {
-      color: var(--navy);
-      font-style: normal;
-      text-decoration: underline;
-      text-decoration-color: var(--gold);
-      text-decoration-thickness: .09em;
-      text-underline-offset: .10em;
-    }
-
-    .hero-lead {
-      max-width: 730px;
+    pre {
       margin: 0;
+      padding: 14px 58px 14px 14px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .copy {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      padding: 4px 8px;
       color: var(--text-dim);
-      font-size: clamp(18px, 2vw, 24px);
-      line-height: 1.55;
-    }
-
-    .hero-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 34px;
-    }
-
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-height: 46px;
-      padding: 0 18px;
-      border: 1px solid var(--navy);
-      border-radius: 9px;
-      color: var(--surface);
-      background: var(--navy);
-      font-weight: 700;
-      text-decoration: none;
-      box-shadow: 4px 4px 0 var(--gold);
-      transition: transform .15s, box-shadow .15s;
-    }
-
-    .button:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 var(--gold); }
-    .button.secondary { color: var(--text); background: var(--surface); box-shadow: none; border-color: var(--border-strong); }
-
-    .hero-proof {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 1px;
-      max-width: 790px;
-      margin-top: 52px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
-      background: var(--border);
-    }
-
-    .proof-item { padding: 16px 18px; background: var(--surface); }
-    .proof-item strong { display: block; color: var(--navy); font: 700 15px/1.2 var(--font-mono); }
-    .proof-item span { color: var(--text-dim); font-size: 12px; }
-
-    .section { padding: 100px 1vw 10px; scroll-margin-top: 24px; }
-    .section-head { max-width: 840px; margin-bottom: 38px; }
-    .section h2 {
-      margin: 10px 0 14px;
-      font: 700 clamp(38px, 4.5vw, 66px)/1 var(--font-display);
-      letter-spacing: -.04em;
-    }
-
-    .section-intro { margin: 0; color: var(--text-dim); font-size: 18px; }
-    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-
-    .card {
-      position: relative;
-      padding: 26px;
-      border: 1px solid var(--border);
-      border-radius: 14px;
       background: var(--surface);
-    }
-
-    .card-number {
-      display: inline-grid;
-      width: 34px;
-      height: 34px;
-      place-items: center;
-      margin-bottom: 18px;
-      color: var(--navy);
-      border: 1px solid var(--border-strong);
-      border-radius: 50%;
-      background: var(--navy-soft);
-      font: 600 12px/1 var(--font-mono);
-    }
-
-    .card h3 { margin: 0 0 8px; font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
-    .card p { margin: 0; color: var(--text-dim); font-size: 14px; }
-
-    .flow {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 24px;
-    }
-
-    .flow-step {
-      position: relative;
-      min-height: 174px;
-      padding: 20px;
-      border-top: 4px solid var(--navy);
-      border-radius: 5px 5px 12px 12px;
-      background: var(--surface);
-      box-shadow: 0 8px 28px rgba(26, 39, 48, .06);
-    }
-
-    .flow-step:not(:last-child)::after {
-      content: "→";
-      position: absolute;
-      z-index: 2;
-      right: -18px;
-      top: 66px;
-      width: 26px;
-      color: var(--gold);
-      font: 700 22px/1 var(--font-mono);
-      text-align: center;
-    }
-
-    .flow-step:nth-child(2) { border-color: var(--terracotta); }
-    .flow-step:nth-child(3) { border-color: var(--gold); }
-    .flow-step:nth-child(4) { border-color: var(--sage); }
-    .flow-step:nth-child(5) { border-color: var(--navy); }
-    .flow-step small { color: var(--text-dim); font: 500 10px/1.4 var(--font-mono); text-transform: uppercase; letter-spacing: 1px; }
-    .flow-step h3 { margin: 15px 0 7px; font-size: 17px; }
-    .flow-step p { margin: 0; color: var(--text-dim); font-size: 13px; line-height: 1.5; }
-
-    .callout {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 18px;
-      margin-top: 22px;
-      padding: 20px 22px;
       border: 1px solid var(--border);
-      border-left: 5px solid var(--gold);
-      border-radius: 10px;
-      background: var(--gold-soft);
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 11px;
     }
 
-    .callout-icon { color: var(--gold); font: 700 22px/1 var(--font-mono); }
-    .callout strong { display: block; margin-bottom: 3px; }
-    .callout p { margin: 0; color: var(--text-dim); font-size: 14px; }
-    .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
-    .callout.danger .callout-icon { color: var(--danger); }
+    .copy:hover { color: var(--text); }
+    .copy.copied { color: var(--good); border-color: var(--good); }
 
-    .use-case {
-      min-height: 250px;
-      display: flex;
-      flex-direction: column;
-      transition: transform .18s ease, border-color .18s ease;
-    }
-
-    .use-case:hover { transform: translateY(-4px); border-color: var(--border-strong); }
-    .use-case .tag { align-self: flex-start; }
-    .use-case h3 { margin-top: 18px; }
-    .use-case .best-for { margin-top: auto; padding-top: 22px; color: var(--text); font-size: 13px; }
-    .use-case .best-for strong { color: var(--sage); }
-
-    .tag {
-      display: inline-flex;
-      align-items: center;
-      min-height: 25px;
-      padding: 0 9px;
-      border-radius: 99px;
-      color: var(--navy);
-      background: var(--navy-soft);
-      font: 600 10px/1 var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: .6px;
-    }
-
-    .tag.gold { color: var(--gold); background: var(--gold-soft); }
-    .tag.sage { color: var(--sage); background: var(--sage-soft); }
-    .tag.terra { color: var(--terracotta); background: var(--terracotta-soft); }
-
-    .checklist {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .checklist li {
-      position: relative;
-      min-height: 76px;
-      padding: 17px 18px 17px 52px;
+    .note, .warning {
+      margin: 14px 0;
+      padding: 12px 14px;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface);
+      border-left: 4px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent-soft);
       font-size: 14px;
     }
-
-    .checklist li::before {
-      content: "✓";
-      position: absolute;
-      left: 18px;
-      top: 17px;
-      width: 22px;
-      height: 22px;
-      display: grid;
-      place-items: center;
-      border-radius: 50%;
-      color: var(--surface);
-      background: var(--sage);
-      font: 700 12px/1 var(--font-mono);
-    }
-
-    .checklist strong { display: block; margin-bottom: 2px; }
-    .checklist span { color: var(--text-dim); font-size: 12px; }
-
-    .run-panel {
-      overflow: hidden;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      background: var(--surface);
-      box-shadow: var(--shadow);
-    }
+    .note p, .warning p { margin: 0; }
+    .warning { border-left-color: var(--warn); background: var(--warn-soft); }
 
     .tabs {
       display: flex;
-      gap: 0;
       overflow-x: auto;
-      border-bottom: 1px solid var(--border);
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 8px 8px 0 0;
       background: var(--surface-soft);
     }
 
     .tab {
       flex: 1;
-      min-width: 155px;
-      padding: 17px 20px;
+      min-width: 120px;
+      padding: 11px 14px;
       color: var(--text-dim);
+      background: transparent;
       border: 0;
       border-right: 1px solid var(--border);
-      background: transparent;
       cursor: pointer;
-      font-weight: 700;
+      font-weight: 600;
+      font-size: 14px;
+      white-space: nowrap;
     }
+    .tab:last-child { border-right: 0; }
+    .tab[aria-selected="true"] { color: var(--text); background: var(--surface); box-shadow: inset 0 -3px var(--accent); }
 
-    .tab[aria-selected="true"] { color: var(--navy); background: var(--surface); box-shadow: inset 0 -3px var(--gold); }
-    .tab-panel { display: none; padding: clamp(22px, 4vw, 42px); }
-    .tab-panel.active { display: block; animation: fadeUp .28s ease both; }
-    .tab-panel h3 { margin: 0 0 8px; font-size: 25px; }
-    .tab-panel > p { margin: 0 0 24px; color: var(--text-dim); }
-
-    .steps { margin: 0; padding: 0; list-style: none; counter-reset: first-run; }
-    .steps > li {
-      position: relative;
-      padding: 0 0 30px 58px;
-      counter-increment: first-run;
-    }
-
-    .steps > li::before {
-      content: counter(first-run);
-      position: absolute;
-      left: 0;
-      top: -2px;
-      width: 36px;
-      height: 36px;
-      display: grid;
-      place-items: center;
-      border: 1px solid var(--border-strong);
-      border-radius: 10px;
-      color: var(--navy);
-      background: var(--navy-soft);
-      font: 700 12px/1 var(--font-mono);
-    }
-
-    .steps > li:not(:last-child)::after {
-      content: "";
-      position: absolute;
-      left: 17px;
-      top: 38px;
-      bottom: 3px;
-      border-left: 1px dashed var(--border-strong);
-    }
-
-    .steps h4 { margin: 0 0 8px; font-size: 16px; }
-    .steps p { margin: 0 0 10px; color: var(--text-dim); font-size: 14px; }
-
-    .code-wrap {
-      position: relative;
-      margin: 11px 0 0;
-      overflow: hidden;
+    .tab-panel {
+      display: none;
+      padding: 20px;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface-recessed);
-    }
-
-    pre {
-      margin: 0;
-      padding: 19px 62px 19px 19px;
-      overflow-x: auto;
-      color: var(--text);
-      font-size: 12px;
-      line-height: 1.75;
-      white-space: pre;
-    }
-
-    .copy {
-      position: absolute;
-      right: 8px;
-      top: 8px;
-      padding: 6px 8px;
-      color: var(--text-dim);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 0 0 8px 8px;
       background: var(--surface);
-      cursor: pointer;
-      font: 500 9px/1 var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: .6px;
     }
-
-    .copy:hover { color: var(--text); }
-    .copy.copied { color: var(--sage); border-color: var(--sage); }
-
-    .success-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 18px;
-    }
-
-    .success {
-      padding: 18px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--sage-soft);
-    }
-
-    .success b { display: block; margin-bottom: 5px; color: var(--sage); font: 600 12px/1.3 var(--font-mono); }
-    .success span { color: var(--text-dim); font-size: 12px; }
-
-    .privacy-hero {
-      display: grid;
-      grid-template-columns: 1.25fr .75fr;
-      gap: 22px;
-      align-items: stretch;
-    }
-
-    .quote {
-      display: grid;
-      align-content: center;
-      min-height: 310px;
-      padding: clamp(28px, 5vw, 56px);
-      border-radius: 18px;
-      color: #f7f3e9;
-      background: var(--navy);
-    }
-
-    .quote p { margin: 0; font: 600 clamp(28px, 4vw, 48px)/1.08 var(--font-display); letter-spacing: -.03em; }
-    .quote footer { margin-top: 22px; color: color-mix(in srgb, #fff 72%, var(--gold)); font: 500 11px/1.5 var(--font-mono); }
-
-    .rule-card { display: grid; align-content: center; }
-    .rule-card .big { display: block; color: var(--terracotta); font: 700 clamp(52px, 7vw, 82px)/1 var(--font-display); }
-    .rule-card p { margin-top: 14px; }
-
-    .rules {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 8px;
-      margin-top: 18px;
-    }
-
-    .rule {
-      padding: 17px 12px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface);
-      text-align: center;
-    }
-
-    .rule strong { display: block; color: var(--navy); font: 700 18px/1.2 var(--font-mono); }
-    .rule span { display: block; margin-top: 4px; color: var(--text-dim); font-size: 11px; }
+    .tab-panel.active { display: block; }
+    .tab-panel > p:first-child { color: var(--text-dim); }
 
     .table-wrap {
       overflow-x: auto;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: var(--surface);
-    }
-
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 16px 18px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-    th {
-      color: var(--text-dim);
-      background: var(--surface-soft);
-      font: 600 10px/1.3 var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: .8px;
-    }
-    td:first-child { color: var(--navy); font-weight: 700; }
-    tr:last-child td { border-bottom: 0; }
-
-    details {
-      margin-top: 10px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--surface);
-    }
-    summary { padding: 16px 18px; cursor: pointer; font-weight: 700; }
-    details p { margin: 0; padding: 0 18px 18px; color: var(--text-dim); font-size: 14px; }
-
-    .next {
-      margin-top: 20px;
-      padding: clamp(28px, 5vw, 54px);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: var(--surface);
-      box-shadow: var(--shadow);
-    }
-    .next h3 { margin: 0 0 10px; font: 700 clamp(30px, 4vw, 48px)/1.05 var(--font-display); }
-    .next p { max-width: 750px; margin: 0; color: var(--text-dim); }
-    .resource-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
-    .resource-links a {
-      padding: 9px 12px;
-      color: var(--text);
+      margin: 10px 0 16px;
       border: 1px solid var(--border);
       border-radius: 8px;
-      background: var(--surface-soft);
-      font: 500 11px/1.3 var(--font-mono);
-      text-decoration: none;
+      background: var(--surface);
     }
-    .resource-links a:hover { border-color: var(--gold); }
 
-    .footer {
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-soft); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); }
+    tr:last-child td { border-bottom: 0; }
+
+    .checks { list-style: none; padding: 0; }
+    .checks li {
+      position: relative;
+      padding: 8px 0 8px 30px;
+      margin: 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .checks li:last-child { border-bottom: 0; }
+    .checks li::before {
+      content: "✓";
+      position: absolute;
+      left: 4px;
+      color: var(--good);
+      font-weight: 700;
+    }
+
+    details {
+      margin: 8px 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    summary { padding: 12px 14px; cursor: pointer; font-weight: 600; font-size: 15px; }
+    details > *:not(summary) { margin-left: 14px; margin-right: 14px; }
+    details > p:last-child, details > .code-wrap:last-of-type { margin-bottom: 14px; }
+
+    footer {
+      margin-top: 64px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 13px;
       display: flex;
       justify-content: space-between;
-      gap: 24px;
-      margin-top: 70px;
-      padding: 22px 0;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border);
-      font-size: 12px;
+      gap: 16px;
+      flex-wrap: wrap;
     }
 
-    .reveal { animation: fadeUp .55s ease both; }
-    .reveal:nth-child(2) { animation-delay: .07s; }
-    .reveal:nth-child(3) { animation-delay: .14s; }
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    @media (max-width: 1100px) {
-      .page { grid-template-columns: 1fr; padding: 0 30px 60px; }
+    @media (max-width: 860px) {
+      .page { grid-template-columns: 1fr; padding: 0 18px 56px; }
       .toc {
-        position: sticky;
-        z-index: 20;
-        top: 0;
-        display: flex;
-        align-items: center;
-        gap: 3px;
+        position: static;
         max-height: none;
-        margin: 0 -30px;
-        padding: 9px 30px;
-        overflow-x: auto;
-        background: color-mix(in srgb, var(--bg) 92%, transparent);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px 6px;
+        padding: 16px 0 0;
         border-bottom: 1px solid var(--border);
-        backdrop-filter: blur(14px);
       }
-      .toc-title, .theme-toggle { display: none; }
-      .brand { flex: 0 0 auto; margin: 0 12px 0 0; }
-      .brand span:last-child { display: none; }
-      .brand-mark { width: 28px; height: 28px; box-shadow: none; }
-      .toc a:not(.brand) {
-        flex: 0 0 auto;
-        margin: 0;
-        padding: 7px 9px;
-        border-left: 0;
-        border-bottom: 2px solid transparent;
-        border-radius: 6px 6px 0 0;
-        white-space: nowrap;
-      }
-      .toc a.active { border-bottom-color: var(--gold); }
-      .hero { min-height: 620px; padding-top: 80px; }
-      .section { scroll-margin-top: 54px; }
-      .flow { grid-template-columns: 1fr; }
-      .flow-step { min-height: auto; }
-      .flow-step:not(:last-child)::after { content: "↓"; left: 50%; right: auto; top: auto; bottom: -19px; }
-      .success-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-
-    @media (max-width: 760px) {
-      .page { padding: 0 16px 40px; }
-      .toc { margin: 0 -16px; padding-left: 16px; padding-right: 16px; }
-      .hero { min-height: 590px; margin: 0 -1px; padding: 70px 22px 48px; border-radius: 0 0 20px 20px; }
-      .hero h1 { font-size: clamp(48px, 16vw, 72px); }
-      .hero-proof, .grid-3, .grid-2, .checklist, .privacy-hero { grid-template-columns: 1fr; }
-      .section { padding-top: 78px; }
-      .rules { grid-template-columns: repeat(2, 1fr); }
-      .rule:last-child { grid-column: 1 / -1; }
-      .success-grid { grid-template-columns: 1fr; }
-      .footer { flex-direction: column; }
+      .toc-brand { margin: 0 10px 0 0; }
+      .toc a:not(.toc-brand) { margin-left: 0; padding: 4px 7px; }
+      .theme-toggle { margin: 0 0 0 auto; }
+      main { padding-top: 28px; }
+      section { margin-top: 44px; }
     }
 
     @media print {
-      .toc, .theme-toggle, .copy, .hero-actions { display: none !important; }
-      .page { display: block; width: 100%; padding: 0; }
-      .hero { min-height: 0; padding: 40px; border: 1px solid #bbb; box-shadow: none; }
-      .section { padding-top: 48px; break-inside: avoid; }
-      .tab-panel { display: block !important; padding: 24px 0; border-top: 1px solid #ccc; }
+      .toc, .copy, .theme-toggle { display: none !important; }
+      .page { display: block; padding: 0; }
+      .tab-panel { display: block !important; border-top: 1px solid #ccc; }
       .tabs { display: none; }
-      .card, .run-panel, .next { box-shadow: none; }
       body { background: #fff; }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
   <div class="page">
-    <nav class="toc" id="toc" aria-label="Page contents">
-      <a class="brand" href="#start">
-        <span class="brand-mark" aria-hidden="true">AB</span>
-        <span>Autobench</span>
-      </a>
-      <div class="toc-title">Start here</div>
-      <a href="#understand">Mental model</a>
-      <a href="#use-cases">Features &amp; use cases</a>
-      <a href="#prepare">Prepare your data</a>
-      <a href="#first-run">First use</a>
-      <a href="#privacy">Privacy guardrails</a>
-      <a href="#outputs">Read the outputs</a>
-      <a href="#troubleshoot">Troubleshooting</a>
-      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle color theme">◐ Change theme</button>
+    <nav class="toc" aria-label="Page contents">
+      <a class="toc-brand" href="#top">Autobench</a>
+      <a href="#what-it-does">What it does</a>
+      <a href="#before-you-start">Before you start</a>
+      <a href="#run-the-demo">Run the demo</a>
+      <a href="#check-it-worked">Check it worked</a>
+      <a href="#your-own-data">Use your own data</a>
+      <a href="#privacy-rules">Privacy rules</a>
+      <a href="#read-the-output">Read the output</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+      <a href="#next-steps">Next steps</a>
+      <button class="theme-toggle" id="theme-toggle" type="button">Toggle dark mode</button>
     </nav>
 
-    <main>
-      <header class="hero" id="start">
-        <div class="eyebrow">Autobench · onboarding &amp; first use</div>
-        <h1>Trust the benchmark, <em>not the loudest peer.</em></h1>
-        <p class="hero-lead">
-          Autobench compares an entity with its peers while automatically limiting peer concentration.
-          You bring pre-aggregated data; it returns privacy-compliant, decision-ready benchmarks.
+    <main id="top">
+      <h1>Autobench: getting started</h1>
+      <p class="lead">
+        Autobench compares one entity (an issuer, bank, or merchant) against its peers.
+        You give it a CSV of pre-aggregated data; it gives you an Excel report that
+        automatically satisfies privacy rules.
+      </p>
+      <p class="lead">
+        This page gets you from zero to one successful run. Total time: about 10 minutes.
+      </p>
+
+      <section id="what-it-does">
+        <h2>What it does</h2>
+        <p class="section-note">One paragraph of theory, then we run things.</p>
+        <p>
+          A naive peer average is easy to skew: one very large peer can dominate the whole
+          comparison. Autobench reweights the peer group so no single peer exceeds a
+          concentration cap, then compares your target entity against that balanced group.
+          The caps come from privacy rules and are enforced automatically — you never
+          configure them in normal use.
         </p>
-        <div class="hero-actions">
-          <a class="button" href="#first-run">Run the demo <span aria-hidden="true">↓</span></a>
-          <a class="button secondary" href="#use-cases">Choose a workflow</a>
+        <p>There are two analysis modes:</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Mode</th><th>Question it answers</th><th>Example</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Share</strong></td>
+                <td>How is my activity distributed across categories, compared to peers?</td>
+                <td>% of transactions by channel, card type, or geography</td>
+              </tr>
+              <tr>
+                <td><strong>Rate</strong></td>
+                <td>How does my performance rate compare to peers?</td>
+                <td>Approval rate, fraud rate</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <div class="hero-proof" aria-label="Autobench at a glance">
-          <div class="proof-item"><strong>2 modes</strong><span>Share and rate analysis</span></div>
-          <div class="proof-item"><strong>1 engine</strong><span>TUI, CLI, and Python API</span></div>
-          <div class="proof-item"><strong>Always on</strong><span>Privacy cap enforcement</span></div>
-        </div>
-      </header>
-
-      <section class="section" id="understand">
-        <div class="section-head">
-          <div class="section-kicker">01 · Mental model</div>
-          <h2>What Autobench actually does</h2>
-          <p class="section-intro">
-            Think of it as a controlled comparison pipeline. It checks the input, creates a representative peer
-            benchmark, tests privacy constraints, and packages evidence alongside the result.
-          </p>
-        </div>
-
-        <div class="grid-3">
-          <article class="card reveal">
-            <span class="card-number">A</span>
-            <h3>Your target stays visible</h3>
-            <p>Choose one entity to compare—or omit it for a peer-only view. Entity names are case-sensitive.</p>
-          </article>
-          <article class="card reveal">
-            <span class="card-number">B</span>
-            <h3>Peers are reweighted</h3>
-            <p>Autobench balances the peer group so no single participant dominates a category-level comparison.</p>
-          </article>
-          <article class="card reveal">
-            <span class="card-number">C</span>
-            <h3>Evidence travels with the result</h3>
-            <p>Reports expose inputs, weight methods, rank changes, compliance verdicts, and optional audit artifacts.</p>
-          </article>
-        </div>
-
-        <div class="flow" aria-label="Autobench analysis flow">
-          <article class="flow-step">
-            <small>Input</small>
-            <h3>Pre-aggregated CSV</h3>
-            <p>One row per entity × dimension bucket, with consistent metric units.</p>
-          </article>
-          <article class="flow-step">
-            <small>Validate</small>
-            <h3>Schema &amp; data checks</h3>
-            <p>Columns normalize; missing keys, invalid values, and unsafe shapes surface early.</p>
-          </article>
-          <article class="flow-step">
-            <small>Balance</small>
-            <h3>Peer weighting</h3>
-            <p>The engine chooses a feasible weighting strategy for the selected dimensions.</p>
-          </article>
-          <article class="flow-step">
-            <small>Protect</small>
-            <h3>Privacy enforcement</h3>
-            <p>Control 3 rules cap concentration and block disallowed deliverables.</p>
-          </article>
-          <article class="flow-step">
-            <small>Deliver</small>
-            <h3>Workbook &amp; exports</h3>
-            <p>Analysis, publication, CSV, JSON, diagnostics, or an audit package.</p>
-          </article>
-        </div>
-
-        <aside class="callout">
-          <div class="callout-icon" aria-hidden="true">→</div>
-          <div>
-            <strong>The practical “so what”</strong>
-            <p>Differences in the output are less likely to be artifacts of one oversized peer—and easier to explain, inspect, and reproduce.</p>
-          </div>
-        </aside>
+        <p>
+          There are four ways to run it — a guided terminal UI (TUI), a command-line
+          interface (CLI), preinstalled launchers on Edge Nodes, and a Python API.
+          They all use the same engine and produce the same results.
+          If you are new, start with the TUI.
+        </p>
       </section>
 
-      <section class="section" id="use-cases">
-        <div class="section-head">
-          <div class="section-kicker">02 · Features &amp; use cases</div>
-          <h2>Choose the question, then the surface</h2>
-          <p class="section-intro">
-            The TUI, CLI, and Python API use the same core engine. Choose based on how often the work runs and who needs the result.
-          </p>
-        </div>
-
-        <div class="grid-3">
-          <article class="card use-case">
-            <span class="tag">Share</span>
-            <h3>Where does activity happen?</h3>
-            <p>Compare how a target’s transaction count, amount, or another primary metric is distributed across categories.</p>
-            <div class="best-for"><strong>Best for:</strong> channel mix, card type, geography, product mix.</div>
-          </article>
-          <article class="card use-case">
-            <span class="tag gold">Rate</span>
-            <h3>How does performance differ?</h3>
-            <p>Benchmark approval or fraud rates using a total denominator and one or more numerator columns.</p>
-            <div class="best-for"><strong>Best for:</strong> approval performance, fraud incidence, operational rates.</div>
-          </article>
-          <article class="card use-case">
-            <span class="tag sage">Peer-only</span>
-            <h3>What does the peer market look like?</h3>
-            <p>Omit the target entity to produce a balanced peer reference without a target-vs-peer comparison.</p>
-            <div class="best-for"><strong>Best for:</strong> neutral baselines and market context.</div>
-          </article>
-          <article class="card use-case">
-            <span class="tag terra">Publication</span>
-            <h3>What can leave the analysis room?</h3>
-            <p>Create a publication-oriented workbook after output sanitization and publishability validation.</p>
-            <div class="best-for"><strong>Best for:</strong> controlled downstream sharing.</div>
-          </article>
-          <article class="card use-case">
-            <span class="tag">BI export</span>
-            <h3>How do I feed a dashboard?</h3>
-            <p>Export balanced CSV data for Power BI, Tableau, or a data pipeline, with export validation enabled by default.</p>
-            <div class="best-for"><strong>Best for:</strong> repeatable dashboards and downstream analysis.</div>
-          </article>
-          <article class="card use-case">
-            <span class="tag gold">Automation</span>
-            <h3>How do I schedule this?</h3>
-            <p>Use the stable Python API for notebooks and pipelines, or the CLI for simple job orchestration.</p>
-            <div class="best-for"><strong>Best for:</strong> scheduled runs and embedded workflows.</div>
-          </article>
-        </div>
-
-        <aside class="callout">
-          <div class="callout-icon" aria-hidden="true">i</div>
-          <div>
-            <strong>New here? Start with the TUI and <code>balanced_default</code>.</strong>
-            <p>It makes the required choices visible. Once the run makes sense, copy the same contract into a CLI command or <code>AnalysisRunRequest</code>.</p>
-          </div>
-        </aside>
-      </section>
-
-      <section class="section" id="prepare">
-        <div class="section-head">
-          <div class="section-kicker">03 · Prepare</div>
-          <h2>Bring data the engine can reason about</h2>
-          <p class="section-intro">A clean first run begins before the command. Confirm these six things about the input.</p>
-        </div>
-
-        <ul class="checklist">
-          <li><strong>Pre-aggregated rows</strong><span>One row per entity × dimension bucket, optionally × time period.</span></li>
-          <li><strong>Stable entity key</strong><span>Default column is <code>issuer_name</code>; values are case-sensitive.</span></li>
-          <li><strong>Primary metric</strong><span>A comparable count, amount, or denominator with consistent units.</span></li>
-          <li><strong>Useful dimensions</strong><span>Columns such as <code>card_type</code> and <code>channel</code>.</span></li>
-          <li><strong>Enough peers</strong><span>Normal non-merchant analysis starts at five peers for the 5/25 rule.</span></li>
-          <li><strong>No sensitive output design</strong><span>Do not use Autobench to produce top-merchant lists or bypass privacy review.</span></li>
+      <section id="before-you-start">
+        <h2>Before you start</h2>
+        <p class="section-note">You need one of these two setups.</p>
+        <h3>Working from the git repository</h3>
+        <ul>
+          <li>Python 3.10 or newer.</li>
+          <li>A clone of this repository.</li>
+          <li>Install dependencies once, from the repository root:</li>
         </ul>
-
-        <div class="code-wrap">
-          <button class="copy" type="button" data-copy aria-label="Copy example CSV">Copy</button>
-          <pre><code>issuer_name,year_month,card_type,channel,txn_cnt,total,approved,fraud
-Target,2026-01,CREDIT,POS,120000,120000,112800,84
-Peer A,2026-01,CREDIT,POS,98000,98000,91630,71
-Peer B,2026-01,CREDIT,POS,105000,105000,98700,76</code></pre>
-        </div>
-
-        <aside class="callout danger">
-          <div class="callout-icon" aria-hidden="true">!</div>
-          <div>
-            <strong>Do not disable validation just to make a failing dataset run.</strong>
-            <p>Fix the schema or data issue first. A generated workbook is not proof that the comparison is safe or meaningful.</p>
-          </div>
-        </aside>
-      </section>
-
-      <section class="section" id="first-run">
-        <div class="section-head">
-          <div class="section-kicker">04 · First use</div>
-          <h2>Complete one known-good run</h2>
-          <p class="section-intro">
-            Use the tracked <code>gate_demo.csv</code> fixture. It contains one target and six peers, so you can learn the workflow without diagnosing your own data at the same time.
+        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>python -m pip install -e ".[dev]"</code></pre></div>
+        <h3>Working on a deployed Edge Node</h3>
+        <ul>
+          <li>Nothing to install. Do <strong>not</strong> run <code>pip</code>.</li>
+          <li>Run the onboarding script once (details in the Edge Node tab below).</li>
+        </ul>
+        <div class="note">
+          <p>
+            In this repository, Python commands are written as <code>py ...</code>.
+            If <code>py</code> does not exist on your system, use <code>python</code> instead.
           </p>
         </div>
+      </section>
 
-        <div class="run-panel">
-          <div class="tabs" role="tablist" aria-label="First-run methods">
-            <button class="tab" id="tab-tui" role="tab" aria-selected="true" aria-controls="panel-tui">Guided TUI</button>
-            <button class="tab" id="tab-cli" role="tab" aria-selected="false" aria-controls="panel-cli">PowerShell CLI</button>
-            <button class="tab" id="tab-edge" role="tab" aria-selected="false" aria-controls="panel-edge">Edge Node</button>
-            <button class="tab" id="tab-api" role="tab" aria-selected="false" aria-controls="panel-api">Python API</button>
-          </div>
+      <section id="run-the-demo">
+        <h2>Run the demo</h2>
+        <p class="section-note">
+          Do this before touching your own data. The repository ships a known-good demo file,
+          <code>tests/fixtures/gate_demo.csv</code> (1 target + 6 peers), so you can learn the
+          workflow without debugging your data at the same time.
+        </p>
 
-          <div class="tab-panel active" id="panel-tui" role="tabpanel" aria-labelledby="tab-tui">
-            <h3>See every choice on screen</h3>
-            <p>Best for a first encounter with the entity, metric, dimension, and preset concepts.</p>
-            <ol class="steps">
-              <li>
-                <h4>Install the contributor environment</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>python -m pip install -e ".[dev]"</code></pre></div>
-              </li>
-              <li>
-                <h4>Launch from the repository root</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py tui_app.py</code></pre></div>
-              </li>
-              <li>
-                <h4>Load the fixture</h4>
-                <p>Enter <code>tests/fixtures/gate_demo.csv</code>, then press Enter or tab away so column headers load.</p>
-              </li>
-              <li>
-                <h4>Configure Share analysis</h4>
-                <p>Entity column: <code>issuer_name</code> · Target: <code>Target</code> · Metric: <code>txn_cnt</code> · Time: <code>year_month</code> · Dimensions: <code>card_type</code> + <code>channel</code> · Preset: <code>balanced_default</code>.</p>
-              </li>
-              <li>
-                <h4>Run and inspect</h4>
-                <p>Click <strong>Run Analysis</strong>. The log should say <strong>Analysis completed successfully</strong> and show the saved report path.</p>
-              </li>
-            </ol>
-          </div>
+        <div class="tabs" role="tablist" aria-label="Ways to run the demo">
+          <button class="tab" id="tab-tui" role="tab" aria-selected="true" aria-controls="panel-tui">TUI (start here)</button>
+          <button class="tab" id="tab-cli" role="tab" aria-selected="false" aria-controls="panel-cli">CLI</button>
+          <button class="tab" id="tab-edge" role="tab" aria-selected="false" aria-controls="panel-edge">Edge Node</button>
+          <button class="tab" id="tab-api" role="tab" aria-selected="false" aria-controls="panel-api">Python API</button>
+        </div>
 
-          <div class="tab-panel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli">
-            <h3>Run the same contract from PowerShell</h3>
-            <p>Use explicit dimensions for a predictable first run.</p>
-            <ol class="steps">
-              <li>
-                <h4>Share analysis</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py share `
-  --csv tests\fixtures\gate_demo.csv `
-  --entity Target `
-  --metric txn_cnt `
-  --dimensions card_type channel `
-  --time-col year_month `
-  --preset balanced_default `
+        <div class="tab-panel active" id="panel-tui" role="tabpanel" aria-labelledby="tab-tui">
+          <p>The TUI shows every choice on screen. Best way to learn what the options mean.</p>
+          <ol>
+            <li>From the repository root, launch it:
+              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py tui_app.py</code></pre></div>
+            </li>
+            <li>In <strong>CSV File Path</strong>, type <code>tests/fixtures/gate_demo.csv</code>, then press Enter (or Tab away) so the column headers load.</li>
+            <li>Set <strong>Entity ID Column</strong> to <code>issuer_name</code> and <strong>Target Entity</strong> to <code>Target</code> (case-sensitive).</li>
+            <li>On the <strong>Share</strong> tab: metric <code>txn_cnt</code>, time column <code>year_month</code>, dimensions <code>card_type</code> and <code>channel</code>, preset <code>balanced_default</code>.</li>
+            <li>Click <strong>Run Analysis</strong>. The log should end with <strong>Analysis completed successfully</strong> and a saved report path.</li>
+          </ol>
+        </div>
+
+        <div class="tab-panel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli">
+          <p>Same run, one command. Run from the repository root.</p>
+          <h3>Share analysis</h3>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py share \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
   --output gate_demo_share.xlsx</code></pre></div>
-              </li>
-              <li>
-                <h4>Rate analysis with balanced CSV</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py rate `
-  --csv tests\fixtures\gate_demo.csv `
-  --entity Target `
-  --total-col total `
-  --approved-col approved `
-  --dimensions card_type channel `
-  --time-col year_month `
-  --preset balanced_default `
-  --export-balanced-csv `
+          <h3>Rate analysis (also exports a balanced CSV)</h3>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py rate \
+  --csv tests/fixtures/gate_demo.csv \
+  --entity Target \
+  --total-col total \
+  --approved-col approved \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset balanced_default \
+  --export-balanced-csv \
   --output gate_demo_rate.xlsx</code></pre></div>
-              </li>
-              <li>
-                <h4>Confirm the shell result</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>$LASTEXITCODE
-Get-Item gate_demo_share.xlsx, gate_demo_rate.xlsx, gate_demo_rate_balanced.csv</code></pre></div>
-              </li>
-            </ol>
+          <div class="note">
+            <p>
+              On Windows PowerShell, replace the trailing <code>\</code> with <code>`</code>
+              and use backslashes in paths (<code>tests\fixtures\gate_demo.csv</code>).
+            </p>
           </div>
+        </div>
 
-          <div class="tab-panel" id="panel-edge" role="tabpanel" aria-labelledby="tab-edge">
-            <h3>Use the managed shared runtime</h3>
-            <p>Analysts do not install production dependencies and do not run <code>pip</code> on an Edge Node.</p>
-            <ol class="steps">
-              <li>
-                <h4>Onboard once, or repair your launchers</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /ads_storage/autobench
+        <div class="tab-panel" id="panel-edge" role="tabpanel" aria-labelledby="tab-edge">
+          <p>Edge Nodes have a shared runtime managed by the Release Operator. You never install anything.</p>
+          <ol>
+            <li>Onboard once (also safe to rerun any time your launchers break):
+              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /ads_storage/autobench
 ./onboard.sh</code></pre></div>
-              </li>
-              <li>
-                <h4>Launch from your working directory</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /path/to/my/work
-autobench
-autobench-cli share --help</code></pre></div>
-              </li>
-              <li>
-                <h4>If the command is not found</h4>
-                <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>export PATH="$HOME/.local/bin:$PATH"
+            </li>
+            <li>Go to the directory with your data and launch:
+              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /path/to/my/work
+autobench            # the TUI
+autobench-cli share --help   # the CLI</code></pre></div>
+            </li>
+            <li>If the commands are not found:
+              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>export PATH="$HOME/.local/bin:$PATH"
 which autobench
 which autobench-cli</code></pre></div>
-              </li>
-            </ol>
-            <aside class="callout danger">
-              <div class="callout-icon" aria-hidden="true">!</div>
-              <div><strong>Shared runtime errors belong to the Release Operator.</strong><p>Analysts should rerun <code>onboard.sh</code>; they must not run <code>install.sh</code> or replace the shared runtime.</p></div>
-            </aside>
+            </li>
+          </ol>
+          <div class="warning">
+            <p>
+              If onboarding says the shared runtime is missing or invalid, stop and send the
+              exact error to the Release Operator. Do not run <code>install.sh</code> or
+              <code>pip</code> yourself.
+            </p>
           </div>
+        </div>
 
-          <div class="tab-panel" id="panel-api" role="tabpanel" aria-labelledby="tab-api">
-            <h3>Embed Autobench without shelling out</h3>
-            <p>The stable public surface is <code>AnalysisRunRequest</code> plus <code>execute_share_run</code> or <code>execute_rate_run</code>.</p>
-            <div class="code-wrap">
-              <button class="copy" type="button" data-copy>Copy</button>
-              <pre><code>import logging
+        <div class="tab-panel" id="panel-api" role="tabpanel" aria-labelledby="tab-api">
+          <p>For pipelines and notebooks. This is the stable public API; everything else in <code>core/</code> is internal.</p>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>import logging
 from core.analysis_run import execute_share_run
 from core.contracts import AnalysisRunRequest
 
@@ -1049,181 +489,157 @@ request = AnalysisRunRequest(
 )
 
 artifacts = execute_share_run(request, logging.getLogger("pipeline"))
-print(artifacts.analysis_output_file)</code></pre>
-            </div>
-            <aside class="callout">
-              <div class="callout-icon" aria-hidden="true">→</div>
-              <div><strong>Runnable example included</strong><p>From the repository root, run <code>py examples/run_from_python.py</code>.</p></div>
-            </aside>
-          </div>
-        </div>
-
-        <h3 style="margin: 34px 0 12px;">The four success signals</h3>
-        <div class="success-grid">
-          <div class="success"><b>01 · Exit</b><span>The CLI returns exit code <code>0</code>.</span></div>
-          <div class="success"><b>02 · Artifact</b><span>The expected workbook exists at the reported path.</span></div>
-          <div class="success"><b>03 · Input</b><span><code>Summary</code> says <code>Input Validation: pass</code>.</span></div>
-          <div class="success"><b>04 · Verdict</b><span><code>Compliance Verdict: fully_compliant</code>.</span></div>
+print(artifacts.analysis_output_file)</code></pre></div>
+          <p>A complete runnable example: <code>py examples/run_from_python.py</code>. For rate runs use <code>execute_rate_run</code> with <code>mode="rate"</code>, <code>total_col</code>, and numerator columns.</p>
         </div>
       </section>
 
-      <section class="section" id="privacy">
-        <div class="section-head">
-          <div class="section-kicker">05 · Privacy guardrails</div>
-          <h2>Privacy is a run condition, not a formatting option</h2>
-          <p class="section-intro">
-            Autobench selects and enforces the applicable concentration rule. Normal runs do not ask analysts to tune the caps.
+      <section id="check-it-worked">
+        <h2>Check it worked</h2>
+        <p class="section-note">All four must be true. If any is false, go to Troubleshooting.</p>
+        <ul class="checks">
+          <li>The command exited with code <code>0</code> (CLI) or the TUI log says <strong>Analysis completed successfully</strong>.</li>
+          <li>The output file exists (e.g. <code>gate_demo_share.xlsx</code>; the rate run also writes <code>gate_demo_rate_balanced.csv</code>).</li>
+          <li>The <code>Summary</code> sheet in the workbook shows <code>Input Validation: pass</code>.</li>
+          <li>The <code>Summary</code> sheet shows <code>Compliance Verdict: fully_compliant</code>.</li>
+        </ul>
+        <p>
+          The generated <code>.xlsx</code>, <code>.csv</code>, and <code>benchmark_log_*.txt</code> files
+          are local artifacts. They are gitignored and safe to delete.
+        </p>
+      </section>
+
+      <section id="your-own-data">
+        <h2>Use your own data</h2>
+        <p class="section-note">
+          Once the demo works, swap in your CSV. Change one thing at a time: first the file,
+          then the entity and metric, then the dimensions. Keep <code>balanced_default</code>.
+        </p>
+        <p>Your CSV must be <strong>pre-aggregated</strong>: one row per entity × dimension bucket (optionally × time period). Like this:</p>
+        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>issuer_name,year_month,card_type,channel,txn_cnt,total,approved,fraud
+Target,2026-01,CREDIT,POS,120000,120000,112800,84
+Peer A,2026-01,CREDIT,POS,98000,98000,91630,71
+Peer B,2026-01,CREDIT,POS,105000,105000,98700,76</code></pre></div>
+        <p>Rules that cause most first failures:</p>
+        <ul>
+          <li><strong>Entity names are case-sensitive.</strong> <code>Target</code> and <code>target</code> are different entities.</li>
+          <li><strong>Column names get normalized</strong> to lowercase with underscores. Refer to them that way.</li>
+          <li><strong>Units must be consistent</strong> across all rows (same currency, same count definition).</li>
+          <li><strong>You need at least 5 peers</strong> for a normal (non-merchant) run. Fewer peers means the privacy rule cannot be satisfied.</li>
+          <li><strong>No nulls</strong> in the entity or metric columns.</li>
+        </ul>
+        <div class="warning">
+          <p>
+            If validation fails, fix the data — do not disable validation to force a run.
+            A workbook produced from bad input is not a usable benchmark.
           </p>
         </div>
-
-        <div class="privacy-hero">
-          <blockquote class="quote">
-            <p>“A plausible number is not automatically a publishable number.”</p>
-            <footer>Autobench operating principle</footer>
-          </blockquote>
-          <article class="card rule-card">
-            <span class="big">5/25</span>
-            <h3>The normal starting rule</h3>
-            <p>At least five peers; no peer may exceed 25% concentration. Other rules apply as participant count and context change.</p>
-          </article>
-        </div>
-
-        <div class="rules" aria-label="Privacy rule summary">
-          <div class="rule"><strong>5/25</strong><span>5 peers · 25% cap</span></div>
-          <div class="rule"><strong>6/30</strong><span>6 peers · 30% cap</span></div>
-          <div class="rule"><strong>7/35</strong><span>7 peers · 35% cap</span></div>
-          <div class="rule"><strong>10/40</strong><span>10 peers · 40% cap</span></div>
-          <div class="rule"><strong>4/35</strong><span>Merchant mode only</span></div>
-        </div>
-
-        <div class="grid-2" style="margin-top: 20px;">
-          <article class="card">
-            <span class="tag sage">Automatic</span>
-            <h3 style="margin-top:16px;">Safe defaults stay on</h3>
-            <p>Input validation, privacy-cap enforcement, export cross-validation, and publishable-output validation are part of the workflow.</p>
-          </article>
-          <article class="card">
-            <span class="tag terra">Declare</span>
-            <h3 style="margin-top:16px;">Special contexts need evidence</h3>
-            <p>Digital-wallet metrics, dual protected entity axes, recurring deliverables, and altered peer groups require explicit declarations or review evidence.</p>
-          </article>
-        </div>
-
-        <aside class="callout danger">
-          <div class="callout-icon" aria-hidden="true">×</div>
-          <div>
-            <strong>Top-merchant outputs are blocked.</strong>
-            <p>Do not restructure the request, disable checks, or reach into internal modules to bypass a blocked deliverable. Escalate the use case to Privacy.</p>
-          </div>
-        </aside>
       </section>
 
-      <section class="section" id="outputs">
-        <div class="section-head">
-          <div class="section-kicker">06 · Outputs</div>
-          <h2>Read the evidence before the insight</h2>
-          <p class="section-intro">Start in <code>Summary</code>, confirm validation and compliance, then interpret the dimension sheets.</p>
-        </div>
-
+      <section id="privacy-rules">
+        <h2>Privacy rules</h2>
+        <p class="section-note">Automatic. Listed here so you know what the tool is doing, not so you can tune it.</p>
+        <p>
+          The engine picks the applicable concentration rule based on peer count and enforces it.
+          The baseline is <strong>5/25</strong>: at least 5 peers, and no peer contributes more
+          than 25% to any category-level comparison.
+        </p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr>
-                <th>Output</th>
-                <th>What it tells you</th>
-                <th>Use it when</th>
-              </tr>
+              <tr><th>Rule</th><th>Min peers</th><th>Max concentration</th><th>Notes</th></tr>
             </thead>
             <tbody>
-              <tr>
-                <td>Summary</td>
-                <td>Run inputs, preset, validation, configuration, and compliance verdict.</td>
-                <td>Always—this is the first inspection point.</td>
-              </tr>
-              <tr>
-                <td>Dimension sheets</td>
-                <td>Target versus balanced peers, gaps, and best-in-class comparisons by category.</td>
-                <td>Answering the business question.</td>
-              </tr>
-              <tr>
-                <td>Weight Methods</td>
-                <td>Whether each dimension used Global-LP, Per-Dimension-LP, or Bayesian fallback.</td>
-                <td>Explaining how the benchmark was constructed.</td>
-              </tr>
-              <tr>
-                <td>Rank Changes</td>
-                <td>How weighting changed peer ranks and the shape of the comparison.</td>
-                <td>Assessing distortion and stability.</td>
-              </tr>
-              <tr>
-                <td>Balanced CSV</td>
-                <td>Balanced metrics for downstream BI or pipeline ingestion.</td>
-                <td>Using <code>--export-balanced-csv</code>.</td>
-              </tr>
-              <tr>
-                <td>Audit package</td>
-                <td>Reports, CSV, audit log, config snapshot, and validation summary in one zip.</td>
-                <td>Preserving release or review evidence.</td>
-              </tr>
+              <tr><td>5/25</td><td>5</td><td>25%</td><td>The normal starting rule</td></tr>
+              <tr><td>6/30</td><td>6</td><td>30%</td><td>Requires ≥3 participants at ≥7%</td></tr>
+              <tr><td>7/35</td><td>7</td><td>35%</td><td>Requires ≥2 at ≥15% and ≥1 at ≥8%</td></tr>
+              <tr><td>10/40</td><td>10</td><td>40%</td><td>Requires ≥2 at ≥20% and ≥1 at ≥10%</td></tr>
+              <tr><td>4/35</td><td>4</td><td>35%</td><td>Merchant benchmarking only</td></tr>
             </tbody>
           </table>
         </div>
-
-        <aside class="callout">
-          <div class="callout-icon" aria-hidden="true">→</div>
-          <div>
-            <strong>Analysis output and publication output are different contracts.</strong>
-            <p>Use <code>--output-format publication</code> or <code>both</code> when a sanitized, publishability-validated artifact is required. JSON sidecars are analysis-grade, not publication-redacted.</p>
-          </div>
-        </aside>
+        <div class="warning">
+          <p>
+            Some outputs, such as top-merchant lists, are blocked outright. Do not restructure a
+            request or disable checks to get around a block — escalate the use case to Privacy.
+            Special contexts (digital-wallet metrics, recurring deliverables, altered peer groups)
+            need explicit declarations or review evidence.
+          </p>
+        </div>
       </section>
 
-      <section class="section" id="troubleshoot">
-        <div class="section-head">
-          <div class="section-kicker">07 · Troubleshooting</div>
-          <h2>Fix the first concrete failure</h2>
-          <p class="section-intro">Most first-run issues are an exact value, column, or environment mismatch.</p>
+      <section id="read-the-output">
+        <h2>Read the output</h2>
+        <p class="section-note">Open the workbook. Check <code>Summary</code> first, then read the dimension sheets.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Sheet / file</th><th>What it tells you</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>Summary</code></td><td>Run inputs, preset, validation result, and compliance verdict. Always check this first.</td></tr>
+              <tr><td>One sheet per dimension</td><td>Target vs. balanced peers per category, with gaps and best-in-class comparisons. This is the answer to your business question.</td></tr>
+              <tr><td><code>Weight Methods</code></td><td>Which weighting strategy each dimension used (Global-LP, Per-Dimension-LP, or Bayesian fallback).</td></tr>
+              <tr><td><code>Rank Changes</code></td><td>How the reweighting shifted peer ranks — a distortion check.</td></tr>
+              <tr><td>Balanced CSV</td><td>Balanced metrics for BI tools (Power BI, Tableau) or pipelines. Written with <code>--export-balanced-csv</code>.</td></tr>
+              <tr><td>Audit package</td><td>One zip with workbook(s), CSV, audit log, config snapshot, and validation summary. Written with <code>--audit-package</code>.</td></tr>
+            </tbody>
+          </table>
         </div>
+        <div class="note">
+          <p>
+            The analysis workbook is for internal work. If the result needs to leave the
+            analysis room, produce a publication workbook with
+            <code>--output-format publication</code> (or <code>both</code>) — it goes through
+            sanitization and publishability validation. JSON sidecars are analysis-grade,
+            not publication-redacted.
+          </p>
+        </div>
+      </section>
 
+      <section id="troubleshooting">
+        <h2>Troubleshooting</h2>
+        <p class="section-note">Fix the first concrete error. Most first-run failures are an exact-value mismatch.</p>
         <details open>
           <summary>“Entity not found”</summary>
-          <p>Use the exact case-sensitive entity value from the CSV. For the demo fixture, the target is <code>Target</code>.</p>
+          <p>The value of <code>--entity</code> must match the CSV exactly, including case. In the demo file the target is <code>Target</code>, capital T.</p>
         </details>
         <details>
           <summary>“Column not found”</summary>
-          <p>Use normalized column names: lowercase with underscores. Load the file in the TUI to inspect the headers Autobench sees.</p>
+          <p>Column names are normalized to lowercase with underscores (<code>Card Type</code> becomes <code>card_type</code>). If unsure, load the file in the TUI and look at the headers it lists.</p>
         </details>
         <details>
           <summary>“No valid dimensions”</summary>
-          <p>Pass explicit dimensions such as <code>--dimensions card_type channel</code> before trying <code>--auto</code>.</p>
+          <p>Pass dimensions explicitly, e.g. <code>--dimensions card_type channel</code>. Only use <code>--auto</code> once explicit dimensions work.</p>
         </details>
         <details>
-          <summary>LP infeasibility or high distortion</summary>
-          <p>Some sparse datasets cannot satisfy every global constraint. Inspect the fallback method and structural sheets; use <code>--compare-presets</code> and <code>--analyze-impact</code> to understand the tradeoff.</p>
+          <summary>LP infeasibility warnings or high distortion</summary>
+          <p>Some sparse datasets cannot satisfy every constraint; the engine falls back to a weaker method and reports it in <code>Weight Methods</code>. Use <code>--compare-presets</code> and <code>--analyze-impact</code> to see the trade-off. This is a data property, not a bug.</p>
         </details>
         <details>
-          <summary>Edge Node shared runtime is missing or invalid</summary>
-          <p>Rerun <code>/ads_storage/autobench/onboard.sh</code>. If it still fails, send the exact error to the Release Operator; analysts cannot repair or replace the shared runtime.</p>
+          <summary>Edge Node: shared runtime missing or invalid</summary>
+          <p>Rerun the onboarding script:</p>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>/ads_storage/autobench/onboard.sh</code></pre></div>
+          <p>If it still fails, send the exact error to the Release Operator. Analysts cannot repair or replace the shared runtime.</p>
         </details>
-
-        <div class="next">
-          <div class="section-kicker">You are ready when…</div>
-          <h3>You can explain the input, the rule, and the verdict.</h3>
-          <p>
-            After the demo succeeds, replace one concept at a time: first the CSV, then the target and metric, then the dimensions.
-            Keep <code>balanced_default</code> and explicit dimensions until you have a reason to change them.
-          </p>
-          <div class="resource-links">
-            <a href="../README.md">README</a>
-            <a href="../onboarding.md">Edge Node onboarding</a>
-            <a href="RESOURCE_MANAGEMENT.md">Large dataset guidance</a>
-            <a href="CORE_TECHNICAL_DOC.md">Core technical reference</a>
-            <a href="../CONTRIBUTING.md">Contributing</a>
-          </div>
-        </div>
       </section>
 
-      <footer class="footer">
+      <section id="next-steps">
+        <h2>Next steps</h2>
+        <p>
+          You are onboarded when you can run the demo, explain which privacy rule applied,
+          and point to the verdict in <code>Summary</code>. From there:
+        </p>
+        <ul>
+          <li><a href="../README.md">README</a> — full CLI cookbook, presets, and output reference.</li>
+          <li><a href="../onboarding.md">Edge Node onboarding</a> — the analyst setup in detail.</li>
+          <li><a href="RESOURCE_MANAGEMENT.md">Large dataset guidance</a> — <code>--lean</code> mode for big files and small machines.</li>
+          <li><a href="CORE_TECHNICAL_DOC.md">Core technical reference</a> — how the engine works inside.</li>
+          <li><a href="../CONTRIBUTING.md">Contributing</a> — if you want to change the tool itself.</li>
+        </ul>
+      </section>
+
+      <footer>
         <span>Autobench · Privacy-compliant peer benchmarking</span>
         <span>Configuration model v3.0</span>
       </footer>
@@ -1277,29 +693,6 @@ print(artifacts.analysis_output_file)</code></pre>
           }
         });
       });
-
-      const toc = document.getElementById("toc");
-      const links = [...toc.querySelectorAll('a[href^="#"]')].filter(link => link.getAttribute("href") !== "#start");
-      const sections = links.map(link => ({
-        link,
-        section: document.querySelector(link.getAttribute("href"))
-      })).filter(item => item.section);
-
-      const observer = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-          if (!entry.isIntersecting) return;
-          links.forEach(link => link.classList.remove("active"));
-          const current = sections.find(item => item.section === entry.target);
-          if (current) {
-            current.link.classList.add("active");
-            if (window.innerWidth <= 1100) {
-              current.link.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-            }
-          }
-        });
-      }, { rootMargin: "-12% 0px -76% 0px" });
-
-      sections.forEach(item => observer.observe(item.section));
     })();
   </script>
 </body>
