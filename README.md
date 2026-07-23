@@ -16,6 +16,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 ## Table of Contents
 
 - [What This Tool Solves](#what-this-tool-solves)
+- [Visual Onboarding Guide](#visual-onboarding-guide)
 - [Quick Start](#quick-start)
 - [First Successful Run (Copy/Paste)](#first-successful-run-copypaste)
 - [Input Data Requirements](#input-data-requirements)
@@ -44,6 +45,12 @@ You get:
 - Optional audit package zip (`--audit-package`) bundling workbook(s), balanced
   CSV, audit log, config snapshot, and validation/compliance summary.
 - CLI and TUI entry points using the same core engine.
+
+## Visual Onboarding Guide
+
+Open [docs/autobench-onboarding.html](docs/autobench-onboarding.html) for a
+newcomer-friendly explanation of Autobench features, use cases, privacy
+guardrails, and a copyable first successful run.
 
 ## Quick Start
 
@@ -109,7 +116,6 @@ py benchmark.py rate \
   --entity Target \
   --total-col total \
   --approved-col approved \
-  --fraud-col fraud \
   --dimensions card_type channel \
   --time-col year_month \
   --preset balanced_default \
