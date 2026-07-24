@@ -1,0 +1,100 @@
+import React from "react";
+import {
+  AbsoluteFill,
+  interpolate,
+  spring,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
+
+import { Backdrop, Centered, RiseIn } from "../components";
+import { COLORS, FONTS, GRADIENT_TEXT } from "../theme";
+
+/** Closing lockup: wordmark, tagline, and the command to get started. */
+export const Outro: React.FC = () => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const pop = spring({
+    frame,
+    fps,
+    config: { damping: 17, mass: 0.9 },
+    durationInFrames: 42,
+  });
+  const chipGlow = interpolate(frame, [70, 100], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const breathe = 0.75 + 0.25 * Math.sin(frame / 20);
+  const tracking = interpolate(frame, [0, 90], [-0.02, -0.045], {
+    extrapolateRight: "clamp",
+    easing: (v) => 1 - Math.pow(1 - v, 2),
+  });
+
+  return (
+    <AbsoluteFill>
+      <Backdrop glow={0.8} />
+      <Centered>
+        <div style={{ position: "relative" }}>
+          <div
+            style={{
+              position: "absolute",
+              inset: -70,
+              background: `radial-gradient(closest-side, rgba(120, 92, 255, ${
+                0.2 * breathe
+              }), transparent)`,
+              filter: "blur(32px)",
+            }}
+          />
+          <div
+            style={{
+              fontFamily: FONTS.display,
+              fontWeight: 700,
+              fontSize: 148,
+              letterSpacing: `${tracking}em`,
+              ...GRADIENT_TEXT,
+              opacity: pop,
+              transform: `scale(${0.9 + pop * 0.1})`,
+              position: "relative",
+            }}
+          >
+            Autobench
+          </div>
+        </div>
+        <RiseIn delay={22} duration={24}>
+          <div
+            style={{
+              fontFamily: FONTS.display,
+              fontWeight: 600,
+              fontSize: 56,
+              color: COLORS.text,
+              letterSpacing: "-0.02em",
+              marginTop: 20,
+            }}
+          >
+            Benchmark boldly. <span style={{ color: COLORS.textDim }}>Privately.</span>
+          </div>
+        </RiseIn>
+        <RiseIn delay={58} duration={26}>
+          <div
+            style={{
+              marginTop: 58,
+              padding: "20px 44px",
+              borderRadius: 100,
+              border: "1px solid rgba(255,255,255,0.14)",
+              background: "rgba(255,255,255,0.05)",
+              fontFamily: FONTS.mono,
+              fontSize: 34,
+              color: COLORS.text,
+              boxShadow: `0 0 ${50 * chipGlow}px rgba(90, 120, 255, ${
+                0.25 * chipGlow
+              })`,
+            }}
+          >
+            <span style={{ color: COLORS.accentA, fontWeight: 700 }}>❯</span> py
+            tui_app.py
+          </div>
+        </RiseIn>
+      </Centered>
+    </AbsoluteFill>
+  );
+};
