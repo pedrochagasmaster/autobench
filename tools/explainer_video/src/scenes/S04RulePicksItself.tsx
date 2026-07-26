@@ -76,7 +76,7 @@ export const S04RulePicksItself: React.FC<{ showControlReference: boolean }> = (
   const stepStart = COUNTER_START + Math.max(step, 0) * STEP_FRAMES;
 
   return (
-    <SceneFrame kicker="The rule picks itself">
+    <SceneFrame sceneId="s04">
       <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
         <div
           style={{

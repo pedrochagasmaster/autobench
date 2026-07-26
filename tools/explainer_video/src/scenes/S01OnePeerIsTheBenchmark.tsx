@@ -58,7 +58,7 @@ export const S01OnePeerIsTheBenchmark: React.FC = () => {
   });
 
   return (
-    <SceneFrame kicker="One peer is the benchmark">
+    <SceneFrame sceneId="s01">
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div
           style={{

@@ -13,7 +13,7 @@ export const S06ShareOrRate: React.FC = () => {
   });
 
   return (
-    <SceneFrame kicker="Share or rate">
+    <SceneFrame sceneId="s06">
       <div
         style={{
           display: "flex",

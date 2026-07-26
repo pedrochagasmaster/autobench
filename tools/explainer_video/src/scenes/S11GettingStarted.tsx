@@ -37,7 +37,7 @@ export const S11GettingStarted: React.FC = () => {
   const frame = useCurrentFrame();
 
   return (
-    <SceneFrame kicker="Getting started">
+    <SceneFrame sceneId="s11">
       <div style={{ display: "flex", gap: 80, alignItems: "flex-start" }}>
         {INSTALL_BLOCKS.map((block, blockIndex) => {
           const isLocal = blockIndex === 0;

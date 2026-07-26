@@ -342,7 +342,7 @@ const RankLadder: React.FC = () => {
 
 export const S05WeightsSolved: React.FC = () => {
   return (
-    <SceneFrame kicker="How the weights are solved">
+    <SceneFrame sceneId="s05">
       <Sequence name="Fallback chain" durationInFrames={LADDER_CUT} layout="none">
         <MethodCards />
       </Sequence>

@@ -76,7 +76,7 @@ export const S07WhatLandsOnDisk: React.FC = () => {
   });
 
   return (
-    <SceneFrame kicker="What lands on disk">
+    <SceneFrame sceneId="s07">
       <div
         style={{
           display: "flex",

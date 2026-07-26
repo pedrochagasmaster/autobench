@@ -41,7 +41,7 @@ export const S10ThreeWaysIn: React.FC = () => {
   );
 
   return (
-    <SceneFrame kicker="Three ways in, one engine">
+    <SceneFrame sceneId="s10">
       <div style={{ display: "flex", flexDirection: "column", gap: 40 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "center" }}>
           <div style={{ width: 620, display: "flex", flexDirection: "column", gap: DOOR_GAP }}>

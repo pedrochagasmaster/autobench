@@ -50,7 +50,7 @@ export const S03WhatItComputes: React.FC = () => {
   );
 
   return (
-    <SceneFrame kicker="What it actually computes">
+    <SceneFrame sceneId="s03">
       <div style={{ display: "flex", flexDirection: "column", gap: 46 }}>
         <div style={{ display: "flex", gap: 80 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>

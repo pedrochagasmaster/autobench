@@ -69,7 +69,7 @@ const Column: React.FC<{
 
 export const S08BeforeAndAfter: React.FC = () => {
   return (
-    <SceneFrame kicker="Before and after">
+    <SceneFrame sceneId="s08">
       <div style={{ display: "flex", gap: 90 }}>
         <Column
           header={COMPARISON_HEADERS[0]}

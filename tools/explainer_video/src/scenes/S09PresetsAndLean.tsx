@@ -27,7 +27,7 @@ export const S09PresetsAndLean: React.FC = () => {
   );
 
   return (
-    <SceneFrame kicker="Presets and big inputs">
+    <SceneFrame sceneId="s09">
       <div style={{ display: "flex", gap: 90, alignItems: "flex-start" }}>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
           {PRESETS.map((preset, index) => {
