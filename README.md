@@ -397,6 +397,10 @@ Quick selection guide:
 - Executive/dashboard consistency -> `strategic_consistency`
 - General business analysis -> `balanced_default`
 
+Detailed Portuguese guide:
+
+- [Guia de presets e configuração manual](docs/guia-presets-e-configuracao-pt-BR.md)
+
 ## Outputs
 
 Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
