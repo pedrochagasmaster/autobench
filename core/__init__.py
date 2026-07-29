@@ -8,6 +8,9 @@ from .contracts import (
     PrivacyFailureReason,
     PrivacyMandatoryOverlayEvaluation,
     PrivacyMetricContext,
+    PrivacyRuleStrategy,
+    PrivacyRuleStrategyEvaluation,
+    PrivacyRuleStrategyResult,
     PrivacyRuleSweepEvaluation,
     PrivacySweepAuditMetadata,
     PrivacySweepRequest,
@@ -16,12 +19,19 @@ from .contracts import (
     PrivacyThresholdEvaluation,
 )
 from .privacy_policy import evaluate_privacy_rule_sweep
+from .dimensional_analyzer import DimensionalAnalyzer
+from .privacy_validator import PrivacyValidator
+from .data_loader import DataLoader
+from .report_generator import ReportGenerator
 
 __all__ = [
     'AnalysisRunRequest',
     'AnalysisArtifacts',
     'PrivacySweepRequest',
     'PrivacyMetricContext',
+    'PrivacyRuleStrategy',
+    'PrivacyRuleStrategyEvaluation',
+    'PrivacyRuleStrategyResult',
     'PrivacyConcentrationBasis',
     'PrivacyEvaluationStatus',
     'PrivacySweepStatus',
@@ -34,6 +44,10 @@ __all__ = [
     'evaluate_privacy_rule_sweep',
     'execute_share_run',
     'execute_rate_run',
+    'DimensionalAnalyzer',
+    'PrivacyValidator',
+    'DataLoader',
+    'ReportGenerator',
 ]
 
 # ``analysis_run`` imports ``utils.config_manager`` at module load, and

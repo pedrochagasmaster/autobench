@@ -15,9 +15,7 @@ import traceback
 import glob
 import contextlib
 import io
-import json
 import pandas as pd
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 import yaml
@@ -71,12 +69,8 @@ try:
     from core.contracts import (
         AnalysisRunRequest,
         PreparedDataset,
-        PrivacyConcentrationBasis,
-        PrivacyMetricContext,
-        PrivacySweepRequest,
-        PrivacySweepStatus,
+        PrivacyRuleStrategy,
     )
-    from core.privacy_policy import evaluate_privacy_rule_sweep
     from core.preset_workflow import PresetWorkflow
     from core.telemetry import (
         action_cancelled,
@@ -110,14 +104,8 @@ SESSION_FILE = Path.home() / ".benchmark_tui" / "session.yaml"
 SESSION_INPUT_IDS = (
     "csv_path",
     "output_file",
-    "privacy_participant_count",
-    "privacy_maximum_share",
-    "privacy_count_7",
-    "privacy_count_8",
-    "privacy_count_10",
-    "privacy_count_15",
-    "privacy_count_20",
-    "privacy_citibank_share",
+    "citibank_entity_name",
+    "privacy_concentration_col",
 )
 SESSION_SELECT_IDS = (
     "entity_col",
@@ -129,8 +117,6 @@ SESSION_SELECT_IDS = (
     "rate_total",
     "rate_approved",
     "rate_fraud",
-    "privacy_metric_context",
-    "privacy_concentration_basis",
 )
 SESSION_CHECKBOX_IDS = (
     "analyze_distortion",
@@ -146,10 +132,8 @@ SESSION_CHECKBOX_IDS = (
     "rate_export_csv",
     "fraud_in_bps",
     "privacy_rule_sweep_mode",
-    "privacy_contains_peer_data",
     "privacy_merchant_spend_scope",
-    "privacy_citibank_included",
-    "privacy_citi_competitor_recipient",
+    "citi_competitor_receives_output",
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
 
@@ -469,6 +453,11 @@ TUI_REQUEST_FIELDS = frozenset({
     "approved_col",
     "fraud_col",
     "fraud_in_bps",
+    "privacy_rule_strategy",
+    "is_anonymized_aggregated_merchant_spend",
+    "citibank_entity_name",
+    "citi_competitor_receives_output",
+    "privacy_concentration_col",
 })
 
 # CLI fields with no TUI widget yet; post-assembly fields are set after validation modal.
@@ -888,67 +877,21 @@ class BenchmarkApp(App):
                         id="privacy_rule_sweep_mode",
                         value=False,
                     )
-
-                with Container(id="privacy_sweep_form", classes="form-section hidden") as section:
-                    section.border_title = "Privacy Rule Sweep Evidence"
                     yield Checkbox(
-                        "Contains peer benchmark data",
-                        id="privacy_contains_peer_data",
-                        value=True,
-                    )
-                    yield Checkbox(
-                        "Anonymized, aggregated merchant-spend report",
+                        "Anonymized aggregated merchant-spend context (enables 4/35)",
                         id="privacy_merchant_spend_scope",
                     )
-                    with Horizontal(classes="split-inputs"):
-                        with Vertical(classes="field-pair"):
-                            yield Label("Metric context", classes="field-label")
-                            yield Select(
-                                [
-                                    ("Other benchmark metric", PrivacyMetricContext.OTHER.value),
-                                    ("Issuer fraud", PrivacyMetricContext.ISSUER_FRAUD.value),
-                                    ("Issuer chargeback", PrivacyMetricContext.ISSUER_CHARGEBACK.value),
-                                ],
-                                id="privacy_metric_context",
-                                value=PrivacyMetricContext.OTHER.value,
-                                allow_blank=False,
-                            )
-                        with Vertical(classes="field-pair"):
-                            yield Label("Concentration basis", classes="field-label")
-                            yield Select(
-                                [
-                                    ("Benchmark metric", PrivacyConcentrationBasis.BENCHMARK_METRIC.value),
-                                    ("Clearing spend", PrivacyConcentrationBasis.CLEARING_SPEND.value),
-                                ],
-                                id="privacy_concentration_basis",
-                                value=PrivacyConcentrationBasis.BENCHMARK_METRIC.value,
-                                allow_blank=False,
-                            )
-                    with Horizontal(classes="split-inputs"):
-                        with Vertical(classes="field-pair"):
-                            yield Label("Participant count", classes="field-label")
-                            yield Input(placeholder="e.g., 10", id="privacy_participant_count")
-                        with Vertical(classes="field-pair"):
-                            yield Label("Maximum share (%)", classes="field-label")
-                            yield Input(placeholder="e.g., 22", id="privacy_maximum_share")
-                    yield Label("Counts at or above each threshold", classes="subsection-title")
-                    with Horizontal(classes="split-inputs"):
-                        yield Input(placeholder=">=7%", id="privacy_count_7")
-                        yield Input(placeholder=">=8%", id="privacy_count_8")
-                        yield Input(placeholder=">=10%", id="privacy_count_10")
-                    with Horizontal(classes="split-inputs"):
-                        yield Input(placeholder=">=15%", id="privacy_count_15")
-                        yield Input(placeholder=">=20%", id="privacy_count_20")
-                    yield Label("Mandatory Citi overlay", classes="subsection-title")
-                    with Horizontal(classes="input-group"):
-                        yield Checkbox("Citibank included", id="privacy_citibank_included")
-                        yield Checkbox(
-                            "Citi competitor receives output",
-                            id="privacy_citi_competitor_recipient",
-                        )
+                    yield Checkbox(
+                        "A Citi competitor receives the output",
+                        id="citi_competitor_receives_output",
+                    )
                     yield Input(
-                        placeholder="Citibank share percentage (when overlay applies)",
-                        id="privacy_citibank_share",
+                        placeholder="Exact Citibank entity name (required for Citi overlay)",
+                        id="citibank_entity_name",
+                    )
+                    yield Input(
+                        placeholder="Policy concentration column (required for fraud sweep)",
+                        id="privacy_concentration_col",
                     )
 
                 # ───────────────────────────────────────────────────────
@@ -1816,87 +1759,31 @@ class BenchmarkApp(App):
         except NoMatches:
             return False
 
-    @staticmethod
-    def _numeric_widget_value(raw_value: str, converter):
-        value = raw_value.strip()
-        if not value:
-            return None
-        try:
-            return converter(value)
-        except (TypeError, ValueError):
-            return value
-
-    def _privacy_sweep_request_from_widgets(self) -> PrivacySweepRequest:
-        metric_context = self.query_one("#privacy_metric_context", Select).value
-        concentration_basis = self.query_one("#privacy_concentration_basis", Select).value
-        return PrivacySweepRequest(
-            contains_peer_benchmark_data=self.query_one("#privacy_contains_peer_data", Checkbox).value,
-            is_anonymized_aggregated_merchant_spend=self.query_one(
+    def _privacy_strategy_values_from_widgets(self) -> Dict[str, Any]:
+        """Return the privacy strategy fields for the normal run request."""
+        return {
+            "privacy_rule_strategy": (
+                PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+                if self._privacy_sweep_enabled()
+                else PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+            ),
+            "is_anonymized_aggregated_merchant_spend": self.query_one(
                 "#privacy_merchant_spend_scope",
                 Checkbox,
             ).value,
-            metric_context=PrivacyMetricContext(str(metric_context)),
-            concentration_basis=PrivacyConcentrationBasis(str(concentration_basis)),
-            participant_count=self._numeric_widget_value(
-                self.query_one("#privacy_participant_count", Input).value,
-                int,
+            "citibank_entity_name": (
+                self.query_one("#citibank_entity_name", Input).value.strip()
+                or None
             ),
-            maximum_share_percentage=self._numeric_widget_value(
-                self.query_one("#privacy_maximum_share", Input).value,
-                float,
-            ),
-            count_at_or_above_7_percent=self._numeric_widget_value(
-                self.query_one("#privacy_count_7", Input).value,
-                int,
-            ),
-            count_at_or_above_8_percent=self._numeric_widget_value(
-                self.query_one("#privacy_count_8", Input).value,
-                int,
-            ),
-            count_at_or_above_10_percent=self._numeric_widget_value(
-                self.query_one("#privacy_count_10", Input).value,
-                int,
-            ),
-            count_at_or_above_15_percent=self._numeric_widget_value(
-                self.query_one("#privacy_count_15", Input).value,
-                int,
-            ),
-            count_at_or_above_20_percent=self._numeric_widget_value(
-                self.query_one("#privacy_count_20", Input).value,
-                int,
-            ),
-            citibank_included=self.query_one("#privacy_citibank_included", Checkbox).value,
-            citi_competitor_receives_output=self.query_one(
-                "#privacy_citi_competitor_recipient",
+            "citi_competitor_receives_output": self.query_one(
+                "#citi_competitor_receives_output",
                 Checkbox,
             ).value,
-            citibank_share_percentage=self._numeric_widget_value(
-                self.query_one("#privacy_citibank_share", Input).value,
-                float,
+            "privacy_concentration_col": (
+                self.query_one("#privacy_concentration_col", Input).value.strip()
+                or None
             ),
-        )
-
-    def _run_privacy_sweep_for_tui(self, log_widget: Log) -> None:
-        try:
-            self.call_from_thread(self._begin_run_ui)
-            result = evaluate_privacy_rule_sweep(self._privacy_sweep_request_from_widgets())
-            payload = json.dumps(asdict(result), indent=2)
-            write_log_message(log_widget, payload)
-            authorizers = ", ".join(result.authorizing_rules) or "none"
-            summary = (
-                f"Status: [bold]{result.status.value}[/bold]\n"
-                f"Numeric policy passed: {result.numeric_policy_passed}\n"
-                f"Authorizing rules: {authorizers}"
-            )
-            state = "success"
-            if result.status == PrivacySweepStatus.INVALID_EVIDENCE:
-                state = "error"
-            elif result.numeric_policy_passed is False:
-                state = "blocked"
-            self.call_from_thread(self._end_run_ui, state, summary)
-        except Exception as exc:
-            write_log_message(log_widget, f"Privacy sweep failed: {exc}")
-            self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
+        }
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
@@ -1904,22 +1791,7 @@ class BenchmarkApp(App):
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox toggles."""
-        if event.checkbox.id == "privacy_rule_sweep_mode":
-            form = self.query_one("#privacy_sweep_form")
-            mode_section = self.query_one("#section_mode")
-            advanced = self.query_one("#advanced_opt")
-            button = self.query_one("#btn_run", Button)
-            if event.value:
-                form.remove_class("hidden")
-                mode_section.add_class("hidden")
-                advanced.add_class("hidden")
-                button.label = "▶  Run Privacy Sweep"
-            else:
-                form.add_class("hidden")
-                mode_section.remove_class("hidden")
-                advanced.remove_class("hidden")
-                button.label = "▶  Run Analysis"
-        elif event.checkbox.id == "share_auto_dim":
+        if event.checkbox.id == "share_auto_dim":
             if event.value:
                 self.query_one("#share_dims").add_class("hidden")
                 self.query_one("#share_dims_label").add_class("hidden")
@@ -2051,10 +1923,6 @@ class BenchmarkApp(App):
             self.call_from_thread(log_widget.write, "Starting analysis sequence...\n")
             self.call_from_thread(self._begin_validation_ui)
 
-            if self._privacy_sweep_enabled():
-                self._run_privacy_sweep_for_tui(log_widget)
-                return
-
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -2099,6 +1967,7 @@ class BenchmarkApp(App):
                     "compare_presets": getattr(self.query_one("#compare_presets"), 'value', False),
                     "include_calculated": getattr(self.query_one("#include_calculated"), 'value', False),
                     "output_format": getattr(self.query_one("#output_format"), 'value', 'analysis'),
+                    **self._privacy_strategy_values_from_widgets(),
                 }
                 if preset and not values["config"]:
                     posture = None

@@ -34,13 +34,24 @@ def write_outputs(
         logger = logging.getLogger(__name__)
 
     posture = (artifacts.compliance_summary or {}).get("posture")
+    verdict = (artifacts.compliance_summary or {}).get("compliance_verdict")
     violations = int((artifacts.compliance_summary or {}).get("violations", 0) or 0)
-    block_publication = posture == "strict" and violations > 0
+    block_publication = (
+        posture == "strict"
+        and (
+            violations > 0
+            or (verdict is not None and verdict != "fully_compliant")
+        )
+    )
 
     if block_publication:
         if artifacts.metadata is None:
             artifacts.metadata = {}
-        artifacts.metadata["publication_withheld_reason"] = "strict_posture_violations"
+        artifacts.metadata["publication_withheld_reason"] = (
+            "strict_posture_violations"
+            if violations > 0
+            else "strict_posture_noncompliant_verdict"
+        )
 
     report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
     output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"

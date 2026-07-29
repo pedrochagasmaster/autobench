@@ -77,11 +77,68 @@ class PrivacyPolicy:
     ) -> None:
         self.merchant_mode = merchant_mode
         self.time_column = time_column
+        self.rule_override: Optional[str] = None
 
     def select_rule(self, peer_count: int) -> Tuple[str, Dict[str, Any]]:
-        rule_name = PrivacyValidator.select_rule(peer_count, merchant_mode=self.merchant_mode)
+        rule_name = self.rule_override or PrivacyValidator.select_rule(
+            peer_count, merchant_mode=self.merchant_mode
+        )
         rule_cfg = PrivacyValidator.get_rule_config(rule_name)
         return rule_name, rule_cfg
+
+    @staticmethod
+    def applicable_sweep_rules(
+        peer_count: int,
+        *,
+        is_anonymized_aggregated_merchant_spend: bool,
+    ) -> Tuple[str, ...]:
+        """Return Control 3 rules applicable to one governed peer population."""
+        return tuple(
+            rule_name
+            for rule_name in _SWEEP_RULES
+            if peer_count >= privacy_rule_from_config(rule_name).min_entities
+            and (
+                rule_name != "4/35"
+                or is_anonymized_aggregated_merchant_spend
+            )
+        )
+
+    @staticmethod
+    def sweep_rule_order() -> Tuple[str, ...]:
+        """Return the stable evaluation and compatibility tie-break order."""
+        return _SWEEP_RULES
+
+    @staticmethod
+    def rule_set_digest() -> str:
+        """Return the machine-readable digest of the active numeric rules."""
+        return _rule_set_digest()
+
+    @staticmethod
+    def select_sweep_candidate(
+        peer_count: int,
+        *,
+        merchant_spend_scope: bool,
+        publication_safe_rules: Tuple[str, ...],
+    ) -> Optional[str]:
+        """Choose one whole-run candidate using a compatibility-first tie-break.
+
+        The fallback order is stable implementation behavior, not a policy
+        ranking of the approved Control 3 rules.
+        """
+        legacy_rule = PrivacyValidator.select_rule(
+            peer_count,
+            merchant_mode=merchant_spend_scope,
+        )
+        if legacy_rule in publication_safe_rules:
+            return legacy_rule
+        return next(
+            (
+                rule_name
+                for rule_name in _SWEEP_RULES
+                if rule_name in publication_safe_rules
+            ),
+            None,
+        )
 
     def _dynamic_thresholds(
         self,
@@ -367,16 +424,33 @@ def _validated_evidence(
             + (concrete_counts[1] - concrete_counts[2]) * 8.0
             + (concrete_counts[0] - concrete_counts[1]) * 7.0
         )
-        if minimum_accounted_share > 100.0 + COMPARISON_EPSILON:
+        exact_maximum_floor = 0.0
+        if maximum_share is not None:
+            attained_band_floor = max(
+                (
+                    threshold
+                    for threshold, count in zip(
+                        (7.0, 8.0, 10.0, 15.0, 20.0),
+                        concrete_counts,
+                    )
+                    if count > 0 and maximum_share + COMPARISON_EPSILON >= threshold
+                ),
+                default=0.0,
+            )
+            exact_maximum_floor = maximum_share - attained_band_floor
+        if minimum_accounted_share + exact_maximum_floor > 100.0 + COMPARISON_EPSILON:
             failures.append(
                 _failure(
                     "contradictory_evidence",
-                    "threshold counts imply more than 100 percent total share",
+                    "threshold counts and the exact maximum imply more than 100 percent total share",
                 )
             )
         if counts_are_monotonic and participant_count is not None and maximum_share is not None:
+            # At least one participant must attain the declared maximum.
+            top_band_count = concrete_counts[4]
             maximum_possible_share = (
-                concrete_counts[4] * maximum_share
+                (maximum_share if top_band_count else 0.0)
+                + max(top_band_count - 1, 0) * maximum_share
                 + (concrete_counts[3] - concrete_counts[4]) * min(maximum_share, 20.0)
                 + (concrete_counts[2] - concrete_counts[3]) * min(maximum_share, 15.0)
                 + (concrete_counts[1] - concrete_counts[2]) * min(maximum_share, 10.0)
@@ -600,13 +674,14 @@ def evaluate_privacy_rule_sweep(request: PrivacySweepRequest) -> PrivacySweepRes
         )
     citi_overlay = _evaluate_citibank_overlay(request, citibank_share, evidence_failures)
     overlays = (citi_overlay,)
-    authorizing_rules = tuple(
+    passing_rules = tuple(
         evaluation.rule_name
         for evaluation in evaluations
         if evaluation.strict_passed
     )
-    numeric_rules_passed = bool(authorizing_rules)
+    numeric_rules_passed = bool(passing_rules)
     overlays_passed = citi_overlay.status != PrivacyEvaluationStatus.FAILED
+    authorizing_rules = passing_rules if overlays_passed else ()
 
     if request.contains_peer_benchmark_data is False and not evidence_failures:
         status = PrivacySweepStatus.NOT_SUBJECT

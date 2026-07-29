@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import math
 from typing import Iterable, Optional
 
@@ -19,6 +18,7 @@ from core import (
 )
 from core.contracts import PrivacySweepResult
 from core.privacy_validator import PrivacyValidator
+from core.privacy_policy import PrivacyPolicy
 
 
 def _request(
@@ -210,6 +210,7 @@ def test_citibank_overlay_blocks_even_when_a_base_rule_passes() -> None:
     assert result.numeric_rules_passed
     assert not result.mandatory_overlays_passed
     assert not result.numeric_policy_passed
+    assert not result.authorizing_rules
     assert result.status == PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY
     assert {reason.code for reason in result.mandatory_overlays[0].failure_reasons} == {
         "citibank_maximum_share_exceeded"
@@ -359,55 +360,53 @@ def test_result_and_nested_public_contracts_are_immutable() -> None:
         result.rule_evaluations[1].threshold_evaluations[0].compliant = False  # type: ignore[misc]
 
 
-def test_public_facade_excludes_internal_privacy_and_data_loading_types() -> None:
+def test_exact_maximum_makes_compact_evidence_infeasible() -> None:
+    result = evaluate_privacy_rule_sweep(
+        PrivacySweepRequest(
+            contains_peer_benchmark_data=True,
+            is_anonymized_aggregated_merchant_spend=False,
+            metric_context=PrivacyMetricContext.OTHER,
+            concentration_basis=PrivacyConcentrationBasis.BENCHMARK_METRIC,
+            participant_count=5,
+            maximum_share_percentage=100,
+            count_at_or_above_7_percent=5,
+            count_at_or_above_8_percent=5,
+            count_at_or_above_10_percent=5,
+            count_at_or_above_15_percent=5,
+            count_at_or_above_20_percent=5,
+            citibank_included=False,
+            citi_competitor_receives_output=False,
+        )
+    )
+    assert result.status == PrivacySweepStatus.INVALID_EVIDENCE
+    assert "contradictory_evidence" in _reason_codes(result)
+
+
+def test_public_facade_adds_sweep_without_breaking_legacy_exports() -> None:
     assert "PrivacySweepRequest" in core.__all__
     assert "PrivacySweepResult" in core.__all__
     assert "evaluate_privacy_rule_sweep" in core.__all__
-    assert "PrivacyValidator" not in core.__all__
+    assert "PrivacyValidator" in core.__all__
     assert "PrivacyPolicy" not in core.__all__
-    assert "DataLoader" not in core.__all__
-    assert not hasattr(core, "PrivacyValidator")
+    assert "DataLoader" in core.__all__
+    assert hasattr(core, "PrivacyValidator")
     assert not hasattr(core, "PrivacyPolicy")
-    assert not hasattr(core, "DataLoader")
+    assert hasattr(core, "DataLoader")
 
 
-def test_cli_flag_builds_and_runs_the_same_public_sweep(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_flag_selects_sweep_strategy_on_normal_analysis() -> None:
     args = benchmark.create_parser().parse_args(
         [
+            "share",
+            "--csv",
+            "input.csv",
+            "--metric",
+            "amount",
             "--privacy-rule-sweep",
-            "--participant-count",
-            "10",
-            "--maximum-share-percentage",
-            "22",
-            "--count-at-or-above-7-percent",
-            "10",
-            "--count-at-or-above-8-percent",
-            "8",
-            "--count-at-or-above-10-percent",
-            "3",
-            "--count-at-or-above-15-percent",
-            "1",
-            "--count-at-or-above-20-percent",
-            "1",
         ]
     )
-
-    request = benchmark.build_privacy_sweep_request_from_namespace(args)
-    assert request == _request([22, 12, 10, 9, 9, 8, 8, 8, 7, 7])
-    assert benchmark.handle_privacy_rule_sweep(args) == benchmark.EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == PrivacySweepStatus.NUMERICALLY_COMPLIANT.value
-    assert payload["authorizing_rules"] == ["5/25", "6/30"]
-
-
-def test_cli_sweep_fails_closed_when_required_evidence_is_missing(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    args = benchmark.create_parser().parse_args(["--privacy-rule-sweep"])
-
-    assert benchmark.handle_privacy_rule_sweep(args) == benchmark.EXIT_FAILURE
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == PrivacySweepStatus.INVALID_EVIDENCE.value
+    request = benchmark.build_run_request("share", args)
+    assert request.privacy_rule_strategy.value == "sweep_any_applicable"
 
 
 def test_cli_sweep_mode_is_off_by_default() -> None:
@@ -422,6 +421,18 @@ def test_cli_sweep_mode_is_off_by_default() -> None:
     )
 
     assert not args.privacy_rule_sweep
+
+
+def test_candidate_selection_prefers_legacy_rule_then_fixed_fallback() -> None:
+    assert PrivacyPolicy.select_sweep_candidate(
+        10, merchant_spend_scope=False, publication_safe_rules=("5/25", "10/40")
+    ) == "10/40"
+    assert PrivacyPolicy.select_sweep_candidate(
+        10, merchant_spend_scope=False, publication_safe_rules=("5/25", "6/30")
+    ) == "5/25"
+    assert PrivacyPolicy.select_sweep_candidate(
+        4, merchant_spend_scope=True, publication_safe_rules=("4/35",)
+    ) == "4/35"
 
 
 @pytest.mark.parametrize(

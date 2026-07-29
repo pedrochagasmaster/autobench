@@ -6,7 +6,7 @@ import argparse
 import logging
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
@@ -31,6 +31,13 @@ from core.contracts import (
     AnalysisRunRequest,
     DataQualityResult,
     OutputSettings,
+    PrivacyEvaluationStatus,
+    PrivacyFailureReason,
+    PrivacyMandatoryOverlayEvaluation,
+    PrivacyRuleStrategy,
+    PrivacyRuleStrategyEvaluation,
+    PrivacyRuleStrategyResult,
+    PrivacySweepStatus,
     RunSummary,
     WeightLookup,
     WeightingResult,
@@ -41,6 +48,8 @@ from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import write_outputs
 from core.privacy_validator import PrivacyValidator
+from core.privacy_policy import PrivacyPolicy
+from core.privacy_rules import evaluate_rule
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
 from core.report_artifact_builder import build_analysis_artifacts
 from core.report_generator import ReportGenerator
@@ -144,6 +153,364 @@ def build_dimensional_analyzer(
         'enforce_single_weight_set': enforce_single_weight_set,
         'dynamic_constraints_config': dyn_constraints,
     }
+
+
+def _fit_privacy_strategy(
+    *,
+    request: AnalysisRunRequest,
+    analyzer: DimensionalAnalyzer,
+    analyzer_settings: Dict[str, Any],
+    analyzer_factory: Callable[[], Tuple[DimensionalAnalyzer, Dict[str, Any]]],
+    df: pd.DataFrame,
+    metric_col: str,
+    governed_metric_cols: List[str],
+    dimensions: List[str],
+) -> Tuple[DimensionalAnalyzer, Dict[str, Any], Optional[WeightingResult], PrivacyRuleStrategyResult]:
+    """Optimize independently for every applicable rule in sweep mode."""
+    _, _, governed_peers = analyzer._build_categories(df, metric_col, dimensions)
+    if request.citi_competitor_receives_output:
+        if not request.citibank_entity_name:
+            raise ValueError(
+                "citibank_entity_name is required when a Citi competitor receives the output"
+            )
+        if request.citibank_entity_name not in governed_peers:
+            raise ValueError(
+                "citibank_entity_name is not present in the governed peer population"
+            )
+        normalized_citi = request.citibank_entity_name.strip().casefold()
+        matching_identities = [
+            peer
+            for peer in governed_peers
+            if peer.strip().casefold() == normalized_citi
+        ]
+        if len(matching_identities) != 1:
+            raise ValueError(
+                "citibank_entity_name is ambiguous in the governed peer population"
+            )
+
+    def governed_share_groups(
+        candidate: DimensionalAnalyzer,
+    ) -> List[List[Tuple[str, float]]]:
+        share_groups: List[List[Tuple[str, float]]] = []
+        for governed_metric_col in governed_metric_cols:
+            categories, _, _ = candidate._build_categories(
+                df, governed_metric_col, dimensions
+            )
+            grouped: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = {}
+            for category in categories:
+                key = (
+                    category.get("dimension"),
+                    category.get("category"),
+                    category.get("time_period"),
+                )
+                grouped.setdefault(key, []).append(category)
+            for (dimension, _category, _period), rows in grouped.items():
+                weighted = [
+                    float(row.get("category_volume", 0.0))
+                    * candidate._get_peer_multiplier(
+                        str(dimension), str(row.get("peer"))
+                    )
+                    for row in rows
+                ]
+                total = sum(value for value in weighted if value > 0.0)
+                if total <= 0.0:
+                    return []
+                share_groups.append(
+                    [
+                        (str(row.get("peer")), value / total * 100.0)
+                        for row, value in zip(rows, weighted)
+                        if value > 0.0
+                    ]
+                )
+        return share_groups
+
+    def strict_output_passed(candidate: DimensionalAnalyzer, rule_name: str) -> bool:
+        share_groups = governed_share_groups(candidate)
+        return bool(share_groups) and all(
+            evaluate_rule(rule_name, [share for _peer, share in group]).strict_passed
+            for group in share_groups
+        )
+
+    def evaluate_citi_overlay(
+        candidate: DimensionalAnalyzer,
+    ) -> PrivacyMandatoryOverlayEvaluation:
+        if not request.citi_competitor_receives_output:
+            return PrivacyMandatoryOverlayEvaluation(
+                overlay_name="citibank_maximum_25_percent",
+                status=PrivacyEvaluationStatus.NOT_APPLICABLE,
+                maximum_share_percentage=25.0,
+                failure_reasons=(),
+            )
+        share_groups = governed_share_groups(candidate)
+        passed = bool(share_groups) and all(
+            share <= 25.0
+            for group in share_groups
+            for peer, share in group
+            if peer == request.citibank_entity_name
+        )
+        return PrivacyMandatoryOverlayEvaluation(
+            overlay_name="citibank_maximum_25_percent",
+            status=(
+                PrivacyEvaluationStatus.PASSED
+                if passed
+                else PrivacyEvaluationStatus.FAILED
+            ),
+            maximum_share_percentage=25.0,
+            failure_reasons=(
+                ()
+                if passed
+                else (
+                    PrivacyFailureReason(
+                        code="citibank_concentration_exceeded",
+                        message=(
+                            "The emitted output does not satisfy the mandatory "
+                            "Citibank maximum-share overlay"
+                        ),
+                    ),
+                )
+            ),
+        )
+
+    def citi_overlay_passed(candidate: DimensionalAnalyzer) -> bool:
+        return (
+            evaluate_citi_overlay(candidate).status
+            != PrivacyEvaluationStatus.FAILED
+        )
+
+    if request.privacy_rule_strategy == PrivacyRuleStrategy.SELECT_BY_PEER_COUNT:
+        result = analyzer.fit_privacy_weights(df, metric_col, dimensions)
+        selected = analyzer.privacy_rule_name
+        passed = bool(
+            selected
+            and selected != "insufficient"
+            and strict_output_passed(analyzer, selected)
+        )
+        overlay_passed = citi_overlay_passed(analyzer)
+        evaluation = PrivacyRuleStrategyEvaluation(
+            rule_name=selected or "insufficient",
+            status=PrivacyEvaluationStatus.PASSED if passed else PrivacyEvaluationStatus.FAILED,
+        )
+        return analyzer, analyzer_settings, result, PrivacyRuleStrategyResult(
+            strategy=request.privacy_rule_strategy,
+            status=(
+                PrivacySweepStatus.NUMERICALLY_COMPLIANT
+                if passed and overlay_passed
+                else (
+                    PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY
+                    if passed
+                    else PrivacySweepStatus.NUMERICALLY_NONCOMPLIANT
+                )
+            ),
+            numeric_rules_passed=passed,
+            mandatory_overlays_passed=overlay_passed,
+            publication_authorized_by_numeric_policy=passed and overlay_passed,
+            display_rule=selected,
+            feasible_candidate_rules=(selected,) if passed and selected else (),
+            authorizing_rules=(
+                (selected,) if passed and overlay_passed and selected else ()
+            ),
+            candidate_attempt_evaluations=(evaluation,),
+            emitted_output_evaluations=(evaluation,),
+            mandatory_overlay_evaluations=(evaluate_citi_overlay(analyzer),),
+            rule_set_digest=PrivacyPolicy.rule_set_digest(),
+        )
+
+    peers = governed_peers
+    applicable = PrivacyPolicy.applicable_sweep_rules(
+        len(peers),
+        is_anonymized_aggregated_merchant_spend=(
+            request.is_anonymized_aggregated_merchant_spend
+        ),
+    )
+    approved_rules = PrivacyPolicy.sweep_rule_order()
+    evaluations: List[PrivacyRuleStrategyEvaluation] = []
+    attempts: Dict[str, Tuple[DimensionalAnalyzer, Dict[str, Any], Optional[WeightingResult]]] = {}
+    feasible_candidate_rules: List[str] = []
+    overlay_results: Dict[str, bool] = {}
+
+    for rule_name in approved_rules:
+        if rule_name not in applicable:
+            evaluations.append(
+                PrivacyRuleStrategyEvaluation(
+                    rule_name=rule_name,
+                    status=PrivacyEvaluationStatus.NOT_APPLICABLE,
+                    failure_reasons=(
+                        PrivacyFailureReason(
+                            code="rule_not_applicable",
+                            message="Rule minimum or merchant-spend scope is not satisfied",
+                        ),
+                    ),
+                )
+            )
+            continue
+        candidate, candidate_settings = analyzer_factory()
+        candidate.privacy_policy.rule_override = rule_name
+        failure_reasons: Tuple[PrivacyFailureReason, ...] = ()
+        try:
+            candidate_result = candidate.fit_privacy_weights(df, metric_col, dimensions)
+            passed = strict_output_passed(candidate, rule_name)
+            overlay_passed = citi_overlay_passed(candidate)
+            overlay_results[rule_name] = overlay_passed
+            if not passed:
+                failure_reasons = (
+                    PrivacyFailureReason(
+                        code="strict_optimization_not_compliant",
+                        message="Rule-specific optimization did not produce a strict-compliant result",
+                    ),
+                )
+        except ValueError as exc:
+            candidate_result = None
+            passed = False
+            failure_reasons = (
+                PrivacyFailureReason(code="optimization_failed", message=str(exc)),
+            )
+        attempts[rule_name] = (candidate, candidate_settings, candidate_result)
+        evaluations.append(
+            PrivacyRuleStrategyEvaluation(
+                rule_name=rule_name,
+                status=PrivacyEvaluationStatus.PASSED if passed else PrivacyEvaluationStatus.FAILED,
+                failure_reasons=failure_reasons,
+            )
+        )
+        if passed:
+            feasible_candidate_rules.append(rule_name)
+
+    publication_safe_candidates = [
+        name
+        for name in feasible_candidate_rules
+        if not request.citi_competitor_receives_output
+        or overlay_results.get(name, False)
+    ]
+    fallback_order = PrivacyPolicy.sweep_rule_order()
+    legacy_selected_rule = PrivacyValidator.select_rule(
+        len(peers),
+        merchant_mode=request.is_anonymized_aggregated_merchant_spend,
+    )
+    display_rule = PrivacyPolicy.select_sweep_candidate(
+        len(peers),
+        merchant_spend_scope=request.is_anonymized_aggregated_merchant_spend,
+        publication_safe_rules=tuple(publication_safe_candidates),
+    )
+    fallback_rule = display_rule or (
+        legacy_selected_rule
+        if legacy_selected_rule in feasible_candidate_rules
+        else (
+            feasible_candidate_rules[0]
+            if feasible_candidate_rules
+            else None
+        )
+    )
+    emitted_candidate_feasible = bool(
+        fallback_rule and fallback_rule in feasible_candidate_rules
+    )
+    diagnostic_rule = fallback_rule or (
+        legacy_selected_rule
+        if legacy_selected_rule in attempts
+        else (applicable[0] if applicable else None)
+    )
+    if diagnostic_rule and diagnostic_rule in attempts:
+        chosen_analyzer, chosen_settings, chosen_result = attempts[diagnostic_rule]
+    else:
+        chosen_analyzer, chosen_settings, chosen_result = analyzer, analyzer_settings, None
+    display_rule = diagnostic_rule
+    emitted_evaluations: List[PrivacyRuleStrategyEvaluation] = []
+    emitted_numeric_rules: List[str] = []
+    for rule_name in fallback_order:
+        if rule_name not in applicable:
+            emitted_evaluations.append(
+                PrivacyRuleStrategyEvaluation(
+                    rule_name=rule_name,
+                    status=PrivacyEvaluationStatus.NOT_APPLICABLE,
+                    failure_reasons=(
+                        PrivacyFailureReason(
+                            code="rule_not_applicable",
+                            message=(
+                                "Rule minimum or merchant-spend scope is not satisfied"
+                            ),
+                        ),
+                    ),
+                )
+            )
+            continue
+        emitted_passed = (
+            emitted_candidate_feasible
+            and strict_output_passed(chosen_analyzer, rule_name)
+        )
+        emitted_evaluations.append(
+            PrivacyRuleStrategyEvaluation(
+                rule_name=rule_name,
+                status=(
+                    PrivacyEvaluationStatus.PASSED
+                    if emitted_passed
+                    else PrivacyEvaluationStatus.FAILED
+                ),
+                failure_reasons=(
+                    ()
+                    if emitted_passed
+                    else (
+                        PrivacyFailureReason(
+                            code="emitted_output_rule_failed",
+                            message=(
+                                (
+                                    "The emitted candidate failed this applicable "
+                                    "rule in at least one governed output"
+                                )
+                                if emitted_candidate_feasible
+                                else (
+                                    "No feasible rule-specific candidate was "
+                                    "available for emitted-output authorization"
+                                )
+                            ),
+                        ),
+                    )
+                ),
+            )
+        )
+        if emitted_passed:
+            emitted_numeric_rules.append(rule_name)
+
+    emitted_overlay_evaluation = evaluate_citi_overlay(chosen_analyzer)
+    emitted_overlay_passed = (
+        emitted_overlay_evaluation.status != PrivacyEvaluationStatus.FAILED
+    )
+    publication_authorized = bool(emitted_numeric_rules) and emitted_overlay_passed
+    authorizing_rules = (
+        tuple(emitted_numeric_rules) if publication_authorized else ()
+    )
+    strategy_result = PrivacyRuleStrategyResult(
+        strategy=request.privacy_rule_strategy,
+        status=(
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT
+            if publication_authorized
+            else (
+                PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY
+                if emitted_numeric_rules
+                else PrivacySweepStatus.NUMERICALLY_NONCOMPLIANT
+            )
+        ),
+        numeric_rules_passed=bool(emitted_numeric_rules),
+        mandatory_overlays_passed=emitted_overlay_passed,
+        publication_authorized_by_numeric_policy=publication_authorized,
+        display_rule=display_rule,
+        feasible_candidate_rules=tuple(feasible_candidate_rules),
+        authorizing_rules=authorizing_rules,
+        candidate_attempt_evaluations=tuple(evaluations),
+        emitted_output_evaluations=tuple(emitted_evaluations),
+        mandatory_overlay_evaluations=(emitted_overlay_evaluation,),
+        rule_set_digest=PrivacyPolicy.rule_set_digest(),
+    )
+    if not publication_authorized:
+        compliance_state = getattr(chosen_analyzer, "weighting_compliance_state", None)
+        if compliance_state is not None:
+            compliance_state.secondary_rule_passed = False
+            compliance_state.residual_violations = max(
+                1, int(compliance_state.residual_violations)
+            )
+            compliance_state.verdict = "non_compliant"
+            if chosen_result is not None:
+                chosen_result.compliance_state = compliance_state
+    chosen_analyzer.privacy_rule_strategy_result = strategy_result
+    return chosen_analyzer, chosen_settings, chosen_result, strategy_result
 
 
 def build_run_config(
@@ -1396,6 +1763,13 @@ def _execute_run_impl(
     tracker.set("configuration")
     args = request.to_namespace()
     config_overrides = dict(mode_spec.extra_config_overrides)
+    if (
+        request.privacy_rule_strategy == PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+        and request.is_anonymized_aggregated_merchant_spend
+    ):
+        # Reuse the internal validation switch, while keeping the public
+        # applicability fact explicit and accurately named.
+        config_overrides["merchant_mode"] = True
     if extra_config_overrides:
         config_overrides.update(extra_config_overrides)
     config = build_run_config(args, extra_overrides=config_overrides or None)
@@ -1460,21 +1834,71 @@ def _execute_run_impl(
     tracker.set("analysis")
     resolved = config.resolve()
     debug_mode = config.get('output', 'include_debug_sheets', default=False)
-    analyzer, analyzer_settings = build_dimensional_analyzer(
-        target_entity=resolved_entity,
-        entity_col=entity_col,
-        resolved=resolved,
-        time_col=time_col,
-        debug_mode=debug_mode,
-        bic_percentile=mode_spec.initial_bic_percentile(request, config),
-        logger=logger,
-    )
+    def analyzer_factory() -> Tuple[DimensionalAnalyzer, Dict[str, Any]]:
+        built_analyzer, built_settings = build_dimensional_analyzer(
+            target_entity=resolved_entity,
+            entity_col=entity_col,
+            resolved=resolved,
+            time_col=time_col,
+            debug_mode=debug_mode,
+            bic_percentile=mode_spec.initial_bic_percentile(request, config),
+            logger=logger,
+        )
+        if request.citi_competitor_receives_output and request.citibank_entity_name:
+            built_analyzer.protected_entity_caps = {
+                request.citibank_entity_name: 25.0,
+            }
+        return built_analyzer, built_settings
+
+    analyzer, analyzer_settings = analyzer_factory()
     consistent_weights = analyzer_settings['consistent_weights']
     weight_metric_col = mode_spec.weight_metric_col(request)
     assert weight_metric_col is not None  # guaranteed by mode_spec.validate_request
 
     try:
-        weighting_result = analyzer.fit_privacy_weights(df, weight_metric_col, dimensions)
+        privacy_metric_col = weight_metric_col
+        if (
+            request.privacy_rule_strategy == PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+            and request.is_rate
+            and request.fraud_col
+        ):
+            if not request.privacy_concentration_col:
+                raise ValueError(
+                    "privacy_concentration_col is required for fraud/chargeback sweep runs"
+                )
+            if request.privacy_concentration_col not in df.columns:
+                raise ValueError(
+                    "privacy_concentration_col is not present in the governed dataset"
+                )
+            privacy_metric_col = request.privacy_concentration_col
+        analyzer, analyzer_settings, weighting_result, privacy_strategy_result = _fit_privacy_strategy(
+            request=request,
+            analyzer=analyzer,
+            analyzer_settings=analyzer_settings,
+            analyzer_factory=analyzer_factory,
+            df=df,
+            metric_col=privacy_metric_col,
+            governed_metric_cols=[
+                privacy_metric_col,
+                *(
+                    [weight_metric_col]
+                    if (
+                        weight_metric_col != privacy_metric_col
+                        and (
+                            not request.is_rate
+                            or request.approved_col is not None
+                        )
+                    )
+                    else []
+                ),
+                *[
+                    metric
+                    for metric in (request.secondary_metrics or [])
+                    if metric != weight_metric_col
+                ],
+            ],
+            dimensions=dimensions,
+        )
     except ValueError as exc:
         _handle_optimization_failure(
             exc,
@@ -1597,15 +2021,37 @@ def _execute_run_impl(
         include_audit_log=output_settings.include_audit_log,
     )
     metadata.update(diagnostics['metadata_updates'])
+    privacy_strategy_blocks = (
+        (
+            request.privacy_rule_strategy
+            == PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+            and not privacy_strategy_result.publication_authorized_by_numeric_policy
+        )
+        or (
+            request.citi_competitor_receives_output
+            and not privacy_strategy_result.mandatory_overlays_passed
+        )
+    )
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
         acknowledgement_given=compliance_context['acknowledgement_given'],
         privacy_validation_df=diagnostics['compliance_privacy_validation_df'],
         structural_infeasibility=metadata.get('structural_infeasibility_summary', {}),
         data_quality=data_quality,
+        blocked_reason=(
+            "privacy_rule_strategy_blocked"
+            if privacy_strategy_blocks
+            else None
+        ),
+        blocked_details=(
+            {"privacy_rule_strategy": asdict(privacy_strategy_result)}
+            if privacy_strategy_blocks
+            else None
+        ),
     ).to_dict()
     metadata['compliance_summary'] = compliance_summary
     metadata['control3_policy'] = compliance_context.get('control3_policy')
+    metadata['privacy_rule_strategy'] = asdict(privacy_strategy_result)
     metadata['run_status'] = compliance_summary['run_status']
     metadata['compliance_verdict'] = compliance_summary['compliance_verdict']
     metadata['acknowledgement_state'] = compliance_summary['acknowledgement_state']
@@ -1673,6 +2119,7 @@ def _execute_run_impl(
 
     tracker.set("output")
     artifacts = write_outputs(request, artifacts, config=config, logger=logger)
+    artifacts.privacy_rule_strategy_result = privacy_strategy_result
     if request.export_balanced_csv:
         mode_spec.export_balanced_csv_fn(
             request=request,

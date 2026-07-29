@@ -44,6 +44,42 @@ class PrivacySweepStatus(str, Enum):
     BLOCKED_BY_MANDATORY_OVERLAY = "blocked_by_mandatory_overlay"
 
 
+class PrivacyRuleStrategy(str, Enum):
+    """Rule-selection strategy used by the normal analysis pipeline."""
+
+    SELECT_BY_PEER_COUNT = "select_by_peer_count"
+    SWEEP_ANY_APPLICABLE = "sweep_any_applicable"
+
+
+@dataclass(frozen=True)
+class PrivacyRuleStrategyEvaluation:
+    """One rule-specific optimization attempt in an integrated analysis run."""
+
+    rule_name: str
+    status: PrivacyEvaluationStatus
+    failure_reasons: Tuple[PrivacyFailureReason, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrivacyRuleStrategyResult:
+    """Immutable audit result for the normal pipeline's rule strategy."""
+
+    strategy: PrivacyRuleStrategy
+    status: PrivacySweepStatus
+    numeric_rules_passed: bool
+    mandatory_overlays_passed: bool
+    publication_authorized_by_numeric_policy: bool
+    display_rule: Optional[str]
+    feasible_candidate_rules: Tuple[str, ...]
+    authorizing_rules: Tuple[str, ...]
+    candidate_attempt_evaluations: Tuple[PrivacyRuleStrategyEvaluation, ...]
+    emitted_output_evaluations: Tuple[PrivacyRuleStrategyEvaluation, ...]
+    mandatory_overlay_evaluations: Tuple[PrivacyMandatoryOverlayEvaluation, ...]
+    rule_set_digest: str
+    policy_version: str = "v5 (2026-06-03)"
+    policy_source: str = "docs/control-3-customer-merchant-performance-v5-20260603.md"
+
+
 @dataclass(frozen=True)
 class PrivacySweepRequest:
     """Compact server-side evidence for a Control 3.2 privacy-rule sweep.
@@ -172,6 +208,7 @@ class SolverRequest:
     learning_rate: float = 0.01
     violation_penalty_weight: float = 1000.0
     merchant_mode: bool = False
+    protected_entity_caps: Dict[str, float] = field(default_factory=dict)
     enforce_additional_constraints: bool = False
     dynamic_constraints_enabled: bool = False
     time_column: Optional[str] = None
@@ -256,6 +293,11 @@ class AnalysisRunRequest:
     fraud_in_bps: bool = True
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
+    privacy_rule_strategy: PrivacyRuleStrategy = PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+    is_anonymized_aggregated_merchant_spend: bool = False
+    citibank_entity_name: Optional[str] = None
+    citi_competitor_receives_output: bool = False
+    privacy_concentration_col: Optional[str] = None
     control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
 
@@ -301,6 +343,8 @@ class AnalysisRunRequest:
             for key in CONTROL3_POLICY_KEYS
             if getattr(ns, key, None) is not None
         }
+        if getattr(ns, "privacy_rule_sweep", False):
+            kwargs["privacy_rule_strategy"] = PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
         return cls(**kwargs)
 
     @classmethod
@@ -341,6 +385,7 @@ class AnalysisArtifacts:
     publication_output: Optional[str] = None
     report_model: Any = None
     json_output: Optional[str] = None
+    privacy_rule_strategy_result: Optional[PrivacyRuleStrategyResult] = None
 
 
 @dataclass

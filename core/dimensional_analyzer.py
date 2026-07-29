@@ -18,7 +18,13 @@ from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
 from .global_weight_optimizer import GlobalWeightOptimizer
 from .privacy_policy import PrivacyPolicy, PrivacyPolicySettings
-from .contracts import SolverRequest, WeightLookup, WeightingResult, weighting_result_from_analyzer
+from .contracts import (
+    PrivacyRuleStrategyResult,
+    SolverRequest,
+    WeightLookup,
+    WeightingResult,
+    weighting_result_from_analyzer,
+)
 from .impact_calculator import (
     calculate_impact_summary as _calculate_impact_summary,
     calculate_rate_impact as _calculate_rate_impact,
@@ -262,6 +268,8 @@ class DimensionalAnalyzer:
         # Privacy compliance validation (enabled by output settings)
         self.privacy_validation_df: pd.DataFrame = pd.DataFrame()
         self.privacy_rule_name: Optional[str] = None
+        self.privacy_rule_strategy_result: Optional[PrivacyRuleStrategyResult] = None
+        self.protected_entity_caps: Dict[str, float] = {}
         self.additional_constraint_violations: List[Dict[str, Any]] = []
         self.dynamic_constraint_stats: Dict[str, int] = {
             'enforced': 0,

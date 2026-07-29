@@ -165,7 +165,7 @@ def evaluate_control3_policy(
     requirements: Dict[str, str] = {
         "control_3_2_numeric_rules": "enforced_by_privacy_validator",
         "citi_25pct_protected_entity_cap": "enforced_when_protected_entity_configured",
-        "merchant_4_35_eligibility": "enforced_by_merchant_mode_rule_selection",
+        "merchant_4_35_eligibility": "enforced_by_privacy_rule_strategy",
         "control_3_3_publication_confidentiality": "enforced_by_publication_redaction",
     }
     details: Dict[str, Any] = {}

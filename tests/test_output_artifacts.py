@@ -321,6 +321,9 @@ def _write_with_posture(
     summary = dict(artifacts.compliance_summary or {})
     summary["posture"] = posture
     summary["violations"] = violations
+    summary["compliance_verdict"] = (
+        "blocked" if violations else "fully_compliant"
+    )
     artifacts.compliance_summary = summary
     artifacts.metadata["compliance_summary"] = summary
     write_outputs(request, artifacts, logger=logging.getLogger("test_publication_gate"))

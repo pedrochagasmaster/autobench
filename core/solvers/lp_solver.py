@@ -41,6 +41,20 @@ class LPSolver(PrivacySolver):
         categories = solver_request.categories
         max_concentration = solver_request.max_concentration
         peer_volumes = solver_request.peer_volumes
+        missing_protected = sorted(
+            set(solver_request.protected_entity_caps) - set(peers)
+        )
+        if missing_protected:
+            return SolverResult(
+                weights={},
+                method="lp",
+                stats={
+                    "error": "protected_entity_absent",
+                    "protected_entities": missing_protected,
+                    "converged": False,
+                },
+                success=False,
+            )
 
         # Extract config
         rank_preservation_strength = float(solver_request.rank_preservation_strength)
@@ -83,7 +97,13 @@ class LPSolver(PrivacySolver):
             logger.warning("No category volumes found for LP solver.")
             return None
 
-        cap = max_concentration / 100.0
+        peer_caps = np.asarray(
+            [
+                float(solver_request.protected_entity_caps.get(peer, max_concentration)) / 100.0
+                for peer in peers
+            ],
+            dtype=float,
+        )
         # Baseline shares (overall) for rank order
         peer_vol_arr = np.array([peer_volumes.get(p, 0.0) for p in peers], dtype=float)
         total_vol = float(peer_vol_arr.sum())
@@ -150,7 +170,10 @@ class LPSolver(PrivacySolver):
         # are evaluated after solving because they are count-based, non-linear
         # constraints in the current solver architecture.
         # Share cap constraints
-        cap_coefficients = -cap * category_matrix[cap_category_indices].copy()
+        cap_coefficients = (
+            -peer_caps[cap_peer_indices, None]
+            * category_matrix[cap_category_indices].copy()
+        )
         cap_coefficients[
             np.arange(num_cap_constraints), cap_peer_indices
         ] += category_matrix[cap_category_indices, cap_peer_indices]

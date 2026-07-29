@@ -356,7 +356,9 @@ Below are the primary config paths (typically set via presets) and how they tran
 
 - analysis.merchant_mode
   - Mapped to DimensionalAnalyzer.merchant_mode.
-  - Allows the 4/35 rule if peer count is 4.
+  - Legacy compatibility setting for single-rule selection at exactly four
+    peers. Sweep mode instead uses the explicit anonymized aggregated
+    merchant-spend context and applies 4/35 at four or more participants.
 
 - input.validate_input / input.validation_thresholds
   - Used by ValidationRunner + DataLoader validators.
@@ -683,7 +685,9 @@ Step 2: Optional validation
 - ValidationRunner reads input.validate_input and input.validation_thresholds.
 - It runs DataLoader.validate_share_input or validate_rate_input.
 - Errors stop the run; warnings are logged and analysis continues.
-- For merchant_mode, min_peer_count is lowered to 4 to permit 4/35.
+- For legacy merchant mode, and for an explicit merchant-spend sweep,
+  min_peer_count is lowered to 4 so policy evaluation can determine 4/35
+  applicability.
 
 Step 3: Category construction
 - CategoryBuilder aggregates per peer per dimension category.
@@ -837,10 +841,11 @@ CSV/JSON:
 - Consider documenting or consolidating to reduce ambiguity.
 - Status: addressed by enforcing output flags in the Excel report generator (metadata-driven sheet inclusion).
 
-5) Merchant mode vs validation thresholds
-- Validation default min_peer_count is 5, but merchant 4/35 is allowed with merchant_mode.
-- Validation thresholds could be rule-aware to avoid false errors.
-- Status: addressed by lowering validation min_peer_count to 4 when merchant_mode is enabled.
+5) Merchant context vs validation thresholds
+- Validation defaults to five peers. Legacy merchant mode and the explicit
+  anonymized aggregated merchant-spend sweep context lower the input threshold
+  to four; the sweep still applies 4/35 only when that explicit scope is true.
+- Status: addressed in shared run configuration before input validation.
 
 6) optimization.constraints.consistency_mode is not wired
 - Config and schema support it, but core uses an explicit consistent_weights flag.
@@ -897,8 +902,9 @@ Standardized solver output:
 
 ### core/__init__.py
 - Exposes the supported analysis-run and compact privacy-sweep contracts.
-- Internal implementation types such as `PrivacyValidator`, `PrivacyPolicy`,
-  raw rule dictionaries, and `DataLoader` are intentionally not exported.
+- Raw rule dictionaries and `PrivacyPolicy` remain internal. Historical
+  `PrivacyValidator`, `DataLoader`, `DimensionalAnalyzer`, and
+  `ReportGenerator` facade imports remain available for compatibility.
 
 ### core/privacy_policy.py
 
@@ -916,10 +922,22 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
 - Results distinguish not-subject, numerically compliant, numerically
   noncompliant, invalid evidence, and mandatory-overlay blocks. A numeric pass
   is not a blanket Control 3 verdict.
-- The Python API is the canonical implementation. The CLI activates the same
-  contract with `--privacy-rule-sweep` and emits JSON; the TUI exposes an
-  opt-in privacy-sweep checkbox and compact-evidence form. Both adapters call
-  `evaluate_privacy_rule_sweep` directly.
+- `PrivacyRuleStrategy` integrates the policy into `AnalysisRunRequest`.
+  CLI and TUI adapters only select the strategy; the shared run executor
+  derives the governed population and performs independent rule-specific
+  optimization attempts. `feasible_candidate_rules` describes those attempts,
+  while `authorizing_rules` is computed only after every applicable rule and
+  Citi overlay are re-evaluated against the one emitted candidate.
+- Candidate selection prefers the legacy peer-count-selected rule when safe,
+  then uses a fixed compatibility tie-break order. The order is not a policy
+  hierarchy. No artifact mixes candidate weight sets.
+- Share secondary metrics are included in emitted-output revalidation. Fraud
+  sweep runs require `privacy_concentration_col` so clearing-spend evidence is
+  explicit rather than inferred from the reported fraud metric.
+- Strategy audit metadata includes candidate and emitted evaluations, display
+  rule, authorizers, structured mandatory-overlay evaluations, policy
+  source/version, and the active rule-set digest.
+  The compact facade remains the low-level Getnet API.
 
 ### core/validation_runner.py
 

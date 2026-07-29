@@ -352,33 +352,67 @@ merchant-spend report; it applies at four or more participants.
 
 The feature is opt-in on all three supported interfaces:
 
-- Python API: construct `PrivacySweepRequest` and call
-  `evaluate_privacy_rule_sweep`.
-- CLI: activate standalone mode with `--privacy-rule-sweep`; the result is
-  emitted as JSON. Exit code 0 means passed/not subject, 1 means invalid
-  evidence, and 2 means the numeric policy blocked the evidence.
-- TUI: check **Privacy rule sweep mode**, complete the evidence form, and run
-  the sweep. Ordinary share/rate fields are not used in this mode.
+- Python API: set `AnalysisRunRequest.privacy_rule_strategy` to
+  `PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE`. The compact
+  `PrivacySweepRequest` and `evaluate_privacy_rule_sweep()` facade remains
+  available for server integrations such as Getnet.
+- CLI: add `--privacy-rule-sweep` to a normal `share` or `rate` invocation.
+- TUI: check **Privacy rule sweep mode** and run the normal loaded-data
+  analysis.
+
+Sweep mode first makes an independent optimization attempt for each applicable
+rule. `feasible_candidate_rules` records which rule-specific attempts worked.
+Autobench then chooses one whole-run candidate: it prefers the legacy
+peer-count-selected rule when publication-safe, otherwise it uses the stable
+tie-break order `5/25`, `6/30`, `7/35`, `10/40`, `4/35`. This order is an
+implementation compatibility rule, not a Control 3 strength ranking.
+
+Every applicable rule and mandatory overlay is then re-evaluated against that
+single emitted candidate across every governed metric/category/time group.
+Only rules passing the emitted output appear in `authorizing_rules`.
+`candidate_attempt_evaluations` and `emitted_output_evaluations` keep the two
+audit stages distinct. `mandatory_overlay_evaluations` records the emitted
+output's overlay status and structured failure reasons.
 
 CLI example:
 
 ```bash
-python benchmark.py --privacy-rule-sweep \
-  --participant-count 10 \
-  --maximum-share-percentage 22 \
-  --count-at-or-above-7-percent 10 \
-  --count-at-or-above-8-percent 8 \
-  --count-at-or-above-10-percent 3 \
-  --count-at-or-above-15-percent 1 \
-  --count-at-or-above-20-percent 1
+python benchmark.py share --csv data.csv --metric txn_cnt --auto \
+  --privacy-rule-sweep
+
+python benchmark.py rate --csv data.csv --total-col txn_cnt \
+  --approved-col approved_cnt --auto --privacy-rule-sweep
 ```
 
-For merchant 4/35 eligibility, add
-`--anonymized-aggregated-merchant-spend`. For issuer fraud or chargeback, set
-`--privacy-metric-context issuer_fraud` (or `issuer_chargeback`) together with
-`--privacy-concentration-basis clearing_spend`.
+For merchant 4/35 eligibility, also add
+`--anonymized-aggregated-merchant-spend`. Fraud runs continue to require the
+normal `--privacy-basis clearing_spend` Control 3 declaration.
+They must also identify the actual clearing-spend column with
+`--privacy-concentration-col`; Autobench will not infer it from the fraud
+metric.
+
+When Citibank is in the governed peer population and a Citi competitor will
+receive the output, also pass `--citi-competitor-receives-output` and the exact
+dataset entity value through `--citibank-entity-name`. Autobench derives Citi's
+concentration from each governed category and adds its mandatory 25% cap to
+every rule-specific optimization attempt.
 
 Python API example:
+
+```python
+import logging
+from core import AnalysisRunRequest, PrivacyRuleStrategy, execute_share_run
+
+request = AnalysisRunRequest(
+    csv="data.csv",
+    metric="txn_cnt",
+    auto=True,
+    privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+)
+artifacts = execute_share_run(request, logging.getLogger("autobench"))
+```
+
+Compact Getnet/server evidence example:
 
 ```python
 from core import (
@@ -417,8 +451,11 @@ overlay after a base rule passes. For issuer fraud or chargeback metrics,
 This result covers only the benchmark numeric rules and their mandatory Citi
 overlay. It does not resolve reverse-engineering review, other run-level gates,
 Control 3.3, or the obligation to re-check after peer-group changes and at
-least annually. `PrivacyValidator`, `PrivacyPolicy`, raw rule configuration,
-and `DataLoader` are internal implementation APIs.
+least annually. `PrivacyPolicy` and raw rule configuration remain internal.
+The legacy `PrivacyValidator`, `DataLoader`, `DimensionalAnalyzer`, and
+`ReportGenerator` imports remain supported from `core` for backward
+compatibility; new integrations should prefer the contracts and orchestration
+facades documented above.
 
 ## Large Dataset / Low-Memory Runs
 

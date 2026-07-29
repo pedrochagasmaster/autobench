@@ -39,7 +39,28 @@ class HeuristicSolver(PrivacySolver):
         peers = solver_request.peers
         categories = solver_request.categories
         max_concentration = solver_request.max_concentration
+        peer_caps = np.asarray(
+            [
+                float(solver_request.protected_entity_caps.get(peer, max_concentration))
+                for peer in peers
+            ],
+            dtype=float,
+        )
         peer_volumes = solver_request.peer_volumes
+        missing_protected = sorted(
+            set(solver_request.protected_entity_caps) - set(peers)
+        )
+        if missing_protected:
+            return SolverResult(
+                weights={},
+                method="heuristic",
+                stats={
+                    "error": "protected_entity_absent",
+                    "protected_entities": missing_protected,
+                    "converged": False,
+                },
+                success=False,
+            )
 
         # Config
         target_weights = solver_request.target_weights
@@ -174,7 +195,6 @@ class HeuristicSolver(PrivacySolver):
             )
 
         def objective(weight_array):
-            max_share = max_concentration + tolerance
             weighted = volume_matrix * np.asarray(weight_array, dtype=float)
             totals = weighted.sum(axis=1)
             shares = np.divide(
@@ -184,7 +204,7 @@ class HeuristicSolver(PrivacySolver):
                 where=totals[:, None] > 0,
             )
 
-            excess = np.maximum(shares - max_share, 0.0)
+            excess = np.maximum(shares - peer_caps[None, :] - tolerance, 0.0)
             violation_penalty = float(np.sum(rep_weights[:, None] * excess * excess))
 
             additional_penalty = 0.0
@@ -274,7 +294,6 @@ class HeuristicSolver(PrivacySolver):
         
         residual_cap_violation = False
         residual_additional_violation = False
-        max_share = max_concentration + tolerance
         optimized_array = np.asarray([optimized_weights[p] for p in peers], dtype=float)
         weighted = volume_matrix * optimized_array
         totals = weighted.sum(axis=1)
@@ -284,7 +303,9 @@ class HeuristicSolver(PrivacySolver):
             out=np.zeros_like(weighted),
             where=totals[:, None] > 0,
         )
-        residual_cap_violation = bool(np.any(shares > max_share + 1e-9))
+        residual_cap_violation = bool(
+            np.any(shares > peer_caps[None, :] + tolerance + 1e-9)
+        )
         if enforce_additional and rule_name:
             if not min_entities_check:
                 residual_additional_violation = True
