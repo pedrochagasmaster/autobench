@@ -301,7 +301,13 @@ function Get-AllPullRequests {
         "--json", "number,headRefName,baseRefName,state,mergedAt,url"
     ) -Operation "Read GitHub pull requests"
 
-    return @($json | ConvertFrom-Json)
+    # Windows PowerShell can emit a JSON array from ConvertFrom-Json as one
+    # pipeline object. Enumerate it explicitly so downstream Where-Object
+    # filters evaluate one PR at a time instead of matching the whole array.
+    $parsed = $json | ConvertFrom-Json
+    foreach ($pullRequest in @($parsed)) {
+        Write-Output $pullRequest
+    }
 }
 
 function Push-BranchVerified {
