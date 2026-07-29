@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.contracts import SolverRequest
 from .base_solver import PrivacySolver, SolverResult
@@ -68,7 +68,7 @@ class LPSolver(PrivacySolver):
 
         # Build category vectors v_c in R^P in one pass. The previous nested
         # scan was quadratic in the number of peer/category records.
-        cat_vectors_by_key = {}
+        cat_vectors_by_key: Dict[Tuple[Any, Any], np.ndarray] = {}
         for cat in categories:
             key = (cat['dimension'], cat['category'])
             if cat['peer'] not in peer_index:

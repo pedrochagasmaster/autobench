@@ -308,6 +308,9 @@ the CLI and TUI use instead of shelling out to `benchmark.py`.
 | `core.analysis_run.execute_share_run` | Run share analysis |
 | `core.analysis_run.execute_rate_run` | Run rate analysis |
 | `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+| `core.PrivacySweepRequest` | Compact evidence for the numeric privacy-rule sweep |
+| `core.evaluate_privacy_rule_sweep` | Evaluate every applicable rule and mandatory numeric overlay |
+| `core.PrivacySweepResult` | Immutable, scope-aware sweep result |
 
 A complete runnable example lives at `examples/run_from_python.py`. Minimal
 share run:
@@ -338,6 +341,84 @@ reload after validation.
 
 Contract tests in `tests/test_public_api.py` pin imports, signatures, and field
 names; breaking changes require updating the README, example, and consumers.
+
+### Native numeric privacy-rule sweep
+
+The sweep follows the repository's Control 3 source: every general rule whose
+minimum participant count is met is applicable, and the numeric rule set passes
+when at least one applicable rule passes. The 4/35 rule is additionally
+applicable only when the caller explicitly identifies an anonymized, aggregated
+merchant-spend report; it applies at four or more participants.
+
+The feature is opt-in on all three supported interfaces:
+
+- Python API: construct `PrivacySweepRequest` and call
+  `evaluate_privacy_rule_sweep`.
+- CLI: activate standalone mode with `--privacy-rule-sweep`; the result is
+  emitted as JSON. Exit code 0 means passed/not subject, 1 means invalid
+  evidence, and 2 means the numeric policy blocked the evidence.
+- TUI: check **Privacy rule sweep mode**, complete the evidence form, and run
+  the sweep. Ordinary share/rate fields are not used in this mode.
+
+CLI example:
+
+```bash
+python benchmark.py --privacy-rule-sweep \
+  --participant-count 10 \
+  --maximum-share-percentage 22 \
+  --count-at-or-above-7-percent 10 \
+  --count-at-or-above-8-percent 8 \
+  --count-at-or-above-10-percent 3 \
+  --count-at-or-above-15-percent 1 \
+  --count-at-or-above-20-percent 1
+```
+
+For merchant 4/35 eligibility, add
+`--anonymized-aggregated-merchant-spend`. For issuer fraud or chargeback, set
+`--privacy-metric-context issuer_fraud` (or `issuer_chargeback`) together with
+`--privacy-concentration-basis clearing_spend`.
+
+Python API example:
+
+```python
+from core import (
+    PrivacyConcentrationBasis,
+    PrivacyMetricContext,
+    PrivacySweepRequest,
+    evaluate_privacy_rule_sweep,
+)
+
+evidence = PrivacySweepRequest(
+    contains_peer_benchmark_data=True,
+    is_anonymized_aggregated_merchant_spend=False,
+    metric_context=PrivacyMetricContext.OTHER,
+    concentration_basis=PrivacyConcentrationBasis.BENCHMARK_METRIC,
+    participant_count=10,
+    maximum_share_percentage=22,
+    count_at_or_above_7_percent=10,
+    count_at_or_above_8_percent=8,
+    count_at_or_above_10_percent=3,
+    count_at_or_above_15_percent=1,
+    count_at_or_above_20_percent=1,
+    citibank_included=False,
+    citi_competitor_receives_output=False,
+)
+result = evaluate_privacy_rule_sweep(evidence)
+
+assert result.numeric_policy_passed
+assert "5/25" in result.authorizing_rules
+```
+
+Rule evaluations are `PASSED`, `FAILED`, or `NOT_APPLICABLE`. If Citibank is
+included and a Citi competitor receives the output, its 25% cap is a mandatory
+overlay after a base rule passes. For issuer fraud or chargeback metrics,
+`concentration_basis` must be `CLEARING_SPEND`.
+
+This result covers only the benchmark numeric rules and their mandatory Citi
+overlay. It does not resolve reverse-engineering review, other run-level gates,
+Control 3.3, or the obligation to re-check after peer-group changes and at
+least annually. `PrivacyValidator`, `PrivacyPolicy`, raw rule configuration,
+and `DataLoader` are internal implementation APIs.
 
 ## Large Dataset / Low-Memory Runs
 

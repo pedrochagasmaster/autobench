@@ -5,9 +5,148 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional
+from enum import Enum
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core.control3_policy import CONTROL3_POLICY_KEYS
+
+
+class PrivacyMetricContext(str, Enum):
+    """Metric context needed to validate the concentration basis."""
+
+    OTHER = "other"
+    ISSUER_FRAUD = "issuer_fraud"
+    ISSUER_CHARGEBACK = "issuer_chargeback"
+
+
+class PrivacyConcentrationBasis(str, Enum):
+    """Basis used to compute the supplied concentration evidence."""
+
+    BENCHMARK_METRIC = "benchmark_metric"
+    CLEARING_SPEND = "clearing_spend"
+
+
+class PrivacyEvaluationStatus(str, Enum):
+    """Outcome for a rule or mandatory overlay."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class PrivacySweepStatus(str, Enum):
+    """Scope-aware outcome of the numeric-rule sweep and its overlays."""
+
+    NOT_SUBJECT = "not_subject_to_benchmark_numeric_rules"
+    NUMERICALLY_COMPLIANT = "numerically_compliant"
+    NUMERICALLY_NONCOMPLIANT = "numerically_noncompliant"
+    INVALID_EVIDENCE = "invalid_or_incomplete_evidence"
+    BLOCKED_BY_MANDATORY_OVERLAY = "blocked_by_mandatory_overlay"
+
+
+@dataclass(frozen=True)
+class PrivacySweepRequest:
+    """Compact server-side evidence for a Control 3.2 privacy-rule sweep.
+
+    Threshold counts are cumulative. For example, a participant counted at
+    20 percent is also included in every lower-threshold count.
+    """
+
+    contains_peer_benchmark_data: Optional[bool]
+    is_anonymized_aggregated_merchant_spend: Optional[bool]
+    metric_context: Optional[PrivacyMetricContext]
+    concentration_basis: Optional[PrivacyConcentrationBasis]
+    participant_count: Optional[int] = None
+    maximum_share_percentage: Optional[float] = None
+    count_at_or_above_7_percent: Optional[int] = None
+    count_at_or_above_8_percent: Optional[int] = None
+    count_at_or_above_10_percent: Optional[int] = None
+    count_at_or_above_15_percent: Optional[int] = None
+    count_at_or_above_20_percent: Optional[int] = None
+    citibank_included: Optional[bool] = None
+    citi_competitor_receives_output: Optional[bool] = None
+    citibank_share_percentage: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PrivacyFailureReason:
+    """Machine-readable privacy failure without entity-level information."""
+
+    code: str
+    message: str
+    field: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PrivacyThresholdEvaluation:
+    """One normalized cumulative threshold-count requirement."""
+
+    threshold_percentage: float
+    required_count: int
+    observed_count: int
+    compliant: bool
+
+
+@dataclass(frozen=True)
+class PrivacyRuleSweepEvaluation:
+    """Diagnostic evaluation of compact evidence against one privacy rule."""
+
+    rule_name: str
+    status: PrivacyEvaluationStatus
+    minimum_entities: int
+    maximum_share_percentage: float
+    threshold_evaluations: Tuple[PrivacyThresholdEvaluation, ...]
+    inapplicability_reasons: Tuple[PrivacyFailureReason, ...]
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+
+    @property
+    def applicable(self) -> bool:
+        return self.status != PrivacyEvaluationStatus.NOT_APPLICABLE
+
+    @property
+    def strict_passed(self) -> bool:
+        return self.status == PrivacyEvaluationStatus.PASSED
+
+
+@dataclass(frozen=True)
+class PrivacyMandatoryOverlayEvaluation:
+    """Mandatory condition applied after one or more base rules pass."""
+
+    overlay_name: str
+    status: PrivacyEvaluationStatus
+    maximum_share_percentage: float
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+
+
+@dataclass(frozen=True)
+class PrivacySweepAuditMetadata:
+    """Stable policy metadata for audit consumers."""
+
+    policy_name: str
+    policy_version: str
+    policy_source: str
+    rule_set_digest: str
+    decision_method: str
+    evidence_valid: bool
+    evaluated_rules: Tuple[str, ...]
+    other_control_review_required: bool
+    recheck_after_peer_group_change_required: bool
+    annual_recheck_required: bool
+
+
+@dataclass(frozen=True)
+class PrivacySweepResult:
+    """Scoped numeric-policy outcome; not a blanket Control 3 verdict."""
+
+    status: PrivacySweepStatus
+    numeric_rules_passed: Optional[bool]
+    mandatory_overlays_passed: Optional[bool]
+    numeric_policy_passed: Optional[bool]
+    authorizing_rules: Tuple[str, ...]
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+    rule_evaluations: Tuple[PrivacyRuleSweepEvaluation, ...]
+    mandatory_overlays: Tuple[PrivacyMandatoryOverlayEvaluation, ...]
+    audit: PrivacySweepAuditMetadata
 
 
 @dataclass

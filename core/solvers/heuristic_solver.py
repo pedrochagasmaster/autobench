@@ -126,20 +126,24 @@ class HeuristicSolver(PrivacySolver):
             rep_weights[row_idx] = rep_weight
 
             enforce = False
-            thresholds = None
+            row_threshold_config = None
             if enforce_additional and rule_name and min_entities_check:
-                enforce, _, thresholds, _ = self._assess_additional_constraints_applicability(
+                enforce, _, row_threshold_config, _ = self._assess_additional_constraints_applicability(
                     rule_name, dim, peer_cat_vols, stats, enforce_additional, dynamic_enabled, time_column
                 )
 
             enforce_mask[row_idx] = enforce
             if enforce:
-                if thresholds is None:
-                    thresholds = PrivacyValidator.get_penalty_thresholds(rule_name)
-                tiers = sorted((thresholds or {}).items(), key=lambda item: item[1][1], reverse=True)
+                if row_threshold_config is None:
+                    row_threshold_config = PrivacyValidator.get_penalty_thresholds(rule_name)
+                configured_tiers = sorted(
+                    (row_threshold_config or {}).items(),
+                    key=lambda item: item[1][1],
+                    reverse=True,
+                )
                 cumulative_count = 0
                 row_thresholds: List[Tuple[int, float]] = []
-                for _tier_name, (min_count, threshold) in tiers:
+                for _tier_name, (min_count, threshold) in configured_tiers:
                     ordinal_idx = cumulative_count + int(min_count) - 1
                     row_thresholds.append((ordinal_idx, float(threshold)))
                     cumulative_count += int(min_count)
@@ -154,18 +158,18 @@ class HeuristicSolver(PrivacySolver):
         for tier_pos in range(max_tiers):
             rows: List[int] = []
             ordinals: List[int] = []
-            thresholds: List[float] = []
-            for row_idx, tiers in enumerate(thresholds_by_row):
-                if tier_pos < len(tiers):
-                    ordinal_idx, threshold = tiers[tier_pos]
+            tier_threshold_values: List[float] = []
+            for row_idx, row_tiers in enumerate(thresholds_by_row):
+                if tier_pos < len(row_tiers):
+                    ordinal_idx, threshold = row_tiers[tier_pos]
                     rows.append(row_idx)
                     ordinals.append(ordinal_idx)
-                    thresholds.append(threshold)
+                    tier_threshold_values.append(threshold)
             tier_lookups.append(
                 (
                     np.asarray(rows, dtype=int),
                     np.asarray(ordinals, dtype=int),
-                    np.asarray(thresholds, dtype=float),
+                    np.asarray(tier_threshold_values, dtype=float),
                 )
             )
 

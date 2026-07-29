@@ -1,20 +1,39 @@
-"""Core modules for the benchmarking tool."""
+"""Supported public facade for the benchmarking tool."""
 
-from .contracts import AnalysisArtifacts, AnalysisRunRequest
-from .dimensional_analyzer import DimensionalAnalyzer
-from .privacy_validator import PrivacyValidator
-from .data_loader import DataLoader
-from .report_generator import ReportGenerator
+from .contracts import (
+    AnalysisArtifacts,
+    AnalysisRunRequest,
+    PrivacyConcentrationBasis,
+    PrivacyEvaluationStatus,
+    PrivacyFailureReason,
+    PrivacyMandatoryOverlayEvaluation,
+    PrivacyMetricContext,
+    PrivacyRuleSweepEvaluation,
+    PrivacySweepAuditMetadata,
+    PrivacySweepRequest,
+    PrivacySweepResult,
+    PrivacySweepStatus,
+    PrivacyThresholdEvaluation,
+)
+from .privacy_policy import evaluate_privacy_rule_sweep
 
 __all__ = [
     'AnalysisRunRequest',
     'AnalysisArtifacts',
+    'PrivacySweepRequest',
+    'PrivacyMetricContext',
+    'PrivacyConcentrationBasis',
+    'PrivacyEvaluationStatus',
+    'PrivacySweepStatus',
+    'PrivacyFailureReason',
+    'PrivacyThresholdEvaluation',
+    'PrivacyRuleSweepEvaluation',
+    'PrivacyMandatoryOverlayEvaluation',
+    'PrivacySweepAuditMetadata',
+    'PrivacySweepResult',
+    'evaluate_privacy_rule_sweep',
     'execute_share_run',
     'execute_rate_run',
-    'DimensionalAnalyzer',
-    'PrivacyValidator',
-    'DataLoader',
-    'ReportGenerator',
 ]
 
 # ``analysis_run`` imports ``utils.config_manager`` at module load, and

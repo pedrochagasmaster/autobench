@@ -695,9 +695,12 @@ Step 3: Category construction
   - TIME_TOTAL constraints (per time period)
   - TIME_CATEGORY constraints (per category per period)
 
-Step 4: Privacy rule selection
-- PrivacyValidator.select_rule chooses one of 4/35, 5/25, 6/30, 7/35, 10/40
-  based on peer count (with merchant_mode allowing 4 peers).
+Step 4: Legacy optimizer rule selection
+- The existing optimizer compatibility path uses
+  `PrivacyValidator.select_rule` to choose one rule for constraint generation.
+  This internal selection is not the Control 3 numeric sweep verdict.
+- Server-side audit consumers must use `evaluate_privacy_rule_sweep`, which
+  evaluates every applicable rule with OR semantics.
 
 Step 5: Global LP attempt
 - LPSolver builds one cap constraint per (category, peer).
@@ -893,8 +896,30 @@ Standardized solver output:
 ## File-by-File Documentation
 
 ### core/__init__.py
-- Exposes core classes for external imports.
-- __all__ includes DimensionalAnalyzer, PrivacyValidator, DataLoader, ReportGenerator.
+- Exposes the supported analysis-run and compact privacy-sweep contracts.
+- Internal implementation types such as `PrivacyValidator`, `PrivacyPolicy`,
+  raw rule dictionaries, and `DataLoader` are intentionally not exported.
+
+### core/privacy_policy.py
+
+Purpose: Own policy orchestration over the canonical numeric rule engine.
+
+- `evaluate_privacy_rule_sweep(request)` evaluates every applicable approved
+  rule and passes the base numeric policy when any applicable rule passes.
+- General rules apply when `participant_count >= min_entities`.
+- 4/35 additionally requires explicit anonymized, aggregated merchant-spend
+  scope and applies at four or more participants.
+- The Citibank competitor-recipient 25% cap is a mandatory overlay, not an
+  alternative base rule.
+- Issuer fraud and chargeback evidence must declare clearing spend as its
+  concentration basis.
+- Results distinguish not-subject, numerically compliant, numerically
+  noncompliant, invalid evidence, and mandatory-overlay blocks. A numeric pass
+  is not a blanket Control 3 verdict.
+- The Python API is the canonical implementation. The CLI activates the same
+  contract with `--privacy-rule-sweep` and emits JSON; the TUI exposes an
+  opt-in privacy-sweep checkbox and compact-evidence form. Both adapters call
+  `evaluate_privacy_rule_sweep` directly.
 
 ### core/validation_runner.py
 
@@ -978,12 +1003,14 @@ Key methods:
 
 ### core/privacy_validator.py
 
-Purpose: Enforce Control 3.2 privacy rules and concentration caps.
+Purpose: Internal compatibility engine for existing single-rule optimization
+and validation paths. New server-side audit consumers use the sweep facade in
+`core/privacy_policy.py`.
 
 Rules:
 - 5/25, 6/30, 7/35, 10/40, and merchant-only 4/35.
 
-Key methods:
+Internal compatibility methods:
 - select_rule(peer_count, merchant_mode=False): chooses appropriate rule.
 - get_rule_config(rule_name): returns rule configuration.
 - evaluate_additional_constraints(shares, rule_name): checks tier requirements.

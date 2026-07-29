@@ -18,12 +18,20 @@ import json
 import logging
 import platform
 import shutil
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 
 # Import core modules
 from core.control3_policy import remediation_hint
+from core import (
+    PrivacyConcentrationBasis,
+    PrivacyMetricContext,
+    PrivacySweepRequest,
+    PrivacySweepStatus,
+    evaluate_privacy_rule_sweep,
+)
 from core.analysis_run import (
     build_run_request,
     execute_rate_run,
@@ -45,6 +53,72 @@ EXIT_FAILURE = 1
 EXIT_STRICT_NON_COMPLIANT = 2
 
 _GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
+
+
+def add_privacy_sweep_flags(parser: argparse.ArgumentParser) -> None:
+    """Register the standalone, opt-in numeric privacy-rule sweep interface."""
+    parser.add_argument(
+        '--privacy-rule-sweep',
+        action='store_true',
+        help='Run the compact Control 3 numeric privacy-rule sweep instead of share/rate analysis',
+    )
+    peer_scope = parser.add_mutually_exclusive_group()
+    peer_scope.add_argument(
+        '--contains-peer-benchmark-data',
+        action='store_true',
+        dest='contains_peer_benchmark_data',
+        default=True,
+        help='Evidence describes peer benchmark data (default in sweep mode)',
+    )
+    peer_scope.add_argument(
+        '--no-peer-benchmark-data',
+        action='store_false',
+        dest='contains_peer_benchmark_data',
+        help='Deliverable contains no peer benchmark data; numeric benchmark rules are not applicable',
+    )
+    parser.add_argument(
+        '--anonymized-aggregated-merchant-spend',
+        action='store_true',
+        default=False,
+        help='Evidence is for an anonymized, aggregated merchant-spend report (enables 4/35 applicability)',
+    )
+    parser.add_argument(
+        '--privacy-metric-context',
+        choices=[context.value for context in PrivacyMetricContext],
+        default=PrivacyMetricContext.OTHER.value,
+        help='Metric context used to validate the concentration basis',
+    )
+    parser.add_argument(
+        '--privacy-concentration-basis',
+        choices=[basis.value for basis in PrivacyConcentrationBasis],
+        default=PrivacyConcentrationBasis.BENCHMARK_METRIC.value,
+        help='Basis used to compute the supplied shares',
+    )
+    parser.add_argument('--participant-count', type=int, help='Number of peer-group participants')
+    parser.add_argument('--maximum-share-percentage', type=float, help='Largest participant share, from 0 to 100')
+    for threshold in (7, 8, 10, 15, 20):
+        parser.add_argument(
+            f'--count-at-or-above-{threshold}-percent',
+            type=int,
+            help=f'Participant count with share at or above {threshold} percent',
+        )
+    parser.add_argument(
+        '--citibank-included',
+        action='store_true',
+        default=False,
+        help='Citibank is included in the peer group',
+    )
+    parser.add_argument(
+        '--citi-competitor-receives-output',
+        action='store_true',
+        default=False,
+        help='A Citi competitor receives the output',
+    )
+    parser.add_argument(
+        '--citibank-share-percentage',
+        type=float,
+        help='Citibank share percentage when the mandatory Citi overlay applies',
+    )
 
 
 def get_presets_help() -> str:
@@ -226,6 +300,12 @@ EXAMPLES:
   python benchmark.py rate --csv data.csv --entity "BANCO SANTANDER" \\
     --total-col txn_cnt --approved-col app_cnt --preset compliance_strict
 
+  # Standalone numeric privacy-rule sweep
+  python benchmark.py --privacy-rule-sweep --participant-count 10 \\
+    --maximum-share-percentage 22 --count-at-or-above-7-percent 10 \\
+    --count-at-or-above-8-percent 8 --count-at-or-above-10-percent 3 \\
+    --count-at-or-above-15-percent 1 --count-at-or-above-20-percent 1
+
   # List available presets
   python benchmark.py config list
 
@@ -249,6 +329,7 @@ EXAMPLES:
     # Add version flag
     parser.add_argument('--version', action='store_true',
                        help='Show version information')
+    add_privacy_sweep_flags(parser)
     
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
@@ -378,6 +459,43 @@ EXAMPLES:
     )
     
     return parser
+
+
+def build_privacy_sweep_request_from_namespace(args: argparse.Namespace) -> PrivacySweepRequest:
+    """Translate CLI evidence flags into the stable public sweep contract."""
+    return PrivacySweepRequest(
+        contains_peer_benchmark_data=args.contains_peer_benchmark_data,
+        is_anonymized_aggregated_merchant_spend=args.anonymized_aggregated_merchant_spend,
+        metric_context=PrivacyMetricContext(args.privacy_metric_context),
+        concentration_basis=PrivacyConcentrationBasis(args.privacy_concentration_basis),
+        participant_count=args.participant_count,
+        maximum_share_percentage=args.maximum_share_percentage,
+        count_at_or_above_7_percent=args.count_at_or_above_7_percent,
+        count_at_or_above_8_percent=args.count_at_or_above_8_percent,
+        count_at_or_above_10_percent=args.count_at_or_above_10_percent,
+        count_at_or_above_15_percent=args.count_at_or_above_15_percent,
+        count_at_or_above_20_percent=args.count_at_or_above_20_percent,
+        citibank_included=args.citibank_included,
+        citi_competitor_receives_output=args.citi_competitor_receives_output,
+        citibank_share_percentage=args.citibank_share_percentage,
+    )
+
+
+def handle_privacy_rule_sweep(args: argparse.Namespace) -> int:
+    """Run the standalone sweep and emit a machine-readable JSON result."""
+    if args.command is not None:
+        print(
+            "Error: --privacy-rule-sweep is a standalone mode; do not combine it with a subcommand.",
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
+    result = evaluate_privacy_rule_sweep(build_privacy_sweep_request_from_namespace(args))
+    print(json.dumps(asdict(result), indent=2))
+    if result.status == PrivacySweepStatus.INVALID_EVIDENCE:
+        return EXIT_FAILURE
+    if result.numeric_policy_passed is False:
+        return EXIT_STRICT_NON_COMPLIANT
+    return EXIT_OK
 
 
 def _telemetry_warn(message: str) -> None:
@@ -705,6 +823,9 @@ def main() -> int:
     if hasattr(args, 'version') and args.version:
         print_version()
         return 0
+
+    if args.privacy_rule_sweep:
+        return handle_privacy_rule_sweep(args)
     
     # Handle config command
     if args.command == 'config':
