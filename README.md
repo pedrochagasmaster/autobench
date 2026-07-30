@@ -308,6 +308,13 @@ the CLI and TUI use instead of shelling out to `benchmark.py`.
 | `core.analysis_run.execute_share_run` | Run share analysis |
 | `core.analysis_run.execute_rate_run` | Run rate analysis |
 | `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+| `core.privacy_validator.PrivacyValidator.get_rule_config` | Read one privacy rule's thresholds |
+| `core.data_loader.DataLoader.normalize_column_name` | Canonical column-name normalization |
+
+The last two are for callers that embed the privacy rules in their own
+pipeline rather than running a full share or rate analysis — they must
+normalize columns and read rule thresholds exactly as Autobench does, or their
+compliance evidence will not line up with a report produced here.
 
 A complete runnable example lives at `examples/run_from_python.py`. Minimal
 share run:
