@@ -39,7 +39,12 @@ from openpyxl import load_workbook
 import benchmark
 from core.analysis_run import execute_rate_run, execute_share_run
 from core.analysis_run import RunAborted, RunBlocked
-from core.contracts import AnalysisRunRequest, PrivacyRuleStrategy, PrivacySweepStatus
+from core.contracts import (
+    AnalysisRunRequest,
+    PrivacyEvaluationStatus,
+    PrivacyRuleStrategy,
+    PrivacySweepStatus,
+)
 from core.dimensional_analyzer import DimensionalAnalyzer
 from utils.logger import finalize_deferred_logging, setup_deferred_logging
 
@@ -547,10 +552,7 @@ def test_cli_sweep_exit_audit_and_publication_agree_when_citi_blocks(
     assert audit_payload["authorizing_rules"] == []
 
 
-@pytest.mark.parametrize(
-    "citi_name",
-    [None, "missing", "Citibank"],
-)
+@pytest.mark.parametrize("citi_name", ["missing", "Citibank"])
 def test_integrated_citi_identity_fails_closed(
     tmp_path: Path,
     citi_name: str | None,
@@ -577,6 +579,61 @@ def test_integrated_citi_identity_fails_closed(
 
     with pytest.raises(RunBlocked):
         execute_share_run(request, logging.getLogger("test"))
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        PrivacyRuleStrategy.SELECT_BY_PEER_COUNT,
+        PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    ],
+)
+def test_integrated_competitor_recipient_without_citi_is_not_applicable(
+    tmp_path: Path,
+    strategy: PrivacyRuleStrategy,
+) -> None:
+    request = AnalysisRunRequest(
+        df=_single_category_df([25, 25, 20, 15, 15]),
+        csv="",
+        metric="amount",
+        dimensions=["segment"],
+        output=str(tmp_path / f"citi_absent_{strategy.value}.xlsx"),
+        compliance_posture="strict",
+        validate_input=False,
+        privacy_rule_strategy=strategy,
+        citibank_entity_name=None,
+        citi_competitor_receives_output=True,
+    )
+
+    artifacts = execute_share_run(request, logging.getLogger("test"))
+
+    assert artifacts.privacy_sink_authorized is True
+    assert artifacts.privacy_rule_strategy_result is not None
+    overlay = artifacts.privacy_rule_strategy_result.mandatory_overlay_evaluations[0]
+    assert overlay.status == PrivacyEvaluationStatus.NOT_APPLICABLE
+
+
+def test_integrated_observational_citi_identity_does_not_trigger_overlay(
+    tmp_path: Path,
+) -> None:
+    request = AnalysisRunRequest(
+        df=_single_category_df([25, 25, 20, 15, 15]),
+        csv="",
+        metric="amount",
+        dimensions=["segment"],
+        output=str(tmp_path / "citi_observational.xlsx"),
+        compliance_posture="strict",
+        validate_input=False,
+        citibank_entity_name="P1",
+        citi_competitor_receives_output=False,
+    )
+
+    artifacts = execute_share_run(request, logging.getLogger("test"))
+
+    assert artifacts.privacy_sink_authorized is True
+    assert artifacts.privacy_rule_strategy_result is not None
+    overlay = artifacts.privacy_rule_strategy_result.mandatory_overlay_evaluations[0]
+    assert overlay.status == PrivacyEvaluationStatus.NOT_APPLICABLE
 
 
 def test_rate_run_end_to_end(tmp_path: Path) -> None:

@@ -486,6 +486,21 @@ included and a Citi competitor receives the output, its 25% cap is a mandatory
 overlay after a base rule passes. For issuer fraud or chargeback metrics,
 `concentration_basis` must be `CLEARING_SPEND`.
 
+The Citi facts are independent. A competitor may receive a deliverable whose
+governed peer group does not include Citi; use `citibank_included=False`,
+keep `citi_competitor_receives_output=True`, and omit
+`citibank_share_percentage`. The overlay is then `NOT_APPLICABLE`. A Citi share
+is contradictory when Citi is absent. When Citi is present but the recipient
+is not a competitor, an optional observational share is accepted only after
+normal numeric and maximum-share consistency validation; it does not activate
+the overlay. When both trigger facts are true, the share is required and the
+25% cap remains mandatory.
+
+For normal analysis requests, omitting `citibank_entity_name` declares that
+Citi is absent from the governed population. Supplying the name declares Citi
+present and must resolve to exactly one governed identity, regardless of
+recipient type.
+
 This result covers only the benchmark numeric rules and their mandatory Citi
 overlay. It does not resolve reverse-engineering review, other run-level gates,
 Control 3.3, or the obligation to re-check after peer-group changes and at

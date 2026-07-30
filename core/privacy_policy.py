@@ -367,14 +367,6 @@ def _validated_evidence(
         failures,
         required=citi_overlay_applies,
     )
-    if request.citi_competitor_receives_output is True and request.citibank_included is False:
-        failures.append(
-            _failure(
-                "contradictory_evidence",
-                "A Citi competitor recipient cannot trigger the Citi overlay when Citibank is not included",
-                "citi_competitor_receives_output",
-            )
-        )
     if request.citibank_included is False and citibank_share is not None:
         failures.append(
             _failure(

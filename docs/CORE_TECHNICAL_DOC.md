@@ -917,6 +917,15 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   scope and applies at four or more participants.
 - The Citibank competitor-recipient 25% cap is a mandatory overlay, not an
   alternative base rule.
+- `citibank_included` and `citi_competitor_receives_output` are independent
+  facts. The overlay applies only when both are true. Recipient=true with Citi
+  absent is valid and yields `NOT_APPLICABLE`; a supplied share while Citi is
+  absent is contradictory. When Citi is present but the recipient is not a
+  competitor, an optional observational share is accepted only if it passes
+  normal numeric and maximum-share consistency checks.
+- In the normal analysis contract, an omitted `citibank_entity_name` declares
+  Citi absent. Supplying a name declares Citi present and requires one exact,
+  unambiguous governed identity even when the overlay is not applicable.
 - Issuer fraud and chargeback evidence must declare clearing spend as its
   concentration basis.
 - Results distinguish not-subject, numerically compliant, numerically

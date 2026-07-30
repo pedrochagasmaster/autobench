@@ -242,6 +242,147 @@ def test_citibank_overlay_passes_at_25_percent() -> None:
 
 
 @pytest.mark.parametrize(
+    (
+        "citibank_included",
+        "competitor_receives",
+        "citibank_share",
+        "expected_status",
+        "expected_overlay_status",
+        "expected_evidence_valid",
+    ),
+    [
+        (
+            False,
+            False,
+            None,
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            True,
+        ),
+        (
+            False,
+            False,
+            20,
+            PrivacySweepStatus.INVALID_EVIDENCE,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            False,
+        ),
+        (
+            False,
+            True,
+            None,
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            True,
+        ),
+        (
+            False,
+            True,
+            20,
+            PrivacySweepStatus.INVALID_EVIDENCE,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            False,
+        ),
+        (
+            True,
+            False,
+            None,
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            True,
+        ),
+        (
+            True,
+            False,
+            20,
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            True,
+        ),
+        (
+            True,
+            False,
+            31,
+            PrivacySweepStatus.INVALID_EVIDENCE,
+            PrivacyEvaluationStatus.NOT_APPLICABLE,
+            False,
+        ),
+        (
+            True,
+            True,
+            None,
+            PrivacySweepStatus.INVALID_EVIDENCE,
+            PrivacyEvaluationStatus.FAILED,
+            False,
+        ),
+        (
+            True,
+            True,
+            25,
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT,
+            PrivacyEvaluationStatus.PASSED,
+            True,
+        ),
+        (
+            True,
+            True,
+            26,
+            PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY,
+            PrivacyEvaluationStatus.FAILED,
+            True,
+        ),
+    ],
+)
+def test_citibank_overlay_truth_table_is_explicit_and_immutable(
+    citibank_included: bool,
+    competitor_receives: bool,
+    citibank_share: Optional[float],
+    expected_status: PrivacySweepStatus,
+    expected_overlay_status: PrivacyEvaluationStatus,
+    expected_evidence_valid: bool,
+) -> None:
+    request = dataclasses.replace(
+        _request([30, 24, 18, 10, 10, 8]),
+        citibank_included=citibank_included,
+        citi_competitor_receives_output=competitor_receives,
+        citibank_share_percentage=citibank_share,
+    )
+
+    result = evaluate_privacy_rule_sweep(request)
+
+    assert result.status == expected_status
+    assert result.audit.evidence_valid is expected_evidence_valid
+    assert result.mandatory_overlays[0].status == expected_overlay_status
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        request.citibank_included = True  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.mandatory_overlays[0].status = (  # type: ignore[misc]
+            PrivacyEvaluationStatus.PASSED
+        )
+
+
+@pytest.mark.parametrize(
+    ("citibank_included", "competitor_receives"),
+    [(None, False), (False, None), (None, None)],
+)
+def test_missing_citibank_trigger_facts_are_invalid(
+    citibank_included: Optional[bool],
+    competitor_receives: Optional[bool],
+) -> None:
+    request = dataclasses.replace(
+        _request([30, 24, 18, 10, 10, 8]),
+        citibank_included=citibank_included,
+        citi_competitor_receives_output=competitor_receives,
+        citibank_share_percentage=None,
+    )
+
+    result = evaluate_privacy_rule_sweep(request)
+
+    assert result.status == PrivacySweepStatus.INVALID_EVIDENCE
+    assert "missing_evidence" in _reason_codes(result)
+
+
+@pytest.mark.parametrize(
     "metric_context",
     [PrivacyMetricContext.ISSUER_FRAUD, PrivacyMetricContext.ISSUER_CHARGEBACK],
 )
@@ -309,7 +450,9 @@ def test_deliverable_without_peer_data_is_not_subject() -> None:
         ("concentration_basis", None, "missing_evidence"),
         ("concentration_basis", "benchmark_metric", "invalid_evidence"),
         ("citibank_included", None, "missing_evidence"),
+        ("citibank_included", 0, "invalid_evidence"),
         ("citi_competitor_receives_output", None, "missing_evidence"),
+        ("citi_competitor_receives_output", "true", "invalid_evidence"),
     ],
 )
 def test_malformed_compact_evidence_fails_closed(
@@ -336,7 +479,6 @@ def test_malformed_compact_evidence_fails_closed(
         {"count_at_or_above_20_percent": 6},
         {"maximum_share_percentage": 19, "count_at_or_above_20_percent": 1},
         {"citibank_included": False, "citibank_share_percentage": 10},
-        {"citibank_included": False, "citi_competitor_receives_output": True},
     ],
 )
 def test_contradictory_compact_evidence_fails_closed(updates: dict[str, object]) -> None:
