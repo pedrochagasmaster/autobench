@@ -931,13 +931,56 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
 - Candidate selection prefers the legacy peer-count-selected rule when safe,
   then uses a fixed compatibility tie-break order. The order is not a policy
   hierarchy. No artifact mixes candidate weight sets.
-- Share secondary metrics are included in emitted-output revalidation. Fraud
-  sweep runs require `privacy_concentration_col` so clearing-spend evidence is
-  explicit rather than inferred from the reported fraud metric.
+- Share secondary metrics are included in emitted-output revalidation. Every
+  fraud/chargeback run requires `privacy_concentration_col` under both
+  strategies, so clearing spend is never inferred from the reported metric or
+  denominator.
 - Strategy audit metadata includes candidate and emitted evaluations, display
   rule, authorizers, structured mandatory-overlay evaluations, policy
   source/version, and the active rule-set digest.
   The compact facade remains the low-level Getnet API.
+
+### Control 3 output boundary
+
+- `core.privacy_output_policy.decide_privacy_output()` derives the single hard
+  disk-output decision from the final emitted-output strategy result. It
+  requires an affirmative numeric-policy decision, at least one
+  `authorizing_rule`, and passing mandatory overlays.
+- A hard denial is independent of compliance posture. It prevents analysis and
+  publication workbooks, balanced CSV, JSON, audit packages, preset/impact
+  sheets, and other benchmark-bearing exports in `strict`, `best_effort`, and
+  `accuracy_first`.
+- `AnalysisArtifacts` clears every withheld output path and exposes the
+  immutable `privacy_output_decision`. The machine-readable reason
+  distinguishes numeric-policy, invalid-evidence, and mandatory-overlay
+  blocks.
+- The only optional denial artifact is
+  `autobench_NON_PUBLISHABLE_control3_<opaque-run-id>.json`. Its schema is an
+  explicit allow-list
+  of policy provenance, rule/overlay statuses, and failure codes. It excludes
+  identities, categories, raw rows, weights, observed shares, rates, and
+  benchmark results.
+- Sole-4/35 authorization is limited to a sanitized publication-only workbook.
+  Analysis/debug sheets, JSON, balanced CSV, audit packages, and persistent
+  run logs are outside the anonymized aggregate contract and are withheld.
+- CLI and TUI file logs use a deferred in-memory handler. Authorized runs flush
+  to the prior timestamped log location and denied, cancelled, or failed runs
+  discard and detach the buffer. Offline product telemetry has a closed event
+  schema containing only launch/surface/action/outcome enums, duration,
+  username/session/version, and timestamps; it rejects file paths, entity or
+  peer names, categories, shares, weights, rates, and benchmark values.
+- The Python API creates no file sink. At run entry, `PrivacyRunLogGate`
+  captures current-thread records at standard `Logger.callHandlers` dispatch,
+  including handlers installed after gate start. Authorization replays the
+  buffer; denial or failure discards it, and every exit restores global
+  dispatch. Other threads continue logging normally. A nested governed run on
+  the same thread is rejected before analysis. Direct calls to a handler that
+  bypass `Logger`, and governed worker-thread logging, require independently
+  trusted privacy-gated sinks.
+- TUI session persistence intentionally excludes CSV/output paths, target and
+  Citi entity values, and the concentration-column input. Only non-identifying
+  form preferences such as modes, column selectors, toggles, and dimension
+  selections are restored.
 
 ### core/validation_runner.py
 

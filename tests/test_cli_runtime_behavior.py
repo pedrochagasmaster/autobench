@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from openpyxl import load_workbook
 
 from core.dimensional_analyzer import DimensionalAnalyzer
@@ -115,6 +116,8 @@ def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
             "approved",
             "--fraud-col",
             "fraud",
+            "--privacy-concentration-col",
+            "total",
             "--privacy-basis",
             "clearing_spend",
             "--csv",
@@ -148,6 +151,63 @@ def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
         workbook.close()
 
 
+@pytest.mark.parametrize("sweep_enabled", [False, True])
+def test_rate_cli_loads_distinct_privacy_concentration_column(
+    tmp_path: Path,
+    sweep_enabled: bool,
+) -> None:
+    csv_path = tmp_path / "distinct_clearing.csv"
+    pd.DataFrame(
+        [
+            {
+                "issuer_name": f"P{index}",
+                "segment": "all",
+                "total": 20,
+                "fraud": 1,
+                "clearing_spend": 20,
+            }
+            for index in range(1, 6)
+        ]
+    ).to_csv(csv_path, index=False)
+    output = tmp_path / f"distinct_clearing_{sweep_enabled}.xlsx"
+    command = [
+        sys.executable,
+        "benchmark.py",
+        "rate",
+        "--total-col",
+        "total",
+        "--fraud-col",
+        "fraud",
+        "--privacy-concentration-col",
+        "clearing_spend",
+        "--privacy-basis",
+        "clearing_spend",
+        "--csv",
+        str(csv_path),
+        "--entity-col",
+        "issuer_name",
+        "--dimensions",
+        "segment",
+        "--output",
+        str(output),
+        "--compliance-posture",
+        "strict",
+    ]
+    if sweep_enabled:
+        command.append("--privacy-rule-sweep")
+
+    result = subprocess.run(
+        command,
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.exists()
+
+
 def test_case01_regression_fixture_is_publishable_with_validation_enabled(tmp_path: Path) -> None:
     output = tmp_path / "case01_regression.xlsx"
 
@@ -169,8 +229,10 @@ def test_case01_regression_fixture_is_publishable_with_validation_enabled(tmp_pa
             "amount_txn_pure_local_currency",
             "--approved-col",
             "amount_approved_local_currency",
-            "--fraud-col",
-            "amount_fraud_local_currency",
+                "--fraud-col",
+                "amount_fraud_local_currency",
+                "--privacy-concentration-col",
+                "amount_txn_pure_local_currency",
             "--privacy-basis",
             "clearing_spend",
             "--secondary-metrics",

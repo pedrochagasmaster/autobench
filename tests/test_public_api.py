@@ -28,10 +28,12 @@ _ARTIFACTS_FIELDS = {
     "analysis_output_file",
     "csv_output",
     "report_paths",
+    "privacy_output_decision",
 }
 
 
 def test_public_api_imports() -> None:
+    from core import PrivacyOutputDecision  # noqa: F401
     from core.analysis_run import execute_share_run, execute_rate_run  # noqa: F401
     from core.contracts import AnalysisArtifacts, AnalysisRunRequest  # noqa: F401
 

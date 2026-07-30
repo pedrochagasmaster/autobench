@@ -55,6 +55,26 @@ def is_category_suppressed(
     return False
 
 
+def is_metric_category_suppressed(
+    suppressed: List[Dict[str, Any]],
+    metric: str,
+    dimension: str,
+    category: Any,
+    time_period: Any = None,
+) -> bool:
+    """Return true when one metric must be omitted from a published group."""
+    return is_category_suppressed(
+        [
+            record
+            for record in suppressed
+            if record.get("metric") == metric
+        ],
+        dimension,
+        category,
+        time_period,
+    )
+
+
 def compute_suppressed_categories(
     df: pd.DataFrame,
     *,
@@ -148,11 +168,16 @@ def format_suppression_warning(record: Dict[str, Any], *, min_entities: int) -> 
     """Build a human-readable run warning for one suppression record."""
     dimension = record.get("dimension", "")
     category = record.get("category", "")
+    metric_suffix = (
+        f" for metric {record['metric']}"
+        if record.get("metric")
+        else ""
+    )
     if record.get("reason") == "structurally_infeasible":
         return f"Suppressed {dimension}/{category}: structurally infeasible"
     participants = record.get("participants", 0)
     return (
-        f"Suppressed {dimension}/{category}: "
+        f"Suppressed {dimension}/{category}{metric_suffix}: "
         f"{participants} participant(s) < rule minimum {min_entities}"
     )
 
@@ -176,6 +201,51 @@ def filter_suppressed_rows(
         return not is_category_suppressed(suppressed, dimension, row["Category"], time_period)
 
     return results_df.loc[results_df.apply(_keep_row, axis=1)].reset_index(drop=True)
+
+
+def filter_suppressed_diagnostic_rows(
+    frame: Optional[pd.DataFrame],
+    suppressed: List[Dict[str, Any]],
+) -> Optional[pd.DataFrame]:
+    """Remove suppressed groups from any persisted category-level frame."""
+    if frame is None or frame.empty or not suppressed:
+        return frame
+    dimension_col = next(
+        (
+            column
+            for column in ("Dimension", "dimension")
+            if column in frame.columns
+        ),
+        None,
+    )
+    category_col = next(
+        (
+            column
+            for column in ("Category", "category")
+            if column in frame.columns
+        ),
+        None,
+    )
+    time_col = next(
+        (
+            column
+            for column in ("Time_Period", "time_period")
+            if column in frame.columns
+        ),
+        None,
+    )
+    if dimension_col is None or category_col is None:
+        return frame
+
+    def _keep(row: pd.Series) -> bool:
+        return not is_category_suppressed(
+            suppressed,
+            str(row[dimension_col]),
+            row[category_col],
+            row[time_col] if time_col is not None else None,
+        )
+
+    return frame.loc[frame.apply(_keep, axis=1)].reset_index(drop=True)
 
 
 def apply_suppression_to_results(

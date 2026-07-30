@@ -10,6 +10,12 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core.control3_policy import CONTROL3_POLICY_KEYS
 
+APPROVED_PRIVACY_RULE_NAMES = ("5/25", "6/30", "7/35", "10/40", "4/35")
+CONTROL3_NUMERIC_POLICY_VERSION = "v5 (2026-06-03)"
+CONTROL3_NUMERIC_POLICY_SOURCE = (
+    "docs/control-3-customer-merchant-performance-v5-20260603.md"
+)
+
 
 class PrivacyMetricContext(str, Enum):
     """Metric context needed to validate the concentration basis."""
@@ -65,6 +71,7 @@ class PrivacyRuleStrategyResult:
     """Immutable audit result for the normal pipeline's rule strategy."""
 
     strategy: PrivacyRuleStrategy
+    is_anonymized_aggregated_merchant_spend: bool
     status: PrivacySweepStatus
     numeric_rules_passed: bool
     mandatory_overlays_passed: bool
@@ -76,8 +83,114 @@ class PrivacyRuleStrategyResult:
     emitted_output_evaluations: Tuple[PrivacyRuleStrategyEvaluation, ...]
     mandatory_overlay_evaluations: Tuple[PrivacyMandatoryOverlayEvaluation, ...]
     rule_set_digest: str
-    policy_version: str = "v5 (2026-06-03)"
-    policy_source: str = "docs/control-3-customer-merchant-performance-v5-20260603.md"
+    policy_version: str = CONTROL3_NUMERIC_POLICY_VERSION
+    policy_source: str = CONTROL3_NUMERIC_POLICY_SOURCE
+
+    def __post_init__(self) -> None:
+        """Reject contradictory strategy verdicts before they reach a sink."""
+        canonical_rules = set(APPROVED_PRIVACY_RULE_NAMES)
+        passed_attempts = {
+            evaluation.rule_name
+            for evaluation in self.candidate_attempt_evaluations
+            if evaluation.status == PrivacyEvaluationStatus.PASSED
+        }
+        passed_emitted = {
+            evaluation.rule_name
+            for evaluation in self.emitted_output_evaluations
+            if evaluation.status == PrivacyEvaluationStatus.PASSED
+        }
+        overlays_passed = bool(self.mandatory_overlay_evaluations) and all(
+            evaluation.status != PrivacyEvaluationStatus.FAILED
+            for evaluation in self.mandatory_overlay_evaluations
+        )
+        expected_authorizers = tuple(
+            rule
+            for rule in APPROVED_PRIVACY_RULE_NAMES
+            if rule in passed_emitted
+        )
+        if not overlays_passed:
+            expected_authorizers = ()
+        expected_status = (
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT
+            if expected_authorizers
+            else (
+                PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY
+                if passed_emitted and not overlays_passed
+                else PrivacySweepStatus.NUMERICALLY_NONCOMPLIANT
+            )
+        )
+        coherent = (
+            isinstance(
+                self.is_anonymized_aggregated_merchant_spend,
+                bool,
+            )
+            and
+            bool(self.candidate_attempt_evaluations)
+            and bool(self.emitted_output_evaluations)
+            and len(set(self.feasible_candidate_rules))
+            == len(self.feasible_candidate_rules)
+            and len(set(self.authorizing_rules))
+            == len(self.authorizing_rules)
+            and len(
+                {
+                    evaluation.rule_name
+                    for evaluation in self.candidate_attempt_evaluations
+                }
+            )
+            == len(self.candidate_attempt_evaluations)
+            and len(
+                {
+                    evaluation.rule_name
+                    for evaluation in self.emitted_output_evaluations
+                }
+            )
+            == len(self.emitted_output_evaluations)
+            and set(self.feasible_candidate_rules) == passed_attempts
+            and set(self.feasible_candidate_rules) <= canonical_rules
+            and passed_emitted <= canonical_rules
+            and self.authorizing_rules == expected_authorizers
+            and self.numeric_rules_passed == bool(passed_emitted)
+            and self.mandatory_overlays_passed == overlays_passed
+            and self.publication_authorized_by_numeric_policy
+            == bool(expected_authorizers)
+            and self.status == expected_status
+            and len(self.rule_set_digest) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in self.rule_set_digest
+            )
+        )
+        if not coherent:
+            raise ValueError(
+                "PrivacyRuleStrategyResult contains contradictory publication fields"
+            )
+
+
+@dataclass(frozen=True)
+class PrivacyOutputDecision:
+    """Final non-overridable Control 3 decision for disk output."""
+
+    privacy_publication_authorized: bool
+    hard_privacy_block: bool
+    withholding_reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Reject contradictory publication decisions at the contract boundary."""
+        authorized = (
+            self.privacy_publication_authorized
+            and not self.hard_privacy_block
+            and self.withholding_reason is None
+        )
+        blocked = (
+            not self.privacy_publication_authorized
+            and self.hard_privacy_block
+            and bool(self.withholding_reason)
+        )
+        if not (authorized or blocked):
+            raise ValueError(
+                "PrivacyOutputDecision must be either affirmatively authorized "
+                "or hard-blocked with a withholding reason"
+            )
 
 
 @dataclass(frozen=True)
@@ -386,6 +499,9 @@ class AnalysisArtifacts:
     report_model: Any = None
     json_output: Optional[str] = None
     privacy_rule_strategy_result: Optional[PrivacyRuleStrategyResult] = None
+    privacy_output_decision: Optional[PrivacyOutputDecision] = None
+    privacy_sink_authorized: bool = False
+    privacy_log_authorized: bool = False
 
 
 @dataclass

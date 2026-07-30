@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from core.analysis_run import execute_share_run
 from core.category_suppression import (
@@ -14,7 +16,7 @@ from core.category_suppression import (
     filter_suppressed_rows,
     is_category_suppressed,
 )
-from core.contracts import AnalysisRunRequest
+from core.contracts import AnalysisRunRequest, PrivacyRuleStrategy
 
 FIXTURE = Path(__file__).parent / "fixtures" / "gate_demo.csv"
 SHARE_DIMENSIONS = ["card_type", "channel"]
@@ -293,12 +295,74 @@ def test_share_run_suppresses_exclusive_category(tmp_path: Path) -> None:
     assert "PREPAID" not in csv_output["Category"].values
 
     suppressed = artifacts.metadata.get("suppressed_categories", [])
-    assert any(record["category"] == "PREPAID" for record in suppressed)
-    assert any("PREPAID" in warning for warning in artifacts.metadata.get("run_warnings", []))
+    assert suppressed
+    assert all("category" not in record for record in suppressed)
+    assert not any(
+        "PREPAID" in warning
+        for warning in artifacts.metadata.get("run_warnings", [])
+    )
 
     privacy_df = artifacts.privacy_validation_df
     assert privacy_df is not None
-    assert "PREPAID" in privacy_df["Category"].values
+    assert "PREPAID" not in privacy_df["Category"].values
+
+
+def test_suppressed_group_is_absent_from_every_analysis_workbook_sheet(
+    tmp_path: Path,
+) -> None:
+    safe_values = [20, 20, 10, 8, 7, 7, 7, 7, 7, 7]
+    df = pd.DataFrame(
+        [
+            {
+                "issuer_name": f"P{index}",
+                "year_month": "2024-01",
+                "card_type": "SAFE_CATEGORY",
+                "channel": "Online",
+                "txn_cnt": value,
+            }
+            for index, value in enumerate(safe_values, start=1)
+        ]
+        + [
+            {
+                "issuer_name": "ONLY_SECRET_PEER",
+                "year_month": "2024-01",
+                "card_type": "SECRET_CATEGORY",
+                "channel": "Online",
+                "txn_cnt": 1,
+            }
+        ]
+    )
+    output = tmp_path / "suppressed_diagnostics.xlsx"
+    artifacts = execute_share_run(
+        AnalysisRunRequest(
+            df=df,
+            csv="",
+            metric="txn_cnt",
+            dimensions=["card_type"],
+            time_col="year_month",
+            output=str(output),
+            compliance_posture="best_effort",
+            validate_input=False,
+            debug=True,
+            privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+        ),
+        logging.getLogger("test"),
+    )
+
+    assert artifacts.privacy_sink_authorized
+    workbook = load_workbook(output, read_only=True)
+    try:
+        text = " ".join(
+            str(cell.value)
+            for sheet in workbook.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        )
+    finally:
+        workbook.close()
+    assert "SECRET_CATEGORY" not in text
+    assert "ONLY_SECRET_PEER" not in text
 
 
 def test_gate_demo_produces_no_suppressions(tmp_path: Path) -> None:
@@ -315,3 +379,72 @@ def test_gate_demo_produces_no_suppressions(tmp_path: Path) -> None:
     )
     artifacts = execute_share_run(request, logging.getLogger("test"))
     assert artifacts.metadata.get("suppressed_categories", []) == []
+
+
+def test_secondary_metric_below_rule_minimum_omits_only_unsafe_metric(
+    tmp_path: Path,
+) -> None:
+    df = pd.DataFrame(
+        {
+            "issuer_name": ["P1", "P2", "P3", "P4", "P5"],
+            "segment": ["all"] * 5,
+            "amount": [20, 20, 20, 20, 20],
+            "secondary": [7777, 7777, 7777, 7777, 0],
+        }
+    )
+    artifacts = execute_share_run(
+        AnalysisRunRequest(
+            df=df,
+            csv="",
+            metric="amount",
+            secondary_metrics=["secondary"],
+            dimensions=["segment"],
+            output=str(tmp_path / "secondary_suppressed.xlsx"),
+            report_format="json",
+            export_balanced_csv=True,
+            compliance_posture="best_effort",
+            validate_input=False,
+        ),
+        logging.getLogger("test"),
+    )
+
+    assert artifacts.privacy_output_decision is not None
+    assert artifacts.privacy_output_decision.privacy_publication_authorized
+    assert not artifacts.results["segment"].empty
+    assert artifacts.secondary_results_df is not None
+    assert "secondary" not in artifacts.secondary_results_df.columns
+    suppressed = artifacts.metadata.get(
+        "suppressed_metric_categories",
+        [],
+    )
+    assert any(
+        record["metric"] == "secondary"
+        for record in suppressed
+    )
+
+    assert artifacts.csv_output is not None
+    csv_frame = pd.read_csv(artifacts.csv_output)
+    assert "Balanced_amount" in csv_frame.columns
+    assert "Balanced_secondary" not in csv_frame.columns
+
+    workbook = load_workbook(
+        tmp_path / "secondary_suppressed.xlsx",
+        read_only=True,
+    )
+    try:
+        workbook_text = " ".join(
+            str(cell.value)
+            for sheet in workbook.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        )
+    finally:
+        workbook.close()
+    assert "7777" not in workbook_text
+
+    assert artifacts.json_output is not None
+    json_payload = json.loads(
+        Path(artifacts.json_output).read_text(encoding="utf-8")
+    )
+    assert "7777" not in json.dumps(json_payload)

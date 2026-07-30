@@ -162,6 +162,10 @@ optimization:
 - As dimensões retiradas do conjunto global podem receber pesos próprios.
 - Uma violação final gera advertência e `violations_detected`, mas a postura
   `best_effort` permite que a execução seja concluída.
+- Essa flexibilidade vale apenas para avisos comuns de qualidade/otimização.
+  Uma negativa das regras numéricas do Control 3 ou de um overlay obrigatório
+  bloqueia todos os artefatos com valores de benchmark, mesmo em
+  `best_effort`.
 
 ### Quando usar
 
@@ -272,6 +276,8 @@ optimization:
 - Mantém forte pressão pela preservação do ranking.
 - Como a postura é `best_effort`, violações residuais são reportadas sem serem
   apresentadas como conformidade estrita.
+- `best_effort` não autoriza saída quando a decisão final de privacidade do
+  Control 3 é negativa.
 
 ### Quando usar
 

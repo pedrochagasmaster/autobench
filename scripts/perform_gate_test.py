@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+import os
 import subprocess
 import shlex
 import shutil
@@ -714,6 +715,12 @@ class GateTestRunner:
             )
             logger.warning("=" * 60)
         logger.info(f"Loaded {len(cases)} cases.")
+        gate_log_dir = (
+            self.root_dir / self.output_dir / "outputs" / "logs"
+        ).resolve()
+        gate_log_dir.mkdir(parents=True, exist_ok=True)
+        case_env = os.environ.copy()
+        case_env["AUTOBENCH_LOG_DIR"] = str(gate_log_dir)
         
         # 4. Execute and Verify
         results = {"passed": 0, "failed": 0, "errors": 0}
@@ -736,7 +743,14 @@ class GateTestRunner:
                 
                 # Fix paths in command args to be absolute or relative to cwd correctly
                 # actually running from root_dir should work if paths are relative to root
-                proc = subprocess.run(cmd_list, cwd=self.root_dir, capture_output=True, text=True, timeout=300)
+                proc = subprocess.run(
+                    cmd_list,
+                    cwd=self.root_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env=case_env,
+                )
                 
                 duration = time.time() - start_time
                 if duration > 60:

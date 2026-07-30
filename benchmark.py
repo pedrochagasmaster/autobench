@@ -13,6 +13,7 @@ Version: 2.0
 """
 
 import argparse
+import os
 import sys
 import json
 import logging
@@ -24,6 +25,8 @@ from typing import Optional, Dict
 
 # Import core modules
 from core.control3_policy import remediation_hint
+from core.contracts import AnalysisArtifacts
+from core.privacy_output_policy import is_privacy_publication_authorized
 from core.analysis_run import (
     build_run_request,
     execute_rate_run,
@@ -35,7 +38,7 @@ from core.telemetry.identity import validate_username
 from core.telemetry.reader import TelemetryReader
 from core.telemetry.render import format_summary, format_who, sanitize_terminal
 from core.telemetry import end_session, start_session
-from utils.logger import setup_logging
+from utils.logger import finalize_deferred_logging, setup_deferred_logging
 from utils.runtime_environment import warn_if_personal_runtime
 from utils.preset_manager import PresetManager
 from utils.validators import validate_config_file
@@ -45,6 +48,10 @@ EXIT_FAILURE = 1
 EXIT_STRICT_NON_COMPLIANT = 2
 
 _GENERIC_VALIDATION_ABORT = "Analysis aborted due to validation errors"
+
+# Compatibility seam retained for CLI tests and embedders that patch the
+# command's logger factory. The implementation is now privacy-deferred.
+setup_logging = setup_deferred_logging
 
 
 def get_presets_help() -> str:
@@ -89,7 +96,7 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
     )
     parser.add_argument(
         '--privacy-concentration-col',
-        help='Policy-correct concentration column; required for fraud/chargeback sweep runs',
+        help='Policy-correct concentration column; required for fraud/chargeback runs',
     )
     parser.add_argument('--entity', help='Name of the entity to benchmark (omit for peer-only analysis)')
     parser.add_argument('--entity-col', default='issuer_name', help='Entity identifier column name (default: issuer_name)')
@@ -596,12 +603,36 @@ def _print_run_metadata_warnings(metadata: Dict) -> None:
             print(f"WARNING: {warning}")
 
 
-def _resolve_exit_code(posture: Optional[str], verdict: Optional[str]) -> int:
+def _resolve_exit_code(
+    posture: Optional[str],
+    verdict: Optional[str],
+    *,
+    hard_privacy_block: bool = False,
+) -> int:
     """Map compliance posture and verdict to a process exit code."""
+    if hard_privacy_block:
+        print(
+            f"CONTROL 3 PRIVACY BLOCK: verdict '{verdict}' -> exit code 2"
+        )
+        return EXIT_STRICT_NON_COMPLIANT
     if posture == "strict" and verdict != "fully_compliant":
         print(f"STRICT POSTURE: verdict '{verdict}' -> exit code 2")
         return EXIT_STRICT_NON_COMPLIANT
     return EXIT_OK
+
+
+def _print_privacy_output_status(artifacts: AnalysisArtifacts) -> bool:
+    """Print the machine-readable hard privacy decision for CLI operators."""
+    decision = artifacts.privacy_output_decision
+    if is_privacy_publication_authorized(decision):
+        return False
+    print(
+        "PUBLICATION WITHHELD: "
+        f"{decision.withholding_reason}; no benchmark-bearing artifact was written."
+    )
+    if artifacts.audit_log_output:
+        print(f"Non-publishable privacy audit: {artifacts.audit_log_output}")
+    return True
 
 
 def _format_analysis_failure_message(exc: Exception) -> str:
@@ -643,6 +674,22 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     try:
         request = build_run_request('share', args)
         artifacts = execute_share_run(request, logger)
+        hard_privacy_block = artifacts.privacy_sink_authorized is not True
+        if hard_privacy_block:
+            print(f"\n{'='*80}")
+            print("SHARE ANALYSIS BLOCKED")
+            print(f"{'='*80}")
+            _print_privacy_output_status(artifacts)
+            finalize_deferred_logging(logger, privacy_authorized=False)
+            verdict, posture = _resolve_compliance_fields(artifacts)
+            print(f"Compliance Posture: {posture}")
+            print(f"Compliance Verdict: {verdict}")
+            print(f"{'='*80}\n")
+            return _resolve_exit_code(
+                posture,
+                verdict,
+                hard_privacy_block=True,
+            )
         print(f"\n{'='*80}")
         print("SHARE ANALYSIS COMPLETE")
         print(f"{'='*80}")
@@ -656,12 +703,22 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if artifacts.metadata.get('compliance_posture') == 'accuracy_first':
             print("WARNING: accuracy_first posture prioritizes analytical fidelity over strict compliance.")
         print(f"Dimensions Analyzed: {len(artifacts.results)}")
-        print(f"Report: {', '.join(artifacts.report_paths)}")
+        finalize_deferred_logging(
+            logger,
+            privacy_authorized=artifacts.privacy_log_authorized,
+        )
+        if artifacts.report_paths:
+            print(f"Report: {', '.join(artifacts.report_paths)}")
         _print_run_metadata_warnings(artifacts.metadata)
         print(f"{'='*80}\n")
         verdict, posture = _resolve_compliance_fields(artifacts)
-        return _resolve_exit_code(posture, verdict)
+        return _resolve_exit_code(
+            posture,
+            verdict,
+            hard_privacy_block=hard_privacy_block,
+        )
     except RunBlocked as e:
+        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis blocked: {e}")
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
@@ -671,6 +728,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:
+        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
         print(f"Analysis failed: {_format_analysis_failure_message(e)}")
@@ -683,6 +741,22 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     try:
         request = build_run_request('rate', args)
         artifacts = execute_rate_run(request, logger)
+        hard_privacy_block = artifacts.privacy_sink_authorized is not True
+        if hard_privacy_block:
+            print(f"\n{'='*80}")
+            print("RATE ANALYSIS BLOCKED")
+            print(f"{'='*80}")
+            _print_privacy_output_status(artifacts)
+            finalize_deferred_logging(logger, privacy_authorized=False)
+            verdict, posture = _resolve_compliance_fields(artifacts)
+            print(f"Compliance Posture: {posture}")
+            print(f"Compliance Verdict: {verdict}")
+            print(f"{'='*80}\n")
+            return _resolve_exit_code(
+                posture,
+                verdict,
+                hard_privacy_block=True,
+            )
         print(f"\n{'='*80}")
         print("RATE ANALYSIS COMPLETE")
         print(f"{'='*80}")
@@ -696,12 +770,22 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if artifacts.metadata.get('compliance_posture') == 'accuracy_first':
             print("WARNING: accuracy_first posture prioritizes analytical fidelity over strict compliance.")
         print(f"Dimensions Analyzed: {len(artifacts.metadata.get('dimension_names', []))}")
-        print(f"Report: {', '.join(artifacts.report_paths)}")
+        finalize_deferred_logging(
+            logger,
+            privacy_authorized=artifacts.privacy_log_authorized,
+        )
+        if artifacts.report_paths:
+            print(f"Report: {', '.join(artifacts.report_paths)}")
         _print_run_metadata_warnings(artifacts.metadata)
         print(f"{'='*80}\n")
         verdict, posture = _resolve_compliance_fields(artifacts)
-        return _resolve_exit_code(posture, verdict)
+        return _resolve_exit_code(
+            posture,
+            verdict,
+            hard_privacy_block=hard_privacy_block,
+        )
     except RunBlocked as e:
+        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis blocked: {e}")
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
@@ -711,6 +795,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:
+        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
         print(f"Analysis failed: {_format_analysis_failure_message(e)}")
@@ -754,7 +839,14 @@ def main() -> int:
     
     # Setup logging for analysis commands
     log_level = getattr(args, 'log_level', None) or 'INFO'
-    logger = setup_logging(log_level, f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    log_directory = Path(
+        os.getenv("AUTOBENCH_LOG_DIR", ".")
+    )
+    log_file = str(
+        log_directory
+        / f"benchmark_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    )
+    logger = setup_logging(log_level, log_file)
     
     # Route to appropriate handler with a CLI session around usable analysis.
     # Telemetry helpers are best-effort and never raise.

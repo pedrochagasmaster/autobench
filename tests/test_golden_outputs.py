@@ -113,6 +113,8 @@ def _assert_peer_only_summary(path: Path) -> None:
                 "approved",
                 "--fraud-col",
                 "fraud",
+                "--privacy-concentration-col",
+                "total",
                 "--privacy-basis",
                 "clearing_spend",
             ],

@@ -8,7 +8,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import pandas as pd
 
-from core.category_suppression import is_category_suppressed
+from core.category_suppression import (
+    is_category_suppressed,
+    is_metric_category_suppressed,
+)
 from core.contracts import WeightLookup
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.export_sanitizer import sanitize_cell
@@ -91,6 +94,19 @@ def _weighted_sum(group: _BalancedGroup, column: str) -> float:
     return float((group.rows[column] * group.peer_weights).sum())
 
 
+def _output_suppressed(
+    suppressed: Optional[Dict[str, List[Dict[str, Any]]]],
+    output_name: str,
+    group: _BalancedGroup,
+) -> bool:
+    return is_category_suppressed(
+        (suppressed or {}).get(output_name, []),
+        group.dimension,
+        group.category,
+        group.time_period,
+    )
+
+
 def _write_csv(
     rows: List[Dict[str, Any]],
     *,
@@ -118,6 +134,10 @@ def get_balanced_metrics_df(
     numerator_cols: Optional[Dict[str, str]] = None,
     weight_lookup: Optional[WeightLookup] = None,
     suppressed_categories: Optional[List[Dict[str, Any]]] = None,
+    suppressed_metric_categories: Optional[List[Dict[str, Any]]] = None,
+    suppressed_output_categories: Optional[
+        Dict[str, List[Dict[str, Any]]]
+    ] = None,
 ) -> pd.DataFrame:
     """
     Calculate balanced metrics for primary and secondary metrics.
@@ -166,6 +186,31 @@ def get_balanced_metrics_df(
         for metric_type, metric in metrics_to_calculate:
             if metric not in group.rows.columns:
                 continue
+            if (
+                metric_type == "Total"
+                and numerator_cols
+                and "approval" not in numerator_cols
+            ):
+                continue
+            output_name = (
+                "approval"
+                if metric_type in {"Total", "Approval"}
+                else "fraud" if metric_type == "Fraud" else ""
+            )
+            if output_name and _output_suppressed(
+                suppressed_output_categories,
+                output_name,
+                group,
+            ):
+                continue
+            if is_metric_category_suppressed(
+                suppressed_metric_categories or [],
+                metric,
+                group.dimension,
+                group.category,
+                group.time_period,
+            ):
+                continue
 
             balanced_metric = _weighted_sum(group, metric)
 
@@ -213,6 +258,10 @@ def export_balanced_csv(
     include_calculated: bool = False,
     weight_lookup: Optional[WeightLookup] = None,
     suppressed_categories: Optional[List[Dict[str, Any]]] = None,
+    suppressed_metric_categories: Optional[List[Dict[str, Any]]] = None,
+    suppressed_output_categories: Optional[
+        Dict[str, List[Dict[str, Any]]]
+    ] = None,
 ) -> None:
     """
     Export balanced metrics to CSV in concatenated dimension format.
@@ -276,23 +325,64 @@ def export_balanced_csv(
             suppressed_categories=suppressed_categories,
             exclude_target=True,
         ):
+            approval_suppressed = _output_suppressed(
+                suppressed_output_categories,
+                "approval",
+                group,
+            )
+            fraud_suppressed = _output_suppressed(
+                suppressed_output_categories,
+                "fraud",
+                group,
+            )
+            total_suppressed = is_metric_category_suppressed(
+                suppressed_metric_categories or [],
+                total_col,
+                group.dimension,
+                group.category,
+                group.time_period,
+            )
             balanced_total = _weighted_sum(group, total_col)
 
             approval_col = numerator_cols.get("approval") if numerator_cols else None
             fraud_col = numerator_cols.get("fraud") if numerator_cols else None
+            approval_surface_allowed = bool(
+                approval_col and not approval_suppressed
+            )
+            fraud_surface_allowed = bool(fraud_col and not fraud_suppressed)
+            denominator_surface_allowed = bool(
+                approval_surface_allowed or fraud_surface_allowed
+            )
 
             balanced_approval = 0.0
-            if approval_col and approval_col in group.rows.columns:
+            if (
+                approval_col
+                and approval_col in group.rows.columns
+                and not approval_suppressed
+            ):
                 balanced_approval = _weighted_sum(group, approval_col)
 
             balanced_fraud = 0.0
-            if fraud_col and fraud_col in group.rows.columns:
+            if (
+                fraud_col
+                and fraud_col in group.rows.columns
+                and not fraud_suppressed
+            ):
                 balanced_fraud = _weighted_sum(group, fraud_col)
 
             secondary_balanced: Dict[str, float] = {}
             if secondary_metrics_list:
                 for sec_metric in secondary_metrics_list:
-                    if sec_metric in group.rows.columns:
+                    if (
+                        sec_metric in group.rows.columns
+                        and not is_metric_category_suppressed(
+                            suppressed_metric_categories or [],
+                            sec_metric,
+                            group.dimension,
+                            group.category,
+                            group.time_period,
+                        )
+                    ):
                         secondary_balanced[sec_metric] = _weighted_sum(group, sec_metric)
 
             raw_total = 0.0
@@ -311,11 +401,15 @@ def export_balanced_csv(
             }
 
             if include_calculated:
-                if total_col:
+                if (
+                    total_col
+                    and denominator_surface_allowed
+                    and not total_suppressed
+                ):
                     row_data["Raw_Total"] = raw_total
                     row_data["Balanced_Total"] = balanced_total
 
-                if numerator_cols.get("approval"):
+                if numerator_cols.get("approval") and approval_surface_allowed:
                     row_data["Balanced_Approval_Total"] = balanced_approval
                     raw_rate = (
                         (raw_peer_approval / raw_total * 100)
@@ -331,7 +425,7 @@ def export_balanced_csv(
                     row_data["Balanced_Approval_Rate_%"] = bal_rate
                     row_data["Approval_Impact_PP"] = bal_rate - raw_rate
 
-                if numerator_cols.get("fraud"):
+                if numerator_cols.get("fraud") and not fraud_suppressed:
                     row_data["Balanced_Fraud_Total"] = balanced_fraud
                     raw_fraud_rate = (
                         (raw_peer_fraud / raw_total * 100)
@@ -351,14 +445,21 @@ def export_balanced_csv(
                 row_data[time_col] = group.time_period
 
             if not include_calculated:
-                row_data[total_col] = round(balanced_total, 2)
+                if denominator_surface_allowed and not total_suppressed:
+                    row_data[total_col] = round(balanced_total, 2)
 
                 if numerator_cols:
-                    if approval_col := numerator_cols.get("approval"):
+                    if (
+                        (approval_col := numerator_cols.get("approval"))
+                        and not approval_suppressed
+                    ):
                         row_data[approval_col] = (
                             round(balanced_approval, 2) if balanced_approval > 0 else None
                         )
-                    if fraud_col := numerator_cols.get("fraud"):
+                    if (
+                        (fraud_col := numerator_cols.get("fraud"))
+                        and not fraud_suppressed
+                    ):
                         row_data[fraud_col] = (
                             round(balanced_fraud, 2) if balanced_fraud > 0 else None
                         )
@@ -366,6 +467,13 @@ def export_balanced_csv(
                 for sec_metric, sec_value in secondary_balanced.items():
                     row_data[sec_metric] = round(sec_value, 2)
 
+            identifying_columns = {
+                "Dimension",
+                "Category",
+                *( [time_col] if time_col is not None else [] ),
+            }
+            if set(row_data) <= identifying_columns:
+                continue
             export_rows.append(row_data)
 
         if not export_rows:
@@ -409,6 +517,14 @@ def export_balanced_csv(
             balanced_metric_values: Dict[str, float] = {}
             raw_metric_values: Dict[str, float] = {}
             for _m_type, m_col in metrics_to_calculate:
+                if is_metric_category_suppressed(
+                    suppressed_metric_categories or [],
+                    m_col,
+                    group.dimension,
+                    group.category,
+                    group.time_period,
+                ):
+                    continue
                 if m_col in group.rows.columns:
                     balanced_metric_values[m_col] = _weighted_sum(group, m_col)
                     if include_calculated:
@@ -434,6 +550,8 @@ def export_balanced_csv(
                 ]
 
             for _m_type, m_col in metrics_to_calculate:
+                if m_col not in balanced_metric_values:
+                    continue
                 row_data[f"Balanced_{m_col}"] = round(
                     balanced_metric_values[m_col], 2
                 )

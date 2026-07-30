@@ -374,6 +374,25 @@ Only rules passing the emitted output appear in `authorizing_rules`.
 audit stages distinct. `mandatory_overlay_evaluations` records the emitted
 output's overlay status and structured failure reasons.
 
+The final emitted-output result is also converted into one non-overridable
+`privacy_output_decision`. If no rule authorizes that output, required privacy
+evidence is invalid, or a mandatory overlay fails, Autobench writes no analysis
+workbook, publication workbook, balanced CSV, JSON report, audit package, or
+run log. This applies to `strict`, `best_effort`, and `accuracy_first`.
+Compliance posture still controls ordinary quality and optimization warnings
+when `privacy_publication_authorized` is true; `best_effort` cannot override a
+Control 3 denial.
+
+When audit logging is enabled, a denied run may write only
+`autobench_NON_PUBLISHABLE_control3_<opaque-run-id>.json`. It contains an
+allow-listed status,
+withholding reason, strategy, policy version/source/digest, applicable and
+feasible rule names, emitted-output rule statuses, authorizing rule names, and
+overlay statuses/failure codes. It contains no peer identities, category
+results, rows, weights, shares, rates, or benchmark values. Tool-owned CLI/TUI
+logs are buffered in memory and flushed to their existing locations only after
+privacy authorization; the buffer is discarded on denial or error.
+
 CLI example:
 
 ```bash
@@ -389,7 +408,8 @@ For merchant 4/35 eligibility, also add
 normal `--privacy-basis clearing_spend` Control 3 declaration.
 They must also identify the actual clearing-spend column with
 `--privacy-concentration-col`; Autobench will not infer it from the fraud
-metric.
+metric or the total/denominator column. This applies to the default strategy
+and sweep mode.
 
 When Citibank is in the governed peer population and a Citi competitor will
 receive the output, also pass `--citi-competitor-receives-output` and the exact
@@ -411,6 +431,24 @@ request = AnalysisRunRequest(
 )
 artifacts = execute_share_run(request, logging.getLogger("autobench"))
 ```
+
+Autobench does not create a file handler for Python API calls. During a run it
+temporarily captures current-thread records before every logging handler that
+already exists in the process. Authorized runs replay those records to the
+configured handlers; denied or failed runs discard them and always restore
+normal dispatch. Records emitted by other threads are not suppressed.
+Handlers added after the run gate starts are covered because capture occurs at
+the standard `Logger.callHandlers` dispatch boundary. A nested privacy-governed
+run on the same thread is rejected before analysis. Records deliberately sent
+directly to a handler (bypassing `Logger`) and governed evidence emitted from
+worker threads are outside the run-thread contract and require an independently
+approved sink.
+
+When 4/35 is the sole authorizing rule, authorization is artifact-scoped:
+only `--output-format publication` may be written. That workbook contains
+aggregate benchmark results only. Analysis/debug sheets, JSON, balanced CSV,
+audit packages, and persistent run logs are withheld; requests for those
+surfaces fail closed.
 
 Compact Getnet/server evidence example:
 
@@ -522,6 +560,10 @@ Detailed Portuguese guide:
 ## Outputs
 
 Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
+
+All of these are benchmark-bearing outputs. A hard Control 3 numeric-rule,
+evidence, governed-basis, or mandatory-overlay denial withholds every one of
+them regardless of compliance posture or requested output format.
 
 Common sheets:
 

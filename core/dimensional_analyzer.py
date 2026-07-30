@@ -343,7 +343,10 @@ class DimensionalAnalyzer:
         )
 
     def _log_init_settings(self) -> None:
-        logger.info(f"Initialized DimensionalAnalyzer for entity: {self.target_entity}")
+        logger.info(
+            "Initialized DimensionalAnalyzer (target entity configured=%s)",
+            self.target_entity is not None,
+        )
         if self.debug_mode:
             logger.info("Debug mode enabled - will include unweighted averages and weights tracking")
         if self.consistent_weights:
@@ -1071,7 +1074,7 @@ class DimensionalAnalyzer:
             target_share = (target_category_vol / target_total_vol * 100.0) if target_total_vol > 0 else 0.0
         
         if len(peer_df) == 0:
-            logger.warning(f"No peers found for category '{category}'" + (f" at time '{time_period}'" if time_period else ""))
+            logger.warning("No peers found for a governed category")
             return None
         
         # Build per-peer category and totals
@@ -1093,12 +1096,15 @@ class DimensionalAnalyzer:
         
         # Debug logging for denominator consistency
         if self.debug_mode and self.time_column and time_period and time_period != "General":
-            logger.debug(f"Share analysis - Category={category}, Time={time_period}")
-            logger.debug(f"  Peers with volume data: {set(peer_category_volumes.keys())}")
-            logger.debug(f"  Peers in totals map: {set(peer_totals_map.keys())}")
+            logger.debug("Share analysis - governed group")
+            logger.debug("  Peers with volume data: %s", len(peer_category_volumes))
+            logger.debug("  Peers in totals map: %s", len(peer_totals_map))
             peers_with_zero_volume = [p for p in peer_totals_map.keys() if peer_category_volumes.get(p, 0.0) == 0]
             if peers_with_zero_volume:
-                logger.debug(f"  Peers with zero volume in this category: {peers_with_zero_volume}")
+                logger.debug(
+                    "  Peers with zero volume in governed group: %s",
+                    len(peers_with_zero_volume),
+                )
         
         # Compute balanced average
         if self.consistent_weights:
@@ -1192,7 +1198,7 @@ class DimensionalAnalyzer:
             target_rate = (target_num / target_den * 100.0) if target_den > 0 else 0.0
         
         if len(peer_df) == 0:
-            logger.warning(f"No peers found for category '{category}'" + (f" at time '{time_period}'" if time_period else ""))
+            logger.warning("No peers found for a governed category")
             return None
         
         # Build per-peer category and totals
@@ -1218,12 +1224,15 @@ class DimensionalAnalyzer:
         
         # Debug logging for denominator consistency
         if self.debug_mode and self.time_column and time_period and time_period != "General":
-            logger.debug(f"Rate analysis - Category={category}, Time={time_period}")
-            logger.debug(f"  Peers with denominator data: {set(peer_category_dens.keys())}")
-            logger.debug(f"  Peers in totals map: {set(peer_totals_map.keys())}")
+            logger.debug("Rate analysis - governed group")
+            logger.debug("  Peers with denominator data: %s", len(peer_category_dens))
+            logger.debug("  Peers in totals map: %s", len(peer_totals_map))
             peers_with_zero_den = [p for p in peer_totals_map.keys() if peer_category_dens.get(p, 0.0) == 0]
             if peers_with_zero_den:
-                logger.debug(f"  Peers with zero denominator in this category: {peers_with_zero_den}")
+                logger.debug(
+                    "  Peers with zero denominator in governed group: %s",
+                    len(peers_with_zero_den),
+                )
         
         # Balanced peer rate
         if self.consistent_weights:
