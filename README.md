@@ -54,28 +54,28 @@ guardrails, and a copyable first successful run.
 
 ## Quick Start
 
-> In this repo, use `py` for Python commands.
+> In this repo, use `uv run` for project Python commands.
 
 Requires Python 3.10+.
 
 Install dependencies:
 
 ```powershell
-python -m pip install -e ".[dev]"
+uv sync --extra dev --extra release
 ```
 
 Run the TUI:
 
 ```powershell
-py tui_app.py
+uv run python tui_app.py
 ```
 
 Or inspect CLI help:
 
 ```powershell
-py benchmark.py --help
-py benchmark.py share --help
-py benchmark.py rate --help
+uv run python benchmark.py --help
+uv run python benchmark.py share --help
+uv run python benchmark.py rate --help
 ```
 
 Contributors should use [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
