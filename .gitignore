@@ -79,6 +79,7 @@ config.json
 !requirements-dev.txt
 !constraints.txt
 !tests/fixtures/*.csv
+!docs/autobench_demo.csv
 !assets/icons/**/*.svg
 !assets/icons/**/*.png
 *.csv.gz
