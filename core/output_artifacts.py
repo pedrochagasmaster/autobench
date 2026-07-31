@@ -35,21 +35,35 @@ def _flatten_rate_results(
     }
 
 
-def sanitize_merchant_aggregate_results(results: Any) -> Any:
-    """Remove analysis-only columns from sole-4/35 aggregate results."""
+_MERCHANT_AGGREGATE_IDENTIFIER_COLUMNS = frozenset(
+    {"Dimension", "Category", "Time", "Time_Period", "Time Period"}
+)
+_MERCHANT_AGGREGATE_VALUE_SUFFIX = "Balanced Peer Average (%)"
+
+
+def sanitize_merchant_aggregate_results(
+    results: Any,
+    time_col: str | None = None,
+) -> Any:
+    """Keep only allow-listed columns in sole-4/35 aggregate results.
+
+    A merchant aggregate publication may carry category identifiers, the time
+    column, and balanced peer averages. Everything else (target shares, BIC,
+    original/unweighted values, impact and distance columns, and any future
+    analysis column) is excluded by construction.
+    """
     if isinstance(results, pd.DataFrame):
         allowed_columns = [
             column
             for column in results.columns
-            if not any(
-                token in str(column).casefold()
-                for token in ("target", "bic", "original")
-            )
+            if str(column) in _MERCHANT_AGGREGATE_IDENTIFIER_COLUMNS
+            or (time_col is not None and str(column) == time_col)
+            or str(column).endswith(_MERCHANT_AGGREGATE_VALUE_SUFFIX)
         ]
         return results.loc[:, allowed_columns].copy()
     if isinstance(results, dict):
         return {
-            key: sanitize_merchant_aggregate_results(value)
+            key: sanitize_merchant_aggregate_results(value, time_col)
             for key, value in results.items()
         }
     return results
@@ -193,8 +207,15 @@ def write_outputs(
                 (artifacts.metadata or {}).get("merchant_aggregate_only")
             )
             if merchant_aggregate_only:
+                # The run may auto-resolve the time column from config when the
+                # request leaves it unset; mirror that so the allow-list keeps
+                # the resolved time column.
+                resolved_time_col = request.time_col
+                if resolved_time_col is None and config is not None:
+                    resolved_time_col = config.get('input', 'time_col')
                 publication_results = sanitize_merchant_aggregate_results(
-                    publication_results
+                    publication_results,
+                    resolved_time_col,
                 )
                 publication_metadata = {
                     "analysis_type": (

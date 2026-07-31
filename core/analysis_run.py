@@ -1900,6 +1900,7 @@ def _limit_public_artifacts_to_privacy_safe_payload(
     artifacts: AnalysisArtifacts,
     *,
     retain_aggregate_results: bool,
+    time_col: Optional[str] = None,
 ) -> None:
     """Remove analysis-bearing state from a denied or aggregate-only return."""
     metadata = artifacts.metadata or {}
@@ -1939,7 +1940,8 @@ def _limit_public_artifacts_to_privacy_safe_payload(
         artifacts.results = {}
     else:
         artifacts.results = sanitize_merchant_aggregate_results(
-            artifacts.results
+            artifacts.results,
+            time_col,
         )
     artifacts.weights_df = None
     artifacts.method_breakdown_df = None
@@ -2833,6 +2835,7 @@ def _execute_run_impl(
         _limit_public_artifacts_to_privacy_safe_payload(
             artifacts,
             retain_aggregate_results=True,
+            time_col=time_col,
         )
     return artifacts
 

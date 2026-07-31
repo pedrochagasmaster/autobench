@@ -309,11 +309,21 @@ def test_sole_4_35_publication_is_anonymized_aggregate_only(
     assert artifacts.report_model is None
     for frame in artifacts.results.values():
         if isinstance(frame, pd.DataFrame):
-            assert not any(
-                token in str(column).casefold()
-                for column in frame.columns
-                for token in ("target", "bic", "original")
-            )
+            # Allow-list semantics: only category identifiers, the time
+            # column, and balanced peer averages survive. Debug-mode columns
+            # such as "Impact (pp)" and target-derived "Distance to Peer (pp)"
+            # must be stripped along with target/BIC/original columns.
+            for column in frame.columns:
+                name = str(column)
+                assert name in (
+                    "Dimension",
+                    "Category",
+                    "Time",
+                    "Time_Period",
+                    "Time Period",
+                ) or name.endswith("Balanced Peer Average (%)"), (
+                    f"unexpected column in merchant aggregate results: {name}"
+                )
 
 
 def test_default_strategy_preserves_legacy_yaml_merchant_mode(
