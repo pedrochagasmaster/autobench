@@ -118,12 +118,15 @@ SESSION_SELECT_IDS = (
     "rate_approved",
     "rate_fraud",
 )
+# Compliance attestations and consent acknowledgements are deliberately
+# excluded: they are per-run declarations and must not be restored from a
+# previous session (acknowledge_accuracy_first, privacy_merchant_spend_scope,
+# citi_competitor_receives_output).
 SESSION_CHECKBOX_IDS = (
     "analyze_distortion",
     "compare_presets",
     "validate_input",
     "include_calculated",
-    "acknowledge_accuracy_first",
     "share_auto_dim",
     "share_debug",
     "share_export_csv",
@@ -132,8 +135,6 @@ SESSION_CHECKBOX_IDS = (
     "rate_export_csv",
     "fraud_in_bps",
     "privacy_rule_sweep_mode",
-    "privacy_merchant_spend_scope",
-    "citi_competitor_receives_output",
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
 
