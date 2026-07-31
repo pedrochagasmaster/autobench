@@ -957,10 +957,16 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   disk-output decision from the final emitted-output strategy result. It
   requires an affirmative numeric-policy decision, at least one
   `authorizing_rule`, and passing mandatory overlays.
-- A hard denial is independent of compliance posture. It prevents analysis and
-  publication workbooks, balanced CSV, JSON, audit packages, preset/impact
-  sheets, and other benchmark-bearing exports in `strict`, `best_effort`, and
-  `accuracy_first`.
+- A hard denial is independent of compliance posture for `strict` and
+  `best_effort`. It prevents analysis and publication workbooks, balanced
+  CSV, JSON, audit packages, preset/impact sheets, and other
+  benchmark-bearing exports.
+- The sole exception is an acknowledged `accuracy_first` run with a
+  numeric-only denial: the analysis workbook is written for internal
+  diagnosis under the `autobench_NON_PUBLISHABLE_` filename prefix with
+  `non_publishable_diagnostic` metadata. Invalid evidence, mandatory-overlay
+  failures, and merchant-scope blocks are never exempted; all other sinks
+  stay withheld. TUI consent is a per-run modal and is never persisted.
 - `AnalysisArtifacts` clears every withheld output path and exposes the
   immutable `privacy_output_decision`. The machine-readable reason
   distinguishes numeric-policy, invalid-evidence, and mandatory-overlay

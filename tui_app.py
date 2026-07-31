@@ -878,7 +878,6 @@ class BenchmarkApp(App):
                         yield Checkbox("Validate input", id="validate_input", value=True)
                     with Horizontal(classes="input-group"):
                         yield Checkbox("Include calc. metrics (CSV)", id="include_calculated")
-                        yield Checkbox("Acknowledge accuracy-first", id="acknowledge_accuracy_first")
                     with Horizontal(classes="input-group"):
                         with Vertical(classes="field-pair"):
                             yield Label("Output format", classes="field-label")
@@ -1356,6 +1355,33 @@ class BenchmarkApp(App):
                 except NoMatches:
                     pass
             self.call_from_thread(_focus)
+
+    def _confirm_accuracy_first_consent(self) -> bool:
+        """Ask for explicit per-run consent to the accuracy_first posture.
+
+        Runs on the analysis worker thread; blocks until the operator answers
+        the modal on the app thread. Consent is never persisted or restored.
+        """
+        decision: Dict[str, bool] = {}
+        answered = threading.Event()
+
+        def _on_dismiss(result: Optional[bool]) -> None:
+            decision["value"] = bool(result)
+            answered.set()
+
+        self.call_from_thread(
+            self.push_screen,
+            ConfirmScreen(
+                "This preset uses the accuracy_first compliance posture: it "
+                "prioritizes analytical fidelity over strict compliance and "
+                "may produce a NON-PUBLISHABLE diagnostic report.\n\n"
+                "Proceed with this run?",
+                confirm_label="I understand — proceed",
+            ),
+            _on_dismiss,
+        )
+        answered.wait()
+        return decision.get("value", False)
 
     def _execute_run_for_tui(self, request: AnalysisRunRequest, logger: logging.Logger, log_widget: Log):
         """Run analysis while keeping library print output inside the TUI log.
@@ -1996,13 +2022,12 @@ class BenchmarkApp(App):
                     if posture == 'best_effort':
                         self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
                     if posture == 'accuracy_first':
-                        values["acknowledge_accuracy_first"] = getattr(self.query_one("#acknowledge_accuracy_first"), 'value', False)
-                        if not values["acknowledge_accuracy_first"]:
+                        if not self._confirm_accuracy_first_consent():
                             self._fail_launch(
-                                "accuracy_first posture requires acknowledgement. Check the box before running.",
-                                focus_id="acknowledge_accuracy_first",
+                                "accuracy_first run cancelled: operator consent was not given.",
                             )
                             return
+                        values["acknowledge_accuracy_first"] = True
 
                 if mode == "share":
                     metric_val = self.query_one("#share_metric").value
@@ -2163,11 +2188,23 @@ class BenchmarkApp(App):
                     logger,
                     privacy_authorized=False,
                 )
-                self.call_from_thread(
-                    log_widget.write,
-                    "Control 3 privacy denial: all benchmark-bearing outputs "
-                    f"withheld ({privacy_decision.withholding_reason}).\n",
-                )
+                if (
+                    (artifacts.metadata or {}).get("non_publishable_diagnostic")
+                    and artifacts.analysis_output_file
+                ):
+                    self.call_from_thread(
+                        log_widget.write,
+                        "Control 3 privacy denial: publication withheld "
+                        f"({privacy_decision.withholding_reason}). A consented "
+                        "accuracy_first diagnostic report was written; it is "
+                        "NON-PUBLISHABLE.\n",
+                    )
+                else:
+                    self.call_from_thread(
+                        log_widget.write,
+                        "Control 3 privacy denial: all benchmark-bearing outputs "
+                        f"withheld ({privacy_decision.withholding_reason}).\n",
+                    )
                 if quarantine_path:
                     self.call_from_thread(
                         log_widget.write,
@@ -2213,6 +2250,15 @@ class BenchmarkApp(App):
                     "[red]Publication withheld[/red] "
                     f"[dim]({privacy_decision.withholding_reason})[/dim]"
                 )
+                if (
+                    (artifacts.metadata or {}).get("non_publishable_diagnostic")
+                    and artifacts.analysis_output_file
+                ):
+                    summary_lines.append(
+                        "[yellow]Non-publishable diagnostic report "
+                        "(do not share)[/yellow] "
+                        f"{artifacts.analysis_output_file}"
+                    )
                 if artifacts.audit_log_output:
                     summary_lines.append(
                         "[dim]Non-publishable audit[/dim] "

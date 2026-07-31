@@ -53,6 +53,7 @@ from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import (
     sanitize_merchant_aggregate_results,
+    write_accuracy_first_diagnostic_report,
     write_outputs,
 )
 from core.privacy_validator import PrivacyValidator
@@ -61,6 +62,7 @@ from core.privacy_rules import evaluate_rule
 from core.privacy_output_policy import (
     CONTROL3_INVALID_EVIDENCE,
     CONTROL3_MERCHANT_ARTIFACT_SCOPE_BLOCKED,
+    CONTROL3_NUMERIC_POLICY_BLOCKED,
     _attest_privacy_output,
     decide_privacy_output,
     is_privacy_publication_authorized,
@@ -2797,7 +2799,32 @@ def _execute_run_impl(
             config_snapshot=config.config,
             metadata=metadata,
         )
-    if not privacy_sink_authorized:
+    # Consented accuracy_first exception: with the operator's explicit
+    # acknowledgement and a numeric-only denial, the analysis workbook is
+    # still written for internal diagnosis, under a non-publishable filename
+    # prefix and metadata marking. Invalid evidence, mandatory-overlay
+    # failures, and merchant-scope blocks are never exempted, and every
+    # other sink (publication, CSV, JSON, audit package) stays withheld.
+    accuracy_first_diagnostic = bool(
+        not privacy_sink_authorized
+        and compliance_context['compliance_posture'] == 'accuracy_first'
+        and compliance_context['acknowledgement_given']
+        and privacy_output_decision.withholding_reason
+        == CONTROL3_NUMERIC_POLICY_BLOCKED
+        and output_settings.output_format in ("analysis", "both")
+    )
+    if accuracy_first_diagnostic:
+        metadata['non_publishable_diagnostic'] = True
+        if artifacts.metadata is not None:
+            artifacts.metadata['non_publishable_diagnostic'] = True
+        artifacts.analysis_output_file = write_accuracy_first_diagnostic_report(
+            request,
+            artifacts,
+            analysis_output_file,
+            config=config,
+            logger=logger,
+        )
+    if not privacy_sink_authorized and not accuracy_first_diagnostic:
         _limit_public_artifacts_to_privacy_safe_payload(
             artifacts,
             retain_aggregate_results=False,

@@ -15,7 +15,7 @@ import pytest
 
 import benchmark
 import core.analysis_run as analysis_run
-from core.analysis_run import execute_share_run
+from core.analysis_run import RunBlocked, execute_share_run
 from core.contracts import (
     AnalysisRunRequest,
     PrivacyFailureReason,
@@ -56,7 +56,7 @@ def _assert_no_sensitive_output(tmp_path: Path, artifacts: Any) -> None:
     assert not list(tmp_path.glob("*.zip"))
 
 
-@pytest.mark.parametrize("posture", ["strict", "best_effort", "accuracy_first"])
+@pytest.mark.parametrize("posture", ["strict", "best_effort"])
 @pytest.mark.parametrize("output_format", ["analysis", "publication", "both"])
 def test_sweep_numeric_denial_withholds_every_sensitive_output_for_all_postures(
     tmp_path: Path,
@@ -117,6 +117,94 @@ def test_sweep_numeric_denial_withholds_every_sensitive_output_for_all_postures(
     assert artifacts.privacy_validation_df is None
     assert artifacts.analyzer is None
     assert artifacts.report_model is None
+
+
+def test_acknowledged_accuracy_first_numeric_denial_writes_marked_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The consented accuracy_first exception writes only a marked workbook."""
+    export_called = False
+
+    def capture_export(**_kwargs: Any) -> None:
+        nonlocal export_called
+        export_called = True
+
+    monkeypatch.setattr(
+        DimensionalAnalyzer,
+        "fit_privacy_weights",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("forced optimizer failure")
+        ),
+    )
+    monkeypatch.setattr(
+        analysis_run.SHARE_MODE_SPEC,
+        "export_balanced_csv_fn",
+        capture_export,
+    )
+    output = tmp_path / "accuracy_first_diag.xlsx"
+    request = AnalysisRunRequest(
+        df=_single_category_df([25, 25, 20, 15, 15]),
+        csv="",
+        metric="amount",
+        dimensions=["segment"],
+        output=str(output),
+        output_format="both",
+        audit_package=True,
+        export_balanced_csv=True,
+        compliance_posture="accuracy_first",
+        acknowledge_accuracy_first=True,
+        validate_input=False,
+        privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    )
+
+    artifacts = execute_share_run(request, logging.getLogger("test"))
+
+    # The requested output path is never created; the diagnostic workbook
+    # carries the non-publishable prefix and metadata marking.
+    assert not output.exists()
+    assert artifacts.analysis_output_file is not None
+    diagnostic_path = Path(artifacts.analysis_output_file)
+    assert diagnostic_path.exists()
+    assert diagnostic_path.name == (
+        "autobench_NON_PUBLISHABLE_accuracy_first_diag.xlsx"
+    )
+    assert artifacts.metadata["non_publishable_diagnostic"] is True
+    # Every other sink stays withheld.
+    assert artifacts.publication_output is None
+    assert artifacts.csv_output is None
+    assert artifacts.json_output is None
+    assert artifacts.audit_package_output is None
+    assert artifacts.report_paths == []
+    assert export_called is False
+    assert not list(tmp_path.glob("*_balanced.csv"))
+    assert not list(tmp_path.glob("*.zip"))
+    assert artifacts.privacy_sink_authorized is not True
+    assert artifacts.privacy_output_decision is not None
+    assert artifacts.privacy_output_decision.withholding_reason == (
+        "control3_numeric_policy_blocked"
+    )
+    assert artifacts.audit_log_output is not None
+
+
+def test_unacknowledged_accuracy_first_never_writes_diagnostic(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RunBlocked):
+        execute_share_run(
+            AnalysisRunRequest(
+                df=_single_category_df([25, 25, 20, 15, 15]),
+                csv="",
+                metric="amount",
+                dimensions=["segment"],
+                output=str(tmp_path / "no_ack.xlsx"),
+                compliance_posture="accuracy_first",
+                acknowledge_accuracy_first=False,
+                validate_input=False,
+            ),
+            logging.getLogger("test"),
+        )
+    assert not list(tmp_path.glob("*.xlsx"))
 
 
 def test_non_publishable_audit_is_allow_listed_and_contains_no_peer_evidence(
@@ -272,6 +360,52 @@ def test_cli_privacy_denial_returns_nonzero_and_reports_withholding(
     assert "CONTROL 3 PRIVACY BLOCK" in stdout
     assert "ANALYSIS COMPLETE" not in stdout
     assert "Report:" not in stdout
+
+
+def test_cli_acknowledged_accuracy_first_diagnostic_completes_with_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        DimensionalAnalyzer,
+        "fit_privacy_weights",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("forced optimizer failure")
+        ),
+    )
+    csv_path = tmp_path / "input.csv"
+    _single_category_df([25, 25, 20, 15, 15]).to_csv(csv_path, index=False)
+    output = tmp_path / "cli_accuracy_first.xlsx"
+    args = benchmark.create_parser().parse_args(
+        [
+            "share",
+            "--csv",
+            str(csv_path),
+            "--metric",
+            "amount",
+            "--dimensions",
+            "segment",
+            "--compliance-posture",
+            "accuracy_first",
+            "--acknowledge-accuracy-first",
+            "--output",
+            str(output),
+            "--privacy-rule-sweep",
+        ]
+    )
+
+    exit_code = benchmark.run_share_analysis(args, logging.getLogger("test"))
+
+    assert exit_code == benchmark.EXIT_OK
+    assert not output.exists()
+    diagnostic = tmp_path / "autobench_NON_PUBLISHABLE_cli_accuracy_first.xlsx"
+    assert diagnostic.exists()
+    stdout = capsys.readouterr().out
+    assert "NON-PUBLISHABLE DIAGNOSTIC" in stdout
+    assert "must not be published" in stdout
+    assert str(diagnostic) in stdout
+    assert "ANALYSIS BLOCKED" not in stdout
 
 
 def test_cli_authorized_run_flushes_deferred_log(tmp_path: Path) -> None:

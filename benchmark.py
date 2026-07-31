@@ -115,7 +115,11 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         '--acknowledge-accuracy-first',
         action='store_true',
         default=None,
-        help='Required acknowledgement for accuracy_first runs',
+        help=(
+            'Required acknowledgement for accuracy_first runs; a numerically '
+            'non-compliant run then writes only a NON_PUBLISHABLE-prefixed '
+            'diagnostic workbook'
+        ),
     )
     parser.add_argument('--debug', action='store_true', default=None, help='Enable debug mode (includes unweighted averages and weight details)')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='Logging level (default: INFO)')
@@ -664,6 +668,40 @@ def _format_analysis_failure_message(exc: Exception) -> str:
     return primary
 
 
+def _print_accuracy_first_diagnostic_outcome(
+    artifacts: AnalysisArtifacts,
+    logger: logging.Logger,
+    analysis_label: str,
+) -> Optional[int]:
+    """Report a consented accuracy_first diagnostic run; None when not one."""
+    metadata = artifacts.metadata or {}
+    if not metadata.get('non_publishable_diagnostic'):
+        return None
+    if not artifacts.analysis_output_file:
+        return None
+    print(f"\n{'='*80}")
+    print(f"{analysis_label} COMPLETE - NON-PUBLISHABLE DIAGNOSTIC")
+    print(f"{'='*80}")
+    print(
+        "WARNING: accuracy_first posture; the emitted output failed Control 3 "
+        "numeric rules."
+    )
+    print(
+        "This report is for internal diagnosis only and must not be "
+        "published or shared."
+    )
+    print(f"Non-publishable diagnostic report: {artifacts.analysis_output_file}")
+    if artifacts.audit_log_output:
+        print(f"Non-publishable privacy audit: {artifacts.audit_log_output}")
+    _finalize_denied_run_logging(logger)
+    verdict, posture = _resolve_compliance_fields(artifacts)
+    print(f"Compliance Posture: {posture}")
+    print(f"Compliance Verdict: {verdict}")
+    print(f"Acknowledgement State: {metadata.get('acknowledgement_state')}")
+    print(f"{'='*80}\n")
+    return EXIT_OK
+
+
 def _finalize_denied_run_logging(logger: logging.Logger) -> None:
     """Quarantine buffered diagnostics for a denied run and tell the operator."""
     quarantine_path = finalize_deferred_logging(logger, privacy_authorized=False)
@@ -679,6 +717,13 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         artifacts = execute_share_run(request, logger)
         hard_privacy_block = artifacts.privacy_sink_authorized is not True
         if hard_privacy_block:
+            diagnostic_exit = _print_accuracy_first_diagnostic_outcome(
+                artifacts,
+                logger,
+                "SHARE ANALYSIS",
+            )
+            if diagnostic_exit is not None:
+                return diagnostic_exit
             print(f"\n{'='*80}")
             print("SHARE ANALYSIS BLOCKED")
             print(f"{'='*80}")
@@ -746,6 +791,13 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         artifacts = execute_rate_run(request, logger)
         hard_privacy_block = artifacts.privacy_sink_authorized is not True
         if hard_privacy_block:
+            diagnostic_exit = _print_accuracy_first_diagnostic_outcome(
+                artifacts,
+                logger,
+                "RATE ANALYSIS",
+            )
+            if diagnostic_exit is not None:
+                return diagnostic_exit
             print(f"\n{'='*80}")
             print("RATE ANALYSIS BLOCKED")
             print(f"{'='*80}")

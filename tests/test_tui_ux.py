@@ -4,6 +4,7 @@ select sentinel handling, and launch preflight checks."""
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -143,9 +144,47 @@ def test_restore_session_never_restores_compliance_attestations(
             for widget_id in (
                 "citi_competitor_receives_output",
                 "privacy_merchant_spend_scope",
-                "acknowledge_accuracy_first",
             ):
                 assert app.query_one(f"#{widget_id}", Checkbox).value is False
+            # The acknowledgement checkbox no longer exists; consent is a
+            # per-run modal and cannot be restored from a session file.
+            assert not app.query("#acknowledge_accuracy_first")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("button_id", "expected"),
+    [("btn_confirm_yes", True), ("btn_confirm_no", False)],
+)
+def test_accuracy_first_consent_modal_round_trip(
+    tmp_path: Path,
+    monkeypatch,
+    button_id: str,
+    expected: bool,
+) -> None:
+    """The per-run consent modal returns the operator's actual answer."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            outcome: dict[str, bool] = {}
+            worker = threading.Thread(
+                target=lambda: outcome.setdefault(
+                    "value", app._confirm_accuracy_first_consent()
+                )
+            )
+            worker.start()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if app.query(f"#{button_id}"):
+                    break
+            await pilot.click(f"#{button_id}")
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+            assert outcome["value"] is expected
 
     asyncio.run(scenario())
 

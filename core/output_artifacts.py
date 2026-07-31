@@ -22,6 +22,9 @@ from core.report_generator import ReportGenerator
 from core.report_models import ReportModel
 
 
+NON_PUBLISHABLE_REPORT_PREFIX = "autobench_NON_PUBLISHABLE_"
+
+
 def _flatten_rate_results(
     results: Mapping[str, Mapping[str, Any]],
 ) -> Dict[str, Any]:
@@ -50,6 +53,60 @@ def sanitize_merchant_aggregate_results(results: Any) -> Any:
             for key, value in results.items()
         }
     return results
+
+
+def write_accuracy_first_diagnostic_report(
+    request: AnalysisRunRequest,
+    artifacts: AnalysisArtifacts,
+    analysis_output_file: str,
+    *,
+    config: Any = None,
+    logger: logging.Logger | None = None,
+) -> str:
+    """Write the consented accuracy_first analysis workbook, clearly marked.
+
+    This is the only sanctioned exception to the Control 3 hard output block:
+    the operator explicitly acknowledged the accuracy_first posture, the
+    denial is numeric-only, and the workbook is written under a
+    non-publishable filename prefix with matching metadata. Publication
+    workbooks, balanced CSVs, JSON reports, and audit packages stay withheld.
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    requested = Path(analysis_output_file)
+    diagnostic_path = requested.with_name(
+        f"{NON_PUBLISHABLE_REPORT_PREFIX}{requested.name}"
+    )
+    diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+    report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
+    entity_name = request.entity or "PEER_ONLY"
+    if request.is_rate and isinstance(artifacts.results, dict) and all(
+        isinstance(v, dict) for v in artifacts.results.values()
+    ):
+        generate_multi_rate_report_model_excel(
+            report_model,
+            str(diagnostic_path),
+            entity_name=entity_name,
+            logger=logger,
+            metadata=artifacts.metadata or {},
+            numerator_cols=request.numerator_cols,
+            config=config,
+        )
+    else:
+        generate_report_model_excel(
+            report_model,
+            str(diagnostic_path),
+            entity_name=entity_name,
+            analysis_type="share" if request.is_share else "rate",
+            logger=logger,
+            metadata=artifacts.metadata,
+            config=config,
+        )
+    logger.warning(
+        "Non-publishable accuracy_first diagnostic report written to %s",
+        diagnostic_path,
+    )
+    return str(diagnostic_path)
 
 
 def write_outputs(

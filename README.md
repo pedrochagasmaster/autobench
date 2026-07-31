@@ -386,10 +386,21 @@ The final emitted-output result is also converted into one non-overridable
 `privacy_output_decision`. If no rule authorizes that output, required privacy
 evidence is invalid, or a mandatory overlay fails, Autobench writes no analysis
 workbook, publication workbook, balanced CSV, JSON report, audit package, or
-run log. This applies to `strict`, `best_effort`, and `accuracy_first`.
-Compliance posture still controls ordinary quality and optimization warnings
-when `privacy_publication_authorized` is true; `best_effort` cannot override a
-Control 3 denial.
+run log. This applies to `strict` and `best_effort`; `best_effort` cannot
+override a Control 3 denial. Compliance posture still controls ordinary
+quality and optimization warnings when `privacy_publication_authorized` is
+true.
+
+The one sanctioned exception is a consented `accuracy_first` run: when the
+operator explicitly acknowledged the posture (CLI
+`--acknowledge-accuracy-first`, API `acknowledge_accuracy_first=True`, or the
+TUI per-run consent dialog) and the denial is numeric-only, the analysis
+workbook is still written for internal diagnosis under a
+`autobench_NON_PUBLISHABLE_` filename prefix with matching metadata
+(`non_publishable_diagnostic`). Invalid evidence, mandatory-overlay failures,
+and merchant-scope blocks are never exempted, and the publication workbook,
+balanced CSV, JSON report, and audit package stay withheld. The diagnostic
+report must never be published or shared.
 
 When audit logging is enabled, a denied run may write only
 `autobench_NON_PUBLISHABLE_control3_<opaque-run-id>.json`. It contains an
