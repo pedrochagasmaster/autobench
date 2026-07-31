@@ -7,7 +7,7 @@ import logging
 import math
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
@@ -577,15 +577,22 @@ def _fit_privacy_strategy(
         rule_set_digest=PrivacyPolicy.rule_set_digest(),
     )
     if not publication_authorized:
+        # The sweep verdict overrides the optimizer's own verdict: a denied
+        # run is reported as non-compliant regardless of how the chosen
+        # weighting fared. Build a fresh denied state instead of mutating the
+        # optimizer-produced one in place, so any earlier holder of that
+        # object keeps the original weighting facts.
         compliance_state = getattr(chosen_analyzer, "weighting_compliance_state", None)
         if compliance_state is not None:
-            compliance_state.secondary_rule_passed = False
-            compliance_state.residual_violations = max(
-                1, int(compliance_state.residual_violations)
+            denied_state = replace(
+                compliance_state,
+                secondary_rule_passed=False,
+                residual_violations=max(1, int(compliance_state.residual_violations)),
+                verdict="non_compliant",
             )
-            compliance_state.verdict = "non_compliant"
+            chosen_analyzer.weighting_compliance_state = denied_state
             if chosen_result is not None:
-                chosen_result.compliance_state = compliance_state
+                chosen_result.compliance_state = denied_state
     chosen_analyzer.privacy_rule_strategy_result = strategy_result
     return chosen_analyzer, chosen_settings, chosen_result, strategy_result
 
