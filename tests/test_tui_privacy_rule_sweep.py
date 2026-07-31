@@ -50,17 +50,23 @@ def test_tui_privacy_sweep_mode_is_off_by_default() -> None:
     asyncio.run(scenario())
 
 
-def test_tui_citi_controls_are_hidden_in_advanced_parameters_by_default() -> None:
+def test_tui_citi_controls_live_in_compliance_declarations_group() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
-            advanced = pilot.app.query_one("#advanced_opt", Collapsible)
+            compliance = pilot.app.query_one(
+                "#compliance_declarations", Collapsible
+            )
 
-            assert advanced.collapsed
-            assert advanced.query_one(
+            assert compliance.collapsed
+            assert compliance.query_one(
                 "#citi_competitor_receives_output",
                 Checkbox,
             )
-            assert advanced.query_one("#citibank_entity_name", Input)
+            assert compliance.query_one("#citibank_entity_name", Input)
+
+            advanced = pilot.app.query_one("#advanced_opt", Collapsible)
+            assert not advanced.query("#citi_competitor_receives_output")
+            assert not advanced.query("#citibank_entity_name")
 
     asyncio.run(scenario())
 

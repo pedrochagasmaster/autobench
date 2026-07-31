@@ -637,6 +637,22 @@ class BenchmarkApp(App):
         padding: 0 1;
     }
 
+    /* ── Compliance Declarations Section ──────────────────────── */
+    #compliance_declarations {
+        border: round $warning 60%;
+        padding: 0 1;
+        margin-top: 0;
+        margin-bottom: 1;
+    }
+
+    #compliance_form {
+        height: auto;
+    }
+
+    #compliance_form Input, #compliance_form Checkbox {
+        margin-bottom: 1;
+    }
+
     /* ── Advanced Optimization Section ────────────────────────── */
     #advanced_opt {
         border: round $accent 60%;
@@ -887,10 +903,10 @@ class BenchmarkApp(App):
                     )
 
                 # ───────────────────────────────────────────────────────
-                # ADVANCED OPTIMIZATION (collapsed by default)
+                # COMPLIANCE DECLARATIONS (collapsed by default)
                 # ───────────────────────────────────────────────────────
-                with Collapsible(title="Advanced Optimization Parameters", id="advanced_opt", collapsed=True):
-                    with Vertical(id="advanced_form"):
+                with Collapsible(title="Compliance Declarations", id="compliance_declarations", collapsed=True):
+                    with Vertical(id="compliance_form"):
                         yield Label("Citi Privacy Overlay", classes="adv-group-title")
                         yield Checkbox(
                             "A Citi competitor receives the output",
@@ -901,6 +917,11 @@ class BenchmarkApp(App):
                             id="citibank_entity_name",
                         )
 
+                # ───────────────────────────────────────────────────────
+                # ADVANCED OPTIMIZATION (collapsed by default)
+                # ───────────────────────────────────────────────────────
+                with Collapsible(title="Advanced Optimization Parameters", id="advanced_opt", collapsed=True):
+                    with Vertical(id="advanced_form"):
                         yield Label("Linear Programming", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
