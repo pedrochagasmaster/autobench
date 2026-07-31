@@ -399,7 +399,10 @@ feasible rule names, emitted-output rule statuses, authorizing rule names, and
 overlay statuses/failure codes. It contains no peer identities, category
 results, rows, weights, shares, rates, or benchmark values. Tool-owned CLI/TUI
 logs are buffered in memory and flushed to their existing locations only after
-privacy authorization; the buffer is discarded on denial or error.
+privacy authorization. On denial or error the buffer is written to a
+quarantine file named `autobench_NON_PUBLISHABLE_run_log_<uuid>.log` beside
+the intended log path; it carries a do-not-share header, may reference
+governed data, and must never be published or attached to deliverables.
 
 CLI example:
 
@@ -442,8 +445,9 @@ artifacts = execute_share_run(request, logging.getLogger("autobench"))
 Autobench does not create a file handler for Python API calls. During a run it
 temporarily captures current-thread records before every logging handler that
 already exists in the process. Authorized runs replay those records to the
-configured handlers; denied or failed runs discard them and always restore
-normal dispatch. Records emitted by other threads are not suppressed.
+configured handlers; denied or failed runs route them only into tool-owned
+deferred handlers for quarantine (never caller-owned handlers or the console)
+and always restore normal dispatch. Records emitted by other threads are not suppressed.
 Handlers added after the run gate starts are covered because capture occurs at
 the standard `Logger.callHandlers` dispatch boundary. A nested privacy-governed
 run on the same thread is rejected before analysis. Records deliberately sent

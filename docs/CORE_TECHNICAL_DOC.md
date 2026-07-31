@@ -975,16 +975,19 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   Analysis/debug sheets, JSON, balanced CSV, audit packages, and persistent
   run logs are outside the anonymized aggregate contract and are withheld.
 - CLI and TUI file logs use a deferred in-memory handler. Authorized runs flush
-  to the prior timestamped log location and denied, cancelled, or failed runs
-  discard and detach the buffer. Offline product telemetry has a closed event
+  to the prior timestamped log location. Denied, cancelled, or failed runs
+  quarantine the buffer to `autobench_NON_PUBLISHABLE_run_log_<uuid>.log`
+  beside the intended path, with a do-not-share header; the intended log path
+  is never created. Offline product telemetry has a closed event
   schema containing only launch/surface/action/outcome enums, duration,
   username/session/version, and timestamps; it rejects file paths, entity or
   peer names, categories, shares, weights, rates, and benchmark values.
 - The Python API creates no file sink. At run entry, `PrivacyRunLogGate`
   captures current-thread records at standard `Logger.callHandlers` dispatch,
   including handlers installed after gate start. Authorization replays the
-  buffer; denial or failure discards it, and every exit restores global
-  dispatch. Other threads continue logging normally. A nested governed run on
+  buffer; denial or failure routes it only into tool-owned deferred handlers
+  for quarantine (caller-owned handlers receive nothing), and every exit
+  restores global dispatch. Other threads continue logging normally. A nested governed run on
   the same thread is rejected before analysis. Direct calls to a handler that
   bypass `Logger`, and governed worker-thread logging, require independently
   trusted privacy-gated sinks.

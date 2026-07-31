@@ -10,6 +10,16 @@ import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, List, Optional
+from uuid import uuid4
+
+
+NON_PUBLISHABLE_LOG_PREFIX = "autobench_NON_PUBLISHABLE_run_log_"
+_QUARANTINE_HEADER = (
+    "# NON-PUBLISHABLE AUTOBENCH RUN LOG\n"
+    "# This diagnostic log belongs to a run whose output was not authorized\n"
+    "# for publication. It may reference governed benchmark data.\n"
+    "# Do not share, attach, or distribute this file.\n"
+)
 
 
 _privacy_gate_state = threading.local()
@@ -66,10 +76,49 @@ class DeferredFileHandler(logging.Handler):
             self._finalized = True
         return self.log_file
 
-    def discard(self) -> None:
-        """Drop buffered records without creating the configured file."""
-        self._records.clear()
+    def quarantine(self) -> Optional[str]:
+        """Persist buffered records to a non-publishable file, exactly once.
+
+        The intended log path is never created; diagnostics are preserved in
+        a clearly marked quarantine file beside it instead of being dropped.
+        """
+        if self._finalized:
+            return None
         self._finalized = True
+        records = list(self._records)
+        self._records.clear()
+        if not records:
+            return None
+        quarantine_path = Path(self.log_file).parent / (
+            f"{NON_PUBLISHABLE_LOG_PREFIX}{uuid4().hex}.log"
+        )
+        quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+        quarantine_path.write_text(_QUARANTINE_HEADER, encoding="utf-8")
+        target = logging.FileHandler(
+            str(quarantine_path), mode="a", encoding="utf-8"
+        )
+        target.setLevel(self.level)
+        target.setFormatter(self.formatter)
+        try:
+            for record in records:
+                target.handle(record)
+        finally:
+            target.close()
+        return str(quarantine_path)
+
+
+def _deferred_handlers_for(logger: logging.Logger) -> List[DeferredFileHandler]:
+    """Collect tool-owned deferred handlers reachable from a logger."""
+    handlers: List[DeferredFileHandler] = []
+    current: Optional[logging.Logger] = logger
+    while current is not None:
+        for handler in current.handlers:
+            if isinstance(handler, DeferredFileHandler):
+                handlers.append(handler)
+        if not current.propagate:
+            break
+        current = current.parent
+    return handlers
 
 
 class PrivacyRunLogGate:
@@ -128,16 +177,27 @@ class PrivacyRunLogGate:
                     _privacy_downstream_call_handlers = None
                 else:
                     downstream = _privacy_downstream_call_handlers
-            if privacy_authorized:
-                records = list(self._records)
+            records = list(self._records)
             self._records.clear()
-            for logger, record in records:
-                try:
-                    if downstream is not None:
-                        downstream(logger, record)
-                except Exception:
-                    # Logging must never alter analysis behavior.
-                    pass
+            if privacy_authorized:
+                for logger, record in records:
+                    try:
+                        if downstream is not None:
+                            downstream(logger, record)
+                    except Exception:
+                        # Logging must never alter analysis behavior.
+                        pass
+            else:
+                # Unauthorized runs never reach console or caller-owned
+                # handlers; route diagnostics only into tool-owned deferred
+                # handlers so they can be quarantined rather than lost.
+                for logger, record in records:
+                    for handler in _deferred_handlers_for(logger):
+                        try:
+                            if record.levelno >= handler.level:
+                                handler.handle(record)
+                        except Exception:
+                            pass
         finally:
             if self._started:
                 _privacy_gate_state.active = False
@@ -150,8 +210,12 @@ def finalize_deferred_logging(
     *,
     privacy_authorized: bool,
 ) -> Optional[str]:
-    """Commit or discard tool-owned deferred file handlers."""
-    committed_path: Optional[str] = None
+    """Commit or quarantine tool-owned deferred file handlers.
+
+    Returns the intended log path when authorized, or the quarantine file
+    path when the run was denied and buffered diagnostics existed.
+    """
+    final_path: Optional[str] = None
     owners: List[logging.Logger] = []
     current: Optional[logging.Logger] = logger
     while current is not None:
@@ -163,11 +227,11 @@ def finalize_deferred_logging(
                 continue
             owner.removeHandler(handler)
             if privacy_authorized:
-                committed_path = handler.commit()
+                final_path = handler.commit()
             else:
-                handler.discard()
+                final_path = handler.quarantine() or final_path
             handler.close()
-    return committed_path
+    return final_path
 
 
 def setup_logging(

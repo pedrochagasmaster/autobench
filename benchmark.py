@@ -664,6 +664,13 @@ def _format_analysis_failure_message(exc: Exception) -> str:
     return primary
 
 
+def _finalize_denied_run_logging(logger: logging.Logger) -> None:
+    """Quarantine buffered diagnostics for a denied run and tell the operator."""
+    quarantine_path = finalize_deferred_logging(logger, privacy_authorized=False)
+    if quarantine_path:
+        print(f"Non-publishable run log (do not share): {quarantine_path}")
+
+
 def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     """Thin CLI adapter over the shared analysis-run executor."""
     logger.info("Starting share-based dimensional analysis")
@@ -676,7 +683,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             print("SHARE ANALYSIS BLOCKED")
             print(f"{'='*80}")
             _print_privacy_output_status(artifacts)
-            finalize_deferred_logging(logger, privacy_authorized=False)
+            _finalize_denied_run_logging(logger)
             verdict, posture = _resolve_compliance_fields(artifacts)
             print(f"Compliance Posture: {posture}")
             print(f"Compliance Verdict: {verdict}")
@@ -714,8 +721,8 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             hard_privacy_block=hard_privacy_block,
         )
     except RunBlocked as e:
-        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis blocked: {e}")
+        _finalize_denied_run_logging(logger)
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
         hint = remediation_hint(reason)
@@ -724,9 +731,9 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:
-        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
+        _finalize_denied_run_logging(logger)
         print(f"Analysis failed: {_format_analysis_failure_message(e)}")
         return EXIT_FAILURE
 
@@ -743,7 +750,7 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             print("RATE ANALYSIS BLOCKED")
             print(f"{'='*80}")
             _print_privacy_output_status(artifacts)
-            finalize_deferred_logging(logger, privacy_authorized=False)
+            _finalize_denied_run_logging(logger)
             verdict, posture = _resolve_compliance_fields(artifacts)
             print(f"Compliance Posture: {posture}")
             print(f"Compliance Verdict: {verdict}")
@@ -781,8 +788,8 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
             hard_privacy_block=hard_privacy_block,
         )
     except RunBlocked as e:
-        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis blocked: {e}")
+        _finalize_denied_run_logging(logger)
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
         reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
         hint = remediation_hint(reason)
@@ -791,9 +798,9 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:
-        finalize_deferred_logging(logger, privacy_authorized=False)
         logger.error(f"Analysis failed: {e}")
         logger.debug("Full traceback for analysis failure", exc_info=True)
+        _finalize_denied_run_logging(logger)
         print(f"Analysis failed: {_format_analysis_failure_message(e)}")
         return EXIT_FAILURE
 

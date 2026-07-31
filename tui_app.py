@@ -2159,7 +2159,7 @@ class BenchmarkApp(App):
             privacy_decision = artifacts.privacy_output_decision
             hard_privacy_block = artifacts.privacy_sink_authorized is not True
             if hard_privacy_block:
-                finalize_deferred_logging(
+                quarantine_path = finalize_deferred_logging(
                     logger,
                     privacy_authorized=False,
                 )
@@ -2168,6 +2168,12 @@ class BenchmarkApp(App):
                     "Control 3 privacy denial: all benchmark-bearing outputs "
                     f"withheld ({privacy_decision.withholding_reason}).\n",
                 )
+                if quarantine_path:
+                    self.call_from_thread(
+                        log_widget.write,
+                        "Non-publishable run log (do not share): "
+                        f"{quarantine_path}\n",
+                    )
             else:
                 log_file = finalize_deferred_logging(
                     logger,
@@ -2238,20 +2244,36 @@ class BenchmarkApp(App):
                     timeout=10,
                 )
         except RunBlocked as exc:
-            finalize_deferred_logging(logger, privacy_authorized=False)
+            self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
             self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
             self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
         except RunAborted as exc:
-            finalize_deferred_logging(logger, privacy_authorized=False)
+            self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
             self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
             self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
         except Exception as exc:
-            finalize_deferred_logging(logger, privacy_authorized=False)
+            self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
             self.call_from_thread(log_widget.write, traceback.format_exc())
             self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
+
+    def _quarantine_run_logging(
+        self,
+        logger: logging.Logger,
+        log_widget: Log,
+    ) -> None:
+        """Quarantine deferred diagnostics for a denied or failed run."""
+        quarantine_path = finalize_deferred_logging(
+            logger,
+            privacy_authorized=False,
+        )
+        if quarantine_path:
+            self.call_from_thread(
+                log_widget.write,
+                f"Non-publishable run log (do not share): {quarantine_path}\n",
+            )
 
 
 if __name__ == "__main__":

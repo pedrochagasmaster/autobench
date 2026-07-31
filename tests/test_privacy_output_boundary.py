@@ -316,7 +316,7 @@ def test_cli_authorized_run_flushes_deferred_log(tmp_path: Path) -> None:
     )
 
 
-def test_cli_denied_run_discards_deferred_log(
+def test_cli_denied_run_quarantines_deferred_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,7 +357,17 @@ def test_cli_denied_run_discards_deferred_log(
 
     assert exit_code == benchmark.EXIT_STRICT_NON_COMPLIANT
     assert not output.exists()
+    # The intended log path must never be created, but the buffered
+    # diagnostics are preserved in a clearly marked quarantine file.
     assert not log_path.exists()
+    quarantined = list(
+        tmp_path.glob("autobench_NON_PUBLISHABLE_run_log_*.log")
+    )
+    assert len(quarantined) == 1
+    quarantine_text = quarantined[0].read_text(encoding="utf-8")
+    assert "NON-PUBLISHABLE" in quarantine_text
+    assert "Do not share" in quarantine_text
+    assert "Starting share-based dimensional analysis" in quarantine_text
 
 
 def test_denial_does_not_overwrite_or_report_preexisting_output_paths(
