@@ -450,13 +450,10 @@ def generate_gate_cases(
                 "fraud_in_bps": True,
                 "output_format": "publication",
                 "privacy_basis": "clearing_spend",
-                "privacy_concentration_col": total_col,
             },
             [
                 "--fraud-col",
                 fraud_col,
-                "--privacy-concentration-col",
-                total_col,
                 "--privacy-basis",
                 "clearing_spend",
                 "--fraud-in-bps",

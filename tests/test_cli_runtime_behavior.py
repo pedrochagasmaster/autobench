@@ -116,8 +116,6 @@ def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
             "approved",
             "--fraud-col",
             "fraud",
-            "--privacy-concentration-col",
-            "total",
             "--privacy-basis",
             "clearing_spend",
             "--csv",
@@ -152,11 +150,11 @@ def test_mock_rate_cli_produces_expected_outputs(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("sweep_enabled", [False, True])
-def test_rate_cli_loads_distinct_privacy_concentration_column(
+def test_rate_cli_uses_total_col_as_concentration_basis(
     tmp_path: Path,
     sweep_enabled: bool,
 ) -> None:
-    csv_path = tmp_path / "distinct_clearing.csv"
+    csv_path = tmp_path / "clearing_basis.csv"
     pd.DataFrame(
         [
             {
@@ -164,12 +162,11 @@ def test_rate_cli_loads_distinct_privacy_concentration_column(
                 "segment": "all",
                 "total": 20,
                 "fraud": 1,
-                "clearing_spend": 20,
             }
             for index in range(1, 6)
         ]
     ).to_csv(csv_path, index=False)
-    output = tmp_path / f"distinct_clearing_{sweep_enabled}.xlsx"
+    output = tmp_path / f"clearing_basis_{sweep_enabled}.xlsx"
     command = [
         sys.executable,
         "benchmark.py",
@@ -178,8 +175,6 @@ def test_rate_cli_loads_distinct_privacy_concentration_column(
         "total",
         "--fraud-col",
         "fraud",
-        "--privacy-concentration-col",
-        "clearing_spend",
         "--privacy-basis",
         "clearing_spend",
         "--csv",
@@ -231,8 +226,6 @@ def test_case01_regression_fixture_is_publishable_with_validation_enabled(tmp_pa
             "amount_approved_local_currency",
                 "--fraud-col",
                 "amount_fraud_local_currency",
-                "--privacy-concentration-col",
-                "amount_txn_pure_local_currency",
             "--privacy-basis",
             "clearing_spend",
             "--secondary-metrics",

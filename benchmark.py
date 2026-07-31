@@ -94,10 +94,6 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         action='store_true',
         help='Declare that a Citi competitor receives the output (enforces Citi at or below 25%%)',
     )
-    parser.add_argument(
-        '--privacy-concentration-col',
-        help='Policy-correct concentration column; required for fraud/chargeback runs',
-    )
     parser.add_argument('--entity', help='Name of the entity to benchmark (omit for peer-only analysis)')
     parser.add_argument('--entity-col', default='issuer_name', help='Entity identifier column name (default: issuer_name)')
     parser.add_argument('--output', '-o', help='Output file path (default: auto-generated)')

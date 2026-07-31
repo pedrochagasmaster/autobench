@@ -642,7 +642,6 @@ def test_rate_run_end_to_end(tmp_path: Path) -> None:
         total_col="total",
         approved_col="approved",
         fraud_col="fraud",
-        privacy_concentration_col="total",
         dimensions=SHARE_DIMENSIONS,
         time_col="year_month",
         preset="balanced_default",
@@ -691,7 +690,8 @@ def test_python_rate_sweep_runs_through_shared_executor(tmp_path: Path) -> None:
     )
 
 
-def test_fraud_rate_sweep_requires_explicit_concentration_column(tmp_path: Path) -> None:
+def test_fraud_rate_sweep_runs_on_total_col_basis(tmp_path: Path) -> None:
+    """Fraud runs need no separate concentration column; total_col is the basis."""
     request = AnalysisRunRequest(
         mode="rate",
         csv=str(FIXTURE),
@@ -707,52 +707,73 @@ def test_fraud_rate_sweep_requires_explicit_concentration_column(tmp_path: Path)
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
 
-    with pytest.raises(RunBlocked):
-        execute_rate_run(request, logging.getLogger("test"))
-
-
-def test_fraud_only_sweep_uses_clearing_spend_not_total_distribution(
-    tmp_path: Path,
-) -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "issuer_name": f"P{index}",
-                "segment": "all",
-                "total": total,
-                "fraud": 1,
-                "clearing_spend": clearing,
-            }
-            for index, (total, clearing) in enumerate(
-                zip([80, 5, 5, 5, 5], [20, 20, 20, 20, 20]),
-                start=1,
-            )
-        ]
-    )
-    request = AnalysisRunRequest(
-        mode="rate",
-        df=df,
-        csv="",
-        total_col="total",
-        fraud_col="fraud",
-        privacy_concentration_col="clearing_spend",
-        dimensions=["segment"],
-        output=str(tmp_path / "fraud_basis.xlsx"),
-        compliance_posture="strict",
-        validate_input=False,
-        control3_overrides={"privacy_basis": "clearing_spend"},
-        privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
-    )
-
     artifacts = execute_rate_run(request, logging.getLogger("test"))
 
     assert artifacts.privacy_rule_strategy_result is not None
-    assert artifacts.privacy_rule_strategy_result.authorizing_rules == ("5/25",)
+    assert artifacts.privacy_rule_strategy_result.authorizing_rules
 
 
-def test_approval_and_fraud_sweep_governs_total_and_clearing_spend(
+def test_fraud_only_sweep_concentration_follows_total_col(
     tmp_path: Path,
 ) -> None:
+    """Fraud concentration is computed on total_col, the clearing-spend amount."""
+
+    def _run(totals: list[int], frauds: list[int], name: str):
+        df = pd.DataFrame(
+            [
+                {
+                    "issuer_name": f"P{index}",
+                    "segment": "all",
+                    "total": total,
+                    "fraud": fraud,
+                }
+                for index, (total, fraud) in enumerate(
+                    zip(totals, frauds), start=1
+                )
+            ]
+        )
+        request = AnalysisRunRequest(
+            mode="rate",
+            df=df,
+            csv="",
+            total_col="total",
+            fraud_col="fraud",
+            dimensions=["segment"],
+            output=str(tmp_path / f"fraud_basis_{name}.xlsx"),
+            compliance_posture="strict",
+            validate_input=False,
+            control3_overrides={"privacy_basis": "clearing_spend"},
+            privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+        )
+        return execute_rate_run(request, logging.getLogger("test"))
+
+    # An extremely skewed fraud distribution is irrelevant to concentration:
+    # the basis is the total_col amount distribution, not the fraud metric.
+    artifacts = _run(
+        [20, 20, 20, 20, 20],
+        [9999, 1, 1, 1, 1],
+        "balanced_totals",
+    )
+    assert artifacts.privacy_rule_strategy_result is not None
+    assert artifacts.privacy_rule_strategy_result.authorizing_rules == ("5/25",)
+
+    # Four peers cannot satisfy any applicable rule's entity minimum, so the
+    # emitted output is withheld from every sink.
+    blocked = _run(
+        [20, 20, 20, 20],
+        [1, 1, 1, 1],
+        "underpopulated",
+    )
+    assert blocked.privacy_sink_authorized is not True
+    assert blocked.privacy_rule_strategy_result is not None
+    assert blocked.privacy_rule_strategy_result.authorizing_rules == ()
+    assert blocked.analysis_output_file is None
+
+
+def test_approval_and_fraud_sweep_blocks_underpopulated_total_basis(
+    tmp_path: Path,
+) -> None:
+    """Four funded peers satisfy no applicable rule, so every sink is withheld."""
     df = pd.DataFrame(
         [
             {
@@ -761,12 +782,8 @@ def test_approval_and_fraud_sweep_governs_total_and_clearing_spend(
                 "total": total,
                 "approved": total * 0.8,
                 "fraud": 1,
-                "clearing_spend": clearing,
             }
-            for index, (total, clearing) in enumerate(
-                zip([80, 5, 5, 5, 5], [20, 20, 20, 20, 20]),
-                start=1,
-            )
+            for index, total in enumerate([20, 20, 20, 20], start=1)
         ]
     )
     request = AnalysisRunRequest(
@@ -776,7 +793,6 @@ def test_approval_and_fraud_sweep_governs_total_and_clearing_spend(
         total_col="total",
         approved_col="approved",
         fraud_col="fraud",
-        privacy_concentration_col="clearing_spend",
         dimensions=["segment"],
         output=str(tmp_path / "approval_fraud_bases.xlsx"),
         output_format="both",
@@ -801,31 +817,30 @@ def test_approval_and_fraud_sweep_governs_total_and_clearing_spend(
 
 
 @pytest.mark.parametrize(
-    ("strategy", "clearing_b"),
+    ("strategy", "totals_b"),
     [
         (PrivacyRuleStrategy.SELECT_BY_PEER_COUNT, [25, 25, 25, 25, 0]),
         (PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE, [25, 25, 25, 25, 0]),
         (PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE, [0, 0, 0, 0, 0]),
     ],
 )
-def test_fraud_output_omits_category_with_underpopulated_clearing_basis(
+def test_fraud_output_omits_category_with_underpopulated_total_basis(
     tmp_path: Path,
     strategy: PrivacyRuleStrategy,
-    clearing_b: list[int],
+    totals_b: list[int],
 ) -> None:
     rows: list[dict[str, object]] = []
-    for category, clearing_values in (
+    for category, total_values in (
         ("SAFE_A", [20, 20, 20, 20, 20]),
-        ("SECRET_B", clearing_b),
+        ("SECRET_B", totals_b),
     ):
-        for index, clearing in enumerate(clearing_values, start=1):
+        for index, total in enumerate(total_values, start=1):
             rows.append(
                 {
                     "issuer_name": f"P{index}",
                     "segment": category,
-                    "total": 20,
+                    "total": total,
                     "fraud": 9999 if category == "SECRET_B" else 1,
-                    "clearing_spend": clearing,
                 }
             )
     output = tmp_path / f"fraud_suppressed_{strategy.value}.xlsx"
@@ -836,7 +851,6 @@ def test_fraud_output_omits_category_with_underpopulated_clearing_basis(
             csv="",
             total_col="total",
             fraud_col="fraud",
-            privacy_concentration_col="clearing_spend",
             dimensions=["segment"],
             output=str(output),
             report_format="json",
@@ -881,18 +895,17 @@ def test_suppressed_rate_group_disjoint_peers_are_absent_from_every_sink(
     tmp_path: Path,
 ) -> None:
     rows: list[dict[str, object]] = []
-    for category, peer_prefix, clearing_values in (
+    for category, peer_prefix, total_values in (
         ("SAFE_A", "P", [20, 20, 20, 20, 20]),
         ("SECRET_B", "Q", [25, 25, 25, 25]),
     ):
-        for index, clearing in enumerate(clearing_values, start=1):
+        for index, total in enumerate(total_values, start=1):
             rows.append(
                 {
                     "issuer_name": f"{peer_prefix}{index}",
                     "segment": category,
-                    "total": 20,
+                    "total": total,
                     "fraud": 9999 if category == "SECRET_B" else 1,
-                    "clearing_spend": clearing,
                     "year_month": (
                         "SUPPRESSED_PERIOD_SENTINEL"
                         if category == "SECRET_B"
@@ -913,7 +926,6 @@ def test_suppressed_rate_group_disjoint_peers_are_absent_from_every_sink(
             csv="",
             total_col="total",
             fraud_col="fraud",
-            privacy_concentration_col="clearing_spend",
             dimensions=["segment"],
             time_col="year_month",
             output=str(output),
@@ -993,7 +1005,7 @@ def test_invalid_privacy_basis_blocks_even_without_input_validation(
         columns={"amount": "total"}
     )
     df["fraud"] = 1.0
-    df["clearing_spend"] = [20, 20, 20, 20, invalid_value]
+    df["total"] = [20, 20, 20, 20, invalid_value]
 
     with pytest.raises(RunBlocked):
         execute_rate_run(
@@ -1003,7 +1015,6 @@ def test_invalid_privacy_basis_blocks_even_without_input_validation(
                 csv="",
                 total_col="total",
                 fraud_col="fraud",
-                privacy_concentration_col="clearing_spend",
                 dimensions=["segment"],
                 output=str(tmp_path / "invalid_basis.xlsx"),
                 compliance_posture="best_effort",

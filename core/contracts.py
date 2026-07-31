@@ -410,7 +410,6 @@ class AnalysisRunRequest:
     is_anonymized_aggregated_merchant_spend: bool = False
     citibank_entity_name: Optional[str] = None
     citi_competitor_receives_output: bool = False
-    privacy_concentration_col: Optional[str] = None
     control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
 

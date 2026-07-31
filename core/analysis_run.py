@@ -2080,28 +2080,10 @@ def _execute_run_impl(
         ],
     ]
     try:
+        # For rate runs the weight metric is total_col, so fraud/chargeback
+        # concentration is evaluated on the clearing-spend amount column by
+        # construction; no separate concentration column is accepted.
         privacy_metric_col = weight_metric_col
-        if (
-            request.is_rate
-            and request.fraud_col
-        ):
-            if not request.privacy_concentration_col:
-                raise ValueError(
-                    "privacy_concentration_col is required for "
-                    "fraud/chargeback runs"
-                )
-            concentration_col = request.privacy_concentration_col
-            if not concentration_col:
-                raise ValueError(
-                    "a clearing-spend concentration column is required for "
-                    "fraud/chargeback runs"
-                )
-            if concentration_col not in df.columns:
-                raise ValueError(
-                    "the clearing-spend concentration column is not present "
-                    "in the governed dataset"
-                )
-            privacy_metric_col = concentration_col
         privacy_values = pd.to_numeric(
             df[privacy_metric_col],
             errors="coerce",

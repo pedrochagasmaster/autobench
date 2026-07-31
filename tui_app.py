@@ -458,7 +458,6 @@ TUI_REQUEST_FIELDS = frozenset({
     "is_anonymized_aggregated_merchant_spend",
     "citibank_entity_name",
     "citi_competitor_receives_output",
-    "privacy_concentration_col",
 })
 
 # CLI fields with no TUI widget yet; post-assembly fields are set after validation modal.
@@ -897,10 +896,6 @@ class BenchmarkApp(App):
                     yield Checkbox(
                         "Anonymized aggregated merchant-spend context (enables 4/35)",
                         id="privacy_merchant_spend_scope",
-                    )
-                    yield Input(
-                        placeholder="Policy concentration column (required for fraud/chargeback)",
-                        id="privacy_concentration_col",
                     )
 
                 # ───────────────────────────────────────────────────────
@@ -1799,10 +1794,6 @@ class BenchmarkApp(App):
                 "#citi_competitor_receives_output",
                 Checkbox,
             ).value,
-            "privacy_concentration_col": (
-                self.query_one("#privacy_concentration_col", Input).value.strip()
-                or None
-            ),
         }
 
     def action_show_help(self) -> None:

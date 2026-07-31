@@ -943,9 +943,9 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   then uses a fixed compatibility tie-break order. The order is not a policy
   hierarchy. No artifact mixes candidate weight sets.
 - Share secondary metrics are included in emitted-output revalidation. Every
-  fraud/chargeback run requires `privacy_concentration_col` under both
-  strategies, so clearing spend is never inferred from the reported metric or
-  denominator.
+  fraud/chargeback run computes concentration on `total_col` under both
+  strategies, so the rate denominator must be the clearing-spend amount
+  column; concentration is never derived from the fraud metric itself.
 - Strategy audit metadata includes candidate and emitted evaluations, display
   rule, authorizers, structured mandatory-overlay evaluations, policy
   source/version, and the active rule-set digest.

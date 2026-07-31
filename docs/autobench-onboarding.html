@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Autobench onboarding: what it does, how to run the demo, and how to use your own data.">
-  <title>Autobench — Getting Started</title>
+  <meta name="description" content="Autobench analyst onboarding for Edge Nodes: setup, daily workflow, input data, presets, privacy rules, and troubleshooting.">
+  <title>Autobench on the Edge Node — Analyst Onboarding</title>
   <style>
     :root {
       color-scheme: light;
@@ -304,11 +304,15 @@
     <nav class="toc" aria-label="Page contents">
       <a class="toc-brand" href="#top">Autobench</a>
       <a href="#what-it-does">What it does</a>
-      <a href="#before-you-start">Before you start</a>
-      <a href="#run-the-demo">Run the demo</a>
+      <a href="#setup">One-time setup</a>
+      <a href="#daily-workflow">Daily workflow</a>
+      <a href="#input-data">Prepare your CSV</a>
+      <a href="#configure-run">Configure a run</a>
+      <a href="#first-run">Your first run</a>
       <a href="#check-it-worked">Check it worked</a>
-      <a href="#your-own-data">Use your own data</a>
+      <a href="#presets">Presets</a>
       <a href="#privacy-rules">Privacy rules</a>
+      <a href="#merchant-mode">Merchant projects</a>
       <a href="#read-the-output">Read the output</a>
       <a href="#troubleshooting">Troubleshooting</a>
       <a href="#next-steps">Next steps</a>
@@ -316,27 +320,37 @@
     </nav>
 
     <main id="top">
-      <h1>Autobench: getting started</h1>
+      <h1>Autobench on the Edge Node</h1>
       <p class="lead">
-        Autobench compares one entity (an issuer, bank, or merchant) against its peers.
-        You give it a CSV of pre-aggregated data; it gives you an Excel report that
-        automatically satisfies privacy rules.
+        Autobench turns weeks of manual privacy-balancing work into a single run.
+        You give it a pre-aggregated CSV; it computes per-player weights that satisfy
+        privacy rules across every dimension cut simultaneously, and writes an Excel report.
       </p>
       <p class="lead">
-        This page gets you from zero to one successful run. Total time: about 10 minutes.
+        This is the analyst onboarding for the shared Edge Node deployment. Everything is
+        preinstalled — you never run <code>pip</code>, <code>install.sh</code>, or clone anything.
       </p>
 
       <section id="what-it-does">
         <h2>What it does</h2>
-        <p class="section-note">One paragraph of theory, then we run things.</p>
+        <p class="section-note">The balancing logic in one minute, then we run things.</p>
         <p>
-          A naive peer average is easy to skew: one very large peer can dominate the whole
-          comparison. Autobench reweights the peer group so no single peer exceeds a
-          concentration cap, then compares your target entity against that balanced group.
-          The caps come from privacy rules and are enforced automatically — you never
-          configure them in normal use.
+          A naive peer average is easy to skew and easy to make non-compliant: one dominant
+          player (a large issuer, a large acquirer) can exceed the privacy concentration cap
+          in some segments, making the whole comparison unpublishable. Autobench solves this
+          globally: it calculates a weight for each market participant so that
         </p>
-        <p>There are two analysis modes:</p>
+        <ul>
+          <li>privacy concentration rules are satisfied in <strong>every</strong> selected dimension cut at once,</li>
+          <li>dominant players are scaled down only where needed, and smaller players scaled up,</li>
+          <li>the market picture stays as close to reality as the constraints allow.</li>
+        </ul>
+        <p>
+          Weights are computed on one <strong>primary metric</strong> (typically an amount)
+          and then applied to every secondary metric (fraud amount, fraud count, approved and
+          declined counts, …), so all views of the market stay internally consistent.
+        </p>
+        <h3>Two analysis modes</h3>
         <div class="table-wrap">
           <table>
             <thead>
@@ -345,282 +359,159 @@
             <tbody>
               <tr>
                 <td><strong>Share</strong></td>
-                <td>How is my activity distributed across categories, compared to peers?</td>
-                <td>% of transactions by channel, card type, or geography</td>
+                <td>How is activity distributed across categories, compared to peers?</td>
+                <td>% of spend by CP/CNP, region, or channel</td>
               </tr>
               <tr>
                 <td><strong>Rate</strong></td>
-                <td>How does my performance rate compare to peers?</td>
-                <td>Approval rate, fraud rate</td>
+                <td>How does a performance rate compare to peers?</td>
+                <td>Approval rate, fraud rate (in bps)</td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p>
-          There are four ways to run it — a guided terminal UI (TUI), a command-line
-          interface (CLI), preinstalled launchers on Edge Nodes, and a Python API.
-          They all use the same engine and produce the same results.
-          If you are new, start with the TUI.
-        </p>
+        <h3>Client vs. market</h3>
+        <p>There are two ways to position the client, chosen with the <strong>Target entity</strong> field:</p>
+        <ul>
+          <li>
+            <strong>Target set</strong> — the client is separated from the market. Autobench balances
+            the peers independently and compares the client against the adjusted benchmark, measuring
+            over- or under-performance. This is usually the preferred setup when the client already
+            owns its raw data.
+          </li>
+          <li>
+            <strong>Target blank (peer-only)</strong> — the whole population is balanced together and
+            you get a market view with no target comparison.
+          </li>
+        </ul>
       </section>
 
-      <section id="before-you-start">
-        <h2>Before you start</h2>
-        <p class="section-note">You need one of these two setups.</p>
-        <h3>Working from the git repository</h3>
-        <ul>
-          <li>Python 3.10 or newer.</li>
-          <li>A clone of this repository.</li>
-          <li>Install dependencies once, from the repository root:</li>
-        </ul>
-        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>python -m pip install -e ".[dev]"</code></pre></div>
-        <h3>Working on a deployed Edge Node</h3>
-        <ul>
-          <li>Nothing to install. Do <strong>not</strong> run <code>pip</code>.</li>
-          <li>Run the onboarding script once (details in the Edge Node tab below).</li>
-        </ul>
-        <div class="note">
+      <section id="setup">
+        <h2>One-time setup</h2>
+        <p class="section-note">
+          The Release Operator maintains one shared runtime per node at
+          <code>/ads_storage/autobench</code>. You only onboard yourself.
+        </p>
+        <ol>
+          <li>Run the onboarding script (this is the "bootstrap command" — also safe to rerun any time your launchers misbehave):
+            <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>/ads_storage/autobench/onboard.sh</code></pre></div>
+          </li>
+          <li>If <code>autobench</code> is not found afterwards, your shell has not picked up <code>~/.local/bin</code>:
+            <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>export PATH="$HOME/.local/bin:$PATH"
+which autobench
+which autobench-cli</code></pre></div>
+          </li>
+        </ol>
+        <p>
+          Onboarding validates the shared runtime, creates your private state under
+          <code>/ads_storage/$USER/.autobench</code>, and installs two thin launchers in
+          <code>~/.local/bin</code>: <code>autobench</code> (the terminal UI) and
+          <code>autobench-cli</code> (the command line). Both use the same engine and give the
+          same results.
+        </p>
+        <div class="warning">
           <p>
-            In this repository, Python commands are written as <code>py ...</code>.
-            If <code>py</code> does not exist on your system, use <code>python</code> instead.
+            If onboarding says the shared runtime is missing or invalid, stop and send the exact
+            error to the Release Operator. Do not run <code>install.sh</code> or <code>pip</code>
+            yourself — analysts cannot repair or replace the shared runtime.
           </p>
         </div>
       </section>
 
-      <section id="run-the-demo">
-        <h2>Run the demo</h2>
-        <p class="section-note">
-          Do this before touching your own data. The repository ships a known-good demo file,
-          <code>tests/fixtures/gate_demo.csv</code> (1 target + 6 peers), so you can learn the
-          workflow without debugging your data at the same time.
+      <section id="daily-workflow">
+        <h2>Daily workflow</h2>
+        <p class="section-note">Three steps, every time.</p>
+        <ol>
+          <li>Extract your data with SQL and land the aggregated CSV in a working directory.</li>
+          <li>Go to that directory and launch:
+            <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /path/to/my/work
+autobench</code></pre></div>
+          </li>
+          <li>Configure and run the analysis. Outputs are written next to your data (relative paths stay relative to where you launched).</li>
+        </ol>
+        <p>
+          The TUI remembers your previous session — CSV path, entity, preset, metrics, and
+          dimensions are restored on launch, so reruns on the same project take seconds.
+          <strong>Browse…</strong> (or <code>Ctrl+O</code>) lists the CSV files in your current
+          directory so you rarely need to type a path; typing one and pressing Enter also works.
         </p>
-
-        <div class="tabs" role="tablist" aria-label="Ways to run the demo">
-          <button class="tab" id="tab-tui" role="tab" aria-selected="true" aria-controls="panel-tui">TUI (start here)</button>
-          <button class="tab" id="tab-cli" role="tab" aria-selected="false" aria-controls="panel-cli">CLI</button>
-          <button class="tab" id="tab-edge" role="tab" aria-selected="false" aria-controls="panel-edge">Edge Node</button>
-          <button class="tab" id="tab-api" role="tab" aria-selected="false" aria-controls="panel-api">Python API</button>
-        </div>
-
-        <div class="tab-panel active" id="panel-tui" role="tabpanel" aria-labelledby="tab-tui">
-          <p>The TUI shows every choice on screen. Best way to learn what the options mean.</p>
-          <ol>
-            <li>From the repository root, launch it:
-              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py tui_app.py</code></pre></div>
-            </li>
-            <li>In <strong>CSV File Path</strong>, type <code>tests/fixtures/gate_demo.csv</code>, then press Enter (or Tab away) so the column headers load.</li>
-            <li>Set <strong>Entity ID Column</strong> to <code>issuer_name</code> and <strong>Target Entity</strong> to <code>Target</code> (case-sensitive).</li>
-            <li>On the <strong>Share</strong> tab: metric <code>txn_cnt</code>, time column <code>year_month</code>, dimensions <code>card_type</code> and <code>channel</code>, preset <code>balanced_default</code>.</li>
-            <li>Click <strong>Run Analysis</strong>. The log should end with <strong>Analysis completed successfully</strong> and a saved report path.</li>
-          </ol>
-        </div>
-
-        <div class="tab-panel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli">
-          <p>Same run, one command. Run from the repository root.</p>
-          <h3>Share analysis</h3>
-          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py share \
-  --csv tests/fixtures/gate_demo.csv \
-  --entity Target \
-  --metric txn_cnt \
-  --dimensions card_type channel \
-  --time-col year_month \
-  --preset balanced_default \
-  --output gate_demo_share.xlsx</code></pre></div>
-          <h3>Rate analysis (also exports a balanced CSV)</h3>
-          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>py benchmark.py rate \
-  --csv tests/fixtures/gate_demo.csv \
-  --entity Target \
-  --total-col total \
-  --approved-col approved \
-  --dimensions card_type channel \
-  --time-col year_month \
-  --preset balanced_default \
-  --export-balanced-csv \
-  --output gate_demo_rate.xlsx</code></pre></div>
-          <div class="note">
-            <p>
-              On Windows PowerShell, replace the trailing <code>\</code> with <code>`</code>
-              and use backslashes in paths (<code>tests\fixtures\gate_demo.csv</code>).
-            </p>
-          </div>
-        </div>
-
-        <div class="tab-panel" id="panel-edge" role="tabpanel" aria-labelledby="tab-edge">
-          <p>Edge Nodes have a shared runtime managed by the Release Operator. You never install anything.</p>
-          <ol>
-            <li>Onboard once (also safe to rerun any time your launchers break):
-              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /ads_storage/autobench
-./onboard.sh</code></pre></div>
-            </li>
-            <li>Go to the directory with your data and launch:
-              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>cd /path/to/my/work
-autobench            # the TUI
-autobench-cli share --help   # the CLI</code></pre></div>
-            </li>
-            <li>If the commands are not found:
-              <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>export PATH="$HOME/.local/bin:$PATH"
-which autobench
-which autobench-cli</code></pre></div>
-            </li>
-          </ol>
-          <div class="warning">
-            <p>
-              If onboarding says the shared runtime is missing or invalid, stop and send the
-              exact error to the Release Operator. Do not run <code>install.sh</code> or
-              <code>pip</code> yourself.
-            </p>
-          </div>
-        </div>
-
-        <div class="tab-panel" id="panel-api" role="tabpanel" aria-labelledby="tab-api">
-          <p>For pipelines and notebooks. This is the stable public API; everything else in <code>core/</code> is internal.</p>
-          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>import logging
-from core.analysis_run import execute_share_run
-from core.contracts import AnalysisRunRequest
-
-request = AnalysisRunRequest(
-    csv="tests/fixtures/gate_demo.csv",
-    entity="Target",
-    metric="txn_cnt",
-    dimensions=["card_type", "channel"],
-    time_col="year_month",
-    preset="balanced_default",
-    compliance_posture="strict",
-    output="report.xlsx",
-)
-
-artifacts = execute_share_run(request, logging.getLogger("pipeline"))
-print(artifacts.analysis_output_file)</code></pre></div>
-          <p>A complete runnable example: <code>py examples/run_from_python.py</code>. For rate runs use <code>execute_rate_run</code> with <code>mode="rate"</code>, <code>total_col</code>, and numerator columns.</p>
+        <div class="note">
+          <p>
+            Useful shortcuts: <code>Ctrl+O</code> browse · <code>Ctrl+R</code> run ·
+            <code>Ctrl+A</code> advanced parameters · <code>F1</code> preset guide.
+          </p>
         </div>
       </section>
 
-      <section id="check-it-worked">
-        <h2>Check it worked</h2>
-        <p class="section-note">All four must be true. If any is false, go to Troubleshooting.</p>
-        <ul class="checks">
-          <li>The command exited with code <code>0</code> (CLI) or the TUI log says <strong>Analysis completed successfully</strong>.</li>
-          <li>The output file exists (e.g. <code>gate_demo_share.xlsx</code>; the rate run also writes <code>gate_demo_rate_balanced.csv</code>).</li>
-          <li>The <code>Summary</code> sheet in the workbook shows <code>Input Validation: pass</code>.</li>
-          <li>The <code>Summary</code> sheet shows <code>Compliance Verdict: fully_compliant</code>.</li>
-        </ul>
-        <p>
-          The generated <code>.xlsx</code>, <code>.csv</code>, and <code>benchmark_log_*.txt</code> files
-          are local artifacts. They are gitignored and safe to delete.
-        </p>
-      </section>
-
-      <section id="your-own-data">
-        <h2>Use your own data</h2>
+      <section id="input-data">
+        <h2>Prepare your CSV</h2>
         <p class="section-note">
-          Once the demo works, swap in your CSV. Change one thing at a time: first the file,
-          then the entity and metric, then the dimensions. Keep <code>balanced_default</code>.
+          Autobench expects a <strong>pre-aggregated</strong> file: one row per entity ×
+          dimension bucket (optionally × time period). Do the aggregation in SQL, not in the tool.
         </p>
-        <p>Your CSV must be <strong>pre-aggregated</strong>: one row per entity × dimension bucket (optionally × time period). Like this:</p>
-        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>issuer_name,year_month,card_type,channel,txn_cnt,total,approved,fraud
-Target,2026-01,CREDIT,POS,120000,120000,112800,84
-Peer A,2026-01,CREDIT,POS,98000,98000,91630,71
-Peer B,2026-01,CREDIT,POS,105000,105000,98700,76</code></pre></div>
-
-        <h3>Example input table</h3>
-        <p>
-          You can also include combined dimension columns in the same file.
-          Here is a small Share-mode example with a <code>card_type_channel</code> break:
-        </p>
+        <p>Every column plays one of four roles:</p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr>
-                <th>issuer_name</th>
-                <th>year_month</th>
-                <th>card_type</th>
-                <th>channel</th>
-                <th>card_type_channel</th>
-                <th class="num">txn_cnt</th>
-              </tr>
+              <tr><th>Role</th><th>What it is</th><th>Examples</th></tr>
             </thead>
             <tbody>
               <tr>
-                <td>Target</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>POS</td>
-                <td>CREDIT + POS</td>
-                <td class="num">120000</td>
+                <td><strong>Entity</strong></td>
+                <td>The peer participants being balanced. One column identifies them; common names like <code>issuer_name</code> are detected automatically.</td>
+                <td>Issuers, merchants, market participants</td>
               </tr>
               <tr>
-                <td>Target</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>ONLINE</td>
-                <td>CREDIT + ONLINE</td>
-                <td class="num">80000</td>
+                <td><strong>Dimensions</strong></td>
+                <td>Categorical columns that segment the analysis. Each selected dimension becomes a set of privacy constraints and a report sheet.</td>
+                <td>CP/CNP, region, domestic vs. cross-border, channel</td>
               </tr>
               <tr>
-                <td>Peer A</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>POS</td>
-                <td>CREDIT + POS</td>
-                <td class="num">98000</td>
+                <td><strong>Metrics</strong></td>
+                <td>The measures being balanced. One primary metric drives the weights; secondary metrics receive the same weights.</td>
+                <td>Amount, count, fraud amount, fraud count, approved, declined</td>
               </tr>
               <tr>
-                <td>Peer A</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>ONLINE</td>
-                <td>CREDIT + ONLINE</td>
-                <td class="num">72000</td>
-              </tr>
-              <tr>
-                <td>Peer B</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>POS</td>
-                <td>CREDIT + POS</td>
-                <td class="num">105000</td>
-              </tr>
-              <tr>
-                <td>Peer B</td>
-                <td>2026-01</td>
-                <td>CREDIT</td>
-                <td>ONLINE</td>
-                <td>CREDIT + ONLINE</td>
-                <td class="num">76000</td>
+                <td><strong>Time</strong></td>
+                <td>Optional period column for time-aware consistency. It can also simply be treated as another dimension if that suits the analysis.</td>
+                <td><code>year_month</code>, <code>ano_mes</code></td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p>One way to build that shape from row-level (or finer) data:</p>
+
+        <h3>Combined dimensions are built upstream, in SQL</h3>
+        <p>
+          If the client wants reporting by a <em>combination</em> of dimensions (entry mode ×
+          region, card type × channel, …), create that combined column in the source query
+          before loading the CSV. Autobench treats it as one more dimension:
+        </p>
         <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>SELECT
     issuer_name,
     year_month,
     card_type,
     channel,
     CONCAT(card_type, ' + ', channel) AS card_type_channel,
-    SUM(txn_cnt) AS txn_cnt
-FROM dados
+    SUM(txn_cnt) AS txn_cnt,
+    SUM(amount)  AS amount
+FROM source_table
 GROUP BY
     issuer_name,
     year_month,
     card_type,
     channel;</code></pre></div>
-        <div class="note">
-          <p>
-            The <code>card_type_channel</code> column is a combined break. It enters the same
-            optimization as the other dimensions and uses the same weight for each player.
-            Pass it as an extra dimension (for example
-            <code>--dimensions card_type channel card_type_channel</code>).
-          </p>
-        </div>
+        <p>
+          The combined column enters the same optimization as the other dimensions and uses the
+          same per-player weights, so all cuts stay consistent.
+        </p>
 
-        <p>Rules that cause most first failures:</p>
+        <h3>Rules that cause most first failures</h3>
         <ul>
-          <li><strong>Entity names are case-sensitive.</strong> <code>Target</code> and <code>target</code> are different entities.</li>
-          <li><strong>Column names get normalized</strong> to lowercase with underscores. Refer to them that way.</li>
+          <li><strong>Entity names are case-sensitive.</strong> <code>Renner</code> and <code>renner</code> are different entities.</li>
+          <li><strong>Column names get normalized</strong> to lowercase with underscores (<code>Card Type</code> → <code>card_type</code>). Refer to them that way.</li>
+          <li><strong>No nulls</strong> in the entity or metric columns. Null-heavy dimension columns cause warnings and balancing difficulties — clean them in SQL or drop the dimension.</li>
           <li><strong>Units must be consistent</strong> across all rows (same currency, same count definition).</li>
-          <li><strong>You need at least 5 peers</strong> for a normal (non-merchant) run. Fewer peers means the privacy rule cannot be satisfied.</li>
-          <li><strong>No nulls</strong> in the entity or metric columns.</li>
+          <li><strong>You need at least 5 peers</strong> for a normal run (4 for a declared merchant-spend run). Fewer peers means no privacy rule can be satisfied.</li>
         </ul>
         <div class="warning">
           <p>
@@ -630,13 +521,182 @@ GROUP BY
         </div>
       </section>
 
+      <section id="configure-run">
+        <h2>Configure a run</h2>
+        <p class="section-note">The TUI walks you through the same order every time. This mirrors it.</p>
+
+        <h3>1 · Data source</h3>
+        <p>Point at your CSV. The header row loads and populates every dropdown that follows.</p>
+
+        <h3>2 · Entity</h3>
+        <p>
+          Pick the <strong>Entity ID column</strong> (defaults to <code>issuer_name</code> when
+          present) and the <strong>Target entity</strong>. Leave the target blank for a peer-only
+          market run (see <a href="#what-it-does">Client vs. market</a>).
+        </p>
+
+        <h3>3 · Analysis options</h3>
+        <p>Pick a preset (see <a href="#presets">Presets</a>), then the option checkboxes. Recommended for normal work:</p>
+        <ul>
+          <li><strong>Analyze impact</strong> (on by default) — adds distortion analysis and impact sheets so you can see what the balancing cost you.</li>
+          <li><strong>Validate input</strong> (on by default) — checks the CSV before analysis and surfaces problems as warnings/errors.</li>
+          <li><strong>Include calc. metrics (CSV)</strong> — enriches the balanced CSV export with calculated metrics.</li>
+          <li><strong>Compare presets</strong> — optional; runs every preset and reports the impact of each. Useful when choosing a preset for a new dataset.</li>
+        </ul>
+        <p>
+          <strong>Output format</strong>: keep <code>Analysis</code> while working. Anything that
+          leaves the analysis room needs <code>Publication</code> (or <code>Both</code>), which
+          goes through sanitization and publishability validation.
+        </p>
+        <p>
+          For merchant projects, the same Analysis Options block also has
+          <strong>Anonymized aggregated merchant-spend context (enables 4/35)</strong> —
+          see <a href="#merchant-mode">Merchant projects</a>.
+        </p>
+
+        <h3>4 · Analysis mode — metrics and dimensions</h3>
+        <p>On the <strong>Share</strong> tab:</p>
+        <ul>
+          <li><strong>Primary metric</strong> — usually the approved amount. This is the metric the weights are optimized on.</li>
+          <li><strong>Secondary metrics</strong> — fraud amount, fraud count, approved/declined counts, etc. They receive the same weights.</li>
+          <li><strong>Dimensions</strong> — selected last. Every dimension you tick adds privacy constraints, so start with the cuts the client actually asked for. If balancing struggles, remove a dimension and rerun (see <a href="#troubleshooting">Troubleshooting</a>).</li>
+        </ul>
+        <p>
+          The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved
+          and/or fraud columns, with fraud reported in bps by default.
+        </p>
+        <p>Press <strong>Run Analysis</strong> (<code>Ctrl+R</code>). The log should end with
+          <strong>Analysis completed successfully</strong> and the saved report path.</p>
+      </section>
+
+      <section id="first-run">
+        <h2>Your first run</h2>
+        <p class="section-note">
+          Do this before touching project data. The shared tree ships a known-good demo file
+          (1 target + 6 peers), so you learn the workflow without debugging your data at the same time.
+        </p>
+        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>mkdir -p /ads_storage/$USER/autobench-demo
+cp /ads_storage/autobench/tests/fixtures/gate_demo.csv /ads_storage/$USER/autobench-demo/
+cd /ads_storage/$USER/autobench-demo</code></pre></div>
+
+        <div class="tabs" role="tablist" aria-label="Ways to run the demo">
+          <button class="tab" id="tab-tui" role="tab" aria-selected="true" aria-controls="panel-tui">TUI (start here)</button>
+          <button class="tab" id="tab-cli" role="tab" aria-selected="false" aria-controls="panel-cli">CLI</button>
+        </div>
+
+        <div class="tab-panel active" id="panel-tui" role="tabpanel" aria-labelledby="tab-tui">
+          <p>The TUI shows every choice on screen — the best way to learn what the options mean.</p>
+          <ol>
+            <li>Launch <code>autobench</code>, press <strong>Browse…</strong>, and pick <code>gate_demo.csv</code>.</li>
+            <li>Set <strong>Entity ID column</strong> to <code>issuer_name</code> and <strong>Target entity</strong> to <code>Target</code> (case-sensitive).</li>
+            <li>In Analysis Options: time column <code>year_month</code>, preset <code>compliance_strict</code>. Leave <strong>Analyze impact</strong> and <strong>Validate input</strong> on.</li>
+            <li>On the <strong>Share</strong> tab: primary metric <code>txn_cnt</code>, dimensions <code>card_type</code> and <code>channel</code>.</li>
+            <li><strong>Run Analysis</strong>. The log should end with <strong>Analysis completed successfully</strong>.</li>
+          </ol>
+        </div>
+
+        <div class="tab-panel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli">
+          <p>Same run, one command — this is what you script once a configuration is settled.</p>
+          <h3>Share analysis</h3>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>autobench-cli share \
+  --csv gate_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset compliance_strict \
+  --output gate_demo_share.xlsx</code></pre></div>
+          <h3>Rate analysis (also exports a balanced CSV)</h3>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>autobench-cli rate \
+  --csv gate_demo.csv \
+  --entity Target \
+  --total-col total \
+  --approved-col approved \
+  --dimensions card_type channel \
+  --time-col year_month \
+  --preset compliance_strict \
+  --export-balanced-csv \
+  --output gate_demo_rate.xlsx</code></pre></div>
+        </div>
+      </section>
+
+      <section id="check-it-worked">
+        <h2>Check it worked</h2>
+        <p class="section-note">All four must be true. If any is false, go to Troubleshooting.</p>
+        <ul class="checks">
+          <li>The command exited with code <code>0</code> (CLI) or the TUI log says <strong>Analysis completed successfully</strong>.</li>
+          <li>The output file exists in your working directory (the rate run also writes a <code>*_balanced.csv</code>).</li>
+          <li>The <code>Summary</code> sheet in the workbook shows <code>Input Validation: pass</code>.</li>
+          <li>The <code>Summary</code> sheet shows <code>Compliance Verdict: fully_compliant</code>.</li>
+        </ul>
+        <p>
+          The generated <code>.xlsx</code>, <code>.csv</code>, and <code>benchmark_log_*.txt</code>
+          files are local artifacts, safe to delete, and must never be committed anywhere.
+        </p>
+      </section>
+
+      <section id="presets">
+        <h2>Presets</h2>
+        <p class="section-note">
+          A preset is a bundled optimization strategy. Press <strong>Preset Guide</strong>
+          (<code>F1</code>) in the TUI for the full descriptions, or
+          <code>autobench-cli config show &lt;preset&gt;</code> for the exact parameters.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Preset</th><th>Goal</th><th>When to use it</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>compliance_strict</code></td>
+                <td>Zero privacy violations, fail-closed.</td>
+                <td><strong>The default for client deliverables.</strong> Most conservative; may split into separate per-dimension weighting solutions when a single global one is infeasible.</td>
+              </tr>
+              <tr>
+                <td><code>strategic_consistency</code></td>
+                <td>One single global weight vector across all cuts.</td>
+                <td>When the weights need to be reused elsewhere (dashboards, follow-up analyses). Tolerates limited, minimized violations to keep one coherent system.</td>
+              </tr>
+              <tr>
+                <td><code>balanced_default</code></td>
+                <td>Middle ground between compliance and practicality.</td>
+                <td>General exploration. Allows small controlled deviations — acceptable thresholds need alignment with your manager before anything ships.</td>
+              </tr>
+              <tr>
+                <td><code>low_distortion</code></td>
+                <td>Keep results near-raw by locking weights close to 1.</td>
+                <td>When preserving analytical accuracy matters more than perfect balancing. Requires the accuracy-first acknowledgement.</td>
+              </tr>
+              <tr>
+                <td><code>minimal_distortion</code></td>
+                <td>Accuracy above privacy, via very high tolerance.</td>
+                <td>Same family as above, looser. Requires the accuracy-first acknowledgement.</td>
+              </tr>
+              <tr>
+                <td><code>research_exploratory</code></td>
+                <td>Maximum flexibility for difficult datasets.</td>
+                <td>Directional insight when full compliance may be impossible. Never a production output. Rarely needed.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note">
+          <p>
+            Practical rule from onboarding: run <code>compliance_strict</code> first. Only move to
+            another preset when strict is infeasible or the deliverable explicitly needs a single
+            reusable weight vector — and record why.
+          </p>
+        </div>
+      </section>
+
       <section id="privacy-rules">
         <h2>Privacy rules</h2>
         <p class="section-note">Automatic. Listed here so you know what the tool is doing, not so you can tune it.</p>
         <p>
-          The engine picks the applicable concentration rule based on peer count and enforces it.
-          The baseline is <strong>5/25</strong>: at least 5 peers, and no peer contributes more
-          than 25% to any category-level comparison.
+          The engine picks the applicable concentration rule based on peer count and enforces it in
+          every dimension cut. The baseline is <strong>5/25</strong>: at least 5 peers, and no peer
+          contributes more than 25% to any category-level comparison.
         </p>
         <div class="table-wrap">
           <table>
@@ -648,7 +708,7 @@ GROUP BY
               <tr><td>6/30</td><td>6</td><td>30%</td><td>Requires ≥3 participants at ≥7%</td></tr>
               <tr><td>7/35</td><td>7</td><td>35%</td><td>Requires ≥2 at ≥15% and ≥1 at ≥8%</td></tr>
               <tr><td>10/40</td><td>10</td><td>40%</td><td>Requires ≥2 at ≥20% and ≥1 at ≥10%</td></tr>
-              <tr><td>4/35</td><td>4</td><td>35%</td><td>Merchant benchmarking only</td></tr>
+              <tr><td>4/35</td><td>4</td><td>35%</td><td>Anonymized aggregated merchant spend only — requires an explicit declaration (see below)</td></tr>
             </tbody>
           </table>
         </div>
@@ -656,10 +716,53 @@ GROUP BY
           <p>
             Some outputs, such as top-merchant lists, are blocked outright. Do not restructure a
             request or disable checks to get around a block — escalate the use case to Privacy.
-            Special contexts (digital-wallet metrics, recurring deliverables, altered peer groups)
-            need explicit declarations or review evidence.
+            Special contexts (digital-wallet metrics, recurring deliverables, altered peer groups,
+            dual entity axes) need explicit declarations or review evidence, all available as
+            CLI flags and TUI options.
           </p>
         </div>
+      </section>
+
+      <section id="merchant-mode">
+        <h2>Merchant projects</h2>
+        <p class="section-note">
+          Merchant benchmarking (e.g. Renner, Riachuelo) needs a specific configuration —
+          it does not work as a plain issuer-style run. The merchant declaration is available
+          in both the TUI and the CLI.
+        </p>
+        <ol>
+          <li>
+            Set the <strong>Entity ID column</strong> to your merchant column — the
+            <code>issuer_name</code> default does not apply.
+          </li>
+          <li>
+            To use the merchant rule (<strong>4/35</strong>), declare the run as anonymized
+            aggregated merchant spend. In the TUI, under <strong>3 · Analysis Options</strong>
+            (below Output format), check:
+            <br><em>Anonymized aggregated merchant-spend context (enables 4/35)</em>
+          </li>
+        </ol>
+        <p>Same declaration from the CLI:</p>
+        <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>autobench-cli share \
+  --csv merchant_data.csv \
+  --entity-col merchant_name \
+  --entity "Client Merchant" \
+  --metric amount \
+  --dimensions region channel \
+  --preset compliance_strict \
+  --anonymized-aggregated-merchant-spend \
+  --output merchant_share.xlsx</code></pre></div>
+        <div class="note">
+          <p>
+            The declaration is a statement of fact about the deliverable, not a convenience
+            switch. Only declare it when the output genuinely is anonymized, aggregated
+            merchant spend. If in doubt, confirm the framing with Privacy before running.
+          </p>
+        </div>
+        <p>
+          A workbook that would include a top-merchant list is blocked regardless of
+          declarations — that deliverable is not allowed.
+        </p>
       </section>
 
       <section id="read-the-output">
@@ -672,10 +775,10 @@ GROUP BY
             </thead>
             <tbody>
               <tr><td><code>Summary</code></td><td>Run inputs, preset, validation result, and compliance verdict. Always check this first.</td></tr>
-              <tr><td>One sheet per dimension</td><td>Target vs. balanced peers per category, with gaps and best-in-class comparisons. This is the answer to your business question.</td></tr>
+              <tr><td>One sheet per dimension</td><td>Target vs. balanced peers per category, with gaps and best-in-class comparisons. This is the answer to the business question.</td></tr>
               <tr><td><code>Weight Methods</code></td><td>Which weighting strategy each dimension used (Global-LP, Per-Dimension-LP, or Bayesian fallback).</td></tr>
               <tr><td><code>Rank Changes</code></td><td>How the reweighting shifted peer ranks — a distortion check.</td></tr>
-              <tr><td>Balanced CSV</td><td>Balanced metrics for BI tools (Power BI, Tableau) or pipelines. Written with <code>--export-balanced-csv</code>.</td></tr>
+              <tr><td>Balanced CSV</td><td>Balanced metrics for BI tools (Power BI, Tableau) or pipelines. Written with <code>--export-balanced-csv</code> / the TUI checkbox.</td></tr>
               <tr><td>Audit package</td><td>One zip with workbook(s), CSV, audit log, config snapshot, and validation summary. Written with <code>--audit-package</code>.</td></tr>
             </tbody>
           </table>
@@ -696,25 +799,46 @@ GROUP BY
         <p class="section-note">Fix the first concrete error. Most first-run failures are an exact-value mismatch.</p>
         <details open>
           <summary>“Entity not found”</summary>
-          <p>The value of <code>--entity</code> must match the CSV exactly, including case. In the demo file the target is <code>Target</code>, capital T.</p>
+          <p>The target entity must match the CSV exactly, including case. In the demo file the target is <code>Target</code>, capital T. In the TUI, pick it from the dropdown instead of typing.</p>
         </details>
         <details>
           <summary>“Column not found”</summary>
           <p>Column names are normalized to lowercase with underscores (<code>Card Type</code> becomes <code>card_type</code>). If unsure, load the file in the TUI and look at the headers it lists.</p>
         </details>
         <details>
-          <summary>“No valid dimensions”</summary>
-          <p>Pass dimensions explicitly, e.g. <code>--dimensions card_type channel</code>. Only use <code>--auto</code> once explicit dimensions work.</p>
+          <summary>Null-related warnings, or balancing keeps failing</summary>
+          <p>
+            This is usually the data, not the tool. Simplify and rerun: drop the sparsest
+            dimension, clean nulls upstream in SQL, or collapse thin categories. Get a simple
+            configuration to succeed first, then add dimensions back one at a time.
+          </p>
         </details>
         <details>
           <summary>LP infeasibility warnings or high distortion</summary>
-          <p>Some sparse datasets cannot satisfy every constraint; the engine falls back to a weaker method and reports it in <code>Weight Methods</code>. Use <code>--compare-presets</code> and <code>--analyze-impact</code> to see the trade-off. This is a data property, not a bug.</p>
+          <p>
+            Some market structures cannot satisfy every constraint; the engine falls back to a
+            weaker method and reports it in <code>Weight Methods</code>. Use
+            <strong>Compare presets</strong> and <strong>Analyze impact</strong> to see the
+            trade-off. This is a data property, not a bug.
+          </p>
         </details>
         <details>
-          <summary>Edge Node: shared runtime missing or invalid</summary>
-          <p>Rerun the onboarding script:</p>
+          <summary><code>autobench: command not found</code></summary>
+          <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>export PATH="$HOME/.local/bin:$PATH"</code></pre></div>
+          <p>Or open a new SSH session. If the command is still missing, rerun <code>/ads_storage/autobench/onboard.sh</code>.</p>
+        </details>
+        <details>
+          <summary>Stale launcher warning, or launchers behave strangely</summary>
+          <p>Rerun the onboarding script — it replaces stale launchers without deleting your config or private files:</p>
           <div class="code-wrap"><button class="copy" type="button" data-copy>Copy</button><pre><code>/ads_storage/autobench/onboard.sh</code></pre></div>
-          <p>If it still fails, send the exact error to the Release Operator. Analysts cannot repair or replace the shared runtime.</p>
+        </details>
+        <details>
+          <summary>Shared runtime missing or invalid</summary>
+          <p>Send the exact error to the Release Operator. Analysts cannot repair or replace the shared runtime.</p>
+        </details>
+        <details>
+          <summary>Output write fails</summary>
+          <p>Your working directory is probably not writable. Launch from a writable directory, or point the output at <code>/ads_storage/$USER/…</code>.</p>
         </details>
       </section>
 
@@ -725,16 +849,21 @@ GROUP BY
           and point to the verdict in <code>Summary</code>. From there:
         </p>
         <ul>
-          <li><a href="../README.md">README</a> — full CLI cookbook, presets, and output reference.</li>
-          <li><a href="../onboarding.md">Edge Node onboarding</a> — the analyst setup in detail.</li>
-          <li><a href="RESOURCE_MANAGEMENT.md">Large dataset guidance</a> — <code>--lean</code> mode for big files and small machines.</li>
+          <li>Rerun the flow on real project data — first with your usual dimensions, then experiment with what the balancing tolerates.</li>
+          <li><a href="../onboarding.md">Edge Node onboarding</a> — the launcher setup in detail.</li>
+          <li><a href="guia-presets-e-configuracao-pt-BR.md">Guia de presets e configuração (pt-BR)</a> — every preset parameter, explained.</li>
+          <li><a href="../README.md">README</a> — full CLI cookbook and output reference.</li>
+          <li><a href="RESOURCE_MANAGEMENT.md">Large dataset guidance</a> — <code>--lean</code> mode for big files.</li>
           <li><a href="CORE_TECHNICAL_DOC.md">Core technical reference</a> — how the engine works inside.</li>
-          <li><a href="../CONTRIBUTING.md">Contributing</a> — if you want to change the tool itself.</li>
         </ul>
+        <p>
+          And yes — the TUI has themes. Press <code>Ctrl+P</code> for the command palette and try a
+          few. Pink ones included.
+        </p>
       </section>
 
       <footer>
-        <span>Autobench · Privacy-compliant peer benchmarking</span>
+        <span>Autobench · Privacy-compliant peer benchmarking · Edge Node analyst onboarding</span>
         <span>Configuration model v3.0</span>
       </footer>
     </main>

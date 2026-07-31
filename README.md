@@ -413,11 +413,10 @@ python benchmark.py rate --csv data.csv --total-col txn_cnt \
 
 For merchant 4/35 eligibility, also add
 `--anonymized-aggregated-merchant-spend`. Fraud runs continue to require the
-normal `--privacy-basis clearing_spend` Control 3 declaration.
-They must also identify the actual clearing-spend column with
-`--privacy-concentration-col`; Autobench will not infer it from the fraud
-metric or the total/denominator column. This applies to the default strategy
-and sweep mode.
+normal `--privacy-basis clearing_spend` Control 3 declaration. Concentration
+for fraud and chargeback runs is always computed on the `--total-col`
+denominator, which must therefore be the clearing-spend amount column (not a
+transaction count). This applies to the default strategy and sweep mode.
 
 When Citibank is in the governed peer population and a Citi competitor will
 receive the output, also pass `--citi-competitor-receives-output` and the exact

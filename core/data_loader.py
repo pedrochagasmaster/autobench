@@ -297,7 +297,6 @@ class DataLoader:
         add(getattr(args, 'total_col', None))
         add(getattr(args, 'approved_col', None))
         add(getattr(args, 'fraud_col', None))
-        add(getattr(args, 'privacy_concentration_col', None))
         return requested or None
 
     def _csv_aggregation_columns(
@@ -335,7 +334,6 @@ class DataLoader:
         add_unique(value_columns, getattr(args, 'total_col', None))
         add_unique(value_columns, getattr(args, 'approved_col', None))
         add_unique(value_columns, getattr(args, 'fraud_col', None))
-        add_unique(value_columns, getattr(args, 'privacy_concentration_col', None))
 
         value_columns = [col for col in value_columns if col not in group_columns]
         if not group_columns or not value_columns:
