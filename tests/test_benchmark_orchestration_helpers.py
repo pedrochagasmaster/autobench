@@ -139,7 +139,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             resolved = resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
 
         self.assertEqual(resolved, 'Target')
-        self.assertTrue(any('case mismatch' in msg for msg in captured.output))
+        self.assertTrue(any('differs in casing' in msg for msg in captured.output))
 
     def test_resolve_target_entity_returns_none_for_ambiguous_match(self) -> None:
         df = pd.DataFrame({'issuer_name': ['Target', 'TARGET', 'Peer1']})
@@ -148,12 +148,16 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             resolved = resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
 
         self.assertIsNone(resolved)
-        self.assertTrue(
-            any(
-                'Configured target entity is ambiguous' in msg
-                for msg in captured.output
-            )
-        )
+        ambiguous_messages = [
+            msg
+            for msg in captured.output
+            if 'matches 2 distinct entities' in msg
+        ]
+        self.assertTrue(ambiguous_messages)
+        # The operator's own input is echoed; dataset spellings are not.
+        for msg in ambiguous_messages:
+            self.assertIn("'target'", msg)
+            self.assertNotIn('TARGET', msg)
 
     def test_resolve_dimensions_prefers_explicit_list(self) -> None:
         args = SimpleNamespace(dimensions=['card_type'], auto=False)

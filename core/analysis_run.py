@@ -206,7 +206,9 @@ def _fit_privacy_strategy(
         ]
         if len(matching_identities) != 1:
             raise ValueError(
-                "citibank_entity_name is ambiguous in the governed peer population"
+                "citibank_entity_name matches "
+                f"{len(matching_identities)} governed peer identities "
+                "(case-insensitive); provide the exact canonical name"
             )
 
     def governed_share_groups(
@@ -895,8 +897,13 @@ def resolve_target_entity(
             if entity is not None and str(entity).upper() == entity_upper
         ]
         if len(all_matches) > 1:
+            # Peer names from the governed dataset are never logged; the
+            # operator's own input and a match count are enough to act on.
             logger.error(
-                "Configured target entity is ambiguous in the governed population"
+                "Configured target entity '%s' matches %d distinct entities "
+                "in the governed population (case-insensitive)",
+                target_entity,
+                len(all_matches),
             )
             logger.error("Please specify the exact entity name with correct casing.")
             return None
@@ -904,7 +911,9 @@ def resolve_target_entity(
             match = str(all_matches[0])
             if match != target_entity:
                 logger.warning(
-                    "Target entity case mismatch; using the canonical dataset value"
+                    "Target entity '%s' differs in casing from the canonical "
+                    "dataset value; using the canonical form",
+                    target_entity,
                 )
             resolved_entity = match
     return resolved_entity

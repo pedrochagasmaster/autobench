@@ -1075,7 +1075,14 @@ class DimensionalAnalyzer:
             target_share = (target_category_vol / target_total_vol * 100.0) if target_total_vol > 0 else 0.0
         
         if len(peer_df) == 0:
-            logger.warning("No peers found for a governed category")
+            # The category label and time period stay redacted: this warning
+            # fires for empty/suppressed cross-sections, whose identifiers
+            # must not leak into any sink, including authorized run logs.
+            logger.warning(
+                "No peers found for a governed category in dimension '%s'; "
+                "it is omitted from results",
+                dimension_column,
+            )
             return None
         
         # Build per-peer category and totals
@@ -1199,7 +1206,13 @@ class DimensionalAnalyzer:
             target_rate = (target_num / target_den * 100.0) if target_den > 0 else 0.0
         
         if len(peer_df) == 0:
-            logger.warning("No peers found for a governed category")
+            # See the share-metrics counterpart: suppressed-category
+            # identifiers stay out of every sink, including authorized logs.
+            logger.warning(
+                "No peers found for a governed category in dimension '%s'; "
+                "it is omitted from results",
+                dimension_column,
+            )
             return None
         
         # Build per-peer category and totals
