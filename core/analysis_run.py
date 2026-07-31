@@ -52,7 +52,6 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import (
-    sanitize_merchant_aggregate_results,
     write_accuracy_first_diagnostic_report,
     write_outputs,
 )
@@ -61,7 +60,6 @@ from core.privacy_policy import PrivacyPolicy
 from core.privacy_rules import evaluate_rule
 from core.privacy_output_policy import (
     CONTROL3_INVALID_EVIDENCE,
-    CONTROL3_MERCHANT_ARTIFACT_SCOPE_BLOCKED,
     CONTROL3_NUMERIC_POLICY_BLOCKED,
     _attest_privacy_output,
     decide_privacy_output,
@@ -1914,18 +1912,14 @@ def _execute_run(
 
 def _limit_public_artifacts_to_privacy_safe_payload(
     artifacts: AnalysisArtifacts,
-    *,
-    retain_aggregate_results: bool,
-    time_col: Optional[str] = None,
 ) -> None:
-    """Remove analysis-bearing state from a denied or aggregate-only return."""
+    """Remove analysis-bearing state from a denied return."""
     metadata = artifacts.metadata or {}
     safe_metadata_keys = {
         "acknowledgement_state",
         "analysis_type",
         "compliance_posture",
         "compliance_verdict",
-        "merchant_aggregate_only",
         "posture_consistent",
         "privacy_output_decision",
         "privacy_rule_strategy",
@@ -1952,13 +1946,7 @@ def _limit_public_artifacts_to_privacy_safe_payload(
         for key in safe_summary_keys
         if key in summary
     }
-    if not retain_aggregate_results:
-        artifacts.results = {}
-    else:
-        artifacts.results = sanitize_merchant_aggregate_results(
-            artifacts.results,
-            time_col,
-        )
+    artifacts.results = {}
     artifacts.weights_df = None
     artifacts.method_breakdown_df = None
     artifacts.privacy_validation_df = None
@@ -2527,19 +2515,6 @@ def _execute_run_impl(
         privacy_output_decision,
         privacy_output_attestation,
     )
-    merchant_aggregate_only = (
-        privacy_strategy_result.authorizing_rules == ("4/35",)
-    )
-    merchant_artifact_scope_allowed = bool(
-        not merchant_aggregate_only
-        or (
-            output_settings.output_format == "publication"
-            and not request.export_balanced_csv
-        )
-    )
-    privacy_sink_authorized = (
-        privacy_sink_authorized and merchant_artifact_scope_allowed
-    )
     if (
         is_privacy_publication_authorized(privacy_output_decision)
         and not privacy_sink_authorized
@@ -2547,12 +2522,7 @@ def _execute_run_impl(
         privacy_output_decision = PrivacyOutputDecision(
             privacy_publication_authorized=False,
             hard_privacy_block=True,
-            withholding_reason=(
-                CONTROL3_MERCHANT_ARTIFACT_SCOPE_BLOCKED
-                if merchant_aggregate_only
-                and not merchant_artifact_scope_allowed
-                else CONTROL3_INVALID_EVIDENCE
-            ),
+            withholding_reason=CONTROL3_INVALID_EVIDENCE,
         )
     privacy_strategy_blocks = not privacy_sink_authorized
     compliance_summary = build_compliance_summary(
@@ -2596,7 +2566,6 @@ def _execute_run_impl(
     metadata['control3_policy'] = compliance_context.get('control3_policy')
     metadata['privacy_rule_strategy'] = asdict(privacy_strategy_result)
     metadata['privacy_output_decision'] = asdict(privacy_output_decision)
-    metadata['merchant_aggregate_only'] = merchant_aggregate_only
     if not privacy_sink_authorized:
         metadata['publication_withheld_reason'] = (
             privacy_output_decision.withholding_reason
@@ -2729,9 +2698,7 @@ def _execute_run_impl(
     artifacts.privacy_rule_strategy_result = privacy_strategy_result
     artifacts.privacy_output_decision = privacy_output_decision
     artifacts.privacy_sink_authorized = privacy_sink_authorized
-    artifacts.privacy_log_authorized = bool(
-        privacy_sink_authorized and not merchant_aggregate_only
-    )
+    artifacts.privacy_log_authorized = privacy_sink_authorized
     artifacts = write_outputs(
         request,
         artifacts,
@@ -2789,7 +2756,7 @@ def _execute_run_impl(
             privacy_strategy_result,
             privacy_output_decision,
         )
-    elif output_settings.include_audit_log and not merchant_aggregate_only:
+    elif output_settings.include_audit_log:
         artifacts.audit_log_output = write_audit_log(
             config,
             analysis_output_file=analysis_output_file,
@@ -2804,7 +2771,6 @@ def _execute_run_impl(
     if (
         output_settings.include_audit_package
         and privacy_sink_authorized
-        and not merchant_aggregate_only
     ):
         artifacts.audit_package_output = write_audit_package(
             analysis_output_file=analysis_output_file,
@@ -2820,8 +2786,8 @@ def _execute_run_impl(
     # Consented accuracy_first exception: with the operator's explicit
     # acknowledgement and a numeric-only denial, the analysis workbook is
     # still written for internal diagnosis, under a non-publishable filename
-    # prefix and metadata marking. Invalid evidence, mandatory-overlay
-    # failures, and merchant-scope blocks are never exempted, and every
+    # prefix and metadata marking. Invalid evidence and mandatory-overlay
+    # failures are never exempted, and every
     # other sink (publication, CSV, JSON, audit package) stays withheld.
     accuracy_first_diagnostic = bool(
         not privacy_sink_authorized
@@ -2843,16 +2809,7 @@ def _execute_run_impl(
             logger=logger,
         )
     if not privacy_sink_authorized and not accuracy_first_diagnostic:
-        _limit_public_artifacts_to_privacy_safe_payload(
-            artifacts,
-            retain_aggregate_results=False,
-        )
-    elif merchant_aggregate_only:
-        _limit_public_artifacts_to_privacy_safe_payload(
-            artifacts,
-            retain_aggregate_results=True,
-            time_col=time_col,
-        )
+        _limit_public_artifacts_to_privacy_safe_payload(artifacts)
     return artifacts
 
 

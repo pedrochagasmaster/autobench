@@ -26,9 +26,6 @@ from core.privacy_policy import PrivacyPolicy
 CONTROL3_INVALID_EVIDENCE = "control3_invalid_privacy_evidence"
 CONTROL3_MANDATORY_OVERLAY_BLOCKED = "control3_mandatory_overlay_blocked"
 CONTROL3_NUMERIC_POLICY_BLOCKED = "control3_numeric_policy_blocked"
-CONTROL3_MERCHANT_ARTIFACT_SCOPE_BLOCKED = (
-    "control3_merchant_aggregate_scope_blocked"
-)
 CONTROL3_POLICY_VERSION = CONTROL3_NUMERIC_POLICY_VERSION
 CONTROL3_POLICY_SOURCE = CONTROL3_NUMERIC_POLICY_SOURCE
 _CANONICAL_RULES = frozenset(APPROVED_PRIVACY_RULE_NAMES)
@@ -346,7 +343,6 @@ def build_non_publishable_privacy_audit(
             CONTROL3_INVALID_EVIDENCE,
             CONTROL3_MANDATORY_OVERLAY_BLOCKED,
             CONTROL3_NUMERIC_POLICY_BLOCKED,
-            CONTROL3_MERCHANT_ARTIFACT_SCOPE_BLOCKED,
         }
         else CONTROL3_INVALID_EVIDENCE
     )

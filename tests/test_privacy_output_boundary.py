@@ -880,7 +880,7 @@ def test_hard_privacy_denial_emits_refused_not_completed_telemetry(
     assert not any(name == "completed" for name, _args in events)
 
 
-def test_sole_4_35_publication_completes_telemetry_while_logs_stay_withheld(
+def test_sole_4_35_publication_completes_telemetry_and_authorizes_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -918,7 +918,7 @@ def test_sole_4_35_publication_completes_telemetry_while_logs_stay_withheld(
     )
 
     assert artifacts.privacy_sink_authorized is True
-    assert artifacts.privacy_log_authorized is False
+    assert artifacts.privacy_log_authorized is True
     assert events == [
         ("attempted", ("share_analysis",)),
         ("completed", ("share_analysis",)),

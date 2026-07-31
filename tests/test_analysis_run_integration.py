@@ -201,52 +201,18 @@ def test_merchant_4_35_context_reaches_normal_input_validation(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
-    ("output_format", "export_csv", "report_format"),
+    "output_format",
     [
-        ("analysis", False, "xlsx"),
-        ("both", False, "xlsx"),
-        ("analysis", True, "xlsx"),
-        ("analysis", False, "json"),
+        "analysis",
+        "publication",
+        "both",
     ],
 )
-def test_sole_4_35_blocks_analysis_bearing_artifacts(
+def test_sole_4_35_uses_normal_authorized_output_settings(
     tmp_path: Path,
     output_format: str,
-    export_csv: bool,
-    report_format: str,
 ) -> None:
-    artifacts = execute_share_run(
-        AnalysisRunRequest(
-            df=_single_category_df([34, 22, 22, 22]),
-            csv="",
-            metric="amount",
-            dimensions=["segment"],
-            output=str(tmp_path / "merchant_blocked.xlsx"),
-            output_format=output_format,
-            report_format=report_format,
-            export_balanced_csv=export_csv,
-            debug=True,
-            compliance_posture="best_effort",
-            validate_input=False,
-            privacy_rule_strategy=(
-                PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
-            ),
-            is_anonymized_aggregated_merchant_spend=True,
-        ),
-        logging.getLogger("test"),
-    )
-
-    assert artifacts.privacy_sink_authorized is False
-    assert artifacts.privacy_log_authorized is False
-    assert not list(tmp_path.glob("*.xlsx"))
-    assert not list(tmp_path.glob("*_balanced.csv"))
-    assert not list(tmp_path.glob("merchant_blocked.json"))
-
-
-def test_sole_4_35_publication_is_anonymized_aggregate_only(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "merchant_publication.xlsx"
+    output = tmp_path / f"merchant_{output_format}.xlsx"
     merchant_df = pd.concat(
         [
             pd.DataFrame(
@@ -270,7 +236,10 @@ def test_sole_4_35_publication_is_anonymized_aggregate_only(
             metric="amount",
             dimensions=["segment"],
             output=str(output),
-            output_format="publication",
+            output_format=output_format,
+            report_format="json",
+            export_balanced_csv=True,
+            audit_package=True,
             debug=True,
             compliance_posture="best_effort",
             validate_input=False,
@@ -283,47 +252,35 @@ def test_sole_4_35_publication_is_anonymized_aggregate_only(
     )
 
     assert artifacts.privacy_sink_authorized is True
-    assert artifacts.privacy_log_authorized is False
-    assert artifacts.analysis_output_file is None
-    assert artifacts.publication_output is not None
-    publication = Path(artifacts.publication_output)
-    assert publication.exists()
-    workbook = load_workbook(publication, read_only=True)
-    try:
-        assert "Peer Weights" not in workbook.sheetnames
-        assert "Privacy Validation" not in workbook.sheetnames
-        text = " ".join(
-            str(cell.value)
-            for sheet in workbook.worksheets
-            for row in sheet.iter_rows()
-            for cell in row
-            if cell.value is not None
-        )
-    finally:
-        workbook.close()
-    for forbidden in ("P1", "P2", "P3", "P4", "BIC", "Target"):
-        assert forbidden not in text
-    assert artifacts.weights_df is None
-    assert artifacts.privacy_validation_df is None
-    assert artifacts.analyzer is None
-    assert artifacts.report_model is None
-    for frame in artifacts.results.values():
-        if isinstance(frame, pd.DataFrame):
-            # Allow-list semantics: only category identifiers, the time
-            # column, and balanced peer averages survive. Debug-mode columns
-            # such as "Impact (pp)" and target-derived "Distance to Peer (pp)"
-            # must be stripped along with target/BIC/original columns.
-            for column in frame.columns:
-                name = str(column)
-                assert name in (
-                    "Dimension",
-                    "Category",
-                    "Time",
-                    "Time_Period",
-                    "Time Period",
-                ) or name.endswith("Balanced Peer Average (%)"), (
-                    f"unexpected column in merchant aggregate results: {name}"
-                )
+    assert artifacts.privacy_log_authorized is True
+    assert artifacts.privacy_rule_strategy_result is not None
+    assert artifacts.privacy_rule_strategy_result.authorizing_rules == ("4/35",)
+    assert (artifacts.analysis_output_file is not None) == (
+        output_format in {"analysis", "both"}
+    )
+    assert (artifacts.publication_output is not None) == (
+        output_format in {"publication", "both"}
+    )
+    assert (artifacts.json_output is not None) == (
+        output_format in {"analysis", "both"}
+    )
+    assert artifacts.csv_output is not None
+    assert artifacts.audit_log_output is not None
+    assert artifacts.audit_package_output is not None
+    assert artifacts.weights_df is not None
+    assert artifacts.privacy_validation_df is not None
+    assert artifacts.analyzer is not None
+    assert artifacts.report_model is not None
+    assert "merchant_aggregate_only" not in (artifacts.metadata or {})
+    assert all(Path(path).exists() for path in artifacts.report_paths)
+    for path in (
+        artifacts.csv_output,
+        artifacts.audit_log_output,
+        artifacts.audit_package_output,
+    ):
+        assert path is not None and Path(path).exists()
+    if artifacts.json_output is not None:
+        assert Path(artifacts.json_output).exists()
 
 
 def test_default_strategy_preserves_legacy_yaml_merchant_mode(

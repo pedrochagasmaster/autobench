@@ -466,11 +466,11 @@ directly to a handler (bypassing `Logger`) and governed evidence emitted from
 worker threads are outside the run-thread contract and require an independently
 approved sink.
 
-When 4/35 is the sole authorizing rule, authorization is artifact-scoped:
-only `--output-format publication` may be written. That workbook contains
-aggregate benchmark results only. Analysis/debug sheets, JSON, balanced CSV,
-audit packages, and persistent run logs are withheld; requests for those
-surfaces fail closed.
+When 4/35 is the sole authorizing rule, normal output settings apply just as
+they do for 5/25, 6/30, 7/35, and 10/40. Analysis and publication workbooks,
+balanced CSV, JSON, audit logs, and audit packages are allowed or withheld by
+the same general compliance and publication gates. The 4/35 rule still applies
+only when the run explicitly declares anonymized, aggregated merchant spend.
 
 Compact Getnet/server evidence example:
 

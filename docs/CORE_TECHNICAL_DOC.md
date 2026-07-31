@@ -982,9 +982,10 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   of policy provenance, rule/overlay statuses, and failure codes. It excludes
   identities, categories, raw rows, weights, observed shares, rates, and
   benchmark results.
-- Sole-4/35 authorization is limited to a sanitized publication-only workbook.
-  Analysis/debug sheets, JSON, balanced CSV, audit packages, and persistent
-  run logs are outside the anonymized aggregate contract and are withheld.
+- Sole-4/35 authorization uses the same output settings and general compliance
+  and publication gates as every other authorizing rule. It does not add a
+  separate artifact allow-list or suppress analysis workbooks, JSON, balanced
+  CSV, audit logs, or audit packages.
 - CLI and TUI file logs use a deferred in-memory handler. Authorized runs flush
   to the prior timestamped log location. Denied, cancelled, or failed runs
   quarantine the buffer to `autobench_NON_PUBLISHABLE_run_log_<uuid>.log`

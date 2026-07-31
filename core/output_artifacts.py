@@ -6,8 +6,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-import pandas as pd
-
 from core.contracts import (
     AnalysisArtifacts,
     AnalysisRunRequest,
@@ -33,40 +31,6 @@ def _flatten_rate_results(
         for rate_type, rate_results in results.items()
         for dimension, value in rate_results.items()
     }
-
-
-_MERCHANT_AGGREGATE_IDENTIFIER_COLUMNS = frozenset(
-    {"Dimension", "Category", "Time", "Time_Period", "Time Period"}
-)
-_MERCHANT_AGGREGATE_VALUE_SUFFIX = "Balanced Peer Average (%)"
-
-
-def sanitize_merchant_aggregate_results(
-    results: Any,
-    time_col: str | None = None,
-) -> Any:
-    """Keep only allow-listed columns in sole-4/35 aggregate results.
-
-    A merchant aggregate publication may carry category identifiers, the time
-    column, and balanced peer averages. Everything else (target shares, BIC,
-    original/unweighted values, impact and distance columns, and any future
-    analysis column) is excluded by construction.
-    """
-    if isinstance(results, pd.DataFrame):
-        allowed_columns = [
-            column
-            for column in results.columns
-            if str(column) in _MERCHANT_AGGREGATE_IDENTIFIER_COLUMNS
-            or (time_col is not None and str(column) == time_col)
-            or str(column).endswith(_MERCHANT_AGGREGATE_VALUE_SUFFIX)
-        ]
-        return results.loc[:, allowed_columns].copy()
-    if isinstance(results, dict):
-        return {
-            key: sanitize_merchant_aggregate_results(value, time_col)
-            for key, value in results.items()
-        }
-    return results
 
 
 def write_accuracy_first_diagnostic_report(
@@ -203,34 +167,7 @@ def write_outputs(
             # `_write_optional_dataframe_sheet`. The diagnostics live as
             # separate `artifacts.*_df` attributes for the analysis path; the
             # publication helper expects them inside `metadata`.
-            merchant_aggregate_only = bool(
-                (artifacts.metadata or {}).get("merchant_aggregate_only")
-            )
-            if merchant_aggregate_only:
-                # The run may auto-resolve the time column from config when the
-                # request leaves it unset; mirror that so the allow-list keeps
-                # the resolved time column.
-                resolved_time_col = request.time_col
-                if resolved_time_col is None and config is not None:
-                    resolved_time_col = config.get('input', 'time_col')
-                publication_results = sanitize_merchant_aggregate_results(
-                    publication_results,
-                    resolved_time_col,
-                )
-                publication_metadata = {
-                    "analysis_type": (
-                        "share" if request.is_share else "rate"
-                    ),
-                    "compliance_posture": (
-                        artifacts.compliance_summary or {}
-                    ).get("posture"),
-                    "compliance_verdict": (
-                        artifacts.compliance_summary or {}
-                    ).get("compliance_verdict"),
-                    "merchant_aggregate_only": True,
-                }
-            else:
-                publication_metadata = dict(artifacts.metadata or {})
+            publication_metadata = dict(artifacts.metadata or {})
             for key, value in {
                 "weights_df": artifacts.weights_df,
                 "method_breakdown_df": artifacts.method_breakdown_df,
@@ -241,11 +178,7 @@ def write_outputs(
                 "secondary_results": artifacts.secondary_results_df,
                 "rank_changes_df": getattr(artifacts, "rank_changes_df", None),
             }.items():
-                if (
-                    not merchant_aggregate_only
-                    and value is not None
-                    and key not in publication_metadata
-                ):
+                if value is not None and key not in publication_metadata:
                     publication_metadata[key] = value
 
             ReportGenerator(config).generate_publication_workbook(
