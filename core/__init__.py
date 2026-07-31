@@ -1,6 +1,25 @@
-"""Core modules for the benchmarking tool."""
+"""Supported public facade for the benchmarking tool."""
 
-from .contracts import AnalysisArtifacts, AnalysisRunRequest
+from .contracts import (
+    AnalysisArtifacts,
+    AnalysisRunRequest,
+    PrivacyConcentrationBasis,
+    PrivacyEvaluationStatus,
+    PrivacyFailureReason,
+    PrivacyMandatoryOverlayEvaluation,
+    PrivacyMetricContext,
+    PrivacyOutputDecision,
+    PrivacyRuleStrategy,
+    PrivacyRuleStrategyEvaluation,
+    PrivacyRuleStrategyResult,
+    PrivacyRuleSweepEvaluation,
+    PrivacySweepAuditMetadata,
+    PrivacySweepRequest,
+    PrivacySweepResult,
+    PrivacySweepStatus,
+    PrivacyThresholdEvaluation,
+)
+from .privacy_policy import evaluate_privacy_rule_sweep
 from .dimensional_analyzer import DimensionalAnalyzer
 from .privacy_validator import PrivacyValidator
 from .data_loader import DataLoader
@@ -9,6 +28,22 @@ from .report_generator import ReportGenerator
 __all__ = [
     'AnalysisRunRequest',
     'AnalysisArtifacts',
+    'PrivacySweepRequest',
+    'PrivacyMetricContext',
+    'PrivacyOutputDecision',
+    'PrivacyRuleStrategy',
+    'PrivacyRuleStrategyEvaluation',
+    'PrivacyRuleStrategyResult',
+    'PrivacyConcentrationBasis',
+    'PrivacyEvaluationStatus',
+    'PrivacySweepStatus',
+    'PrivacyFailureReason',
+    'PrivacyThresholdEvaluation',
+    'PrivacyRuleSweepEvaluation',
+    'PrivacyMandatoryOverlayEvaluation',
+    'PrivacySweepAuditMetadata',
+    'PrivacySweepResult',
+    'evaluate_privacy_rule_sweep',
     'execute_share_run',
     'execute_rate_run',
     'DimensionalAnalyzer',

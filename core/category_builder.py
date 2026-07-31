@@ -111,7 +111,7 @@ class CategoryBuilder:
 
         all_categories: List[Dict[str, Any]] = []
         time_periods = sorted(df[self.time_column].dropna().unique())
-        logger.info("Found %s time periods: %s", len(time_periods), time_periods)
+        logger.info("Found %s governed time periods", len(time_periods))
 
         for time_period in time_periods:
             time_df = df[df[self.time_column] == time_period]

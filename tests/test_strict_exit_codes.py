@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,13 +72,46 @@ def _share_args(
     )
 
 
-def _violating_share_df() -> pd.DataFrame:
-    """Dataset with an exclusive PREPAID category (single peer) under 6 peers."""
-    rows: list[dict[str, object]] = []
-    for entity in ["Target", "P1", "P2", "P3", "P4", "P5", "P6"]:
-        rows.append({"issuer_name": entity, "card_type": "CREDIT", "txn_cnt": 100})
-    rows.append({"issuer_name": "P1", "card_type": "PREPAID", "txn_cnt": 5000})
-    return pd.DataFrame(rows)
+def _hard_privacy_denial_args(
+    tmp_path: Path,
+    output: Path,
+    *,
+    posture: str,
+) -> SimpleNamespace:
+    """Build a five-peer 5/25 failure that cannot be suppressed or reweighted."""
+    df = pd.DataFrame(
+        {
+            "issuer_name": ["Target", "P1", "P2", "P3", "P4", "P5"],
+            "card_type": ["CREDIT"] * 6,
+            "txn_cnt": [100, 80, 5, 5, 5, 5],
+        }
+    )
+    config_path = tmp_path / f"hard_privacy_{posture}.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'version: "3.0"',
+                f"compliance_posture: {posture}",
+                "optimization:",
+                "  bounds:",
+                "    max_weight: 1.0",
+                "    min_weight: 0.999",
+                "  linear_programming:",
+                "    tolerance: 100.0",
+                "  subset_search:",
+                "    enabled: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    args = _share_args(
+        output,
+        df,
+        compliance_posture=posture,
+        preset=None,
+    )
+    args.config = str(config_path)
+    return args
 
 
 def _compliant_share_df() -> pd.DataFrame:
@@ -187,30 +221,42 @@ def test_strict_posture_non_compliant_share_run_returns_exit_2(tmp_path: Path) -
     logger = logging.getLogger("test_strict_exit_codes")
 
     result = run_share_analysis(
-        _share_args(output, _violating_share_df(), compliance_posture="strict"),
-        logger,
-    )
-
-    assert result == EXIT_STRICT_NON_COMPLIANT
-    assert output.exists()
-
-
-def test_best_effort_same_data_returns_exit_0(tmp_path: Path) -> None:
-    output = tmp_path / "best_effort_violation.xlsx"
-    logger = logging.getLogger("test_strict_exit_codes")
-
-    result = run_share_analysis(
-        _share_args(
+        _hard_privacy_denial_args(
+            tmp_path,
             output,
-            _violating_share_df(),
-            compliance_posture="best_effort",
-            preset="balanced_default",
+            posture="strict",
         ),
         logger,
     )
 
-    assert result == EXIT_OK
-    assert output.exists()
+    assert result == EXIT_STRICT_NON_COMPLIANT
+    assert not output.exists()
+    assert list(
+        tmp_path.glob("autobench_NON_PUBLISHABLE_control3_*.json")
+    )
+
+
+def test_best_effort_cannot_override_hard_privacy_denial(tmp_path: Path) -> None:
+    output = tmp_path / "best_effort_violation.xlsx"
+    logger = logging.getLogger("test_strict_exit_codes")
+
+    result = run_share_analysis(
+        _hard_privacy_denial_args(
+            tmp_path,
+            output,
+            posture="best_effort",
+        ),
+        logger,
+    )
+
+    assert result == EXIT_STRICT_NON_COMPLIANT
+    assert not output.exists()
+    audit_path = next(
+        tmp_path.glob("autobench_NON_PUBLISHABLE_control3_*.json")
+    )
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["strategy"] == "select_by_peer_count"
+    assert audit["authorizing_rules"] == []
 
 
 def test_compliant_strict_share_run_returns_exit_0(tmp_path: Path) -> None:

@@ -5,9 +5,297 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional
+from enum import Enum
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core.control3_policy import CONTROL3_POLICY_KEYS
+
+APPROVED_PRIVACY_RULE_NAMES = ("5/25", "6/30", "7/35", "10/40", "4/35")
+CONTROL3_NUMERIC_POLICY_VERSION = "v5 (2026-06-03)"
+CONTROL3_NUMERIC_POLICY_SOURCE = (
+    "docs/control-3-customer-merchant-performance-v5-20260603.md"
+)
+
+
+class PrivacyMetricContext(str, Enum):
+    """Metric context needed to validate the concentration basis."""
+
+    OTHER = "other"
+    ISSUER_FRAUD = "issuer_fraud"
+    ISSUER_CHARGEBACK = "issuer_chargeback"
+
+
+class PrivacyConcentrationBasis(str, Enum):
+    """Basis used to compute the supplied concentration evidence."""
+
+    BENCHMARK_METRIC = "benchmark_metric"
+    CLEARING_SPEND = "clearing_spend"
+
+
+class PrivacyEvaluationStatus(str, Enum):
+    """Outcome for a rule or mandatory overlay."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class PrivacySweepStatus(str, Enum):
+    """Scope-aware outcome of the numeric-rule sweep and its overlays."""
+
+    NOT_SUBJECT = "not_subject_to_benchmark_numeric_rules"
+    NUMERICALLY_COMPLIANT = "numerically_compliant"
+    NUMERICALLY_NONCOMPLIANT = "numerically_noncompliant"
+    INVALID_EVIDENCE = "invalid_or_incomplete_evidence"
+    BLOCKED_BY_MANDATORY_OVERLAY = "blocked_by_mandatory_overlay"
+
+
+class PrivacyRuleStrategy(str, Enum):
+    """Rule-selection strategy used by the normal analysis pipeline."""
+
+    SELECT_BY_PEER_COUNT = "select_by_peer_count"
+    SWEEP_ANY_APPLICABLE = "sweep_any_applicable"
+
+
+@dataclass(frozen=True)
+class PrivacyRuleStrategyEvaluation:
+    """One rule-specific optimization attempt in an integrated analysis run."""
+
+    rule_name: str
+    status: PrivacyEvaluationStatus
+    failure_reasons: Tuple[PrivacyFailureReason, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrivacyRuleStrategyResult:
+    """Immutable audit result for the normal pipeline's rule strategy."""
+
+    strategy: PrivacyRuleStrategy
+    is_anonymized_aggregated_merchant_spend: bool
+    status: PrivacySweepStatus
+    numeric_rules_passed: bool
+    mandatory_overlays_passed: bool
+    publication_authorized_by_numeric_policy: bool
+    display_rule: Optional[str]
+    feasible_candidate_rules: Tuple[str, ...]
+    authorizing_rules: Tuple[str, ...]
+    candidate_attempt_evaluations: Tuple[PrivacyRuleStrategyEvaluation, ...]
+    emitted_output_evaluations: Tuple[PrivacyRuleStrategyEvaluation, ...]
+    mandatory_overlay_evaluations: Tuple[PrivacyMandatoryOverlayEvaluation, ...]
+    rule_set_digest: str
+    policy_version: str = CONTROL3_NUMERIC_POLICY_VERSION
+    policy_source: str = CONTROL3_NUMERIC_POLICY_SOURCE
+
+    def __post_init__(self) -> None:
+        """Reject contradictory strategy verdicts before they reach a sink."""
+        canonical_rules = set(APPROVED_PRIVACY_RULE_NAMES)
+        passed_attempts = {
+            evaluation.rule_name
+            for evaluation in self.candidate_attempt_evaluations
+            if evaluation.status == PrivacyEvaluationStatus.PASSED
+        }
+        passed_emitted = {
+            evaluation.rule_name
+            for evaluation in self.emitted_output_evaluations
+            if evaluation.status == PrivacyEvaluationStatus.PASSED
+        }
+        overlays_passed = bool(self.mandatory_overlay_evaluations) and all(
+            evaluation.status != PrivacyEvaluationStatus.FAILED
+            for evaluation in self.mandatory_overlay_evaluations
+        )
+        expected_authorizers = tuple(
+            rule
+            for rule in APPROVED_PRIVACY_RULE_NAMES
+            if rule in passed_emitted
+        )
+        if not overlays_passed:
+            expected_authorizers = ()
+        expected_status = (
+            PrivacySweepStatus.NUMERICALLY_COMPLIANT
+            if expected_authorizers
+            else (
+                PrivacySweepStatus.BLOCKED_BY_MANDATORY_OVERLAY
+                if passed_emitted and not overlays_passed
+                else PrivacySweepStatus.NUMERICALLY_NONCOMPLIANT
+            )
+        )
+        coherent = (
+            isinstance(
+                self.is_anonymized_aggregated_merchant_spend,
+                bool,
+            )
+            and
+            bool(self.candidate_attempt_evaluations)
+            and bool(self.emitted_output_evaluations)
+            and len(set(self.feasible_candidate_rules))
+            == len(self.feasible_candidate_rules)
+            and len(set(self.authorizing_rules))
+            == len(self.authorizing_rules)
+            and len(
+                {
+                    evaluation.rule_name
+                    for evaluation in self.candidate_attempt_evaluations
+                }
+            )
+            == len(self.candidate_attempt_evaluations)
+            and len(
+                {
+                    evaluation.rule_name
+                    for evaluation in self.emitted_output_evaluations
+                }
+            )
+            == len(self.emitted_output_evaluations)
+            and set(self.feasible_candidate_rules) == passed_attempts
+            and set(self.feasible_candidate_rules) <= canonical_rules
+            and passed_emitted <= canonical_rules
+            and self.authorizing_rules == expected_authorizers
+            and self.numeric_rules_passed == bool(passed_emitted)
+            and self.mandatory_overlays_passed == overlays_passed
+            and self.publication_authorized_by_numeric_policy
+            == bool(expected_authorizers)
+            and self.status == expected_status
+            and len(self.rule_set_digest) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in self.rule_set_digest
+            )
+        )
+        if not coherent:
+            raise ValueError(
+                "PrivacyRuleStrategyResult contains contradictory publication fields"
+            )
+
+
+@dataclass(frozen=True)
+class PrivacyOutputDecision:
+    """Final non-overridable Control 3 decision for disk output."""
+
+    privacy_publication_authorized: bool
+    hard_privacy_block: bool
+    withholding_reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Reject contradictory publication decisions at the contract boundary."""
+        authorized = (
+            self.privacy_publication_authorized
+            and not self.hard_privacy_block
+            and self.withholding_reason is None
+        )
+        blocked = (
+            not self.privacy_publication_authorized
+            and self.hard_privacy_block
+            and bool(self.withholding_reason)
+        )
+        if not (authorized or blocked):
+            raise ValueError(
+                "PrivacyOutputDecision must be either affirmatively authorized "
+                "or hard-blocked with a withholding reason"
+            )
+
+
+@dataclass(frozen=True)
+class PrivacySweepRequest:
+    """Compact server-side evidence for a Control 3.2 privacy-rule sweep.
+
+    Threshold counts are cumulative. For example, a participant counted at
+    20 percent is also included in every lower-threshold count.
+    """
+
+    contains_peer_benchmark_data: Optional[bool]
+    is_anonymized_aggregated_merchant_spend: Optional[bool]
+    metric_context: Optional[PrivacyMetricContext]
+    concentration_basis: Optional[PrivacyConcentrationBasis]
+    participant_count: Optional[int] = None
+    maximum_share_percentage: Optional[float] = None
+    count_at_or_above_7_percent: Optional[int] = None
+    count_at_or_above_8_percent: Optional[int] = None
+    count_at_or_above_10_percent: Optional[int] = None
+    count_at_or_above_15_percent: Optional[int] = None
+    count_at_or_above_20_percent: Optional[int] = None
+    citibank_included: Optional[bool] = None
+    citi_competitor_receives_output: Optional[bool] = None
+    citibank_share_percentage: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class PrivacyFailureReason:
+    """Machine-readable privacy failure without entity-level information."""
+
+    code: str
+    message: str
+    field: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PrivacyThresholdEvaluation:
+    """One normalized cumulative threshold-count requirement."""
+
+    threshold_percentage: float
+    required_count: int
+    observed_count: int
+    compliant: bool
+
+
+@dataclass(frozen=True)
+class PrivacyRuleSweepEvaluation:
+    """Diagnostic evaluation of compact evidence against one privacy rule."""
+
+    rule_name: str
+    status: PrivacyEvaluationStatus
+    minimum_entities: int
+    maximum_share_percentage: float
+    threshold_evaluations: Tuple[PrivacyThresholdEvaluation, ...]
+    inapplicability_reasons: Tuple[PrivacyFailureReason, ...]
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+
+    @property
+    def applicable(self) -> bool:
+        return self.status != PrivacyEvaluationStatus.NOT_APPLICABLE
+
+    @property
+    def strict_passed(self) -> bool:
+        return self.status == PrivacyEvaluationStatus.PASSED
+
+
+@dataclass(frozen=True)
+class PrivacyMandatoryOverlayEvaluation:
+    """Mandatory condition applied after one or more base rules pass."""
+
+    overlay_name: str
+    status: PrivacyEvaluationStatus
+    maximum_share_percentage: float
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+
+
+@dataclass(frozen=True)
+class PrivacySweepAuditMetadata:
+    """Stable policy metadata for audit consumers."""
+
+    policy_name: str
+    policy_version: str
+    policy_source: str
+    rule_set_digest: str
+    decision_method: str
+    evidence_valid: bool
+    evaluated_rules: Tuple[str, ...]
+    other_control_review_required: bool
+    recheck_after_peer_group_change_required: bool
+    annual_recheck_required: bool
+
+
+@dataclass(frozen=True)
+class PrivacySweepResult:
+    """Scoped numeric-policy outcome; not a blanket Control 3 verdict."""
+
+    status: PrivacySweepStatus
+    numeric_rules_passed: Optional[bool]
+    mandatory_overlays_passed: Optional[bool]
+    numeric_policy_passed: Optional[bool]
+    authorizing_rules: Tuple[str, ...]
+    failure_reasons: Tuple[PrivacyFailureReason, ...]
+    rule_evaluations: Tuple[PrivacyRuleSweepEvaluation, ...]
+    mandatory_overlays: Tuple[PrivacyMandatoryOverlayEvaluation, ...]
+    audit: PrivacySweepAuditMetadata
 
 
 @dataclass
@@ -33,6 +321,7 @@ class SolverRequest:
     learning_rate: float = 0.01
     violation_penalty_weight: float = 1000.0
     merchant_mode: bool = False
+    protected_entity_caps: Dict[str, float] = field(default_factory=dict)
     enforce_additional_constraints: bool = False
     dynamic_constraints_enabled: bool = False
     time_column: Optional[str] = None
@@ -117,6 +406,11 @@ class AnalysisRunRequest:
     fraud_in_bps: bool = True
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
+    privacy_rule_strategy: PrivacyRuleStrategy = PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+    is_anonymized_aggregated_merchant_spend: bool = False
+    citibank_entity_name: Optional[str] = None
+    citi_competitor_receives_output: bool = False
+    privacy_concentration_col: Optional[str] = None
     control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
 
@@ -162,6 +456,8 @@ class AnalysisRunRequest:
             for key in CONTROL3_POLICY_KEYS
             if getattr(ns, key, None) is not None
         }
+        if getattr(ns, "privacy_rule_sweep", False):
+            kwargs["privacy_rule_strategy"] = PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
         return cls(**kwargs)
 
     @classmethod
@@ -202,6 +498,10 @@ class AnalysisArtifacts:
     publication_output: Optional[str] = None
     report_model: Any = None
     json_output: Optional[str] = None
+    privacy_rule_strategy_result: Optional[PrivacyRuleStrategyResult] = None
+    privacy_output_decision: Optional[PrivacyOutputDecision] = None
+    privacy_sink_authorized: bool = False
+    privacy_log_authorized: bool = False
 
 
 @dataclass

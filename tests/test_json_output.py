@@ -41,6 +41,7 @@ def _rate_request(tmp_path: Path, **overrides: object) -> AnalysisRunRequest:
         "total_col": "total",
         "approved_col": "approved",
         "fraud_col": "fraud",
+        "privacy_concentration_col": "total",
         "dimensions": SHARE_DIMENSIONS,
         "time_col": "year_month",
         "preset": "balanced_default",

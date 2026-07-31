@@ -32,6 +32,7 @@ def build_lp_request(
         max_iterations=settings.max_iterations,
         min_weight=settings.min_weight,
         max_weight=settings.max_weight,
+        protected_entity_caps=dict(getattr(settings, "protected_entity_caps", {}) or {}),
     )
 
 
@@ -61,6 +62,7 @@ def build_heuristic_request(
         learning_rate=settings.bayesian_learning_rate,
         violation_penalty_weight=settings.violation_penalty_weight,
         merchant_mode=settings.merchant_mode,
+        protected_entity_caps=dict(getattr(settings, "protected_entity_caps", {}) or {}),
         enforce_additional_constraints=settings.enforce_additional_constraints,
         dynamic_constraints_enabled=settings.dynamic_constraints_enabled,
         time_column=settings.time_column,

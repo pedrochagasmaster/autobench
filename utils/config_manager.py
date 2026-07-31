@@ -632,6 +632,7 @@ class ConfigManager:
             'min_weight': ('optimization', 'bounds', 'min_weight'),
             'volume_preservation': ('optimization', 'constraints', 'volume_preservation'),
             'bic_percentile': ('analysis', 'best_in_class_percentile'),
+            'merchant_mode': ('analysis', 'merchant_mode'),
             'auto': ('analysis', 'auto_detect_dimensions'),
             'auto_subset_search': ('optimization', 'subset_search', 'enabled'),
             'subset_search_max_tests': ('optimization', 'subset_search', 'max_attempts'),
@@ -801,4 +802,3 @@ class ConfigManager:
     def resolve(self) -> ResolvedConfig:
         """Return a typed view of the merged configuration."""
         return ResolvedConfig.from_merged_config(self.config)
-

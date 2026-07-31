@@ -97,19 +97,21 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(save_scenario())
 
     saved = yaml.safe_load(session_file.read_text())
-    assert saved["csv_path"] == str(FIXTURE)
-    assert saved["entity_name"] == "Target"
+    assert "csv_path" not in saved
+    assert "output_file" not in saved
+    assert "entity_name" not in saved
+    assert "citibank_entity_name" not in saved
     assert saved["share_dims"] == ["card_type"]
 
     async def restore_scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause(0.3)
-            assert app.query_one("#csv_path").value == str(FIXTURE)
-            assert app.query_one("#entity_col", Select).value == "issuer_name"
-            assert app.query_one("#entity_name", Select).value == "Target"
-            assert app.query_one("#time_col", Select).value == "year_month"
-            assert app.query_one("#share_dims", SelectionList).selected == ["card_type"]
+            assert app.query_one("#csv_path").value == ""
+            assert app.query_one("#entity_col", Select).value == SELECT_BLANK
+            assert app.query_one("#entity_name", Select).value == SELECT_BLANK
+            assert app.query_one("#time_col", Select).value == SELECT_BLANK
+            assert app.query_one("#share_dims", SelectionList).selected == []
 
     asyncio.run(restore_scenario())
 
@@ -133,6 +135,38 @@ def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> No
             await pilot.pause()
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
+
+    asyncio.run(scenario())
+
+
+def test_restore_session_ignores_valid_legacy_sensitive_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session_file = tmp_path / "session.yaml"
+    csv_path = tmp_path / "legacy.csv"
+    csv_path.write_bytes(FIXTURE.read_bytes())
+    output_path = tmp_path / "legacy_output.xlsx"
+    session_file.write_text(
+        yaml.safe_dump(
+            {
+                "csv_path": str(csv_path),
+                "output_file": str(output_path),
+                "entity_col": "issuer_name",
+                "entity_name": "Target",
+            }
+        )
+    )
+    monkeypatch.setattr(tui_app, "SESSION_FILE", session_file)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            assert app.query_one("#csv_path").value == ""
+            assert app.query_one("#output_file").value == ""
+            assert app.query_one("#entity_col", Select).value == SELECT_BLANK
+            assert app.query_one("#entity_name", Select).value == SELECT_BLANK
 
     asyncio.run(scenario())
 
@@ -266,3 +300,13 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
     assert "Analysis completed successfully" in log_text
     assert run_state == "success"
     assert output.exists()
+
+
+def test_tui_log_directory_honors_runtime_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    isolated = tmp_path / "tui_logs"
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(isolated))
+
+    assert tui_app._resolve_log_dir() == isolated

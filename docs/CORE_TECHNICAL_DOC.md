@@ -356,7 +356,9 @@ Below are the primary config paths (typically set via presets) and how they tran
 
 - analysis.merchant_mode
   - Mapped to DimensionalAnalyzer.merchant_mode.
-  - Allows the 4/35 rule if peer count is 4.
+  - Legacy compatibility setting for single-rule selection at exactly four
+    peers. Sweep mode instead uses the explicit anonymized aggregated
+    merchant-spend context and applies 4/35 at four or more participants.
 
 - input.validate_input / input.validation_thresholds
   - Used by ValidationRunner + DataLoader validators.
@@ -683,7 +685,9 @@ Step 2: Optional validation
 - ValidationRunner reads input.validate_input and input.validation_thresholds.
 - It runs DataLoader.validate_share_input or validate_rate_input.
 - Errors stop the run; warnings are logged and analysis continues.
-- For merchant_mode, min_peer_count is lowered to 4 to permit 4/35.
+- For legacy merchant mode, and for an explicit merchant-spend sweep,
+  min_peer_count is lowered to 4 so policy evaluation can determine 4/35
+  applicability.
 
 Step 3: Category construction
 - CategoryBuilder aggregates per peer per dimension category.
@@ -695,9 +699,12 @@ Step 3: Category construction
   - TIME_TOTAL constraints (per time period)
   - TIME_CATEGORY constraints (per category per period)
 
-Step 4: Privacy rule selection
-- PrivacyValidator.select_rule chooses one of 4/35, 5/25, 6/30, 7/35, 10/40
-  based on peer count (with merchant_mode allowing 4 peers).
+Step 4: Legacy optimizer rule selection
+- The existing optimizer compatibility path uses
+  `PrivacyValidator.select_rule` to choose one rule for constraint generation.
+  This internal selection is not the Control 3 numeric sweep verdict.
+- Server-side audit consumers must use `evaluate_privacy_rule_sweep`, which
+  evaluates every applicable rule with OR semantics.
 
 Step 5: Global LP attempt
 - LPSolver builds one cap constraint per (category, peer).
@@ -834,10 +841,11 @@ CSV/JSON:
 - Consider documenting or consolidating to reduce ambiguity.
 - Status: addressed by enforcing output flags in the Excel report generator (metadata-driven sheet inclusion).
 
-5) Merchant mode vs validation thresholds
-- Validation default min_peer_count is 5, but merchant 4/35 is allowed with merchant_mode.
-- Validation thresholds could be rule-aware to avoid false errors.
-- Status: addressed by lowering validation min_peer_count to 4 when merchant_mode is enabled.
+5) Merchant context vs validation thresholds
+- Validation defaults to five peers. Legacy merchant mode and the explicit
+  anonymized aggregated merchant-spend sweep context lower the input threshold
+  to four; the sweep still applies 4/35 only when that explicit scope is true.
+- Status: addressed in shared run configuration before input validation.
 
 6) optimization.constraints.consistency_mode is not wired
 - Config and schema support it, but core uses an explicit consistent_weights flag.
@@ -893,8 +901,95 @@ Standardized solver output:
 ## File-by-File Documentation
 
 ### core/__init__.py
-- Exposes core classes for external imports.
-- __all__ includes DimensionalAnalyzer, PrivacyValidator, DataLoader, ReportGenerator.
+- Exposes the supported analysis-run and compact privacy-sweep contracts.
+- Raw rule dictionaries and `PrivacyPolicy` remain internal. Historical
+  `PrivacyValidator`, `DataLoader`, `DimensionalAnalyzer`, and
+  `ReportGenerator` facade imports remain available for compatibility.
+
+### core/privacy_policy.py
+
+Purpose: Own policy orchestration over the canonical numeric rule engine.
+
+- `evaluate_privacy_rule_sweep(request)` evaluates every applicable approved
+  rule and passes the base numeric policy when any applicable rule passes.
+- General rules apply when `participant_count >= min_entities`.
+- 4/35 additionally requires explicit anonymized, aggregated merchant-spend
+  scope and applies at four or more participants.
+- The Citibank competitor-recipient 25% cap is a mandatory overlay, not an
+  alternative base rule.
+- `citibank_included` and `citi_competitor_receives_output` are independent
+  facts. The overlay applies only when both are true. Recipient=true with Citi
+  absent is valid and yields `NOT_APPLICABLE`; a supplied share while Citi is
+  absent is contradictory. When Citi is present but the recipient is not a
+  competitor, an optional observational share is accepted only if it passes
+  normal numeric and maximum-share consistency checks.
+- In the normal analysis contract, an omitted `citibank_entity_name` declares
+  Citi absent. Supplying a name declares Citi present and requires one exact,
+  unambiguous governed identity even when the overlay is not applicable.
+- Issuer fraud and chargeback evidence must declare clearing spend as its
+  concentration basis.
+- Results distinguish not-subject, numerically compliant, numerically
+  noncompliant, invalid evidence, and mandatory-overlay blocks. A numeric pass
+  is not a blanket Control 3 verdict.
+- `PrivacyRuleStrategy` integrates the policy into `AnalysisRunRequest`.
+  CLI and TUI adapters only select the strategy; the shared run executor
+  derives the governed population and performs independent rule-specific
+  optimization attempts. `feasible_candidate_rules` describes those attempts,
+  while `authorizing_rules` is computed only after every applicable rule and
+  Citi overlay are re-evaluated against the one emitted candidate.
+- Candidate selection prefers the legacy peer-count-selected rule when safe,
+  then uses a fixed compatibility tie-break order. The order is not a policy
+  hierarchy. No artifact mixes candidate weight sets.
+- Share secondary metrics are included in emitted-output revalidation. Every
+  fraud/chargeback run requires `privacy_concentration_col` under both
+  strategies, so clearing spend is never inferred from the reported metric or
+  denominator.
+- Strategy audit metadata includes candidate and emitted evaluations, display
+  rule, authorizers, structured mandatory-overlay evaluations, policy
+  source/version, and the active rule-set digest.
+  The compact facade remains the low-level Getnet API.
+
+### Control 3 output boundary
+
+- `core.privacy_output_policy.decide_privacy_output()` derives the single hard
+  disk-output decision from the final emitted-output strategy result. It
+  requires an affirmative numeric-policy decision, at least one
+  `authorizing_rule`, and passing mandatory overlays.
+- A hard denial is independent of compliance posture. It prevents analysis and
+  publication workbooks, balanced CSV, JSON, audit packages, preset/impact
+  sheets, and other benchmark-bearing exports in `strict`, `best_effort`, and
+  `accuracy_first`.
+- `AnalysisArtifacts` clears every withheld output path and exposes the
+  immutable `privacy_output_decision`. The machine-readable reason
+  distinguishes numeric-policy, invalid-evidence, and mandatory-overlay
+  blocks.
+- The only optional denial artifact is
+  `autobench_NON_PUBLISHABLE_control3_<opaque-run-id>.json`. Its schema is an
+  explicit allow-list
+  of policy provenance, rule/overlay statuses, and failure codes. It excludes
+  identities, categories, raw rows, weights, observed shares, rates, and
+  benchmark results.
+- Sole-4/35 authorization is limited to a sanitized publication-only workbook.
+  Analysis/debug sheets, JSON, balanced CSV, audit packages, and persistent
+  run logs are outside the anonymized aggregate contract and are withheld.
+- CLI and TUI file logs use a deferred in-memory handler. Authorized runs flush
+  to the prior timestamped log location and denied, cancelled, or failed runs
+  discard and detach the buffer. Offline product telemetry has a closed event
+  schema containing only launch/surface/action/outcome enums, duration,
+  username/session/version, and timestamps; it rejects file paths, entity or
+  peer names, categories, shares, weights, rates, and benchmark values.
+- The Python API creates no file sink. At run entry, `PrivacyRunLogGate`
+  captures current-thread records at standard `Logger.callHandlers` dispatch,
+  including handlers installed after gate start. Authorization replays the
+  buffer; denial or failure discards it, and every exit restores global
+  dispatch. Other threads continue logging normally. A nested governed run on
+  the same thread is rejected before analysis. Direct calls to a handler that
+  bypass `Logger`, and governed worker-thread logging, require independently
+  trusted privacy-gated sinks.
+- TUI session persistence intentionally excludes CSV/output paths, target and
+  Citi entity values, and the concentration-column input. Only non-identifying
+  form preferences such as modes, column selectors, toggles, and dimension
+  selections are restored.
 
 ### core/validation_runner.py
 
@@ -978,12 +1073,14 @@ Key methods:
 
 ### core/privacy_validator.py
 
-Purpose: Enforce Control 3.2 privacy rules and concentration caps.
+Purpose: Internal compatibility engine for existing single-rule optimization
+and validation paths. New server-side audit consumers use the sweep facade in
+`core/privacy_policy.py`.
 
 Rules:
 - 5/25, 6/30, 7/35, 10/40, and merchant-only 4/35.
 
-Key methods:
+Internal compatibility methods:
 - select_rule(peer_count, merchant_mode=False): chooses appropriate rule.
 - get_rule_config(rule_name): returns rule configuration.
 - evaluate_additional_constraints(shares, rule_name): checks tier requirements.

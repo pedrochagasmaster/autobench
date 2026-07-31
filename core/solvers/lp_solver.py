@@ -1,6 +1,6 @@
 import logging
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.contracts import SolverRequest
 from .base_solver import PrivacySolver, SolverResult
@@ -41,6 +41,20 @@ class LPSolver(PrivacySolver):
         categories = solver_request.categories
         max_concentration = solver_request.max_concentration
         peer_volumes = solver_request.peer_volumes
+        missing_protected = sorted(
+            set(solver_request.protected_entity_caps) - set(peers)
+        )
+        if missing_protected:
+            return SolverResult(
+                weights={},
+                method="lp",
+                stats={
+                    "error": "protected_entity_absent",
+                    "protected_entities": missing_protected,
+                    "converged": False,
+                },
+                success=False,
+            )
 
         # Extract config
         rank_preservation_strength = float(solver_request.rank_preservation_strength)
@@ -68,7 +82,7 @@ class LPSolver(PrivacySolver):
 
         # Build category vectors v_c in R^P in one pass. The previous nested
         # scan was quadratic in the number of peer/category records.
-        cat_vectors_by_key = {}
+        cat_vectors_by_key: Dict[Tuple[Any, Any], np.ndarray] = {}
         for cat in categories:
             key = (cat['dimension'], cat['category'])
             if cat['peer'] not in peer_index:
@@ -83,7 +97,13 @@ class LPSolver(PrivacySolver):
             logger.warning("No category volumes found for LP solver.")
             return None
 
-        cap = max_concentration / 100.0
+        peer_caps = np.asarray(
+            [
+                float(solver_request.protected_entity_caps.get(peer, max_concentration)) / 100.0
+                for peer in peers
+            ],
+            dtype=float,
+        )
         # Baseline shares (overall) for rank order
         peer_vol_arr = np.array([peer_volumes.get(p, 0.0) for p in peers], dtype=float)
         total_vol = float(peer_vol_arr.sum())
@@ -150,7 +170,10 @@ class LPSolver(PrivacySolver):
         # are evaluated after solving because they are count-based, non-linear
         # constraints in the current solver architecture.
         # Share cap constraints
-        cap_coefficients = -cap * category_matrix[cap_category_indices].copy()
+        cap_coefficients = (
+            -peer_caps[cap_peer_indices, None]
+            * category_matrix[cap_category_indices].copy()
+        )
         cap_coefficients[
             np.arange(num_cap_constraints), cap_peer_indices
         ] += category_matrix[cap_category_indices, cap_peer_indices]

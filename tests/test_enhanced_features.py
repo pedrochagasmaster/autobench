@@ -224,6 +224,7 @@ class TestValidationAndOutputs(unittest.TestCase):
                 total_col='total',
                 approved_col='approved',
                 fraud_col='fraud',
+                privacy_concentration_col='total',
                 secondary_metrics=None,
                 entity='Target',
                 entity_col='issuer_name',

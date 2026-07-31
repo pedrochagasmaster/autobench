@@ -148,7 +148,12 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             resolved = resolve_target_entity(df, 'issuer_name', 'target', logging.getLogger(__name__))
 
         self.assertIsNone(resolved)
-        self.assertTrue(any('Ambiguous entity name' in msg for msg in captured.output))
+        self.assertTrue(
+            any(
+                'Configured target entity is ambiguous' in msg
+                for msg in captured.output
+            )
+        )
 
     def test_resolve_dimensions_prefers_explicit_list(self) -> None:
         args = SimpleNamespace(dimensions=['card_type'], auto=False)
@@ -332,7 +337,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
 
         self.assertIsNone(diagnostics["privacy_validation_df"])
         self.assertIs(diagnostics["compliance_privacy_validation_df"], validation_result)
-        self.assertIs(diagnostics["metadata_updates"]["privacy_validation_result"], validation_result)
+        self.assertNotIn("privacy_validation_result", diagnostics["metadata_updates"])
 
     def test_prepare_run_data_uses_loader_and_resolves_entity_column(self) -> None:
         config = ConfigManager()

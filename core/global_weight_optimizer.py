@@ -137,9 +137,8 @@ class GlobalWeightOptimizer:
                     structural.get("worst_margin_pp"),
                 )
                 logger.warning(
-                    "Top structural issue: dimension=%s category=%s",
-                    structural.get("top_infeasible_dimension"),
-                    structural.get("top_infeasible_category"),
+                    "A governed category was structurally infeasible; "
+                    "identifiers are withheld from persistent logs."
                 )
         except Exception as exc:  # pragma: no cover
             logger.warning("Structural diagnostics failed: %s", exc)
@@ -508,7 +507,6 @@ class GlobalWeightOptimizer:
                 categories_by_peer[peer].append(cat)
 
         for peer in sorted(problem.peers, key=lambda peer_name: weights[peer_name], reverse=True):
-            peer_max_share = 0.0
             peer_violation_dims: List[str] = []
             for cat in categories_by_peer.get(peer, []):
 
@@ -542,24 +540,18 @@ class GlobalWeightOptimizer:
                         0.0,
                     )
                 adjusted_share = (category_vol_weighted / total_weighted * 100) if total_weighted > 0 else 0.0
-                peer_max_share = max(peer_max_share, adjusted_share)
 
                 if analyzer._is_share_violation(adjusted_share, problem.max_concentration):
                     if original_dim not in peer_violation_dims:
                         peer_violation_dims.append(original_dim)
 
-            status = "OK" if len(peer_violation_dims) == 0 else "VIOLATION"
-            logger.info(
-                "  %s: multiplier=%.4f, max_adjusted_share=%.4f%% [%s]",
-                peer,
-                weights[peer],
-                peer_max_share,
-                status,
-            )
-
             for violation_dim in peer_violation_dims:
                 if violation_dim not in dimensions_with_violations:
                     dimensions_with_violations.append(violation_dim)
+        logger.debug(
+            "Validated final global multipliers for %s governed peers",
+            len(problem.peers),
+        )
 
         real_dimensions_with_violations = [
             violation_dim

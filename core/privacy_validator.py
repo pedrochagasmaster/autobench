@@ -24,6 +24,7 @@ Rule Specifications:
 """
 
 import logging
+import math
 import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, cast
@@ -100,6 +101,53 @@ class PrivacyValidator:
     PROTECTED_ENTITY_DEFAULT_MAX_CONCENTRATION = 25.0
     _RULES_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
 
+    @staticmethod
+    def _is_finite_number(value: Any) -> bool:
+        return (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value))
+        )
+
+    @classmethod
+    def _validate_additional_constraint(
+        cls,
+        rule_name: str,
+        constraint_name: str,
+        value: Any,
+    ) -> None:
+        if isinstance(value, (tuple, list)):
+            if len(value) != 2:
+                raise ValueError(
+                    f"Rule '{rule_name}' constraint '{constraint_name}' "
+                    "must contain a count and threshold."
+                )
+            count, threshold = value
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+            ):
+                raise ValueError(
+                    f"Rule '{rule_name}' constraint '{constraint_name}' "
+                    f"has invalid count: {count}"
+                )
+            if (
+                not cls._is_finite_number(threshold)
+                or float(threshold) <= 0
+                or float(threshold) > 100
+            ):
+                raise ValueError(
+                    f"Rule '{rule_name}' constraint '{constraint_name}' "
+                    f"has invalid threshold: {threshold}"
+                )
+            return
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(
+                f"Rule '{rule_name}' constraint '{constraint_name}' "
+                f"has invalid count: {value}"
+            )
+
     @classmethod
     def _rules_file_path(cls) -> Path:
         env_path = os.getenv(cls.RULES_ENV_VAR)
@@ -109,18 +157,82 @@ class PrivacyValidator:
 
     @classmethod
     def _validate_rules_schema(cls, rules: Dict[str, Dict[str, Any]]) -> None:
+        approved_names = set(cls.DEFAULT_RULES)
+        supplied_names = set(rules)
+        if supplied_names != approved_names:
+            missing = sorted(approved_names - supplied_names)
+            extra = sorted(supplied_names - approved_names)
+            details = []
+            if missing:
+                details.append(f"missing={missing}")
+            if extra:
+                details.append(f"extra={extra}")
+            raise ValueError(
+                "Privacy rules file must contain exactly the approved rule "
+                f"names ({', '.join(details)})."
+            )
         for rule_name, rule_cfg in rules.items():
             if not isinstance(rule_cfg, dict):
                 raise ValueError(f"Rule '{rule_name}' must map to a dictionary.")
             min_entities = rule_cfg.get('min_entities')
             max_concentration = rule_cfg.get('max_concentration')
-            if not isinstance(min_entities, int) or min_entities <= 0:
+            if (
+                isinstance(min_entities, bool)
+                or not isinstance(min_entities, int)
+                or min_entities <= 0
+            ):
                 raise ValueError(f"Rule '{rule_name}' has invalid min_entities: {min_entities}")
-            if not isinstance(max_concentration, (int, float)) or max_concentration <= 0:
+            if (
+                isinstance(max_concentration, bool)
+                or not isinstance(max_concentration, (int, float))
+                or not math.isfinite(float(max_concentration))
+                or float(max_concentration) <= 0
+                or float(max_concentration) > 100
+            ):
                 raise ValueError(f"Rule '{rule_name}' has invalid max_concentration: {max_concentration}")
             additional = rule_cfg.get('additional')
             if additional is not None and not isinstance(additional, dict):
                 raise ValueError(f"Rule '{rule_name}' additional constraints must be a dictionary.")
+            for constraint_name, value in (additional or {}).items():
+                cls._validate_additional_constraint(
+                    rule_name,
+                    str(constraint_name),
+                    value,
+                )
+        for rule_name, official in cls.DEFAULT_RULES.items():
+            candidate = rules[rule_name]
+            if int(candidate["min_entities"]) < int(official["min_entities"]):
+                raise ValueError(
+                    f"Rule '{rule_name}' weakens the official entity minimum."
+                )
+            if float(candidate["max_concentration"]) > float(
+                official["max_concentration"]
+            ):
+                raise ValueError(
+                    f"Rule '{rule_name}' weakens the official concentration cap."
+                )
+            official_additional = official.get("additional", {})
+            candidate_additional = candidate.get("additional", {})
+            for key, official_value in official_additional.items():
+                if key not in candidate_additional:
+                    raise ValueError(
+                        f"Rule '{rule_name}' omits official constraint '{key}'."
+                    )
+                candidate_value = candidate_additional[key]
+                if isinstance(official_value, (tuple, list)):
+                    if (
+                        not isinstance(candidate_value, (tuple, list))
+                        or len(candidate_value) != 2
+                        or int(candidate_value[0]) < int(official_value[0])
+                        or float(candidate_value[1]) < float(official_value[1])
+                    ):
+                        raise ValueError(
+                            f"Rule '{rule_name}' weakens constraint '{key}'."
+                        )
+                elif int(candidate_value) < int(official_value):
+                    raise ValueError(
+                        f"Rule '{rule_name}' weakens constraint '{key}'."
+                    )
 
     @classmethod
     def _load_rules_from_file(cls) -> Optional[Dict[str, Dict[str, Any]]]:
@@ -142,6 +254,10 @@ class PrivacyValidator:
             return rules
         except Exception as exc:
             logger.warning("Failed to load privacy rules from %s: %s", path, exc)
+            if os.getenv(cls.RULES_ENV_VAR):
+                raise ValueError(
+                    "Configured privacy rules failed official-policy validation"
+                ) from exc
             return None
 
     @classmethod

@@ -29,6 +29,7 @@ def is_telemetry_test_path(path: Path) -> bool:
 def _opt_out_telemetry_outside_telemetry_tests(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
+    tmp_path: Path,
 ) -> None:
     """Prevent legacy/full-suite tests from writing telemetry under /ads_storage.
 
@@ -37,6 +38,7 @@ def _opt_out_telemetry_outside_telemetry_tests(
     """
     if not is_telemetry_test_path(Path(str(request.path))):
         monkeypatch.setenv("AUTOBENCH_TELEMETRY", "0")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "cli_logs"))
 
 
 @pytest.fixture

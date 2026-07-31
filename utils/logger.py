@@ -6,9 +6,168 @@ Sets up structured logging for the benchmarking tool.
 
 import logging
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Callable, List, Optional
+
+
+_privacy_gate_state = threading.local()
+_privacy_gate_lock = threading.RLock()
+_privacy_active_gates: dict[int, "PrivacyRunLogGate"] = {}
+_privacy_downstream_call_handlers: Optional[
+    Callable[[logging.Logger, logging.LogRecord], None]
+] = None
+
+
+def _privacy_gated_call_handlers(
+    logger: logging.Logger,
+    record: logging.LogRecord,
+) -> None:
+    """Capture run-thread records before any current or future handler."""
+    with _privacy_gate_lock:
+        gate = _privacy_active_gates.get(threading.get_ident())
+        if gate is not None:
+            gate._records.append((logger, record))
+            return
+        downstream = _privacy_downstream_call_handlers
+    if downstream is not None:
+        downstream(logger, record)
+
+
+class DeferredFileHandler(logging.Handler):
+    """Buffer records until a final privacy decision permits disk output."""
+
+    def __init__(self, log_file: str) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.log_file = log_file
+        self._records: List[logging.LogRecord] = []
+        self._finalized = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self._finalized:
+            self._records.append(record)
+
+    def commit(self) -> str:
+        """Write buffered records to the configured file exactly once."""
+        if self._finalized:
+            return self.log_file
+        log_path = Path(self.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        target = logging.FileHandler(self.log_file, mode="w")
+        target.setLevel(self.level)
+        target.setFormatter(self.formatter)
+        try:
+            for record in self._records:
+                target.handle(record)
+        finally:
+            target.close()
+            self._records.clear()
+            self._finalized = True
+        return self.log_file
+
+    def discard(self) -> None:
+        """Drop buffered records without creating the configured file."""
+        self._records.clear()
+        self._finalized = True
+
+
+class PrivacyRunLogGate:
+    """Temporarily buffer logger dispatch for one governed run thread."""
+
+    def __init__(self) -> None:
+        self._records: List[tuple[logging.Logger, logging.LogRecord]] = []
+        self._finished = False
+        self._started = False
+        self._thread_id: Optional[int] = None
+
+    def start(self) -> None:
+        """Install run-thread capture before handler dispatch."""
+        global _privacy_downstream_call_handlers
+        if getattr(_privacy_gate_state, "active", False):
+            raise RuntimeError(
+                "Nested privacy-governed runs on the same thread are not supported"
+            )
+        thread_id = threading.get_ident()
+        with _privacy_gate_lock:
+            if not _privacy_active_gates:
+                _privacy_downstream_call_handlers = (
+                    logging.Logger.callHandlers
+                )
+                setattr(
+                    logging.Logger,
+                    "callHandlers",
+                    _privacy_gated_call_handlers,
+                )
+            _privacy_active_gates[thread_id] = self
+        _privacy_gate_state.active = True
+        self._thread_id = thread_id
+        self._started = True
+
+    def finish(self, *, privacy_authorized: bool) -> None:
+        """Restore logger dispatch and replay only an authorized run."""
+        global _privacy_downstream_call_handlers
+        if self._finished:
+            return
+        self._finished = True
+        records: List[tuple[logging.Logger, logging.LogRecord]] = []
+        downstream: Optional[
+            Callable[[logging.Logger, logging.LogRecord], None]
+        ] = None
+        try:
+            with _privacy_gate_lock:
+                if self._thread_id is not None:
+                    _privacy_active_gates.pop(self._thread_id, None)
+                if not _privacy_active_gates:
+                    downstream = _privacy_downstream_call_handlers
+                    setattr(
+                        logging.Logger,
+                        "callHandlers",
+                        downstream or logging.Logger.callHandlers,
+                    )
+                    _privacy_downstream_call_handlers = None
+                else:
+                    downstream = _privacy_downstream_call_handlers
+            if privacy_authorized:
+                records = list(self._records)
+            self._records.clear()
+            for logger, record in records:
+                try:
+                    if downstream is not None:
+                        downstream(logger, record)
+                except Exception:
+                    # Logging must never alter analysis behavior.
+                    pass
+        finally:
+            if self._started:
+                _privacy_gate_state.active = False
+                self._started = False
+                self._thread_id = None
+
+
+def finalize_deferred_logging(
+    logger: logging.Logger,
+    *,
+    privacy_authorized: bool,
+) -> Optional[str]:
+    """Commit or discard tool-owned deferred file handlers."""
+    committed_path: Optional[str] = None
+    owners: List[logging.Logger] = []
+    current: Optional[logging.Logger] = logger
+    while current is not None:
+        owners.append(current)
+        current = current.parent
+    for owner in owners:
+        for handler in list(owner.handlers):
+            if not isinstance(handler, DeferredFileHandler):
+                continue
+            owner.removeHandler(handler)
+            if privacy_authorized:
+                committed_path = handler.commit()
+            else:
+                handler.discard()
+            handler.close()
+    return committed_path
 
 
 def setup_logging(
@@ -68,6 +227,29 @@ def setup_logging(
     if log_file:
         logger.info(f"Log file: {log_file}")
     
+    return logger
+
+
+def setup_deferred_logging(
+    log_level: str,
+    log_file: str,
+    *,
+    console_output: bool = True,
+) -> logging.Logger:
+    """Configure normal logging with an authorization-gated file sink."""
+    logger = setup_logging(
+        log_level=log_level,
+        log_file=None,
+        console_output=console_output,
+    )
+    formatter = logging.Formatter(
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    deferred_handler = DeferredFileHandler(log_file)
+    deferred_handler.setFormatter(formatter)
+    logger.addHandler(deferred_handler)
+    logger.info("Log file: %s", log_file)
     return logger
 
 

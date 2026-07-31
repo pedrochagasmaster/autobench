@@ -308,10 +308,14 @@ the CLI and TUI use instead of shelling out to `benchmark.py`.
 | `core.analysis_run.execute_share_run` | Run share analysis |
 | `core.analysis_run.execute_rate_run` | Run rate analysis |
 | `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+| `core.PrivacySweepRequest` | Compact evidence for the numeric privacy-rule sweep |
+| `core.evaluate_privacy_rule_sweep` | Evaluate every applicable rule and mandatory numeric overlay |
+| `core.PrivacySweepResult` | Immutable, scope-aware sweep result |
 | `core.privacy_validator.PrivacyValidator.get_rule_config` | Read one privacy rule's thresholds |
 | `core.data_loader.DataLoader.normalize_column_name` | Canonical column-name normalization |
 
-The last two are for callers that embed the privacy rules in their own
+The final two compatibility methods are for callers that embed the privacy
+rules in their own
 pipeline rather than running a full share or rate analysis — they must
 normalize columns and read rule thresholds exactly as Autobench does, or their
 compliance evidence will not line up with a report produced here.
@@ -345,6 +349,174 @@ reload after validation.
 
 Contract tests in `tests/test_public_api.py` pin imports, signatures, and field
 names; breaking changes require updating the README, example, and consumers.
+
+### Native numeric privacy-rule sweep
+
+The sweep follows the repository's Control 3 source: every general rule whose
+minimum participant count is met is applicable, and the numeric rule set passes
+when at least one applicable rule passes. The 4/35 rule is additionally
+applicable only when the caller explicitly identifies an anonymized, aggregated
+merchant-spend report; it applies at four or more participants.
+
+The feature is opt-in on all three supported interfaces:
+
+- Python API: set `AnalysisRunRequest.privacy_rule_strategy` to
+  `PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE`. The compact
+  `PrivacySweepRequest` and `evaluate_privacy_rule_sweep()` facade remains
+  available for server integrations such as Getnet.
+- CLI: add `--privacy-rule-sweep` to a normal `share` or `rate` invocation.
+- TUI: check **Privacy rule sweep mode** and run the normal loaded-data
+  analysis.
+
+Sweep mode first makes an independent optimization attempt for each applicable
+rule. `feasible_candidate_rules` records which rule-specific attempts worked.
+Autobench then chooses one whole-run candidate: it prefers the legacy
+peer-count-selected rule when publication-safe, otherwise it uses the stable
+tie-break order `5/25`, `6/30`, `7/35`, `10/40`, `4/35`. This order is an
+implementation compatibility rule, not a Control 3 strength ranking.
+
+Every applicable rule and mandatory overlay is then re-evaluated against that
+single emitted candidate across every governed metric/category/time group.
+Only rules passing the emitted output appear in `authorizing_rules`.
+`candidate_attempt_evaluations` and `emitted_output_evaluations` keep the two
+audit stages distinct. `mandatory_overlay_evaluations` records the emitted
+output's overlay status and structured failure reasons.
+
+The final emitted-output result is also converted into one non-overridable
+`privacy_output_decision`. If no rule authorizes that output, required privacy
+evidence is invalid, or a mandatory overlay fails, Autobench writes no analysis
+workbook, publication workbook, balanced CSV, JSON report, audit package, or
+run log. This applies to `strict`, `best_effort`, and `accuracy_first`.
+Compliance posture still controls ordinary quality and optimization warnings
+when `privacy_publication_authorized` is true; `best_effort` cannot override a
+Control 3 denial.
+
+When audit logging is enabled, a denied run may write only
+`autobench_NON_PUBLISHABLE_control3_<opaque-run-id>.json`. It contains an
+allow-listed status,
+withholding reason, strategy, policy version/source/digest, applicable and
+feasible rule names, emitted-output rule statuses, authorizing rule names, and
+overlay statuses/failure codes. It contains no peer identities, category
+results, rows, weights, shares, rates, or benchmark values. Tool-owned CLI/TUI
+logs are buffered in memory and flushed to their existing locations only after
+privacy authorization; the buffer is discarded on denial or error.
+
+CLI example:
+
+```bash
+python benchmark.py share --csv data.csv --metric txn_cnt --auto \
+  --privacy-rule-sweep
+
+python benchmark.py rate --csv data.csv --total-col txn_cnt \
+  --approved-col approved_cnt --auto --privacy-rule-sweep
+```
+
+For merchant 4/35 eligibility, also add
+`--anonymized-aggregated-merchant-spend`. Fraud runs continue to require the
+normal `--privacy-basis clearing_spend` Control 3 declaration.
+They must also identify the actual clearing-spend column with
+`--privacy-concentration-col`; Autobench will not infer it from the fraud
+metric or the total/denominator column. This applies to the default strategy
+and sweep mode.
+
+When Citibank is in the governed peer population and a Citi competitor will
+receive the output, also pass `--citi-competitor-receives-output` and the exact
+dataset entity value through `--citibank-entity-name`. Autobench derives Citi's
+concentration from each governed category and adds its mandatory 25% cap to
+every rule-specific optimization attempt.
+
+Python API example:
+
+```python
+import logging
+from core import AnalysisRunRequest, PrivacyRuleStrategy, execute_share_run
+
+request = AnalysisRunRequest(
+    csv="data.csv",
+    metric="txn_cnt",
+    auto=True,
+    privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+)
+artifacts = execute_share_run(request, logging.getLogger("autobench"))
+```
+
+Autobench does not create a file handler for Python API calls. During a run it
+temporarily captures current-thread records before every logging handler that
+already exists in the process. Authorized runs replay those records to the
+configured handlers; denied or failed runs discard them and always restore
+normal dispatch. Records emitted by other threads are not suppressed.
+Handlers added after the run gate starts are covered because capture occurs at
+the standard `Logger.callHandlers` dispatch boundary. A nested privacy-governed
+run on the same thread is rejected before analysis. Records deliberately sent
+directly to a handler (bypassing `Logger`) and governed evidence emitted from
+worker threads are outside the run-thread contract and require an independently
+approved sink.
+
+When 4/35 is the sole authorizing rule, authorization is artifact-scoped:
+only `--output-format publication` may be written. That workbook contains
+aggregate benchmark results only. Analysis/debug sheets, JSON, balanced CSV,
+audit packages, and persistent run logs are withheld; requests for those
+surfaces fail closed.
+
+Compact Getnet/server evidence example:
+
+```python
+from core import (
+    PrivacyConcentrationBasis,
+    PrivacyMetricContext,
+    PrivacySweepRequest,
+    evaluate_privacy_rule_sweep,
+)
+
+evidence = PrivacySweepRequest(
+    contains_peer_benchmark_data=True,
+    is_anonymized_aggregated_merchant_spend=False,
+    metric_context=PrivacyMetricContext.OTHER,
+    concentration_basis=PrivacyConcentrationBasis.BENCHMARK_METRIC,
+    participant_count=10,
+    maximum_share_percentage=22,
+    count_at_or_above_7_percent=10,
+    count_at_or_above_8_percent=8,
+    count_at_or_above_10_percent=3,
+    count_at_or_above_15_percent=1,
+    count_at_or_above_20_percent=1,
+    citibank_included=False,
+    citi_competitor_receives_output=False,
+)
+result = evaluate_privacy_rule_sweep(evidence)
+
+assert result.numeric_policy_passed
+assert "5/25" in result.authorizing_rules
+```
+
+Rule evaluations are `PASSED`, `FAILED`, or `NOT_APPLICABLE`. If Citibank is
+included and a Citi competitor receives the output, its 25% cap is a mandatory
+overlay after a base rule passes. For issuer fraud or chargeback metrics,
+`concentration_basis` must be `CLEARING_SPEND`.
+
+The Citi facts are independent. A competitor may receive a deliverable whose
+governed peer group does not include Citi; use `citibank_included=False`,
+keep `citi_competitor_receives_output=True`, and omit
+`citibank_share_percentage`. The overlay is then `NOT_APPLICABLE`. A Citi share
+is contradictory when Citi is absent. When Citi is present but the recipient
+is not a competitor, an optional observational share is accepted only after
+normal numeric and maximum-share consistency validation; it does not activate
+the overlay. When both trigger facts are true, the share is required and the
+25% cap remains mandatory.
+
+For normal analysis requests, omitting `citibank_entity_name` declares that
+Citi is absent from the governed population. Supplying the name declares Citi
+present and must resolve to exactly one governed identity, regardless of
+recipient type.
+
+This result covers only the benchmark numeric rules and their mandatory Citi
+overlay. It does not resolve reverse-engineering review, other run-level gates,
+Control 3.3, or the obligation to re-check after peer-group changes and at
+least annually. `PrivacyPolicy` and raw rule configuration remain internal.
+The legacy `PrivacyValidator`, `DataLoader`, `DimensionalAnalyzer`, and
+`ReportGenerator` imports remain supported from `core` for backward
+compatibility; new integrations should prefer the contracts and orchestration
+facades documented above.
 
 ## Large Dataset / Low-Memory Runs
 
@@ -411,6 +583,10 @@ Detailed Portuguese guide:
 ## Outputs
 
 Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
+
+All of these are benchmark-bearing outputs. A hard Control 3 numeric-rule,
+evidence, governed-basis, or mandatory-overlay denial withholds every one of
+them regardless of compliance posture or requested output format.
 
 Common sheets:
 

@@ -66,7 +66,11 @@ try:
         validate_analysis_input,
         execute_run,
     )
-    from core.contracts import AnalysisRunRequest, PreparedDataset
+    from core.contracts import (
+        AnalysisRunRequest,
+        PreparedDataset,
+        PrivacyRuleStrategy,
+    )
     from core.preset_workflow import PresetWorkflow
     from core.telemetry import (
         action_cancelled,
@@ -74,7 +78,7 @@ try:
         start_session,
         surface_viewed,
     )
-    from utils.logger import setup_logging
+    from utils.logger import finalize_deferred_logging, setup_deferred_logging
     from utils.runtime_environment import warn_if_personal_runtime
     from utils.config_manager import ConfigManager
     from utils.config_overrides import (
@@ -93,14 +97,19 @@ except ImportError as e:
 # real sentinel to detect "nothing selected" reliably.
 SELECT_BLANK = getattr(Select, "NULL", getattr(Select, "BLANK", None))
 
-LOG_DIR = Path("outputs") / "logs"
 SESSION_FILE = Path.home() / ".benchmark_tui" / "session.yaml"
 
 
-SESSION_INPUT_IDS = ("csv_path", "output_file")
+def _resolve_log_dir() -> Path:
+    """Resolve the log directory at run time so test/process isolation applies."""
+    return Path(
+        os.getenv("AUTOBENCH_LOG_DIR", str(Path("outputs") / "logs"))
+    )
+
+
+SESSION_INPUT_IDS: tuple[str, ...] = ()
 SESSION_SELECT_IDS = (
     "entity_col",
-    "entity_name",
     "time_col",
     "preset_select",
     "output_format",
@@ -122,6 +131,9 @@ SESSION_CHECKBOX_IDS = (
     "rate_debug",
     "rate_export_csv",
     "fraud_in_bps",
+    "privacy_rule_sweep_mode",
+    "privacy_merchant_spend_scope",
+    "citi_competitor_receives_output",
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
 
@@ -441,6 +453,11 @@ TUI_REQUEST_FIELDS = frozenset({
     "approved_col",
     "fraud_col",
     "fraud_in_bps",
+    "privacy_rule_strategy",
+    "is_anonymized_aggregated_merchant_spend",
+    "citibank_entity_name",
+    "citi_competitor_receives_output",
+    "privacy_concentration_col",
 })
 
 # CLI fields with no TUI widget yet; post-assembly fields are set after validation modal.
@@ -855,6 +872,27 @@ class BenchmarkApp(App):
                                 value="analysis",
                                 allow_blank=False,
                             )
+                    yield Checkbox(
+                        "Privacy rule sweep mode",
+                        id="privacy_rule_sweep_mode",
+                        value=False,
+                    )
+                    yield Checkbox(
+                        "Anonymized aggregated merchant-spend context (enables 4/35)",
+                        id="privacy_merchant_spend_scope",
+                    )
+                    yield Checkbox(
+                        "A Citi competitor receives the output",
+                        id="citi_competitor_receives_output",
+                    )
+                    yield Input(
+                        placeholder="Exact Citibank entity name (required for Citi overlay)",
+                        id="citibank_entity_name",
+                    )
+                    yield Input(
+                        placeholder="Policy concentration column (required for fraud/chargeback)",
+                        id="privacy_concentration_col",
+                    )
 
                 # ───────────────────────────────────────────────────────
                 # ADVANCED OPTIMIZATION (collapsed by default)
@@ -1043,6 +1081,10 @@ class BenchmarkApp(App):
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
+        finalize_deferred_logging(
+            logging.getLogger(),
+            privacy_authorized=False,
+        )
         if getattr(self, "_telemetry_session_started", False):
             end_session()
             self._telemetry_session_started = False
@@ -1077,6 +1119,10 @@ class BenchmarkApp(App):
         if result is False:
             action = "share_analysis" if request.is_share else "rate_analysis"
             action_cancelled(action)
+        finalize_deferred_logging(
+            logging.getLogger(),
+            privacy_authorized=False,
+        )
         write_log_message(log_widget, "Analysis cancelled by user.")
         self._reset_run_ui()
 
@@ -1134,22 +1180,10 @@ class BenchmarkApp(App):
             self._apply_session(session)
 
     def _apply_session(self, session: Dict[str, Any]) -> None:
-        csv_path = session.get("csv_path") or ""
-        if csv_path and os.path.isfile(csv_path):
-            self.query_one("#csv_path", Input).value = csv_path
-            self.load_csv_headers(csv_path, announce=False)
-        # Entity options depend on the entity column, so populate them
-        # synchronously before restoring the target-entity selection.
-        entity_col = session.get("entity_col")
-        if entity_col:
-            try:
-                self.query_one("#entity_col", Select).value = entity_col
-                self.load_unique_entities(entity_col)
-            except Exception:
-                pass
+        # Legacy sessions may contain governed dataset/output paths and entity
+        # selections. Never restore those values; the operator must choose the
+        # dataset afresh for each process.
         for widget_id in SESSION_SELECT_IDS:
-            if widget_id == "entity_col":
-                continue
             value = session.get(widget_id)
             if value is None:
                 continue
@@ -1183,10 +1217,6 @@ class BenchmarkApp(App):
             for value in values:
                 if value in available:
                     s_list.select(value)
-        output_file = session.get("output_file")
-        if output_file:
-            self.query_one("#output_file", Input).value = str(output_file)
-
     # ──────────────────────────────────────────────────────────────────
     # Run status / results panels
     # ──────────────────────────────────────────────────────────────────
@@ -1234,7 +1264,7 @@ class BenchmarkApp(App):
         """
         self._run_state = "validating"
         self._run_started_at = None
-        self._run_mode = self._analysis_mode()
+        self._run_mode = "privacy-sweep" if self._privacy_sweep_enabled() else self._analysis_mode()
         btn = self.query_one("#btn_run", Button)
         btn.disabled = True
         btn.label = "Validating…"
@@ -1248,7 +1278,7 @@ class BenchmarkApp(App):
         """Switch UI into the running state (app thread only)."""
         self._run_state = "running"
         self._run_started_at = time.monotonic()
-        self._run_mode = self._analysis_mode()
+        self._run_mode = "privacy-sweep" if self._privacy_sweep_enabled() else self._analysis_mode()
         btn = self.query_one("#btn_run", Button)
         btn.disabled = True
         btn.label = "Running…"
@@ -1270,7 +1300,7 @@ class BenchmarkApp(App):
         self._run_started_at = None
         btn = self.query_one("#btn_run", Button)
         btn.disabled = False
-        btn.label = "▶  Run Analysis"
+        btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
         self._refresh_run_status()
 
         header = self._STATE_BADGES.get(state, "")
@@ -1287,11 +1317,15 @@ class BenchmarkApp(App):
         self._run_started_at = None
         btn = self.query_one("#btn_run", Button)
         btn.disabled = False
-        btn.label = "▶  Run Analysis"
+        btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
         self._refresh_run_status()
 
     def _fail_launch(self, message: str, focus_id: Optional[str] = None) -> None:
         """Notify about an invalid launch and return UI to idle (worker-safe)."""
+        finalize_deferred_logging(
+            logging.getLogger(),
+            privacy_authorized=False,
+        )
         log_widget = self.query_one("#log_output", Log)
         write_log_message(log_widget, f"ERROR: {message}")
         self.call_from_thread(self.notify, message, title="Cannot run", severity="error")
@@ -1715,6 +1749,38 @@ class BenchmarkApp(App):
             return "share"
         return "share" if active == "share_tab" else "rate"
 
+    def _privacy_sweep_enabled(self) -> bool:
+        try:
+            return bool(self.query_one("#privacy_rule_sweep_mode", Checkbox).value)
+        except NoMatches:
+            return False
+
+    def _privacy_strategy_values_from_widgets(self) -> Dict[str, Any]:
+        """Return the privacy strategy fields for the normal run request."""
+        return {
+            "privacy_rule_strategy": (
+                PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+                if self._privacy_sweep_enabled()
+                else PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+            ),
+            "is_anonymized_aggregated_merchant_spend": self.query_one(
+                "#privacy_merchant_spend_scope",
+                Checkbox,
+            ).value,
+            "citibank_entity_name": (
+                self.query_one("#citibank_entity_name", Input).value.strip()
+                or None
+            ),
+            "citi_competitor_receives_output": self.query_one(
+                "#citi_competitor_receives_output",
+                Checkbox,
+            ).value,
+            "privacy_concentration_col": (
+                self.query_one("#privacy_concentration_col", Input).value.strip()
+                or None
+            ),
+        }
+
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
         self.push_screen(PresetHelpScreen())
@@ -1855,16 +1921,22 @@ class BenchmarkApp(App):
 
             try:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                LOG_DIR.mkdir(parents=True, exist_ok=True)
-                log_file = str(LOG_DIR / f"benchmark_log_{timestamp}.txt")
-                setup_logging(log_level="INFO", log_file=log_file, console_output=False)
+                log_dir = _resolve_log_dir()
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file = str(
+                    log_dir / f"benchmark_log_{timestamp}.txt"
+                )
+                setup_deferred_logging(
+                    log_level="INFO",
+                    log_file=log_file,
+                    console_output=False,
+                )
 
                 logging.getLogger("benchmark").handlers.clear()
                 logging.getLogger("core").handlers.clear()
                 handler = LogHandler(log_widget)
                 handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
                 logging.getLogger().addHandler(handler)
-                self.call_from_thread(log_widget.write, f"Log file created: {log_file}\n")
 
                 csv_path = self.query_one("#csv_path").value
                 if not csv_path:
@@ -1897,6 +1969,7 @@ class BenchmarkApp(App):
                     "compare_presets": getattr(self.query_one("#compare_presets"), 'value', False),
                     "include_calculated": getattr(self.query_one("#include_calculated"), 'value', False),
                     "output_format": getattr(self.query_one("#output_format"), 'value', 'analysis'),
+                    **self._privacy_strategy_values_from_widgets(),
                 }
                 if preset and not values["config"]:
                     posture = None
@@ -2016,6 +2089,10 @@ class BenchmarkApp(App):
                             self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
                             return
                     except Exception as exc:
+                        finalize_deferred_logging(
+                            logging.getLogger(),
+                            privacy_authorized=False,
+                        )
                         self.call_from_thread(log_widget.write, f"Validation error: {exc}\n")
                         self.call_from_thread(self.notify, "Validation failed. Fix the data and retry.", severity="error")
                         self.call_from_thread(self._end_run_ui, "error", f"Validation error: {exc}")
@@ -2025,6 +2102,10 @@ class BenchmarkApp(App):
                 return
 
             except Exception as exc:
+                finalize_deferred_logging(
+                    logging.getLogger(),
+                    privacy_authorized=False,
+                )
                 self.call_from_thread(log_widget.write, f"Initialization Error: {exc}\n")
                 self.call_from_thread(self._end_run_ui, "error", f"Initialization error: {exc}")
                 return
@@ -2060,7 +2141,32 @@ class BenchmarkApp(App):
             if saved_df is not None and request.prepared_dataset is None:
                 request.prepared_dataset = PreparedDataset(df=saved_df)
             artifacts = self._execute_run_for_tui(request, logger, log_widget)
-            self.call_from_thread(log_widget.write, "Analysis completed successfully.\n")
+            privacy_decision = artifacts.privacy_output_decision
+            hard_privacy_block = artifacts.privacy_sink_authorized is not True
+            if hard_privacy_block:
+                finalize_deferred_logging(
+                    logger,
+                    privacy_authorized=False,
+                )
+                self.call_from_thread(
+                    log_widget.write,
+                    "Control 3 privacy denial: all benchmark-bearing outputs "
+                    f"withheld ({privacy_decision.withholding_reason}).\n",
+                )
+            else:
+                log_file = finalize_deferred_logging(
+                    logger,
+                    privacy_authorized=artifacts.privacy_log_authorized,
+                )
+                if log_file:
+                    self.call_from_thread(
+                        log_widget.write,
+                        f"Log file created: {log_file}\n",
+                    )
+                self.call_from_thread(
+                    log_widget.write,
+                    "Analysis completed successfully.\n",
+                )
             summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
             posture = summary.get('posture') or summary.get('compliance_posture')
             self.call_from_thread(
@@ -2081,23 +2187,53 @@ class BenchmarkApp(App):
             ]
             for path in report_paths:
                 summary_lines.append(f"[dim]Report[/dim]   {path}")
-            self.call_from_thread(self._end_run_ui, "success", "\n".join(summary_lines))
-            self.call_from_thread(
-                self.notify,
-                f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
-                title="Analysis Complete",
-                severity="information",
-                timeout=10,
-            )
+            if hard_privacy_block:
+                summary_lines.append(
+                    "[red]Publication withheld[/red] "
+                    f"[dim]({privacy_decision.withholding_reason})[/dim]"
+                )
+                if artifacts.audit_log_output:
+                    summary_lines.append(
+                        "[dim]Non-publishable audit[/dim] "
+                        f"{artifacts.audit_log_output}"
+                    )
+                self.call_from_thread(
+                    self._end_run_ui,
+                    "blocked",
+                    "\n".join(summary_lines),
+                )
+                self.call_from_thread(
+                    self.notify,
+                    "Control 3 privacy denial: publication withheld.",
+                    title="Publication Withheld",
+                    severity="error",
+                    timeout=10,
+                )
+            else:
+                self.call_from_thread(
+                    self._end_run_ui,
+                    "success",
+                    "\n".join(summary_lines),
+                )
+                self.call_from_thread(
+                    self.notify,
+                    f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
+                    title="Analysis Complete",
+                    severity="information",
+                    timeout=10,
+                )
         except RunBlocked as exc:
+            finalize_deferred_logging(logger, privacy_authorized=False)
             self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
             self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
             self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
         except RunAborted as exc:
+            finalize_deferred_logging(logger, privacy_authorized=False)
             self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
             self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
             self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
         except Exception as exc:
+            finalize_deferred_logging(logger, privacy_authorized=False)
             self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
             self.call_from_thread(log_widget.write, traceback.format_exc())
             self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")

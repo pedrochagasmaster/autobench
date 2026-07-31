@@ -104,6 +104,41 @@ class TestLPSolver(unittest.TestCase):
         expected_stats_keys = {"method", "max_slack", "sum_slack", "num_vars", "num_constraints"}
         self.assertTrue(expected_stats_keys.issubset(set(result.stats.keys())))
 
+    def test_lp_solver_enforces_peer_specific_mandatory_cap(self) -> None:
+        peers = ["Citibank", "B", "C", "D", "E"]
+        volumes = {"Citibank": 40.0, "B": 20.0, "C": 15.0, "D": 15.0, "E": 10.0}
+        result = LPSolver().solve(
+            SolverRequest(
+                peers=peers,
+                categories=_build_categories("dim1", "cat1", volumes),
+                max_concentration=40.0,
+                protected_entity_caps={"Citibank": 25.0},
+                peer_volumes=volumes,
+                tolerance=0.0,
+                rank_preservation_strength=0.0,
+                min_weight=0.1,
+                max_weight=10.0,
+            )
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        shares = _weighted_shares(volumes, result.weights)
+        self.assertLessEqual(shares["Citibank"], 25.0 + 1e-6)
+
+    def test_lp_solver_rejects_absent_protected_entity(self) -> None:
+        result = LPSolver().solve(
+            SolverRequest(
+                peers=["A", "B"],
+                categories=_build_categories("dim", "cat", {"A": 50, "B": 50}),
+                max_concentration=60,
+                protected_entity_caps={"Citibank": 25},
+                peer_volumes={"A": 50, "B": 50},
+            )
+        )
+        assert result is not None
+        self.assertFalse(result.success)
+        self.assertEqual(result.stats["error"], "protected_entity_absent")
+
     def test_lambda_penalty_changes_lp_objective(self) -> None:
         """§9.3 item 2: ``lambda_penalty`` (used by ``strategic_consistency``)
         must materially flow into the LP objective. Reviewers can otherwise
@@ -150,6 +185,39 @@ class TestLPSolver(unittest.TestCase):
 
 
 class TestHeuristicSolver(unittest.TestCase):
+    def test_heuristic_enforces_peer_specific_mandatory_cap(self) -> None:
+        peers = ["Citibank", "B", "C", "D", "E"]
+        volumes = {"Citibank": 40.0, "B": 20.0, "C": 15.0, "D": 15.0, "E": 10.0}
+        result = HeuristicSolver().solve(
+            SolverRequest(
+                peers=peers,
+                categories=_build_categories("dim", "cat", volumes),
+                max_concentration=40,
+                protected_entity_caps={"Citibank": 25},
+                peer_volumes=volumes,
+                min_weight=0.1,
+                max_weight=10,
+                tolerance=0,
+            )
+        )
+        assert result is not None
+        shares = _weighted_shares(volumes, result.weights)
+        self.assertLessEqual(shares["Citibank"], 25.0 + 1e-6)
+
+    def test_heuristic_rejects_absent_protected_entity(self) -> None:
+        result = HeuristicSolver().solve(
+            SolverRequest(
+                peers=["A", "B"],
+                categories=_build_categories("dim", "cat", {"A": 50, "B": 50}),
+                max_concentration=60,
+                protected_entity_caps={"Citibank": 25},
+                peer_volumes={"A": 50, "B": 50},
+            )
+        )
+        assert result is not None
+        self.assertFalse(result.success)
+        self.assertEqual(result.stats["error"], "protected_entity_absent")
+
     def test_heuristic_reduces_additional_constraint_penalty(self) -> None:
         peers = ["P1", "P2", "P3", "P4", "P5", "P6"]
         volumes = {"P1": 70.0, "P2": 10.0, "P3": 5.0, "P4": 5.0, "P5": 5.0, "P6": 5.0}

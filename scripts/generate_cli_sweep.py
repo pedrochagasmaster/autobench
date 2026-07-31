@@ -348,6 +348,7 @@ def generate_gate_cases(
     config_path: Optional[Path],
     secondary_metrics: List[str] = None,
     fraud_col: Optional[str] = None,
+    total_col: Optional[str] = None,
 ) -> Tuple[List[Dict], List[str]]:
     """
     Generate a minimal set of "gate" cases that cover most code paths
@@ -441,7 +442,7 @@ def generate_gate_cases(
         )
         
     # Case 5: Rate Specific - Fraud (if applicable)
-    if analysis_type == "rate" and fraud_col:
+    if analysis_type == "rate" and fraud_col and total_col:
         make_gate_case(
             "fraud_bps",
             {
@@ -449,10 +450,13 @@ def generate_gate_cases(
                 "fraud_in_bps": True,
                 "output_format": "publication",
                 "privacy_basis": "clearing_spend",
+                "privacy_concentration_col": total_col,
             },
             [
                 "--fraud-col",
                 fraud_col,
+                "--privacy-concentration-col",
+                total_col,
                 "--privacy-basis",
                 "clearing_spend",
                 "--fraud-in-bps",
@@ -905,6 +909,7 @@ def main() -> int:
             config_path,
             secondary_metrics,
             fraud_col=fraud_col,
+            total_col=total_col,
         )
         rate_cases.extend(cases)
         rate_commands.extend(commands)

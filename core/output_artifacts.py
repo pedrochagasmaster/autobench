@@ -6,7 +6,17 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from core.contracts import AnalysisArtifacts, AnalysisRunRequest
+import pandas as pd
+
+from core.contracts import (
+    AnalysisArtifacts,
+    AnalysisRunRequest,
+    PrivacyOutputDecision,
+)
+from core.privacy_output_policy import (
+    _PrivacyOutputAttestation,
+    is_verified_privacy_publication_authorized,
+)
 from core.excel_reports import generate_multi_rate_report_model_excel, generate_report_model_excel
 from core.report_generator import ReportGenerator
 from core.report_models import ReportModel
@@ -22,25 +32,77 @@ def _flatten_rate_results(
     }
 
 
+def sanitize_merchant_aggregate_results(results: Any) -> Any:
+    """Remove analysis-only columns from sole-4/35 aggregate results."""
+    if isinstance(results, pd.DataFrame):
+        allowed_columns = [
+            column
+            for column in results.columns
+            if not any(
+                token in str(column).casefold()
+                for token in ("target", "bic", "original")
+            )
+        ]
+        return results.loc[:, allowed_columns].copy()
+    if isinstance(results, dict):
+        return {
+            key: sanitize_merchant_aggregate_results(value)
+            for key, value in results.items()
+        }
+    return results
+
+
 def write_outputs(
     request: AnalysisRunRequest,
     artifacts: AnalysisArtifacts,
     *,
     config: Any = None,
     logger: logging.Logger | None = None,
+    privacy_output_decision: PrivacyOutputDecision,
+    privacy_output_attestation: _PrivacyOutputAttestation | None,
 ) -> AnalysisArtifacts:
     """Write Excel (and optionally publication) reports, returning updated artifacts."""
     if logger is None:
         logger = logging.getLogger(__name__)
 
+    if not is_verified_privacy_publication_authorized(
+        artifacts.privacy_rule_strategy_result,
+        artifacts.privacy_output_decision,
+        privacy_output_decision,
+        privacy_output_attestation,
+    ):
+        artifacts.analysis_output_file = None
+        artifacts.publication_output = None
+        artifacts.csv_output = None
+        artifacts.json_output = None
+        artifacts.audit_log_output = None
+        artifacts.audit_package_output = None
+        artifacts.report_paths = []
+        logger.error(
+            "All benchmark-bearing outputs withheld by Control 3 (%s)",
+            privacy_output_decision.withholding_reason,
+        )
+        return artifacts
+
     posture = (artifacts.compliance_summary or {}).get("posture")
+    verdict = (artifacts.compliance_summary or {}).get("compliance_verdict")
     violations = int((artifacts.compliance_summary or {}).get("violations", 0) or 0)
-    block_publication = posture == "strict" and violations > 0
+    block_publication = (
+        posture == "strict"
+        and (
+            violations > 0
+            or (verdict is not None and verdict != "fully_compliant")
+        )
+    )
 
     if block_publication:
         if artifacts.metadata is None:
             artifacts.metadata = {}
-        artifacts.metadata["publication_withheld_reason"] = "strict_posture_violations"
+        artifacts.metadata["publication_withheld_reason"] = (
+            "strict_posture_violations"
+            if violations > 0
+            else "strict_posture_noncompliant_verdict"
+        )
 
     report_model = artifacts.report_model or ReportModel.from_artifacts(artifacts)
     output_file = artifacts.analysis_output_file or "benchmark_output.xlsx"
@@ -70,7 +132,27 @@ def write_outputs(
             # `_write_optional_dataframe_sheet`. The diagnostics live as
             # separate `artifacts.*_df` attributes for the analysis path; the
             # publication helper expects them inside `metadata`.
-            publication_metadata = dict(artifacts.metadata or {})
+            merchant_aggregate_only = bool(
+                (artifacts.metadata or {}).get("merchant_aggregate_only")
+            )
+            if merchant_aggregate_only:
+                publication_results = sanitize_merchant_aggregate_results(
+                    publication_results
+                )
+                publication_metadata = {
+                    "analysis_type": (
+                        "share" if request.is_share else "rate"
+                    ),
+                    "compliance_posture": (
+                        artifacts.compliance_summary or {}
+                    ).get("posture"),
+                    "compliance_verdict": (
+                        artifacts.compliance_summary or {}
+                    ).get("compliance_verdict"),
+                    "merchant_aggregate_only": True,
+                }
+            else:
+                publication_metadata = dict(artifacts.metadata or {})
             for key, value in {
                 "weights_df": artifacts.weights_df,
                 "method_breakdown_df": artifacts.method_breakdown_df,
@@ -81,7 +163,11 @@ def write_outputs(
                 "secondary_results": artifacts.secondary_results_df,
                 "rank_changes_df": getattr(artifacts, "rank_changes_df", None),
             }.items():
-                if value is not None and key not in publication_metadata:
+                if (
+                    not merchant_aggregate_only
+                    and value is not None
+                    and key not in publication_metadata
+                ):
                     publication_metadata[key] = value
 
             ReportGenerator(config).generate_publication_workbook(
@@ -141,6 +227,8 @@ def write_outputs(
             )
             artifacts.json_output = json_path
             logger.info("JSON report written to %s", json_path)
+    else:
+        artifacts.analysis_output_file = None
     if write_publication:
         if block_publication:
             artifacts.publication_output = None
@@ -153,4 +241,6 @@ def write_outputs(
             _write_report(publication_file, publication=True)
             artifacts.publication_output = publication_file
             logger.info("Publication report written to %s", publication_file)
+    else:
+        artifacts.publication_output = None
     return artifacts
