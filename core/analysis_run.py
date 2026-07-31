@@ -188,7 +188,7 @@ def _fit_privacy_strategy(
     merchant_spend_scope: bool,
 ) -> Tuple[DimensionalAnalyzer, Dict[str, Any], Optional[WeightingResult], PrivacyRuleStrategyResult]:
     """Optimize independently for every applicable rule in sweep mode."""
-    _, _, governed_peers = analyzer._build_categories(df, metric_col, dimensions)
+    _, _, governed_peers = analyzer.build_categories(df, metric_col, dimensions)
     if request.citi_competitor_receives_output and not request.citibank_entity_name:
         raise ValueError(
             "citibank_entity_name is required when a Citi competitor receives the output"
@@ -217,7 +217,7 @@ def _fit_privacy_strategy(
         minimum_entities = int(output_rule.get("min_entities", 0) or 0)
         share_groups: List[List[Tuple[str, float]]] = []
         for governed_metric_col in governed_metric_cols:
-            categories, _, _ = candidate._build_categories(
+            categories, _, _ = candidate.build_categories(
                 df, governed_metric_col, dimensions
             )
             grouped: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = {}
@@ -231,7 +231,7 @@ def _fit_privacy_strategy(
             for (dimension, _category, _period), rows in grouped.items():
                 weighted = [
                     float(row.get("category_volume", 0.0))
-                    * candidate._get_peer_multiplier(
+                    * candidate.get_peer_multiplier(
                         str(dimension), str(row.get("peer"))
                     )
                     for row in rows

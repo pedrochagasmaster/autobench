@@ -33,7 +33,7 @@ def _analyzer(categories: list[dict[str, Any]], solver: _Solver) -> SimpleNamesp
         max_cap_slack=0.1,
         subset_search_results=[],
     )
-    analyzer._build_categories = lambda _df, _metric, _dims: (
+    analyzer.build_categories = lambda _df, _metric, _dims: (
         categories,
         {"P1": 1.0},
         ["P1"],

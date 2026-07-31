@@ -60,7 +60,7 @@ def _solve_trial(
     analyzer: Any, df: pd.DataFrame, metric_col: str, trial_dims: List[str],
     max_concentration: float, peers: List[str], attempt: int,
 ) -> _TrialResult:
-    categories, peer_volumes, _ = analyzer._build_categories(df, metric_col, trial_dims)
+    categories, peer_volumes, _ = analyzer.build_categories(df, metric_col, trial_dims)
     if not categories:
         return _TrialResult([], None, None)
     result = analyzer.lp_solver.solve(

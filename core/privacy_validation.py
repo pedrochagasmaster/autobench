@@ -162,7 +162,7 @@ def build_privacy_validation_result(
 ) -> PrivacyValidationResult:
     """Build detailed typed privacy validation rows for each dimension/category."""
     rows: List[PrivacyValidationRow] = []
-    all_categories, peer_volumes, _ = analyzer._build_categories(df, metric_col, dimensions)
+    all_categories, peer_volumes, _ = analyzer.build_categories(df, metric_col, dimensions)
     peers = list(analyzer.global_weights.keys())
     if not peers:
         per_dim_peers = set()

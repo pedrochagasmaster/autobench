@@ -420,11 +420,11 @@ class DimensionalAnalyzer:
         warnings.warn(message, DeprecationWarning, stacklevel=2)
         logger.warning(message)
     
-    def _build_categories(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
+    def build_categories(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
         """Aggregate by entity and dimension categories for the given dimensions."""
         return self.category_builder.build_categories(df, metric_col, dimensions)
 
-    def _build_time_aware_categories(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
+    def build_time_aware_categories(self, df: pd.DataFrame, metric_col: str, dimensions: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
         """
         Build categories that include time-aware constraints for consistent weights.
         
@@ -791,7 +791,7 @@ class DimensionalAnalyzer:
         rule_name: str
     ) -> None:
         for dimension in dimensions:
-            dim_cats, dim_peer_vols, _ = self._build_categories(df, metric_col, [dimension])
+            dim_cats, dim_peer_vols, _ = self.build_categories(df, metric_col, [dimension])
             if not dim_cats:
                 continue
 
@@ -853,7 +853,8 @@ class DimensionalAnalyzer:
             else:
                 logger.warning(f"Per-dimension solving failed for '{dimension}'")
 
-    def _get_peer_multiplier(self, dimension_column: str, peer: str) -> float:
+    def get_peer_multiplier(self, dimension_column: str, peer: str) -> float:
+        """Effective privacy-weight multiplier for a peer in a dimension."""
         if dimension_column in self.per_dimension_weights and peer in self.per_dimension_weights[dimension_column]:
             return float(self.per_dimension_weights[dimension_column][peer])
         if peer in self.global_weights:
@@ -955,7 +956,7 @@ class DimensionalAnalyzer:
         if self.consistent_weights:
             return self.calculate_global_privacy_weights(df, metric_col, dimensions)
 
-        _, _, peers = self._build_categories(df, metric_col, dimensions)
+        _, _, peers = self.build_categories(df, metric_col, dimensions)
         rule_name, max_concentration = self._get_privacy_rule(len(peers))
         self._solve_per_dimension_weights(
             df,
@@ -1111,11 +1112,11 @@ class DimensionalAnalyzer:
             # Calculate weighted average share: sum(category_vol * weight) / sum(total_vol * weight)
             # Use the SAME set of peers (from peer_totals_map) for both numerator and denominator
             total_adjusted_category_volume = sum(
-                peer_category_volumes.get(p, 0.0) * self._get_peer_multiplier(dimension_column, p)
+                peer_category_volumes.get(p, 0.0) * self.get_peer_multiplier(dimension_column, p)
                 for p in peer_totals_map.keys()
             )
             total_adjusted_overall_volume = sum(
-                peer_totals_map[p] * self._get_peer_multiplier(dimension_column, p)
+                peer_totals_map[p] * self.get_peer_multiplier(dimension_column, p)
                 for p in peer_totals_map.keys()
             )
             peer_balanced_avg = (total_adjusted_category_volume / total_adjusted_overall_volume * 100.0) if total_adjusted_overall_volume > 0 else 0.0
@@ -1135,7 +1136,7 @@ class DimensionalAnalyzer:
             peer_shares.append(share)
             
             # Weight is the peer's total volume adjusted by privacy multiplier
-            multiplier = self._get_peer_multiplier(dimension_column, p)
+            multiplier = self.get_peer_multiplier(dimension_column, p)
             peer_weights.append(total_vol * multiplier)
 
         if len(peer_shares) > 0:
@@ -1239,7 +1240,7 @@ class DimensionalAnalyzer:
             # Calculate weighted average rate: sum(rate * weight * den) / sum(weight * den)
             # Use the SAME set of peers (from peer_totals_map) for consistency
             total_adjusted_den = sum(
-                peer_category_dens.get(p, 0.0) * self._get_peer_multiplier(dimension_column, p)
+                peer_category_dens.get(p, 0.0) * self.get_peer_multiplier(dimension_column, p)
                 for p in peer_totals_map.keys()
             )
             peer_balanced_rate = 0.0
@@ -1248,7 +1249,7 @@ class DimensionalAnalyzer:
                 if peer_category_dens.get(p, 0.0) > 0:
                     rate = (peer_category_nums.get(p, 0.0) / peer_category_dens[p] * 100.0)
                     adjusted_weight = (
-                        peer_category_dens[p] * self._get_peer_multiplier(dimension_column, p)
+                        peer_category_dens[p] * self.get_peer_multiplier(dimension_column, p)
                         / total_adjusted_den * 100.0
                     ) if total_adjusted_den > 0 else 0.0
                     peer_balanced_rate += (rate * adjusted_weight / 100.0)
@@ -1267,7 +1268,7 @@ class DimensionalAnalyzer:
                 peer_rates.append(rate)
                 
                 # Weight is the peer's denominator adjusted by privacy multiplier
-                multiplier = self._get_peer_multiplier(dimension_column, p)
+                multiplier = self.get_peer_multiplier(dimension_column, p)
                 peer_weights.append(peer_category_dens[p] * multiplier)
         
         if len(peer_rates) > 0:

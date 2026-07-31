@@ -135,7 +135,7 @@ class _FakeAnalyzer:
         self.structural_summary_df = pd.DataFrame()
         self.slack_subset_triggered = False
 
-    def _build_time_aware_categories(
+    def build_time_aware_categories(
         self,
         _df: pd.DataFrame,
         _metric_col: str,
@@ -143,7 +143,7 @@ class _FakeAnalyzer:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[str]]:
         return self._all_categories, self._peer_volumes, self._peers
 
-    def _build_categories(
+    def build_categories(
         self,
         _df: pd.DataFrame,
         _metric_col: str,

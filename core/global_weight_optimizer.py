@@ -93,11 +93,11 @@ class GlobalWeightOptimizer:
         single_weight_mode = bool(getattr(analyzer, "enforce_single_weight_set", False))
 
         if analyzer.time_column and analyzer.time_column in df.columns:
-            all_categories, peer_volumes, peers = analyzer._build_time_aware_categories(
+            all_categories, peer_volumes, peers = analyzer.build_time_aware_categories(
                 df, metric_col, dimensions
             )
         else:
-            all_categories, peer_volumes, peers = analyzer._build_categories(df, metric_col, dimensions)
+            all_categories, peer_volumes, peers = analyzer.build_categories(df, metric_col, dimensions)
 
         peer_count = len(peers)
         rule_name, max_concentration = analyzer._get_privacy_rule(peer_count)
@@ -287,7 +287,7 @@ class GlobalWeightOptimizer:
                     trial_dims = [dim_name for dim_name in problem.dimensions if dim_name not in ordered_dims[:count]]
                     if not trial_dims:
                         continue
-                    trial_cats, trial_peer_vols, _ = analyzer._build_categories(
+                    trial_cats, trial_peer_vols, _ = analyzer.build_categories(
                         problem.df, problem.metric_col, trial_dims
                     )
                     if not trial_cats:
@@ -585,7 +585,7 @@ class GlobalWeightOptimizer:
                         violation_dim,
                     )
                     continue
-                violation_cats, violation_peer_vols, _ = analyzer._build_categories(
+                violation_cats, violation_peer_vols, _ = analyzer.build_categories(
                     problem.df, problem.metric_col, [violation_dim]
                 )
                 if not violation_cats:
