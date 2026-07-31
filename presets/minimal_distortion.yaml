@@ -1,11 +1,15 @@
 version: "3.0"
 preset_name: "minimal_distortion"
 compliance_posture: "accuracy_first"
-description: "Minimize distortion - Very high tolerance, prioritizes accuracy over privacy"
+description: "Minimize distortion - Very high tolerance; accuracy_first requires per-run acknowledgement"
 
-# Intent: "I need accurate market share numbers, privacy violations are acceptable."
+# Intent: "I need accurate market share numbers for internal diagnosis."
 # Priority: Minimize distortion at all costs.
-# Trade-off: Will allow significant privacy violations.
+# Trade-off: Weighting may leave privacy caps unmet. Non-compliant results are
+# never publishable: with the per-run acknowledgement (CLI flag, API field, or
+# TUI consent dialog), such a run writes only a NON_PUBLISHABLE-prefixed
+# diagnostic workbook; publication outputs, balanced CSV, JSON report, and
+# audit package are withheld.
 
 optimization:
   bounds:

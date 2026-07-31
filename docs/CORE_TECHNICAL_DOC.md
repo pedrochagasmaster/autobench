@@ -631,15 +631,20 @@ Key effects:
 - min_weight = max_weight = 1.0: identity weights (no reweighting).
 - tolerance 10.0: allow violations to preserve accuracy.
 - subset_search disabled: no dimension dropping.
-- Outcome: outputs stay close to raw, compliance may be violated.
+- Outcome: outputs stay close to raw. The accuracy_first posture requires
+  explicit per-run acknowledgement; if the run is numerically non-compliant,
+  only a NON_PUBLISHABLE-prefixed diagnostic workbook is written and all
+  publishable sinks are withheld.
 
 #### minimal_distortion
-Intent: maximum accuracy with minimal concern for privacy.
+Intent: maximum accuracy for internal diagnosis.
 Key effects:
 - very wide bounds and high tolerance.
 - low volume_preservation: allow large reordering.
 - subset_search disabled: no dimension dropping.
-- Outcome: maximum freedom for raw-like outputs; privacy caps likely violated.
+- Outcome: maximum freedom for raw-like outputs; privacy caps are often unmet.
+  Same accuracy_first consequences as low_distortion: acknowledgement is
+  required and non-compliant runs yield only the non-publishable diagnostic.
 
 ## Interaction Notes: Practical Usage Patterns
 
@@ -998,9 +1003,11 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   bypass `Logger`, and governed worker-thread logging, require independently
   trusted privacy-gated sinks.
 - TUI session persistence intentionally excludes CSV/output paths, target and
-  Citi entity values, and the concentration-column input. Only non-identifying
-  form preferences such as modes, column selectors, toggles, and dimension
-  selections are restored.
+  Citi entity values, and every compliance declaration or consent control
+  (`citi_competitor_receives_output`, `privacy_merchant_spend_scope`, and the
+  accuracy_first consent, which is a per-run dialog rather than a checkbox).
+  Only non-identifying form preferences such as modes, column selectors,
+  toggles, and dimension selections are restored.
 
 ### core/validation_runner.py
 

@@ -374,10 +374,15 @@ optimization:
 
 - Os pesos ficam praticamente travados em `1.0`.
 - O solver quase não consegue alterar a composição dos pares.
-- Se os dados brutos violarem a regra, a configuração tende a preservar os
-  dados e registrar a violação.
+- Se os dados brutos violarem a regra, os pesos preservam os dados, mas a
+  saída não é publicável: com o reconhecimento explícito, a execução gera
+  apenas um workbook de diagnóstico com prefixo `autobench_NON_PUBLISHABLE_`;
+  publicação, CSV balanceado, relatório JSON e pacote de auditoria são
+  retidos.
 - A busca proativa de subconjunto fica desabilitada.
-- A execução exige reconhecimento explícito da postura `accuracy_first`.
+- A execução exige reconhecimento explícito da postura `accuracy_first`
+  (flag de CLI, campo da API ou diálogo de consentimento na TUI, por
+  execução).
 
 ### Quando usar
 
@@ -433,7 +438,9 @@ optimization:
 - A ponderação quadrática por volume reduz ainda mais a importância relativa
   do slack em categorias pequenas.
 - Há pouca pressão para preservar o ranking original.
-- Violações são esperadas e registradas sob `accuracy_first`.
+- Violações são esperadas sob `accuracy_first`, mas o resultado de uma
+  execução numericamente não conforme nunca é publicável: apenas o workbook
+  de diagnóstico `autobench_NON_PUBLISHABLE_` é gravado.
 
 ### Diferença para `low_distortion`
 
@@ -474,7 +481,7 @@ optimization:
 | --- | --- | --- |
 | `compliance_posture` | `strict` | Violações geram estado não conforme; indicado para gates regulatórios. |
 | `compliance_posture` | `best_effort` | A execução pode concluir com advertências e violações claramente identificadas. |
-| `compliance_posture` | `accuracy_first` | Prioriza fidelidade e bloqueia a execução sem reconhecimento explícito. |
+| `compliance_posture` | `accuracy_first` | Prioriza fidelidade; exige reconhecimento explícito por execução e, em caso de não conformidade numérica, grava apenas um diagnóstico não publicável. |
 
 No CLI, use:
 

@@ -583,7 +583,10 @@ Use when needed:
 - `compliance_strict`: regulatory/audit-first, zero tolerance.
 - `strategic_consistency`: emphasize one consistent global weighting behavior.
 - `research_exploratory`: harder datasets with more flexibility.
-- `low_distortion` / `minimal_distortion`: prioritize lower distortion patterns.
+- `low_distortion` / `minimal_distortion`: prioritize lower distortion
+  patterns. Both use the `accuracy_first` posture: each run needs an explicit
+  acknowledgement, and a numerically non-compliant run produces only a
+  `autobench_NON_PUBLISHABLE_`-prefixed diagnostic workbook.
 
 Quick selection guide:
 
