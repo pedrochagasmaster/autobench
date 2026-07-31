@@ -25,7 +25,7 @@ from typing import Optional, Dict
 
 # Import core modules
 from core.control3_policy import remediation_hint
-from core.contracts import AnalysisArtifacts
+from core.contracts import AnalysisArtifacts, DEFAULT_PRESET_NAME
 from core.privacy_output_policy import is_privacy_publication_authorized
 from core.analysis_run import (
     build_run_request,
@@ -105,7 +105,14 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
     parser.add_argument('--time-col', help='Time column name for time-aware consistency (e.g., ano_mes, year_month)')
     parser.add_argument('--config', help='Configuration file (YAML)')
     available_presets = ', '.join(preset_choices) if preset_choices else 'none found'
-    parser.add_argument('--preset', help=f'Preset configuration name (available: {available_presets})')
+    parser.add_argument(
+        '--preset',
+        default=DEFAULT_PRESET_NAME,
+        help=(
+            f'Preset configuration name (default: {DEFAULT_PRESET_NAME}; '
+            f'available: {available_presets})'
+        ),
+    )
     parser.add_argument(
         '--compliance-posture',
         choices=['strict', 'best_effort', 'accuracy_first'],
@@ -190,54 +197,6 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         choices=['clearing_spend', 'transaction_count', 'transaction_amount'],
         help='Basis used for Control 3 concentration checks; fraud/chargeback issuer benchmarking requires clearing_spend',
     )
-    parser.add_argument(
-        '--contains-digital-wallet-metrics',
-        action='store_true',
-        default=None,
-        help='Declare that the output contains digital wallet metrics and therefore requires Privacy review',
-    )
-    parser.add_argument(
-        '--digital-wallet-review-approved',
-        action='store_true',
-        default=None,
-        help='Declare that required Privacy review/approval has been obtained for digital wallet metrics',
-    )
-    parser.add_argument(
-        '--contains-top-merchant-output',
-        action='store_true',
-        default=None,
-        help='Declare that the output would include a top-merchant list; Control 3 blocks this deliverable',
-    )
-    parser.add_argument(
-        '--dual-entity-axis',
-        action='store_true',
-        default=None,
-        help='Declare that the benchmark involves two protected entity axes and requires Privacy review',
-    )
-    parser.add_argument(
-        '--dual-entity-axis-review-approved',
-        action='store_true',
-        default=None,
-        help='Declare that required Privacy review/approval has been obtained for dual entity axis benchmarking',
-    )
-    parser.add_argument(
-        '--recurring-deliverable',
-        action='store_true',
-        default=None,
-        help='Declare that this is a recurring deliverable requiring re-check evidence',
-    )
-    parser.add_argument(
-        '--last-privacy-recheck-date',
-        help='Date of the latest privacy compliance re-check in YYYY-MM-DD format',
-    )
-    parser.add_argument(
-        '--peer-group-altered',
-        action='store_true',
-        default=None,
-        help='Declare that the peer group changed since the last recurring deliverable',
-    )
-
-
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     
@@ -248,7 +207,7 @@ def create_parser() -> argparse.ArgumentParser:
         epilog=f"""
 EXAMPLES:
   # Share analysis with preset
-  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --preset balanced_default
+  python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --preset compliance_strict
 
   # Share analysis with custom config
   python benchmark.py share --csv data.csv --entity "BANCO SANTANDER" --metric txn_cnt --config my_config.yaml

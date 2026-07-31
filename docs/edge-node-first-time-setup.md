@@ -101,7 +101,7 @@ autobench-cli share \
   --metric txn_cnt \
   --dimensions card_type channel \
   --time-col year_month \
-  --preset balanced_default \
+  --preset compliance_strict \
   --export-balanced-csv \
   --output /tmp/autobench_setup_smoke.xlsx
 ```

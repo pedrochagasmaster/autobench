@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core.control3_policy import CONTROL3_POLICY_KEYS
 
+
+DEFAULT_PRESET_NAME = "compliance_strict"
+
 APPROVED_PRIVACY_RULE_NAMES = ("5/25", "6/30", "7/35", "10/40", "4/35")
 CONTROL3_NUMERIC_POLICY_VERSION = "v5 (2026-06-03)"
 CONTROL3_NUMERIC_POLICY_SOURCE = (
@@ -379,7 +382,7 @@ class AnalysisRunRequest:
     df: Any = None
     entity: Optional[str] = None
     entity_col: str = "issuer_name"
-    preset: Optional[str] = None
+    preset: Optional[str] = DEFAULT_PRESET_NAME
     config: Optional[str] = None
     output: Optional[str] = None
     time_col: Optional[str] = None
@@ -412,6 +415,10 @@ class AnalysisRunRequest:
     citi_competitor_receives_output: bool = False
     control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
+
+    def __post_init__(self) -> None:
+        if not self.preset:
+            self.preset = DEFAULT_PRESET_NAME
 
     @property
     def is_share(self) -> bool:

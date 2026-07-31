@@ -61,14 +61,6 @@ def _share_args(
         audit_package=False,
         lean=False,
         privacy_basis=None,
-        contains_digital_wallet_metrics=None,
-        digital_wallet_review_approved=None,
-        contains_top_merchant_output=None,
-        dual_entity_axis=None,
-        dual_entity_axis_review_approved=None,
-        recurring_deliverable=None,
-        last_privacy_recheck_date=None,
-        peer_group_altered=None,
     )
 
 

@@ -24,9 +24,10 @@ def _write_tolerance_config(tmp_path, tolerance: float) -> str:
     return str(path)
 
 
-def test_default_baseline_tolerance() -> None:
+def test_default_uses_compliance_strict_tolerance() -> None:
     config = ConfigManager()
-    assert config.get("optimization", "linear_programming", "tolerance") == _DEFAULT_TOLERANCE
+    assert config.get("optimization", "linear_programming", "tolerance") == 0.0
+    assert config.resolve().compliance_posture == "strict"
 
 
 def test_preset_beats_default() -> None:
@@ -61,7 +62,13 @@ def test_cli_none_does_not_override(tmp_path) -> None:
 
 
 def test_cli_multiple_paths() -> None:
-    config = ConfigManager(cli_overrides={"debug": True, "max_weight": 5.0})
+    config = ConfigManager(
+        cli_overrides={
+            "debug": True,
+            "max_weight": 5.0,
+            "compliance_posture": "strict",
+        }
+    )
     assert config.get("output", "include_debug_sheets") is True
     assert config.get("optimization", "bounds", "max_weight") == 5.0
 

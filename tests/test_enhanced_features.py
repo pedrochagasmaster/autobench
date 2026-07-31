@@ -194,12 +194,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 max_cap_slack=None,
                 compliance_posture='best_effort',
                 privacy_basis='clearing_spend',
-                contains_digital_wallet_metrics=False,
-                contains_top_merchant_output=False,
-                dual_entity_axis=False,
-                recurring_deliverable=False,
-                last_privacy_recheck_date=None,
-                peer_group_altered=False,
             )
             logger = logging.getLogger("test_publication")
             result = run_share_analysis(args, logger)
@@ -249,12 +243,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 max_cap_slack=None,
                 compliance_posture='best_effort',
                 privacy_basis='clearing_spend',
-                contains_digital_wallet_metrics=False,
-                contains_top_merchant_output=False,
-                dual_entity_axis=False,
-                recurring_deliverable=False,
-                last_privacy_recheck_date=None,
-                peer_group_altered=False,
             )
             logger = logging.getLogger("test_publication_rate")
             result = run_rate_analysis(args, logger)

@@ -99,7 +99,7 @@ py benchmark.py share `
   --entity "BANCO ALVO" `
   --metric txn_cnt `
   --dimensions canal produto `
-  --preset balanced_default `
+  --preset compliance_strict `
   --config .\minha-config.yaml
 ```
 
@@ -113,8 +113,8 @@ disponível para declarar explicitamente a postura da execução.
 
 | Preset | Prioridade | Postura | Pesos | Tolerância | Subset search | Consistência |
 | --- | --- | --- | ---: | ---: | --- | --- |
-| `balanced_default` | Equilíbrio geral | `best_effort` | `0.01` a `10` | `2.0` | aleatória determinística, até 200 tentativas | global, com fallback |
-| `compliance_strict` | Privacidade | `strict` | `0.01` a `10` | `0.0` | greedy, em qualquer slack | global, com fallback |
+| `balanced_default` | Exploração equilibrada explícita | `best_effort` | `0.01` a `10` | `2.0` | aleatória determinística, até 200 tentativas | global, com fallback |
+| `compliance_strict` | Privacidade; padrão em todas as interfaces | `strict` | `0.01` a `10` | `0.0` | greedy, em qualquer slack | global, com fallback |
 | `strategic_consistency` | Um único vetor de pesos | `best_effort` | `0.01` a `15` | `25.0` | desabilitada | global obrigatório |
 | `research_exploratory` | Viabilidade em dados difíceis | `best_effort` | `0.005` a `20` | `5.0` | aleatória determinística, até 400 tentativas | global flexível |
 | `low_distortion` | Resultado quase bruto | `accuracy_first` | `1.0` a `1.0001` | `10.0` | desabilitada | normalmente global |
@@ -128,8 +128,9 @@ mesmo resultado, o que é necessário para auditoria.
 
 ### Intenção
 
-É o ponto de partida recomendado para análises rotineiras. Procura equilibrar
-privacidade, baixa distorção e consistência entre dimensões.
+É uma escolha exploratória explícita para equilibrar privacidade, baixa
+distorção e consistência entre dimensões. Não é o padrão: CLI, TUI, Python e
+configuração usam `compliance_strict` quando nenhum preset é informado.
 
 ### Configuração principal
 
@@ -629,31 +630,31 @@ renomear um resultado relaxado como plenamente conforme.
 `merchant_mode` é uma declaração operacional explícita em YAML; não é inferido
 automaticamente pelo nome das colunas.
 
-### 10.10 Política Control 3
+### 10.10 Política Control 3 e elegibilidade anterior ao Autobench
 
-Os campos de `control3` não ajustam o solver. Eles registram evidência para
-gates que não podem ser inferidos com segurança a partir dos dados:
+O único campo aceito em `control3` é `privacy_basis`. Para fraude ou chargeback
+em benchmark de emissores, ele deve ser `clearing_spend`, e a coluna escolhida
+como `total_col` deve conter o valor de clearing spend: o motor usa essa própria
+coluna como base de concentração e não tenta descobrir outra.
 
-- `privacy_basis`;
-- `contains_digital_wallet_metrics` e
-  `digital_wallet_review_approved`;
-- `contains_top_merchant_output`;
-- `dual_entity_axis` e `dual_entity_axis_review_approved`;
-- `recurring_deliverable`;
-- `last_privacy_recheck_date`;
-- `peer_group_altered`.
+As demais decisões de negócio pertencem ao processo de Privacidade/governança
+anterior ao Autobench. Antes de carregar os dados, o analista deve resolver:
 
-Para fraude ou chargeback em benchmark de emissores, a base de concentração
-deve ser declarada como `clearing_spend`.
+- revisão para métricas de carteira digital;
+- proteção quando há dois eixos de entidades protegidas;
+- rechecagem de entregáveis recorrentes, inclusive após alteração do peer group;
+- revisão contra engenharia reversa e Control 3.3;
+- proibição de entregáveis que listam top merchants.
+
+Não existem flags, campos de TUI, chaves YAML nem campos Python para declarar
+essas decisões. O Autobench confia na elegibilidade aprovada pelo analista; ele
+não a infere dos dados e não substitui o processo upstream.
 
 Exemplo:
 
 ```yaml
 control3:
   privacy_basis: clearing_spend
-  recurring_deliverable: true
-  last_privacy_recheck_date: "2026-07-27"
-  peer_group_altered: false
 ```
 
 ### 10.11 Entrada, memória e desempenho
@@ -711,23 +712,12 @@ significativamente o tempo e o consumo de memória.
 
 ## 11. Receitas de configuração
 
-### 11.1 Mais privacidade sem abandonar completamente a consistência
+### 11.1 Privacidade estrita com fallback por dimensão
 
-Use `balanced_default` como base, reduza a tolerância e antecipe a busca de
-subconjunto:
-
-```yaml
-version: "3.0"
-compliance_posture: "strict"
-
-optimization:
-  linear_programming:
-    tolerance: 0.5
-  subset_search:
-    trigger_on_slack: true
-    max_slack_threshold: 0.0
-    strategy: greedy
-```
+Use `compliance_strict`. Ele já aplica tolerância zero e antecipa a busca greedy
+de subconjunto quando qualquer slack aparece; nenhum override YAML é necessário.
+Se o vetor global não for viável, o preset pode calcular pesos por dimensão.
+Confirme o método realmente usado na aba `Weight Methods`.
 
 ### 11.2 Menos distorção com advertências explícitas
 
@@ -810,7 +800,7 @@ py benchmark.py share `
   --entity "BANCO ALVO" `
   --metric txn_cnt `
   --dimensions canal produto `
-  --preset balanced_default `
+  --preset compliance_strict `
   --compare-presets `
   --analyze-impact
 ```
@@ -842,7 +832,7 @@ py benchmark.py share `
   --metric txn_cnt `
   --dimensions canal produto `
   --time-col year_month `
-  --preset balanced_default `
+  --preset compliance_strict `
   --output .\benchmark-share.xlsx
 ```
 
@@ -863,10 +853,13 @@ py benchmark.py rate `
 
 ## 14. Recomendação final
 
-Comece com `balanced_default`, habilite análise de impacto e leia os métodos de
-peso. Mude de preset somente em resposta a um requisito explícito:
+Comece com `compliance_strict`, habilite análise de impacto e leia a coluna ou
+aba de métodos de peso. O preset estrito pode recorrer a pesos por dimensão;
+somente `strategic_consistency` garante um único vetor global. Mude de preset
+somente em resposta a um requisito explícito:
 
-- conformidade fail-closed: `compliance_strict`;
+- conformidade fail-closed: mantenha `compliance_strict`;
+- exploração best-effort explicitamente autorizada: `balanced_default`;
 - vetor único entre todas as visões: `strategic_consistency`;
 - diagnóstico de base difícil: `research_exploratory`;
 - referência quase bruta: `low_distortion`;

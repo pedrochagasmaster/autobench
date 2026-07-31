@@ -226,6 +226,7 @@ class TestBenchmarkOrchestrationHelpers(unittest.TestCase):
             analyze_distortion=True,
             output_format='publication',
             include_calculated=True,
+            compliance_posture='strict',
         )
 
         config = build_run_config(args, extra_overrides={'fraud_in_bps': False})

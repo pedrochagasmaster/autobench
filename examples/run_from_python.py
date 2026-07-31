@@ -29,7 +29,7 @@ request = AnalysisRunRequest(
     metric="txn_cnt",
     dimensions=["card_type", "channel"],
     time_col="year_month",
-    preset="balanced_default",
+    preset="compliance_strict",
     compliance_posture="strict",
     output="example_share.xlsx",
 )

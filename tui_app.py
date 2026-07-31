@@ -68,6 +68,7 @@ try:
     )
     from core.contracts import (
         AnalysisRunRequest,
+        DEFAULT_PRESET_NAME,
         PreparedDataset,
         PrivacyRuleStrategy,
     )
@@ -1569,10 +1570,15 @@ class BenchmarkApp(App):
         presets = self.preset_workflow.list_presets()
         options = [(preset, preset) for preset in presets] or [("standard", "standard")]
         self.query_one("#preset_select").set_options(options)
-        self.query_one("#preset_select").value = options[0][0] if options else None
-        if options:
-            self.update_advanced_parameters(options[0][0])
-            self._update_preset_blurb(options[0][0])
+        default_preset = (
+            DEFAULT_PRESET_NAME
+            if DEFAULT_PRESET_NAME in presets
+            else (options[0][0] if options else None)
+        )
+        self.query_one("#preset_select").value = default_preset
+        if default_preset:
+            self.update_advanced_parameters(default_preset)
+            self._update_preset_blurb(default_preset)
         self.advanced_config_path = None
 
     def _update_preset_blurb(self, preset_name: str) -> None:

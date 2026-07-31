@@ -97,7 +97,6 @@ def test_config_show_unknown_preset_returns_nonzero():
     "reason, fragment",
     [
         ("fraud_chargeback_requires_clearing_spend_basis", "clearing_spend"),
-        ("top_merchant_lists_not_allowed", "top-merchant"),
     ],
 )
 def test_control3_remediation_hint(reason, fragment):

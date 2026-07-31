@@ -4,7 +4,6 @@ This module provides configuration file validation against the v3.0 schema.
 """
 
 import logging
-from datetime import datetime
 from typing import Dict, Any, List
 from pathlib import Path
 from core.compliance import VALID_COMPLIANCE_POSTURES
@@ -95,14 +94,6 @@ class ConfigValidator:
     }
     VALID_CONTROL3_KEYS = {
         'privacy_basis',
-        'contains_digital_wallet_metrics',
-        'digital_wallet_review_approved',
-        'contains_top_merchant_output',
-        'dual_entity_axis',
-        'dual_entity_axis_review_approved',
-        'recurring_deliverable',
-        'last_privacy_recheck_date',
-        'peer_group_altered',
     }
     
     @classmethod
@@ -177,19 +168,6 @@ class ConfigValidator:
         if unknown_fields:
             errors.append(f"Unknown control3 fields: {', '.join(sorted(unknown_fields))}")
 
-        bool_fields = [
-            'contains_digital_wallet_metrics',
-            'digital_wallet_review_approved',
-            'contains_top_merchant_output',
-            'dual_entity_axis',
-            'dual_entity_axis_review_approved',
-            'recurring_deliverable',
-            'peer_group_altered',
-        ]
-        for field in bool_fields:
-            if field in control3_config and not isinstance(control3_config[field], bool):
-                errors.append(f"control3.{field} must be a boolean")
-
         if 'privacy_basis' in control3_config:
             basis = control3_config['privacy_basis']
             if basis is not None and basis not in cls.VALID_PRIVACY_BASES:
@@ -198,16 +176,6 @@ class ConfigValidator:
                     + ", ".join(cls.VALID_PRIVACY_BASES)
                     + ", or null"
                 )
-
-        if 'last_privacy_recheck_date' in control3_config:
-            value = control3_config['last_privacy_recheck_date']
-            if value is not None and not isinstance(value, str):
-                errors.append("control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null")
-            elif value:
-                try:
-                    datetime.strptime(value, "%Y-%m-%d")
-                except ValueError:
-                    errors.append("control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null")
 
         return errors
     

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+import argparse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,11 +8,53 @@ import pandas as pd
 import pytest
 from openpyxl import load_workbook
 
-from benchmark import run_share_analysis
+from benchmark import create_parser, run_share_analysis
 from core.analysis_run import RunBlocked, build_run_request, enforce_compliance_preconditions
+from core.contracts import AnalysisRunRequest
 from core.control3_policy import Control3PolicyInput, evaluate_control3_policy
 from utils.config_manager import ConfigManager
 from utils.validators import ConfigValidator
+
+
+REMOVED_BUSINESS_FLAGS = {
+    "--contains-digital-wallet-metrics",
+    "--digital-wallet-review-approved",
+    "--contains-top-merchant-output",
+    "--dual-entity-axis",
+    "--dual-entity-axis-review-approved",
+    "--recurring-deliverable",
+    "--last-privacy-recheck-date",
+    "--peer-group-altered",
+}
+
+
+def _share_parser():
+    parser = create_parser()
+    subparsers = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    return subparsers.choices["share"]
+
+
+def test_cli_defaults_to_compliance_strict() -> None:
+    args = create_parser().parse_args(["share", "--csv", "input.csv", "--metric", "txn_cnt"])
+
+    assert args.preset == "compliance_strict"
+
+
+def test_python_request_defaults_to_compliance_strict() -> None:
+    assert AnalysisRunRequest().preset == "compliance_strict"
+    assert AnalysisRunRequest(preset=None).preset == "compliance_strict"
+
+
+def test_cli_does_not_expose_upstream_business_decisions() -> None:
+    exposed = {
+        option
+        for action in _share_parser()._actions
+        for option in action.option_strings
+    }
+
+    assert REMOVED_BUSINESS_FLAGS.isdisjoint(exposed)
 
 
 def test_fraud_and_chargeback_metrics_require_clearing_spend_privacy_basis() -> None:
@@ -41,67 +83,29 @@ def test_fraud_metrics_allow_explicit_clearing_spend_privacy_basis() -> None:
     assert policy.requirements["fraud_chargeback_privacy_basis"] == "enforced"
 
 
-def test_digital_wallet_metrics_require_privacy_review_approval() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            contains_digital_wallet_metrics=True,
-            digital_wallet_review_approved=False,
-        )
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "digital_wallet_metrics_require_privacy_review"
-
-
-def test_top_merchant_output_is_hard_blocked() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            contains_top_merchant_output=True,
-            digital_wallet_review_approved=True,
-            dual_entity_axis_review_approved=True,
-        )
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "top_merchant_lists_not_allowed"
-
-
-def test_dual_entity_axis_requires_manual_privacy_review() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            dual_entity_axis=True,
-            dual_entity_axis_review_approved=False,
-        )
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "dual_entity_axis_requires_privacy_review"
-
-
-def test_digital_wallet_review_does_not_approve_dual_entity_axis() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            contains_digital_wallet_metrics=True,
-            digital_wallet_review_approved=True,
-            dual_entity_axis=True,
-            dual_entity_axis_review_approved=False,
-        )
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "dual_entity_axis_requires_privacy_review"
-
-
-def test_control3_config_recheck_date_must_be_iso_date() -> None:
+@pytest.mark.parametrize(
+    "removed_key",
+    [
+        "contains_digital_wallet_metrics",
+        "digital_wallet_review_approved",
+        "contains_top_merchant_output",
+        "dual_entity_axis",
+        "dual_entity_axis_review_approved",
+        "recurring_deliverable",
+        "last_privacy_recheck_date",
+        "peer_group_altered",
+    ],
+)
+def test_control3_config_rejects_upstream_business_decisions(removed_key: str) -> None:
     errors = ConfigValidator.validate(
         {
             "version": "3.0",
             "compliance_posture": "strict",
-            "control3": {"last_privacy_recheck_date": "2026/06/03"},
+            "control3": {removed_key: True},
         }
     )
 
-    assert "control3.last_privacy_recheck_date must be a YYYY-MM-DD string or null" in errors
+    assert f"Unknown control3 fields: {removed_key}" in errors
 
 
 def test_control3_config_rejects_overloaded_privacy_review_approval() -> None:
@@ -116,34 +120,6 @@ def test_control3_config_rejects_overloaded_privacy_review_approval() -> None:
     assert "Unknown control3 fields: privacy_review_approved" in errors
 
 
-def test_recurring_deliverable_requires_recheck_when_peer_group_altered() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            recurring_deliverable=True,
-            peer_group_altered=True,
-            last_privacy_recheck_date="2026-01-15",
-        ),
-        today=date(2026, 6, 3),
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "recurring_deliverable_recheck_required"
-
-
-def test_recurring_deliverable_requires_annual_recheck() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            recurring_deliverable=True,
-            peer_group_altered=False,
-            last_privacy_recheck_date="2025-06-02",
-        ),
-        today=date(2026, 6, 3),
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "recurring_deliverable_recheck_required"
-
-
 def test_compliance_preconditions_block_declared_sensitive_run() -> None:
     request = build_run_request(
         "rate",
@@ -152,12 +128,6 @@ def test_compliance_preconditions_block_declared_sensitive_run() -> None:
             approved_col=None,
             fraud_col="fraud",
             privacy_basis=None,
-            contains_digital_wallet_metrics=False,
-            contains_top_merchant_output=False,
-            dual_entity_axis=False,
-            recurring_deliverable=False,
-            last_privacy_recheck_date=None,
-            peer_group_altered=False,
         ),
     )
     config = ConfigManager()
@@ -206,12 +176,6 @@ def test_publication_peer_evidence_redacts_peer_composition(tmp_path: Path) -> N
         compliance_posture="best_effort",
         acknowledge_accuracy_first=False,
         privacy_basis=None,
-        contains_digital_wallet_metrics=False,
-        contains_top_merchant_output=False,
-        dual_entity_axis=False,
-        recurring_deliverable=False,
-        last_privacy_recheck_date=None,
-        peer_group_altered=False,
     )
 
     assert run_share_analysis(args, __import__("logging").getLogger("test_control3_publication")) == 0

@@ -535,8 +535,8 @@ Presets live in presets/ and encode user intent as a set of configuration overri
 
 Preset | Primary intent | Compliance strictness | Consistency goal | Distortion tolerance | Typical use case
 --- | --- | --- | --- | --- | ---
-balanced_default | Balanced compliance vs consistency | Medium | Medium | Medium | Day-to-day benchmarking
-compliance_strict | Regulatory compliance | High (0.0 tolerance) | Medium | Low | Audit/regulatory reporting
+balanced_default | Balanced compliance vs consistency | Medium | Medium | Medium | Explicit exploratory benchmarking
+compliance_strict | Regulatory compliance; default | High (0.0 tolerance) | Medium | Low | Day-to-day and audit/regulatory reporting
 strategic_consistency | Single global weights | Low to Medium | High (no dimension dropping) | Medium to High | Executive dashboards
 research_exploratory | Feasibility on hard data | Medium | Low | High | Sparse/difficult datasets
 low_distortion | Minimize distortion (identity weights) | Low | High | Very Low | Accuracy-first comparisons

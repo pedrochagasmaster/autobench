@@ -7,7 +7,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - Use `py tui_app.py` for a guided first run.
 - Use `py benchmark.py share|rate ...` for automation.
 - Privacy caps are always enforced automatically.
-- Start with preset `balanced_default` unless you have a specific regulatory/reporting need.
+- `compliance_strict` is the default preset on every interface.
 - Development ends with a GitHub pull request; see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Release Operators use [docs/release-workflow.md](docs/release-workflow.md).
 - On Edge Nodes, operators install one shared runtime and analysts run
@@ -106,7 +106,7 @@ py benchmark.py share \
   --metric txn_cnt \
   --dimensions card_type channel \
   --time-col year_month \
-  --preset balanced_default \
+  --preset compliance_strict \
   --output gate_demo_share.xlsx
 ```
 
@@ -118,7 +118,7 @@ py benchmark.py rate \
   --approved-col approved \
   --dimensions card_type channel \
   --time-col year_month \
-  --preset balanced_default \
+  --preset compliance_strict \
   --export-balanced-csv \
   --output gate_demo_rate.xlsx
 ```
@@ -247,7 +247,7 @@ Config/preset management:
 
 ```powershell
 py benchmark.py config list
-py benchmark.py config show balanced_default
+py benchmark.py config show compliance_strict
 py benchmark.py config validate my_config.yaml
 py benchmark.py config generate my_config.yaml
 ```
@@ -334,7 +334,7 @@ request = AnalysisRunRequest(
     metric="txn_cnt",
     dimensions=["card_type", "channel"],
     time_col="year_month",
-    preset="balanced_default",
+    preset="compliance_strict",
     compliance_posture="strict",
     output="report.xlsx",
 )
@@ -525,9 +525,13 @@ present and must resolve to exactly one governed identity, regardless of
 recipient type. Omitting both facts leaves the overlay not applicable.
 
 This result covers only the benchmark numeric rules and their mandatory Citi
-overlay. It does not resolve reverse-engineering review, other run-level gates,
-Control 3.3, or the obligation to re-check after peer-group changes and at
-least annually. `PrivacyPolicy` and raw rule configuration remain internal.
+overlay. Business eligibility decisions happen upstream: digital-wallet
+review, dual protected entity axes, recurring-deliverable rechecks, peer-group
+changes, reverse-engineering review, Control 3.3, and the prohibition on
+top-merchant deliverables must be resolved before data enters Autobench. There
+are no CLI, TUI, YAML, or Python declarations for those decisions; Autobench
+trusts the analyst's upstream approval. `PrivacyPolicy` and raw rule
+configuration remain internal.
 The legacy `PrivacyValidator`, `DataLoader`, `DimensionalAnalyzer`, and
 `ReportGenerator` imports remain supported from `core` for backward
 compatibility; new integrations should prefer the contracts and orchestration
@@ -574,14 +578,15 @@ List available presets:
 py benchmark.py config list
 ```
 
-Recommended starting point:
+Default and recommended starting point:
 
-- `balanced_default`: day-to-day analysis.
+- `compliance_strict`: fail-closed privacy with zero tolerance. It attempts one
+  global vector but may use compliant per-dimension fallbacks.
 
 Use when needed:
 
-- `compliance_strict`: regulatory/audit-first, zero tolerance.
 - `strategic_consistency`: emphasize one consistent global weighting behavior.
+- `balanced_default`: best-effort exploratory analysis with controlled slack.
 - `research_exploratory`: harder datasets with more flexibility.
 - `low_distortion` / `minimal_distortion`: prioritize lower distortion
   patterns. Both use the `accuracy_first` posture: each run needs an explicit
@@ -590,9 +595,9 @@ Use when needed:
 
 Quick selection guide:
 
-- Regulatory submission -> `compliance_strict`
+- Normal analysis and regulatory submission -> `compliance_strict`
 - Executive/dashboard consistency -> `strategic_consistency`
-- General business analysis -> `balanced_default`
+- Explicit best-effort exploration -> `balanced_default`
 
 Detailed Portuguese guide:
 
@@ -600,7 +605,21 @@ Detailed Portuguese guide:
 
 ## Outputs
 
-Main output is Excel (`.xlsx`), optionally with balanced CSV. Set `--report-format json` (or `output.format: json` in config) to also write a machine-readable `.json` sidecar beside the analysis workbook; the JSON is analysis-grade and not publication-redacted.
+Choose the output contract before running:
+
+- `analysis` writes an internal diagnostic workbook that may contain identities,
+  detailed weights, and analysis-only sheets. It is not client-safe.
+- `publication` sanitizes a separate client-facing candidate, then validates that
+  transformed artifact against the publication contract. It is written only if
+  both stages pass.
+- `both` requests both separate artifacts; only the publication workbook is a
+  client-facing candidate.
+
+Main output is Excel (`.xlsx`), optionally with balanced CSV. Set
+`--report-format json` (or `output.format: json` in config) to also write a
+machine-readable `.json` sidecar beside the analysis workbook; the JSON is
+analysis-grade and not publication-redacted. Manual sheet deletion does not
+replace publication sanitization and validation.
 
 All of these are benchmark-bearing outputs. A hard Control 3 numeric-rule,
 evidence, governed-basis, or mandatory-overlay denial withholds every one of

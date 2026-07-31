@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - validators already handle this path
     yaml = None
 
 from core.compliance import VALID_COMPLIANCE_POSTURES
+from core.contracts import DEFAULT_PRESET_NAME
 from core.control3_policy import Control3PolicyEvidence
 
 logger = logging.getLogger(__name__)
@@ -287,6 +288,7 @@ class ConfigManager:
         self.column_mapping = self.DEFAULT_COLUMN_MAPPING.copy()
         self.comparison_metrics = self.DEFAULT_COMPARISON_METRICS.copy()
         self.sql_config: Dict[str, Any] = {}
+        preset = preset or DEFAULT_PRESET_NAME
         self._preset_name = preset
         self._preset_declared_posture = None
         self._config_declared_posture = False
@@ -519,14 +521,6 @@ class ConfigManager:
             },
             'control3': {
                 'privacy_basis': None,
-                'contains_digital_wallet_metrics': False,
-                'digital_wallet_review_approved': False,
-                'contains_top_merchant_output': False,
-                'dual_entity_axis': False,
-                'dual_entity_axis_review_approved': False,
-                'recurring_deliverable': False,
-                'last_privacy_recheck_date': None,
-                'peer_group_altered': False,
             },
             'runtime': {
                 'lean_mode': False,
@@ -651,14 +645,6 @@ class ConfigManager:
             'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
             'privacy_basis': ('control3', 'privacy_basis'),
-            'contains_digital_wallet_metrics': ('control3', 'contains_digital_wallet_metrics'),
-            'digital_wallet_review_approved': ('control3', 'digital_wallet_review_approved'),
-            'contains_top_merchant_output': ('control3', 'contains_top_merchant_output'),
-            'dual_entity_axis': ('control3', 'dual_entity_axis'),
-            'dual_entity_axis_review_approved': ('control3', 'dual_entity_axis_review_approved'),
-            'recurring_deliverable': ('control3', 'recurring_deliverable'),
-            'last_privacy_recheck_date': ('control3', 'last_privacy_recheck_date'),
-            'peer_group_altered': ('control3', 'peer_group_altered'),
         }
         material_cli_keys = {
             'per_dimension_weights',
@@ -675,13 +661,16 @@ class ConfigManager:
         
         for cli_key, config_path in mapping.items():
             if cli_key in overrides and overrides[cli_key] is not None:
-                if cli_key in material_cli_keys:
-                    self._material_overrides.append(cli_key)
                 if cli_key == 'per_dimension_weights':
                     value = 'per_dimension' if overrides[cli_key] else 'global'
-                    self._set_nested(self.config, config_path, value)
                 else:
-                    self._set_nested(self.config, config_path, overrides[cli_key])
+                    value = overrides[cli_key]
+                current: Any = self.config
+                for path_part in config_path:
+                    current = current.get(path_part) if isinstance(current, dict) else None
+                if cli_key in material_cli_keys and current != value:
+                    self._material_overrides.append(cli_key)
+                self._set_nested(self.config, config_path, value)
                 logger.debug(f"CLI override: {cli_key} = {overrides[cli_key]}")
 
         self._apply_runtime_profiles()

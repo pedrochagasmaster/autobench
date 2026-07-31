@@ -323,8 +323,8 @@
       <h1>Autobench on the Edge Node</h1>
       <p class="lead">
         Autobench turns weeks of manual privacy-balancing work into a single run.
-        You give it a pre-aggregated CSV; it computes per-player weights that satisfy
-        privacy rules across every dimension cut simultaneously, and writes an Excel report.
+        You give it a pre-aggregated CSV; it computes privacy-constrained peer weights,
+        validates every selected dimension cut, and writes an Excel report.
       </p>
       <p class="lead">
         This is the analyst onboarding for the shared Edge Node deployment. Everything is
@@ -337,19 +337,27 @@
         <p>
           A naive peer average is easy to skew and easy to make non-compliant: one dominant
           player (a large issuer, a large acquirer) can exceed the privacy concentration cap
-          in some segments, making the whole comparison unpublishable. Autobench solves this
-          globally: it calculates a weight for each market participant so that
+          in some segments, making the whole comparison unpublishable. Autobench first attempts
+          one global weight vector across the selected cuts so that
         </p>
         <ul>
-          <li>privacy concentration rules are satisfied in <strong>every</strong> selected dimension cut at once,</li>
+          <li>privacy concentration rules are satisfied in <strong>every</strong> selected dimension cut,</li>
           <li>dominant players are scaled down only where needed, and smaller players scaled up,</li>
           <li>the market picture stays as close to reality as the constraints allow.</li>
         </ul>
         <p>
           Weights are computed on one <strong>primary metric</strong> (typically an amount)
           and then applied to every secondary metric (fraud amount, fraud count, approved and
-          declined counts, …), so all views of the market stay internally consistent.
+          declined counts, …) within the corresponding calculation.
         </p>
+        <div class="note">
+          <p>
+            <code>compliance_strict</code> is the default. It is strict about privacy, not about
+            using one weight vector: when a single global solution is infeasible, it may use
+            compliant per-dimension fallbacks. Check <code>Weight Methods</code> before reusing
+            weights across cuts. Only <code>strategic_consistency</code> guarantees one global vector.
+          </p>
+        </div>
         <h3>Two analysis modes</h3>
         <div class="table-wrap">
           <table>
@@ -430,8 +438,11 @@ autobench</code></pre></div>
           <li>Configure and run the analysis. Outputs are written next to your data (relative paths stay relative to where you launched).</li>
         </ol>
         <p>
-          The TUI remembers your previous session — CSV path, entity, preset, metrics, and
-          dimensions are restored on launch, so reruns on the same project take seconds.
+          The TUI remembers safe, dataset-independent preferences such as the preset, output
+          format, and ordinary option checkboxes. It deliberately does <strong>not</strong> restore
+          CSV/output paths, target entities, or per-run compliance declarations. Choose the
+          dataset and target afresh in every process; metric and dimension choices become
+          available after the CSV is loaded.
           <strong>Browse…</strong> (or <code>Ctrl+O</code>) lists the CSV files in your current
           directory so you rarely need to type a path; typing one and pressing Enter also works.
         </p>
@@ -501,8 +512,9 @@ GROUP BY
     card_type,
     channel;</code></pre></div>
         <p>
-          The combined column enters the same optimization as the other dimensions and uses the
-          same per-player weights, so all cuts stay consistent.
+          The combined column enters the same optimization as the other dimensions. Autobench
+          first tries to include it in the global vector, but a strict run may use a compliant
+          per-dimension fallback. Confirm the final method in <code>Weight Methods</code>.
         </p>
 
         <h3>Rules that cause most first failures</h3>
@@ -544,9 +556,11 @@ GROUP BY
           <li><strong>Compare presets</strong> — optional; runs every preset and reports the impact of each. Useful when choosing a preset for a new dataset.</li>
         </ul>
         <p>
-          <strong>Output format</strong>: keep <code>Analysis</code> while working. Anything that
-          leaves the analysis room needs <code>Publication</code> (or <code>Both</code>), which
-          goes through sanitization and publishability validation.
+          <strong>Output format</strong>: keep <code>Analysis</code> while working. An analysis
+          workbook is internal and is not client-safe merely because its automated checks pass.
+          Anything that leaves the analysis room must be generated as <code>Publication</code>
+          (or <code>Both</code>); see <a href="#read-the-output">Read the output</a> for the exact
+          two-stage publication gate.
         </p>
         <p>
           For merchant projects, the same Analysis Options block also has
@@ -563,7 +577,10 @@ GROUP BY
         </ul>
         <p>
           The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved
-          and/or fraud columns, with fraud reported in bps by default.
+          and/or fraud columns, with fraud reported in bps by default. For issuer fraud or
+          chargeback runs, <strong>Total must be the clearing-spend amount</strong>: Autobench uses
+          the selected <code>total_col</code> as the concentration basis and requires
+          <code>privacy_basis: clearing_spend</code>. It does not infer or substitute another column.
         </p>
         <p>Press <strong>Run Analysis</strong> (<code>Ctrl+R</code>). The log should end with
           <strong>Analysis completed successfully</strong> and the saved report path.</p>
@@ -651,7 +668,7 @@ cd /ads_storage/$USER/autobench-demo</code></pre></div>
               <tr>
                 <td><code>compliance_strict</code></td>
                 <td>Zero privacy violations, fail-closed.</td>
-                <td><strong>The default for client deliverables.</strong> Most conservative; may split into separate per-dimension weighting solutions when a single global one is infeasible.</td>
+                <td><strong>The default everywhere.</strong> Most conservative; may split into separate per-dimension weighting solutions when a single global one is infeasible.</td>
               </tr>
               <tr>
                 <td><code>strategic_consistency</code></td>
@@ -694,9 +711,11 @@ cd /ads_storage/$USER/autobench-demo</code></pre></div>
         <h2>Privacy rules</h2>
         <p class="section-note">Automatic. Listed here so you know what the tool is doing, not so you can tune it.</p>
         <p>
-          The engine picks the applicable concentration rule based on peer count and enforces it in
-          every dimension cut. The baseline is <strong>5/25</strong>: at least 5 peers, and no peer
-          contributes more than 25% to any category-level comparison.
+          The engine evaluates every concentration rule that is applicable to the emitted output.
+          Any applicable rule that passes can authorize the numeric-policy result; the report records
+          every evaluation and the authorizing rule or rules. The familiar baseline is
+          <strong>5/25</strong>: at least 5 peers, and no peer contributes more than 25% to any
+          category-level comparison.
         </p>
         <div class="table-wrap">
           <table>
@@ -714,11 +733,12 @@ cd /ads_storage/$USER/autobench-demo</code></pre></div>
         </div>
         <div class="warning">
           <p>
-            Some outputs, such as top-merchant lists, are blocked outright. Do not restructure a
-            request or disable checks to get around a block — escalate the use case to Privacy.
-            Special contexts (digital-wallet metrics, recurring deliverables, altered peer groups,
-            dual entity axes) need explicit declarations or review evidence, all available as
-            CLI flags and TUI options.
+            These automated rules do not decide whether a business request is eligible for
+            Autobench. Before loading data, the analyst must resolve digital-wallet review,
+            dual protected entity axes, recurring-deliverable rechecks, peer-group changes, and
+            the prohibition on top-merchant deliverables through the upstream Privacy/governance
+            process. Autobench trusts that upstream eligibility decision; there are no CLI, TUI,
+            YAML, or Python switches for those business decisions.
           </p>
         </div>
       </section>
@@ -760,14 +780,39 @@ cd /ads_storage/$USER/autobench-demo</code></pre></div>
           </p>
         </div>
         <p>
-          A workbook that would include a top-merchant list is blocked regardless of
-          declarations — that deliverable is not allowed.
+          Top-merchant deliverables are not eligible for Autobench. Resolve that upstream before
+          running the tool; Autobench does not ask the analyst to self-attest this decision.
         </p>
       </section>
 
       <section id="read-the-output">
         <h2>Read the output</h2>
-        <p class="section-note">Open the workbook. Check <code>Summary</code> first, then read the dimension sheets.</p>
+        <p class="section-note">Choose the output contract first; then open <code>Summary</code> and the dimension sheets.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Output mode</th><th>Exact meaning</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>analysis</code></td><td>Internal diagnostic workbook. It may contain peer identities, detailed weights, and analysis-only sheets. Never send it to a client.</td></tr>
+              <tr><td><code>publication</code></td><td>Client-facing candidate. Autobench sanitizes it, validates the sanitized artifact, and writes it only if that validation passes.</td></tr>
+              <tr><td><code>both</code></td><td>Requests both contracts. The analysis workbook remains internal; only the separately named publication workbook is a client-facing candidate.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>The publication gate has two mandatory stages</h3>
+        <ol>
+          <li><strong>Sanitization transforms the artifact.</strong> It removes or redacts analysis-only identities, detailed weights, debug content, and non-publication metadata.</li>
+          <li><strong>Publishability validation inspects that transformed artifact.</strong> It checks that the sheets, columns, and identity fields forbidden by the publication contract did not survive sanitization.</li>
+        </ol>
+        <h3>Upstream eligibility: decide before Autobench</h3>
+        <div class="warning">
+          <p>
+            If either stage fails, Autobench withholds the publication workbook. Passing the
+            numerical privacy rules does not convert an analysis workbook into a publication
+            workbook, and manual deletion of sheets is not a substitute for the publication gate.
+          </p>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -783,15 +828,7 @@ cd /ads_storage/$USER/autobench-demo</code></pre></div>
             </tbody>
           </table>
         </div>
-        <div class="note">
-          <p>
-            The analysis workbook is for internal work. If the result needs to leave the
-            analysis room, produce a publication workbook with
-            <code>--output-format publication</code> (or <code>both</code>) — it goes through
-            sanitization and publishability validation. JSON sidecars are analysis-grade,
-            not publication-redacted.
-          </p>
-        </div>
+        <div class="note"><p>JSON sidecars, balanced CSVs, audit packages, and quarantined/non-publishable diagnostics are not publication-redacted unless their own validated publication contract explicitly says otherwise.</p></div>
       </section>
 
       <section id="troubleshooting">

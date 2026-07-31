@@ -154,7 +154,7 @@ py -m tools.prod_tui smoke --config tools/prod_tui/config-node04.yaml --level 3 
 The controlled action is equivalent to:
 
 ```bash
-autobench-cli share --csv tests/fixtures/gate_demo.csv --entity Target --metric txn_cnt --dimensions card_type channel --time-col year_month --preset balanced_default --export-balanced-csv --output /tmp/autobench_prod_smoke.xlsx
+autobench-cli share --csv tests/fixtures/gate_demo.csv --entity Target --metric txn_cnt --dimensions card_type channel --time-col year_month --preset compliance_strict --export-balanced-csv --output /tmp/autobench_prod_smoke.xlsx
 ```
 
 Never use arbitrary user files as a production smoke fixture.
