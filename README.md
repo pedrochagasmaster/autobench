@@ -504,10 +504,11 @@ normal numeric and maximum-share consistency validation; it does not activate
 the overlay. When both trigger facts are true, the share is required and the
 25% cap remains mandatory.
 
-For normal analysis requests, omitting `citibank_entity_name` declares that
-Citi is absent from the governed population. Supplying the name declares Citi
+For normal analysis requests, declaring `citi_competitor_receives_output`
+requires `citibank_entity_name`; the run fails closed when the name is
+missing rather than treating Citi as absent. Supplying the name declares Citi
 present and must resolve to exactly one governed identity, regardless of
-recipient type.
+recipient type. Omitting both facts leaves the overlay not applicable.
 
 This result covers only the benchmark numeric rules and their mandatory Citi
 overlay. It does not resolve reverse-engineering review, other run-level gates,

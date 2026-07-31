@@ -923,9 +923,11 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   absent is contradictory. When Citi is present but the recipient is not a
   competitor, an optional observational share is accepted only if it passes
   normal numeric and maximum-share consistency checks.
-- In the normal analysis contract, an omitted `citibank_entity_name` declares
-  Citi absent. Supplying a name declares Citi present and requires one exact,
-  unambiguous governed identity even when the overlay is not applicable.
+- In the normal analysis contract, `citi_competitor_receives_output=True`
+  requires `citibank_entity_name`; the run aborts when the name is missing
+  instead of silently treating the overlay as not applicable. Supplying a
+  name declares Citi present and requires one exact, unambiguous governed
+  identity even when the overlay is not applicable.
 - Issuer fraud and chargeback evidence must declare clearing spend as its
   concentration basis.
 - Results distinguish not-subject, numerically compliant, numerically

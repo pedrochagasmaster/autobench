@@ -552,7 +552,7 @@ def test_cli_sweep_exit_audit_and_publication_agree_when_citi_blocks(
     assert audit_payload["authorizing_rules"] == []
 
 
-@pytest.mark.parametrize("citi_name", ["missing", "Citibank"])
+@pytest.mark.parametrize("citi_name", [None, "missing", "Citibank"])
 def test_integrated_citi_identity_fails_closed(
     tmp_path: Path,
     citi_name: str | None,
@@ -588,10 +588,11 @@ def test_integrated_citi_identity_fails_closed(
         PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     ],
 )
-def test_integrated_competitor_recipient_without_citi_is_not_applicable(
+def test_integrated_competitor_recipient_without_citi_name_fails_closed(
     tmp_path: Path,
     strategy: PrivacyRuleStrategy,
 ) -> None:
+    """A declared Citi-competitor recipient without an entity name must abort."""
     request = AnalysisRunRequest(
         df=_single_category_df([25, 25, 20, 15, 15]),
         csv="",
@@ -605,12 +606,8 @@ def test_integrated_competitor_recipient_without_citi_is_not_applicable(
         citi_competitor_receives_output=True,
     )
 
-    artifacts = execute_share_run(request, logging.getLogger("test"))
-
-    assert artifacts.privacy_sink_authorized is True
-    assert artifacts.privacy_rule_strategy_result is not None
-    overlay = artifacts.privacy_rule_strategy_result.mandatory_overlay_evaluations[0]
-    assert overlay.status == PrivacyEvaluationStatus.NOT_APPLICABLE
+    with pytest.raises(RunBlocked):
+        execute_share_run(request, logging.getLogger("test"))
 
 
 def test_integrated_observational_citi_identity_does_not_trigger_overlay(

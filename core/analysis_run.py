@@ -187,6 +187,10 @@ def _fit_privacy_strategy(
 ) -> Tuple[DimensionalAnalyzer, Dict[str, Any], Optional[WeightingResult], PrivacyRuleStrategyResult]:
     """Optimize independently for every applicable rule in sweep mode."""
     _, _, governed_peers = analyzer._build_categories(df, metric_col, dimensions)
+    if request.citi_competitor_receives_output and not request.citibank_entity_name:
+        raise ValueError(
+            "citibank_entity_name is required when a Citi competitor receives the output"
+        )
     if request.citibank_entity_name:
         if request.citibank_entity_name not in governed_peers:
             raise ValueError(
