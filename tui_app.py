@@ -881,14 +881,6 @@ class BenchmarkApp(App):
                         "Anonymized aggregated merchant-spend context (enables 4/35)",
                         id="privacy_merchant_spend_scope",
                     )
-                    yield Checkbox(
-                        "A Citi competitor receives the output",
-                        id="citi_competitor_receives_output",
-                    )
-                    yield Input(
-                        placeholder="Exact Citibank entity name (required for Citi overlay)",
-                        id="citibank_entity_name",
-                    )
                     yield Input(
                         placeholder="Policy concentration column (required for fraud/chargeback)",
                         id="privacy_concentration_col",
@@ -899,6 +891,16 @@ class BenchmarkApp(App):
                 # ───────────────────────────────────────────────────────
                 with Collapsible(title="Advanced Optimization Parameters", id="advanced_opt", collapsed=True):
                     with Vertical(id="advanced_form"):
+                        yield Label("Citi Privacy Overlay", classes="adv-group-title")
+                        yield Checkbox(
+                            "A Citi competitor receives the output",
+                            id="citi_competitor_receives_output",
+                        )
+                        yield Input(
+                            placeholder="Exact Citibank entity name (required for Citi overlay)",
+                            id="citibank_entity_name",
+                        )
+
                         yield Label("Linear Programming", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):

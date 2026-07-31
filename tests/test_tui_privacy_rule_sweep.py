@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 import pytest
-from textual.widgets import Checkbox
+from textual.widgets import Checkbox, Collapsible, Input
 from unittest.mock import MagicMock
 
 import tui_app
@@ -46,6 +46,21 @@ def test_tui_privacy_sweep_mode_is_off_by_default() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             assert not app.query_one("#privacy_rule_sweep_mode", Checkbox).value
+
+    asyncio.run(scenario())
+
+
+def test_tui_citi_controls_are_hidden_in_advanced_parameters_by_default() -> None:
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
+            advanced = pilot.app.query_one("#advanced_opt", Collapsible)
+
+            assert advanced.collapsed
+            assert advanced.query_one(
+                "#citi_competitor_receives_output",
+                Checkbox,
+            )
+            assert advanced.query_one("#citibank_entity_name", Input)
 
     asyncio.run(scenario())
 
