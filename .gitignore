@@ -87,3 +87,4 @@ autobench_deploy.zip
 SHA256SUMS
 .edge-deploy-bundles/
 edge-deploy/*
+.cursor/hooks/state/
