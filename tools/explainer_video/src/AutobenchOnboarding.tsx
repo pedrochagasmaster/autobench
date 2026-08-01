@@ -1,7 +1,8 @@
 import { linearTiming, TransitionSeries } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import React from "react";
-import { AbsoluteFill, Audio, interpolate, staticFile } from "remotion";
+import { AbsoluteFill, Audio, interpolate, Sequence, staticFile } from "remotion";
+import { HAS_VOICEOVER, voiceClip } from "./content/voiceoverManifest";
 import { Backdrop } from "./components/Backdrop";
 import { Narration } from "./components/Narration";
 import { ProgressBar } from "./components/ProgressBar";
@@ -30,7 +31,7 @@ import {
   S17Troubleshooting,
   S18GoDeeper,
 } from "./scenes/Verify";
-import { SCENES, TOTAL_FRAMES, TRANSITION_FRAMES } from "./timeline";
+import { SCENES, TOTAL_FRAMES, TRANSITION_FRAMES, VO_LEAD_FRAMES } from "./timeline";
 
 export type OnboardingProps = {
   /**
@@ -40,8 +41,13 @@ export type OnboardingProps = {
   showControlReference: boolean;
   showNarration: boolean;
   showProgress: boolean;
+  /** Bed level with no voice track; the bed ducks when narration is present. */
   musicGain: number;
+  voiceGain: number;
 };
+
+/** How far the bed drops under the narration. */
+const MUSIC_DUCK = 0.42;
 
 const chapterScenes = (showControlReference: boolean): Record<string, React.ReactNode> => ({
   s01: <S01Title />,
@@ -73,8 +79,10 @@ export const AutobenchOnboarding: React.FC<OnboardingProps> = ({
   showNarration,
   showProgress,
   musicGain,
+  voiceGain,
 }) => {
   const scenes = chapterScenes(showControlReference);
+  const bedGain = HAS_VOICEOVER ? musicGain * MUSIC_DUCK : musicGain;
 
   return (
     <AbsoluteFill>
@@ -105,13 +113,30 @@ export const AutobenchOnboarding: React.FC<OnboardingProps> = ({
       </TransitionSeries>
       {showNarration ? <Narration /> : null}
       {showProgress ? <ProgressBar /> : null}
+      {SCENES.map((scene) => {
+        const clip = voiceClip(scene.id);
+        if (!clip) {
+          return null;
+        }
+        return (
+          <Sequence
+            key={`vo-${scene.id}`}
+            name={`voice — ${scene.id}`}
+            from={scene.start + VO_LEAD_FRAMES}
+            durationInFrames={Math.ceil(clip.seconds * 30) + 2}
+            layout="none"
+          >
+            <Audio src={staticFile(clip.file)} volume={voiceGain} />
+          </Sequence>
+        );
+      })}
       <Audio
         src={staticFile("music_bed.wav")}
         volume={(f) =>
           interpolate(
             f,
             [MUSIC_IN, MUSIC_IN + 60, MUSIC_OUT_START, TOTAL_FRAMES],
-            [0, musicGain, musicGain, 0],
+            [0, bedGain, bedGain, 0],
             { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
           )
         }

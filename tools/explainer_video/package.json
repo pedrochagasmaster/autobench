@@ -26,7 +26,7 @@
     "build": "remotion bundle",
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc",
-    "assets": "python3 scripts/capture_tui.py && python3 scripts/make_music_bed.py"
+    "assets": "python3 scripts/capture_tui.py && python3 scripts/make_voiceover.py && python3 scripts/make_music_bed.py"
   },
   "sideEffects": [
     "*.css"

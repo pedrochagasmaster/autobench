@@ -18,6 +18,7 @@ export const RemotionRoot: React.FC = () => {
           showNarration: true,
           showProgress: true,
           musicGain: 0.22,
+          voiceGain: 1,
         }}
       />
       <Folder name="Scenes">

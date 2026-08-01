@@ -6,7 +6,8 @@ first access to a verified first run. It follows the teaching order of
 built around a recorded walkthrough of the real TUI.
 
 - Composition id: `AutobenchOnboarding`
-- 1920×1080, 30 fps, 8445 frames (4 minutes 41 seconds)
+- 1920×1080, 30 fps; 8175 frames (4 minutes 32 seconds) without a voice track,
+  and as long as the narration needs with one
 - Chapters: what it does · set up · prepare · run (terminal UI, then CLI) · verify
 
 ## Setup
@@ -17,13 +18,42 @@ npm install
 npm run assets     # captures the TUI and synthesises the music bed
 ```
 
-`npm run assets` runs two Python scripts and must be run before the first
-render. Neither output is committed:
+`npm run assets` runs three Python scripts and must be run before the first
+render. None of their output is committed:
 
 | Script | Writes | Why it is generated |
 | --- | --- | --- |
 | `scripts/capture_tui.py` | `public/tui/*.svg` and `manifest.json` | Screens of the real TUI, so the video cannot drift from the app |
+| `scripts/make_voiceover.py` | `public/vo/*.mp3` and `manifest.json` | Narration, synthesised from the same lines the captions show |
 | `scripts/make_music_bed.py` | `public/music_bed.wav` | Avoids committing a binary audio artifact |
+
+## Voice track
+
+`scripts/make_voiceover.py` synthesises one clip per scene with the
+[Fish Audio](https://docs.fish.audio) TTS API, reading the same narration the
+video puts on screen — `src/content/narration.json` for the chapters and the
+capture manifest for the walkthrough steps, so the spoken line and the caption
+beside it cannot diverge.
+
+```bash
+export FISH_API_KEY=...                                  # required
+python3 scripts/make_voiceover.py                        # default voice
+python3 scripts/make_voiceover.py --reference-id <id>    # a saved voice model
+python3 scripts/make_voiceover.py --speed 0.95 --force   # re-synthesise everything
+```
+
+Clips are cached by a hash of the text and the voice settings, so re-running
+only re-synthesises lines that changed, and only those are billed.
+
+**The edit follows the read.** Each scene is held for `lead + clip + tail`, or
+its animation floor, whichever is longer, so nothing is cut off mid-sentence and
+no scene waits around after its line ends. Without a voice track, scenes fall
+back to the caption-paced lengths in `src/timeline.ts` and the total is checked
+against a fixed constant. The music bed ducks by 7.5 dB whenever narration is
+present.
+
+Without `FISH_API_KEY` the script writes an empty manifest and exits cleanly, so
+the video still renders with captions and no voice.
 
 ## Preview and render
 
@@ -69,11 +99,12 @@ capture time, so a callout cannot point at the wrong control.
 | `showControlReference` | `true` | Names Mastercard Control 3.2 under the privacy rule table |
 | `showNarration` | `true` | Renders the narration as on-screen captions |
 | `showProgress` | `true` | Thin chapter progress line at the top of the frame |
-| `musicGain` | `0.22` | Bed level between the title card and the outro fade |
+| `musicGain` | `0.22` | Bed level; automatically ducked when a voice track exists |
+| `voiceGain` | `1` | Narration level |
 
 ```bash
 npx remotion render AutobenchOnboarding out/external_cut.mp4 \
-  --props='{"showControlReference": false, "showNarration": true, "showProgress": true, "musicGain": 0.22}'
+  --props='{"showControlReference": false, "showNarration": true, "showProgress": true, "musicGain": 0.22, "voiceGain": 1}'
 ```
 
 ## Two standing decisions
@@ -109,8 +140,8 @@ than teaching a number the data does not support.
 
 ## Narration
 
-`src/data/voiceover.ts` holds one line per chapter; the walkthrough lines come
-from the capture manifest, so a caption and the screenshot beside it can never
-describe different steps. There is no recorded voice track, so the lines render
-as captions. When a read is recorded, dub it over the render and re-render with
-`showNarration: false`.
+`src/content/narration.json` holds one line per chapter, and the walkthrough
+lines come from the capture manifest, so a caption, the screenshot beside it, and
+the spoken line cannot describe different steps. The captions stay on with a
+voice track — they are the subtitles. Set `showNarration: false` for a
+clean-frame cut.
