@@ -5,16 +5,35 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from pathlib import Path
 
 import pytest
 import yaml
+from textual.pilot import Pilot
 from textual.widgets import Checkbox, Select, SelectionList, Static
 
 import tui_app
 from tui_app import SELECT_BLANK, BenchmarkApp
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
+
+_RUN_FINISHED_STATES = frozenset({"success", "error", "blocked"})
+
+
+async def _await_run_completion(pilot: Pilot, timeout: float = 60.0) -> str:
+    """Wait for the run worker to publish its final state, then return the log.
+
+    The worker writes "Analysis completed successfully" to the log several
+    ``call_from_thread`` hops before it calls ``_end_run_ui``, so waiting on
+    the log text alone can read ``_run_state`` while it is still ``running``.
+    """
+    deadline = time.monotonic() + timeout
+    while pilot.app._run_state not in _RUN_FINISHED_STATES:
+        if time.monotonic() >= deadline:
+            break
+        await pilot.pause(0.1)
+    return "\n".join(pilot.app.query_one("#log_output").lines)
 
 
 def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkeypatch) -> None:
@@ -311,13 +330,7 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
             app.query_one("#validate_input", Checkbox).value = True
 
             app.run_analysis()
-            log_text = ""
-            for _ in range(120):
-                await pilot.pause(0.5)
-                log_text = "\n".join(app.query_one("#log_output").lines)
-                if "Analysis completed successfully" in log_text or "Execution" in log_text:
-                    break
-            await pilot.pause(0.5)
+            log_text = await _await_run_completion(pilot)
             results_text = str(app.query_one("#results_panel", Static).content)
             return log_text, results_text, app._run_state
 
@@ -360,12 +373,7 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             app.query_one("#validate_input", Checkbox).value = True
 
             app.run_analysis()
-            log_text = ""
-            for _ in range(120):
-                await pilot.pause(0.5)
-                log_text = "\n".join(app.query_one("#log_output").lines)
-                if "Analysis completed successfully" in log_text or "Execution" in log_text:
-                    break
+            log_text = await _await_run_completion(pilot)
             return log_text, app._run_state
 
     log_text, run_state = asyncio.run(scenario())
