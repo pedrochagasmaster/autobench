@@ -36,9 +36,10 @@ const tuiScenes: ScenePlan[] = manifest.steps.map((step, index) => ({
   chapter: "Run · the terminal UI",
   tuiStep: index,
   transitionFrames: TUI_TRANSITION_FRAMES,
-  // Two dense terminal screenshots dissolving through each other ghosts badly.
-  // Inside a single session, cut the way the app itself changes.
-  hardCutAfter: index < manifest.steps.length - 1,
+  // Two dense terminal screenshots dissolving through each other ghosts badly,
+  // and so does a chapter slide dissolving into the terminal. Cut in, cut
+  // between steps, cut out.
+  hardCutAfter: true,
 }));
 
 if (tuiScenes.length !== TUI_BEAT_FRAMES.length) {
@@ -57,7 +58,13 @@ const PLAN: ScenePlan[] = [
   { id: "s07", label: "Daily workflow", frames: 300, chapter: "Set up" },
   { id: "s08", label: "Prepare the CSV", frames: 285, chapter: "Prepare" },
   { id: "s09", label: "What breaks a first run", frames: 240, chapter: "Prepare" },
-  { id: "s10", label: "Privacy rules at a glance", frames: 270, chapter: "Prepare" },
+  {
+    id: "s10",
+    label: "Privacy rules at a glance",
+    frames: 270,
+    chapter: "Prepare",
+    hardCutAfter: true,
+  },
   ...tuiScenes,
   { id: "s11", label: "The same run, one command", frames: 240, chapter: "Run · the CLI" },
   { id: "s12", label: "Check that it worked", frames: 210, chapter: "Verify" },
