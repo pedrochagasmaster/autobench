@@ -43,7 +43,10 @@ PROJECT_DIR = SCRIPT_DIR.parent
 
 TTS_URL = "https://api.fish.audio/v1/tts"
 # The model is sent as a request header and is required on every call.
-DEFAULT_MODEL = "s2.1-pro"
+# s2.1-pro-free is the same weights as s2.1-pro at $0 (no TTFA/DPA SLA).
+# Prefer it so `npm run assets` works without paid API credit; pass
+# --model s2.1-pro when production credits and SLAs are required.
+DEFAULT_MODEL = "s2.1-pro-free"
 DEFAULT_FORMAT = "mp3"
 DEFAULT_BITRATE = 128
 REQUEST_TIMEOUT = 180
@@ -159,8 +162,8 @@ def main() -> None:
         "--model",
         default=DEFAULT_MODEL,
         help=(
-            "Fish Audio TTS model: s1, s2-pro, s2.1-pro (default), or "
-            "s2.1-pro-free for unbilled testing"
+            "Fish Audio TTS model: s2.1-pro-free (default), s2.1-pro, "
+            "s2-pro, or s1"
         ),
     )
     parser.add_argument(

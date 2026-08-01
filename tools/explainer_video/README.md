@@ -37,13 +37,16 @@ beside it cannot diverge.
 
 ```bash
 export FISH_API_KEY=...                                  # required
-python3 scripts/make_voiceover.py                        # default voice
+python3 scripts/make_voiceover.py                        # s2.1-pro-free, default voice
+python3 scripts/make_voiceover.py --model s2.1-pro       # paid production model
 python3 scripts/make_voiceover.py --reference-id <id>    # a saved voice model
 python3 scripts/make_voiceover.py --speed 0.95 --force   # re-synthesise everything
 ```
 
+The default model is `s2.1-pro-free` (same weights as `s2.1-pro`, no paid API
+credit required). Use `--model s2.1-pro` when you want the production SLA.
 Clips are cached by a hash of the text and the voice settings, so re-running
-only re-synthesises lines that changed, and only those are billed.
+only re-synthesises lines that changed.
 
 **The edit follows the read.** Each scene is held for `lead + clip + tail`, or
 its animation floor, whichever is longer, so nothing is cut off mid-sentence and
