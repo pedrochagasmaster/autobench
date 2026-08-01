@@ -40,7 +40,7 @@ type ScenePlan = {
  * caption that goes with it, and no longer.
  */
 const TUI_BEAT_FRAMES = [
-  270, 210, 240, 225, 255, 180, 255, 210, 270, 225, 225, 225, 240, 225, 270,
+  270, 210, 240, 225, 255, 255, 255, 210, 345, 225, 225, 225, 240, 225, 270,
 ];
 
 const tuiScenes: ScenePlan[] = manifest.steps.map((step, index) => ({
@@ -68,11 +68,11 @@ const PLAN: ScenePlan[] = [
   { id: "s02", label: "Why a peer average is not enough", frames: 300, minFrames: 130, chapter: "What it does" },
   { id: "s03", label: "What balancing changes", frames: 300, minFrames: 120, chapter: "What it does" },
   { id: "s04", label: "Client or market", frames: 285, minFrames: 110, chapter: "What it does" },
-  { id: "s05", label: "The run path", frames: 225, minFrames: 110, chapter: "What it does" },
-  { id: "s06", label: "First access", frames: 270, minFrames: 150, chapter: "Set up" },
-  { id: "s07", label: "Daily workflow", frames: 300, minFrames: 180, chapter: "Set up" },
-  { id: "s08", label: "Prepare the CSV", frames: 285, minFrames: 170, chapter: "Prepare" },
-  { id: "s09", label: "What breaks a first run", frames: 240, minFrames: 180, chapter: "Prepare" },
+  { id: "s05", label: "The run path", frames: 405, minFrames: 110, chapter: "What it does" },
+  { id: "s06", label: "First access", frames: 510, minFrames: 150, chapter: "Set up" },
+  { id: "s07", label: "Daily workflow", frames: 465, minFrames: 180, chapter: "Set up" },
+  { id: "s08", label: "Prepare the CSV", frames: 345, minFrames: 170, chapter: "Prepare" },
+  { id: "s09", label: "What breaks a first run", frames: 405, minFrames: 180, chapter: "Prepare" },
   {
     id: "s10",
     label: "Privacy rules at a glance",
@@ -83,12 +83,12 @@ const PLAN: ScenePlan[] = [
   },
   ...tuiScenes,
   { id: "s11", label: "The same run, one command", frames: 240, minFrames: 165, chapter: "Run · the CLI" },
-  { id: "s12", label: "Check that it worked", frames: 210, minFrames: 150, chapter: "Verify" },
+  { id: "s12", label: "Check that it worked", frames: 435, minFrames: 150, chapter: "Verify" },
   { id: "s13", label: "Read the workbook", frames: 255, minFrames: 155, chapter: "Verify" },
   { id: "s14", label: "Which weights were used", frames: 285, minFrames: 145, chapter: "Verify" },
   { id: "s15", label: "Output contracts", frames: 270, minFrames: 140, chapter: "Verify" },
   { id: "s16", label: "Choosing a preset", frames: 285, minFrames: 155, chapter: "Verify" },
-  { id: "s17", label: "When it fails", frames: 255, minFrames: 140, chapter: "Verify" },
+  { id: "s17", label: "When it fails", frames: 315, minFrames: 140, chapter: "Verify" },
   { id: "s18", label: "Go deeper", frames: 270, minFrames: 150 },
 ];
 
@@ -135,7 +135,7 @@ export const TOTAL_FRAMES = RESOLVED.reduce((sum, scene) => sum + scene.frames, 
  * The caption-paced cut, checked to catch accidental edits. With a voice track
  * the length comes from the read, so the constant no longer applies.
  */
-export const EXPECTED_TOTAL_FRAMES = 8175;
+export const EXPECTED_TOTAL_FRAMES = 9420;
 
 if (!HAS_VOICEOVER && TOTAL_FRAMES !== EXPECTED_TOTAL_FRAMES) {
   throw new Error(
