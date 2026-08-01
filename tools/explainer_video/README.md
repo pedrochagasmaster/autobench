@@ -46,11 +46,11 @@ python3 scripts/make_voiceover.py --speed 0.95 --force   # re-synthesise everyth
 The default model is `s2.1-pro-free` (same weights as `s2.1-pro`, no paid API
 credit required). Use `--model s2.1-pro` when you want the production SLA.
 
-The default voice is **Classic Female Narration**
-(`936e9324561f400d81befaf5e387e8cf`) — a calm, measured English educational
-voice from the public Fish Audio library. Override with `--reference-id` or
-`FISH_VOICE_ID`. Clips are cached by a hash of the text and the voice settings,
-so re-running only re-synthesises lines that changed.
+The default voice is **Selene** (`b347db033a6549378b48d00acb0d06cd`) — a
+meditative female English narration voice from the public Fish Audio library.
+Override with `--reference-id` or `FISH_VOICE_ID`. Clips are cached by a hash of
+the text and the voice settings, so re-running only re-synthesises lines that
+changed.
 
 **The edit follows the read.** Each scene is held for `lead + clip + tail`, or
 its animation floor, whichever is longer, so nothing is cut off mid-sentence and

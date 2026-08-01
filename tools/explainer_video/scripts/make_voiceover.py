@@ -47,9 +47,9 @@ TTS_URL = "https://api.fish.audio/v1/tts"
 # Prefer it so `npm run assets` works without paid API credit; pass
 # --model s2.1-pro when production credits and SLAs are required.
 DEFAULT_MODEL = "s2.1-pro-free"
-# Classic Female Narration — calm, measured English educational voice from the
-# public Fish Audio library. Override with --reference-id or FISH_VOICE_ID.
-DEFAULT_REFERENCE_ID = "936e9324561f400d81befaf5e387e8cf"
+# Selene — meditative female English narration voice from the public Fish Audio
+# library. Override with --reference-id or FISH_VOICE_ID.
+DEFAULT_REFERENCE_ID = "b347db033a6549378b48d00acb0d06cd"
 DEFAULT_FORMAT = "mp3"
 DEFAULT_BITRATE = 128
 REQUEST_TIMEOUT = 180
@@ -178,7 +178,7 @@ def main() -> None:
         "--reference-id",
         default=os.environ.get("FISH_VOICE_ID", DEFAULT_REFERENCE_ID),
         help=(
-            "Voice model id to speak in; default is Classic Female Narration "
+            "Voice model id to speak in; default is Selene "
             f"({DEFAULT_REFERENCE_ID})"
         ),
     )
