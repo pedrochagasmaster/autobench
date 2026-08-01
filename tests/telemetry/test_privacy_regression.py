@@ -23,7 +23,6 @@ from core.contracts import AnalysisRunRequest
 from core.telemetry.events import decode_record
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.service import TelemetryService
-from tests.test_strict_exit_codes import _violating_share_df
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "gate_demo.csv"
 SHARE_DIMENSIONS = ["card_type", "channel"]
@@ -147,6 +146,16 @@ def _share_request(tmp_path: Path, *, stem: str, df: pd.DataFrame, **overrides: 
     }
     data.update(overrides)
     return AnalysisRunRequest(**data)
+
+
+def _violating_share_df() -> pd.DataFrame:
+    """Dataset with an exclusive PREPAID category (single peer) under 6 peers."""
+    rows: list[dict[str, object]] = [
+        {"issuer_name": entity, "card_type": "CREDIT", "txn_cnt": 100}
+        for entity in ("Target", "P1", "P2", "P3", "P4", "P5", "P6")
+    ]
+    rows.append({"issuer_name": "P1", "card_type": "PREPAID", "txn_cnt": 5000})
+    return pd.DataFrame(rows)
 
 
 def _violating_request(tmp_path: Path, *, stem: str) -> AnalysisRunRequest:
