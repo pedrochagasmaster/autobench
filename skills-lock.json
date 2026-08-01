@@ -19,6 +19,16 @@
       "skillPath": "skills/engineering/diagnose/SKILL.md",
       "computedHash": "15939a26f86edec2d4862042b8564e5a062cb81d04e047a0cea6305c8830b5f5"
     },
+    "fish-audio-api": {
+      "source": "docs.fish.audio",
+      "sourceType": "well-known",
+      "computedHash": "6877de0a8eb7abed98253a1e53dc478861e7eb90dda66748fb40796d17dee246"
+    },
+    "fish-audio-sdk": {
+      "source": "docs.fish.audio",
+      "sourceType": "well-known",
+      "computedHash": "c2668b17a1ed151d3b3dca43a396aaaccc4837ac3bc51229e225b461b23cc35d"
+    },
     "git-guardrails-claude-code": {
       "source": "mattpocock/skills",
       "sourceType": "github",

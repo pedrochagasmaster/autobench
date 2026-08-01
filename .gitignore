@@ -51,6 +51,9 @@ tools/prod_tui/reports/
 tools/prod_tui/logs/
 tools/prod_tui/*.log
 
+# Skill bodies fetched by `npx skills add` — tracked via skills-lock.json only
+.agents/
+
 # Generated agent/audit context bundles — regenerate with: py scripts/build_master_context.py
 docs/autobench_master_context*.md
 
