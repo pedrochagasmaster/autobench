@@ -155,7 +155,19 @@ def write_manifest(output_dir: Path, clips: dict[str, Any], meta: dict[str, Any]
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=PROJECT_DIR / "public" / "vo")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Fish Audio TTS model")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=(
+            "Fish Audio TTS model: s1, s2-pro, s2.1-pro (default), or "
+            "s2.1-pro-free for unbilled testing"
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List the lines that would be synthesised, and their size, without calling the API",
+    )
     parser.add_argument(
         "--reference-id",
         default=os.environ.get("FISH_VOICE_ID"),
@@ -173,6 +185,17 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     lines = load_lines()
+
+    if args.dry_run:
+        characters = sum(len(text) for _, text in lines)
+        words = sum(len(text.split()) for _, text in lines)
+        for scene, text in lines:
+            print(f"  {scene}  {len(text):4d} chars  {text[:72]}…")
+        print(
+            f"\n{len(lines)} lines, {words} words, {characters} characters, "
+            f"model {args.model}"
+        )
+        return
 
     api_key = os.environ.get("FISH_API_KEY")
     if not api_key:
