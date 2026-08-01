@@ -292,7 +292,9 @@ which autobench-cli</code></pre>
   SUM(approved) AS approved,
   SUM(fraud) AS fraud
 FROM source_table
-GROUP BY issuer_name, year_month, card_type, input_mode;</code></pre>
+GROUP BY issuer_name, year_month, card_type, input_mode,
+         CONCAT(card_type, ' + ', input_mode);</code></pre>
+        <div class="callout"><strong>Group the combined column too.</strong> Repeating <code>CONCAT(card_type, ' + ', input_mode)</code> in the <code>GROUP BY</code> is accepted by every engine, Impala and Hive included, and states the grain in one place. Engines that follow the standard also accept the query without it, because the value is already fixed once <code>card_type</code> and <code>input_mode</code> are grouped, but listing it is never wrong.</div>
         <div class="callout"><strong>Period-key rule.</strong> Use one non-null, consistent representation. <code>YYYY-MM</code> is recommended when monthly values should sort chronologically, but it is a convention—not a date parser requirement.</div>
         <h3>Rules that cause most first failures</h3>
         <ul>
@@ -523,7 +525,9 @@ which autobench-cli</code></pre>
   SUM(approved) AS approved,
   SUM(fraud) AS fraud
 FROM source_table
-GROUP BY issuer_name, year_month, card_type, input_mode;</code></pre>
+GROUP BY issuer_name, year_month, card_type, input_mode,
+         CONCAT(card_type, ' + ', input_mode);</code></pre>
+        <div class="callout"><strong>Agrupe também a coluna combinada.</strong> Repetir <code>CONCAT(card_type, ' + ', input_mode)</code> no <code>GROUP BY</code> é aceito por todos os engines, inclusive Impala e Hive, e declara o grão em um só lugar. Engines que seguem o padrão também aceitam a consulta sem essa repetição, porque o valor já fica fixo depois que <code>card_type</code> e <code>input_mode</code> são agrupados, mas listá-la nunca está errado.</div>
         <div class="callout"><strong>Regra da chave de período.</strong> Use uma representação não nula e consistente. <code>YYYY-MM</code> é recomendado para ordenação cronológica mensal, mas é convenção, não requisito de parser.</div>
         <h3>Regras que causam a maioria das primeiras falhas</h3>
         <ul>
