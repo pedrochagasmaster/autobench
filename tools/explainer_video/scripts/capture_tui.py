@@ -230,7 +230,8 @@ def build_beats() -> list[Beat]:
         ),
         Beat(
             "time_column",
-            "The time period column is optional. The demo groups by year_month.",
+            "The time period column is optional. The demo groups by year_month, and "
+            "privacy constraints are enforced within every period.",
             action=set_time_column,
             focus=("#time_col",),
             reveal="#section_analysis",
@@ -252,8 +253,9 @@ def build_beats() -> list[Beat]:
         ),
         Beat(
             "options",
-            "Analyze impact and Validate input are on by default. Leave them on: they "
-            "show what the balancing cost you.",
+            "Analyze impact and Validate input are on by default. Leave them on: "
+            "validation catches bad input before the run, and impact analysis shows "
+            "what the balancing cost.",
             action=close_preset_guide,
             focus=("#analyze_distortion", "#validate_input"),
             reveal="#analyze_distortion",
