@@ -20,9 +20,10 @@ from pathlib import Path
 import numpy as np
 
 SAMPLE_RATE = 44_100
-# Long enough to cover a voice-paced walkthrough (Selene ~273 s of narration
-# expands past five minutes with lead/tail); the composition fades it out.
-DEFAULT_SECONDS = 360.0
+# Long enough to cover a voice-paced walkthrough (Selene reads the current
+# script in ~320 s, which lead/tail stretches past six minutes); the
+# composition fades it out before the end.
+DEFAULT_SECONDS = 420.0
 BPM = 66.0
 
 # A minor, one chord every four bars at 66 BPM.
