@@ -52,7 +52,7 @@ const PLAN: ScenePlan[] = [
   { id: "s02", label: "Why a peer average is not enough", frames: 300, chapter: "What it does" },
   { id: "s03", label: "What balancing changes", frames: 300, chapter: "What it does" },
   { id: "s04", label: "Client or market", frames: 285, chapter: "What it does" },
-  { id: "s05", label: "The run path", frames: 255, chapter: "What it does" },
+  { id: "s05", label: "The run path", frames: 225, chapter: "What it does" },
   { id: "s06", label: "First access", frames: 270, chapter: "Set up" },
   { id: "s07", label: "Daily workflow", frames: 300, chapter: "Set up" },
   { id: "s08", label: "Prepare the CSV", frames: 285, chapter: "Prepare" },
@@ -60,7 +60,7 @@ const PLAN: ScenePlan[] = [
   { id: "s10", label: "Privacy rules at a glance", frames: 270, chapter: "Prepare" },
   ...tuiScenes,
   { id: "s11", label: "The same run, one command", frames: 240, chapter: "Run · the CLI" },
-  { id: "s12", label: "Check that it worked", frames: 240, chapter: "Verify" },
+  { id: "s12", label: "Check that it worked", frames: 210, chapter: "Verify" },
   { id: "s13", label: "Read the workbook", frames: 255, chapter: "Verify" },
   { id: "s14", label: "Which weights were used", frames: 285, chapter: "Verify" },
   { id: "s15", label: "Output contracts", frames: 270, chapter: "Verify" },
@@ -94,7 +94,7 @@ export const SCENES: Scene[] = PLAN.map((scene, index) => {
 export const TOTAL_FRAMES = PLAN.reduce((sum, scene) => sum + scene.frames, 0);
 
 /** Update deliberately; the check exists to catch accidental drift. */
-export const EXPECTED_TOTAL_FRAMES = 8235;
+export const EXPECTED_TOTAL_FRAMES = 8175;
 
 if (TOTAL_FRAMES !== EXPECTED_TOTAL_FRAMES) {
   throw new Error(

@@ -94,10 +94,10 @@ export const S02Problem: React.FC = () => {
     <SceneFrame sceneId="s02">
       <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
         <ChartLead text={`share of one category · the six peers in ${DEMO_FILE}`} />
-        <ShareChart peers={PEERS} mode="base" capFrame={54} />
+        <ShareChart peers={PEERS} mode="base" capFrame={40} />
         <ChartCaption
           frame={frame}
-          at={104}
+          at={70}
           left={`${TOP_PEER.name} alone is ${TOP_PEER.baseSharePct.toFixed(0)}% of the category.`}
           right="over the cap · not publishable"
           rightColor={COLORS.warn}
@@ -114,10 +114,10 @@ export const S03Balanced: React.FC = () => {
     <SceneFrame sceneId="s03">
       <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
         <ChartLead text="the same category after privacy-constrained weighting" />
-        <ShareChart peers={PEERS} mode="adjusted" capFrame={40} />
+        <ShareChart peers={PEERS} mode="adjusted" capFrame={34} />
         <ChartCaption
           frame={frame}
-          at={92}
+          at={62}
           left="Dominant peers scaled down, smaller peers up, only where needed."
           right="every cut under the cap"
           rightColor={COLORS.good}
