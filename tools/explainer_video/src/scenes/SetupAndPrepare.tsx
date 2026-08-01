@@ -189,9 +189,10 @@ export const S09FirstFailures: React.FC = () => {
                 <span
                   style={{
                     fontFamily: MONO,
-                    fontSize: 30,
+                    fontSize: 34,
+                    fontWeight: 600,
                     color: COLORS.warn,
-                    width: 34,
+                    width: 38,
                     flexShrink: 0,
                   }}
                 >

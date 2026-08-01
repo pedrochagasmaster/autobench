@@ -9,8 +9,10 @@ export const COLORS = {
   textDim: "#a3aeb4",
   textFaint: "#6d7c85",
   accent: "#8fb3d4",
-  good: "#97bb9d",
-  warn: "#e69488",
+  // Muted like the onboarding page, but saturated enough that a pass and a
+  // failure are still distinguishable after video compression.
+  good: "#86cb92",
+  warn: "#f0907f",
   amber: "#d8b26a",
   grid: "rgba(163, 174, 180, 0.06)",
 } as const;

@@ -88,20 +88,34 @@ export const Callout: React.FC<{
   const reveal = revealAt(useCurrentFrame(), startFrame);
   const accent =
     tone === "warn" ? COLORS.warn : tone === "good" ? COLORS.good : COLORS.accent;
+  const marker = tone === "warn" ? "!" : tone === "good" ? "✓" : "i";
 
   return (
     <div
       style={{
         display: "flex",
-        gap: 22,
+        gap: 24,
         padding: "22px 28px",
         borderRadius: 8,
-        backgroundColor: COLORS.panelSoft,
-        borderLeft: `4px solid ${accent}`,
+        backgroundColor:
+          tone === "warn" ? "rgba(240, 144, 127, 0.09)" : COLORS.panelSoft,
+        borderLeft: `5px solid ${accent}`,
         opacity: reveal,
         translate: interpolate(reveal, [0, 1], ["0px 10px", "0px 0px"]),
       }}
     >
+      <div
+        style={{
+          fontFamily: MONO,
+          fontSize: SIZES.label,
+          fontWeight: 600,
+          color: accent,
+          width: 24,
+          flexShrink: 0,
+        }}
+      >
+        {marker}
+      </div>
       <div
         style={{
           fontFamily: SANS,

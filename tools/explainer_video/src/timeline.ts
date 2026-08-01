@@ -21,18 +21,24 @@ type ScenePlan = {
   hardCutAfter?: boolean;
 };
 
-/** Time given to each captured TUI screen, in frames. */
+/**
+ * Time given to each captured TUI screen, in frames: long enough to read the
+ * caption that goes with it, and no longer.
+ */
 const TUI_BEAT_FRAMES = [
-  240, 165, 210, 195, 210, 150, 225, 150, 195, 195, 210, 180, 150, 240, 240,
+  270, 210, 240, 225, 255, 180, 255, 210, 270, 225, 225, 225, 240, 225, 270,
 ];
 
 const tuiScenes: ScenePlan[] = manifest.steps.map((step, index) => ({
   id: `t${String(index).padStart(2, "0")}`,
   label: step.slug.replace(/_/g, " "),
-  frames: TUI_BEAT_FRAMES[index] ?? 180,
+  frames: TUI_BEAT_FRAMES[index] ?? 210,
   chapter: "Run · the terminal UI",
   tuiStep: index,
   transitionFrames: TUI_TRANSITION_FRAMES,
+  // Two dense terminal screenshots dissolving through each other ghosts badly.
+  // Inside a single session, cut the way the app itself changes.
+  hardCutAfter: index < manifest.steps.length - 1,
 }));
 
 if (tuiScenes.length !== TUI_BEAT_FRAMES.length) {
@@ -42,25 +48,25 @@ if (tuiScenes.length !== TUI_BEAT_FRAMES.length) {
 }
 
 const PLAN: ScenePlan[] = [
-  { id: "s01", label: "Title", frames: 120 },
-  { id: "s02", label: "Why a peer average is not enough", frames: 360, chapter: "What it does" },
+  { id: "s01", label: "Title", frames: 105 },
+  { id: "s02", label: "Why a peer average is not enough", frames: 300, chapter: "What it does" },
   { id: "s03", label: "What balancing changes", frames: 300, chapter: "What it does" },
-  { id: "s04", label: "Client or market", frames: 240, chapter: "What it does" },
-  { id: "s05", label: "The run path", frames: 180, chapter: "What it does" },
-  { id: "s06", label: "First access", frames: 300, chapter: "Set up" },
+  { id: "s04", label: "Client or market", frames: 285, chapter: "What it does" },
+  { id: "s05", label: "The run path", frames: 255, chapter: "What it does" },
+  { id: "s06", label: "First access", frames: 270, chapter: "Set up" },
   { id: "s07", label: "Daily workflow", frames: 300, chapter: "Set up" },
-  { id: "s08", label: "Prepare the CSV", frames: 360, chapter: "Prepare" },
-  { id: "s09", label: "What breaks a first run", frames: 360, chapter: "Prepare" },
-  { id: "s10", label: "Privacy rules at a glance", frames: 390, chapter: "Prepare" },
+  { id: "s08", label: "Prepare the CSV", frames: 285, chapter: "Prepare" },
+  { id: "s09", label: "What breaks a first run", frames: 240, chapter: "Prepare" },
+  { id: "s10", label: "Privacy rules at a glance", frames: 270, chapter: "Prepare" },
   ...tuiScenes,
-  { id: "s11", label: "The same run, one command", frames: 330, chapter: "Run · the CLI" },
-  { id: "s12", label: "Check that it worked", frames: 360, chapter: "Verify" },
-  { id: "s13", label: "Read the workbook", frames: 330, chapter: "Verify" },
-  { id: "s14", label: "Which weights were used", frames: 300, chapter: "Verify" },
-  { id: "s15", label: "Output contracts", frames: 300, chapter: "Verify" },
-  { id: "s16", label: "Choosing a preset", frames: 300, chapter: "Verify" },
-  { id: "s17", label: "When it fails", frames: 360, chapter: "Verify" },
-  { id: "s18", label: "Go deeper", frames: 300 },
+  { id: "s11", label: "The same run, one command", frames: 240, chapter: "Run · the CLI" },
+  { id: "s12", label: "Check that it worked", frames: 240, chapter: "Verify" },
+  { id: "s13", label: "Read the workbook", frames: 255, chapter: "Verify" },
+  { id: "s14", label: "Which weights were used", frames: 285, chapter: "Verify" },
+  { id: "s15", label: "Output contracts", frames: 270, chapter: "Verify" },
+  { id: "s16", label: "Choosing a preset", frames: 285, chapter: "Verify" },
+  { id: "s17", label: "When it fails", frames: 255, chapter: "Verify" },
+  { id: "s18", label: "Go deeper", frames: 270 },
 ];
 
 export type Scene = ScenePlan & {
@@ -88,7 +94,7 @@ export const SCENES: Scene[] = PLAN.map((scene, index) => {
 export const TOTAL_FRAMES = PLAN.reduce((sum, scene) => sum + scene.frames, 0);
 
 /** Update deliberately; the check exists to catch accidental drift. */
-export const EXPECTED_TOTAL_FRAMES = 8445;
+export const EXPECTED_TOTAL_FRAMES = 8235;
 
 if (TOTAL_FRAMES !== EXPECTED_TOTAL_FRAMES) {
   throw new Error(

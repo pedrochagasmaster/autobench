@@ -201,7 +201,7 @@ def build_beats() -> list[Beat]:
         Beat(
             "browse",
             "Ctrl+O opens Browse…, which lists the CSV files in the directory you "
-            "launched from. You rarely need to type a path.",
+            "launched from.",
             action=open_picker,
         ),
         Beat(
@@ -214,16 +214,16 @@ def build_beats() -> list[Beat]:
         ),
         Beat(
             "entity_column",
-            "Entity ID column is the identifier shared by the target and its peers. In "
-            "the demo file that is issuer_name.",
+            "Entity ID column is the identifier shared by the target and its peers: "
+            "issuer_name here.",
             action=set_entity_column,
             focus=("#entity_col",),
             reveal="#section_entity",
         ),
         Beat(
             "target",
-            "Target entity is case-sensitive. Name it to compare one client against the "
-            "balanced peers, or leave it blank for a peer-only market view.",
+            "Target entity is case-sensitive. Name it to compare one client, or leave "
+            "it blank for a market view.",
             action=set_target,
             focus=("#entity_name",),
             reveal="#section_entity",
@@ -253,31 +253,31 @@ def build_beats() -> list[Beat]:
         Beat(
             "options",
             "Analyze impact and Validate input are on by default. Leave them on: they "
-            "tell you what the balancing cost and whether the input was sound.",
+            "show what the balancing cost you.",
             action=close_preset_guide,
             focus=("#analyze_distortion", "#validate_input"),
             reveal="#analyze_distortion",
         ),
         Beat(
             "metric",
-            "On the Share tab the primary metric is the one the weights are optimized "
-            "on. Secondary metrics inherit those weights.",
+            "On the Share tab, the primary metric is the one the weights are optimized "
+            "on.",
             action=set_metric,
             focus=("#share_metric",),
             reveal="#section_mode",
         ),
         Beat(
             "dimensions",
-            "Dimensions are the cuts you are asking for. Every one you tick adds "
-            "privacy constraints, so pick only the cuts the request needs.",
+            "Every dimension you tick adds privacy constraints. Pick only the cuts the "
+            "request actually needs.",
             action=set_dimensions,
             focus=("#share_dims",),
             reveal="#share_dims",
         ),
         Beat(
             "rate_tab",
-            "The Rate tab asks for a denominator and numerators instead of a single "
-            "metric. Same engine, same privacy enforcement.",
+            "The Rate tab asks for a denominator and numerators instead. Same engine, "
+            "same privacy enforcement.",
             action=show_rate_tab,
             focus=("#rate_total",),
             reveal="#section_mode",
@@ -293,15 +293,15 @@ def build_beats() -> list[Beat]:
         Beat(
             "log_tail",
             "The execution log ends with Analysis completed successfully, followed by "
-            "the posture, the verdict, and the acknowledgement state.",
+            "the posture and the verdict.",
             action=wait_for_finish,
             focus=("#log_output",),
             settle=10,
         ),
         Beat(
             "done",
-            "Last Run repeats the verdict and gives you the output path. "
-            "fully_compliant under a strict posture is what a good run looks like.",
+            "Last Run repeats the verdict and gives the output path. fully_compliant "
+            "under a strict posture is a good run.",
             action=hold,
             focus=("#results_panel",),
         ),

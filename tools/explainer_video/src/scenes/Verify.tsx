@@ -76,8 +76,9 @@ export const S12Checks: React.FC = () => {
                 style={{
                   fontFamily: MONO,
                   fontSize: 34,
+                  fontWeight: 600,
                   color: COLORS.good,
-                  width: 40,
+                  width: 42,
                   flexShrink: 0,
                 }}
               >
