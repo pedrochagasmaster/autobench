@@ -51,7 +51,7 @@
     a { color: var(--accent); text-underline-offset: 3px; }
     button, a { -webkit-tap-highlight-color: transparent; }
     :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-    .skip-link { position: fixed; left: 12px; top: -80px; z-index: 20; padding: 8px 12px; background: var(--surface); }
+    .skip-link { position: fixed; left: 12px; top: -80px; z-index: 20; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); font-weight: 700; }
     .skip-link:focus { top: 12px; }
     .site-shell { min-height: 100vh; display: grid; grid-template-columns: 286px minmax(0, 1fr); }
     .sidebar {
@@ -68,7 +68,7 @@
     .brand strong { font-size: 1.15rem; letter-spacing: -.02em; }
     .brand-sub { margin: 0 0 24px; color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; }
     .site-nav { display: grid; gap: 4px; }
-    .site-nav a { padding: 9px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem; }
+    .site-nav a { padding: 9px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem; transition: background-color .12s ease-out, color .12s ease-out; }
     .site-nav a:hover { background: var(--soft); color: var(--ink); }
     .site-nav a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
     .sidebar-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 24px; }
@@ -82,15 +82,17 @@
       font: inherit;
       font-size: .8rem;
       font-weight: 700;
+      transition: border-color .12s ease-out;
     }
     .control:hover { border-color: var(--accent); }
-    .download-link { display: block; margin-top: 10px; padding: 10px; border-radius: 7px; background: var(--navy); color: var(--paper); text-align: center; text-decoration: none; font-size: .82rem; font-weight: 750; }
+    .download-link { display: block; margin-top: 10px; padding: 10px; border-radius: 7px; background: var(--navy); color: var(--paper); text-align: center; text-decoration: none; font-size: .82rem; font-weight: 750; transition: filter .12s ease-out; }
+    .download-link:hover { filter: brightness(1.12); }
     html[data-theme="dark"] .download-link { color: #0e171e; }
     .content { min-width: 0; padding: 46px clamp(24px, 6vw, 90px) 30px; }
     .doc-page { max-width: 1050px; margin: 0 auto; }
     .doc-page[hidden] { display: none; }
     .eyebrow { margin: 0 0 9px; color: var(--accent); font: 750 .76rem/1.2 Consolas, monospace; text-transform: uppercase; letter-spacing: .12em; }
-    h1 { max-width: 850px; margin: 0; font-size: clamp(2.3rem, 5vw, 4.6rem); line-height: .99; letter-spacing: -.055em; }
+    h1 { max-width: 850px; margin: 0; font-size: clamp(2.3rem, 5vw, 4.6rem); line-height: .99; letter-spacing: -.04em; }
     h2 { margin: 55px 0 14px; font-size: clamp(1.55rem, 3vw, 2.35rem); line-height: 1.12; letter-spacing: -.035em; }
     h3 { margin: 28px 0 8px; font-size: 1.12rem; }
     .lede { max-width: 760px; margin: 20px 0 28px; color: var(--muted); font-size: 1.12rem; }
@@ -106,13 +108,14 @@
     .card { padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
     .card h3 { margin-top: 0; }
     .card p:last-child { margin-bottom: 0; }
-    .callout { margin: 20px 0; padding: 16px 18px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
-    .callout.good { border-color: var(--good); background: color-mix(in srgb, var(--good) 10%, var(--surface)); }
-    .callout.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+    .callout { margin: 20px 0; padding: 16px 18px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line)); background: var(--accent-soft); border-radius: 8px; }
+    .callout.good { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); background: color-mix(in srgb, var(--good) 10%, var(--surface)); }
+    .callout.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
     code { font-family: Consolas, "SFMono-Regular", monospace; font-size: .9em; }
     pre { position: relative; margin: 12px 0 20px; padding: 17px 19px; overflow-x: auto; border-radius: 8px; background: var(--code); color: var(--code-ink); line-height: 1.48; }
     pre code { font-size: .83rem; }
-    .copy { float: right; margin: -5px -6px 6px 10px; border: 1px solid #526675; border-radius: 5px; background: transparent; color: #dce8ef; cursor: pointer; font: 700 .72rem "Segoe UI", sans-serif; padding: 4px 7px; }
+    .copy { float: right; margin: -5px -6px 6px 10px; border: 1px solid #526675; border-radius: 5px; background: var(--code); color: #dce8ef; cursor: pointer; font: 700 .72rem "Segoe UI", sans-serif; padding: 4px 7px; transition: border-color .12s ease-out, color .12s ease-out; }
+    .copy:hover { border-color: #8ea6b6; color: #ffffff; }
     .table-wrap { margin: 16px 0 24px; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
     table { width: 100%; border-collapse: collapse; min-width: 620px; }
     th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -123,7 +126,7 @@
     details { margin: 10px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
     summary { cursor: pointer; font-weight: 750; }
     .page-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0; }
-    .page-links a { display: block; min-height: 110px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); text-decoration: none; }
+    .page-links a { display: block; min-height: 110px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); text-decoration: none; transition: border-color .15s ease-out, transform .15s ease-out; }
     .page-links a:hover { border-color: var(--accent); transform: translateY(-2px); }
     .page-links strong { display: block; color: var(--accent); }
     .metadata { max-width: 1050px; margin: 54px auto 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .75rem; }
@@ -132,6 +135,17 @@
     .term-grid dt { background: var(--soft); font-weight: 750; }
     .term-grid dd { background: var(--surface); }
     .term-grid dt:last-of-type, .term-grid dd:last-of-type { border-bottom: 0; }
+    .tabs { display: flex; overflow-x: auto; margin-top: 18px; border: 1px solid var(--line); border-bottom: 0; border-radius: 9px 9px 0 0; background: var(--soft); }
+    .tab { flex: 1; min-width: 130px; padding: 11px 14px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: .9rem; font-weight: 700; white-space: nowrap; transition: background-color .12s ease-out, color .12s ease-out; }
+    .tab:last-child { border-right: 0; }
+    .tab[aria-selected="true"] { color: var(--accent); background: var(--surface); box-shadow: inset 0 -3px var(--accent); }
+    .tab-panel { display: none; padding: 6px 20px 20px; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 9px 9px; background: var(--surface); }
+    .tab-panel.active { display: block; }
+    .tab-panel > h3:first-of-type { margin-top: 16px; }
+    .checks { list-style: none; margin: 14px 0; padding: 0 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+    .checks li { position: relative; margin: 0; padding: 10px 0 10px 30px; border-bottom: 1px solid var(--line); }
+    .checks li:last-child { border-bottom: 0; }
+    .checks li::before { content: "✓"; position: absolute; left: 2px; color: var(--good); font-weight: 800; }
     @media (max-width: 860px) {
       .site-shell { display: block; }
       .sidebar { position: sticky; z-index: 10; height: auto; padding: 12px 14px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
@@ -149,6 +163,7 @@
       .card-grid, .page-links { grid-template-columns: 1fr; }
       .term-grid { grid-template-columns: 1fr; }
       .term-grid dt { border-bottom: 0; }
+      .tab-panel { padding: 2px 14px 14px; }
       h1 { font-size: clamp(2.1rem, 12vw, 3.6rem); }
     }
     @media (max-width: 480px) {
@@ -158,13 +173,33 @@
       .run-path { grid-template-columns: 1fr; }
     }
     @media print {
-      .sidebar, .copy, .skip-link { display: none !important; }
+      .sidebar, .copy, .skip-link, .tabs { display: none !important; }
       .site-shell { display: block; }
       .content { padding: 0; }
       .doc-page[hidden] { display: none !important; }
+      .tab-panel { display: block; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 0; }
       .card, .table-wrap, details { break-inside: avoid; }
     }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { transition: none !important; }
+    }
   </style>
+  <script>
+    // Resolve theme and language before first paint to avoid a light flash for dark-mode readers.
+    (() => {
+      const read = key => { try { return localStorage.getItem(key); } catch { return null; } };
+      const savedTheme = read('autobench-doc-theme');
+      const savedLanguage = read('autobench-doc-language');
+      const root = document.documentElement;
+      root.dataset.theme = savedTheme === 'dark' || savedTheme === 'light'
+        ? savedTheme
+        : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      root.dataset.language = savedLanguage === 'en' || savedLanguage === 'pt'
+        ? savedLanguage
+        : (navigator.language || '').toLowerCase().startsWith('pt') ? 'pt' : 'en';
+    })();
+  </script>
 </head>
 <body>
   <a class="skip-link" href="#main-content" data-copy-en="Skip to content" data-copy-pt="Pular para o conteúdo">Skip to content</a>
@@ -183,7 +218,7 @@
       </nav>
       <div class="sidebar-actions">
         <button class="control" id="language-toggle" type="button" aria-label="Mudar para português">PT</button>
-        <button class="control" id="theme-toggle" type="button" aria-pressed="false">☾ Dark</button>
+        <button class="control" id="theme-toggle" type="button" aria-pressed="false">☾ Dark mode</button>
       </div>
 <a class="download-link" id="demo-download" download="autobench_demo.csv" href="data:text/csv;base64,aXNzdWVyX25hbWUseWVhcl9tb250aCxjYXJkX3R5cGUsaW5wdXRfbW9kZSxjYXJkX3R5cGVfaW5wdXRfbW9kZSx0eG5fY250LHRvdGFsLGFwcHJvdmVkLGZyYXVkClRhcmdldCwyMDI0LTAxLENSRURJVCxDTlAsQ1JFRElUICsgQ05QLDEwMCwxMDAwLDkyMCw2ClAxLDIwMjQtMDEsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsMTIwLDEyMDAsMTEwNCw3ClAyLDIwMjQtMDEsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsMTEwLDExMDAsMTAxMiw2ClAzLDIwMjQtMDEsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsMTAwLDEwMDAsOTIwLDYKUDQsMjAyNC0wMSxDUkVESVQsQ05QLENSRURJVCArIENOUCw5MCw5MDAsODI4LDUKUDUsMjAyNC0wMSxDUkVESVQsQ05QLENSRURJVCArIENOUCw4MCw4MDAsNzM2LDQKUDYsMjAyNC0wMSxDUkVESVQsQ05QLENSRURJVCArIENOUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMSxDUkVESVQsQ1AsQ1JFRElUICsgQ1AsMTIwLDEyMDAsMTEwNCw3ClAxLDIwMjQtMDEsQ1JFRElULENQLENSRURJVCArIENQLDEwMCwxMDAwLDkyMCw2ClAyLDIwMjQtMDEsQ1JFRElULENQLENSRURJVCArIENQLDEyMCwxMjAwLDExMDQsNwpQMywyMDI0LTAxLENSRURJVCxDUCxDUkVESVQgKyBDUCwxMTAsMTEwMCwxMDEyLDYKUDQsMjAyNC0wMSxDUkVESVQsQ1AsQ1JFRElUICsgQ1AsOTAsOTAwLDgyOCw1ClA1LDIwMjQtMDEsQ1JFRElULENQLENSRURJVCArIENQLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAxLENSRURJVCxDUCxDUkVESVQgKyBDUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMSxERUJJVCxDTlAsREVCSVQgKyBDTlAsODAsODAwLDczNiw0ClAxLDIwMjQtMDEsREVCSVQsQ05QLERFQklUICsgQ05QLDkwLDkwMCw4MjgsNQpQMiwyMDI0LTAxLERFQklULENOUCxERUJJVCArIENOUCwxMDAsMTAwMCw5MjAsNgpQMywyMDI0LTAxLERFQklULENOUCxERUJJVCArIENOUCwxMjAsMTIwMCwxMTA0LDcKUDQsMjAyNC0wMSxERUJJVCxDTlAsREVCSVQgKyBDTlAsMTEwLDExMDAsMTAxMiw2ClA1LDIwMjQtMDEsREVCSVQsQ05QLERFQklUICsgQ05QLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAxLERFQklULENOUCxERUJJVCArIENOUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMSxERUJJVCxDUCxERUJJVCArIENQLDkwLDkwMCw4MjgsNQpQMSwyMDI0LTAxLERFQklULENQLERFQklUICsgQ1AsMTAwLDEwMDAsOTIwLDYKUDIsMjAyNC0wMSxERUJJVCxDUCxERUJJVCArIENQLDkwLDkwMCw4MjgsNQpQMywyMDI0LTAxLERFQklULENQLERFQklUICsgQ1AsMTEwLDExMDAsMTAxMiw2ClA0LDIwMjQtMDEsREVCSVQsQ1AsREVCSVQgKyBDUCwxMjAsMTIwMCwxMTA0LDcKUDUsMjAyNC0wMSxERUJJVCxDUCxERUJJVCArIENQLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAxLERFQklULENQLERFQklUICsgQ1AsMTAwLDEwMDAsOTIwLDYKVGFyZ2V0LDIwMjQtMDIsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsOTUsOTUwLDg3NCw1ClAxLDIwMjQtMDIsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsMTEwLDExMDAsMTAxMiw2ClAyLDIwMjQtMDIsQ1JFRElULENOUCxDUkVESVQgKyBDTlAsMTAwLDEwMDAsOTIwLDYKUDMsMjAyNC0wMixDUkVESVQsQ05QLENSRURJVCArIENOUCwxMjAsMTIwMCwxMTA0LDcKUDQsMjAyNC0wMixDUkVESVQsQ05QLENSRURJVCArIENOUCw5MCw5MDAsODI4LDUKUDUsMjAyNC0wMixDUkVESVQsQ05QLENSRURJVCArIENOUCw4MCw4MDAsNzM2LDQKUDYsMjAyNC0wMixDUkVESVQsQ05QLENSRURJVCArIENOUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMixDUkVESVQsQ1AsQ1JFRElUICsgQ1AsMTEwLDExMDAsMTAxMiw2ClAxLDIwMjQtMDIsQ1JFRElULENQLENSRURJVCArIENQLDkwLDkwMCw4MjgsNQpQMiwyMDI0LTAyLENSRURJVCxDUCxDUkVESVQgKyBDUCwxMTAsMTEwMCwxMDEyLDYKUDMsMjAyNC0wMixDUkVESVQsQ1AsQ1JFRElUICsgQ1AsMTAwLDEwMDAsOTIwLDYKUDQsMjAyNC0wMixDUkVESVQsQ1AsQ1JFRElUICsgQ1AsMTIwLDEyMDAsMTEwNCw3ClA1LDIwMjQtMDIsQ1JFRElULENQLENSRURJVCArIENQLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAyLENSRURJVCxDUCxDUkVESVQgKyBDUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMixERUJJVCxDTlAsREVCSVQgKyBDTlAsODUsODUwLDc4Miw1ClAxLDIwMjQtMDIsREVCSVQsQ05QLERFQklUICsgQ05QLDEwMCwxMDAwLDkyMCw2ClAyLDIwMjQtMDIsREVCSVQsQ05QLERFQklUICsgQ05QLDEyMCwxMjAwLDExMDQsNwpQMywyMDI0LTAyLERFQklULENOUCxERUJJVCArIENOUCw5MCw5MDAsODI4LDUKUDQsMjAyNC0wMixERUJJVCxDTlAsREVCSVQgKyBDTlAsMTEwLDExMDAsMTAxMiw2ClA1LDIwMjQtMDIsREVCSVQsQ05QLERFQklUICsgQ05QLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAyLERFQklULENOUCxERUJJVCArIENOUCwxMDAsMTAwMCw5MjAsNgpUYXJnZXQsMjAyNC0wMixERUJJVCxDUCxERUJJVCArIENQLDkyLDkyMCw4NDYsNQpQMSwyMDI0LTAyLERFQklULENQLERFQklUICsgQ1AsMTIwLDEyMDAsMTEwNCw3ClAyLDIwMjQtMDIsREVCSVQsQ1AsREVCSVQgKyBDUCw5MCw5MDAsODI4LDUKUDMsMjAyNC0wMixERUJJVCxDUCxERUJJVCArIENQLDEwMCwxMDAwLDkyMCw2ClA0LDIwMjQtMDIsREVCSVQsQ1AsREVCSVQgKyBDUCwxMTAsMTEwMCwxMDEyLDYKUDUsMjAyNC0wMixERUJJVCxDUCxERUJJVCArIENQLDgwLDgwMCw3MzYsNApQNiwyMDI0LTAyLERFQklULENQLERFQklUICsgQ1AsMTAwLDEwMDAsOTIwLDYK"><span data-copy-en="↓ Download demo CSV" data-copy-pt="↓ Baixar CSV de demonstração">↓ Download demo CSV</span></a>
     </aside>
@@ -203,12 +238,20 @@
         </div>
 
         <h2>What Autobench does</h2>
+        <p>A naive peer average is easy to skew and easy to make non-compliant: one dominant participant (a large issuer, a large acquirer) can exceed the privacy concentration cap in some segments, making the whole comparison unpublishable. Autobench first attempts one global weight vector across the selected cuts, scaling dominant players down and smaller players up only where needed, so that every requested cut satisfies the concentration rules while the market picture stays as close to reality as the constraints allow.</p>
+        <p>Weights are computed on one <strong>primary metric</strong> (typically an amount) and then applied to every secondary metric (fraud amount, fraud count, approved and declined counts) within the corresponding calculation.</p>
         <div class="card-grid">
           <div class="card"><h3>Share analysis</h3><p>Compares a target entity with a governed peer group using a primary volume metric. Secondary metrics receive the final weights as supporting context.</p></div>
           <div class="card"><h3>Rate analysis</h3><p>Compares approval, fraud, or chargeback rates using an explicit denominator and numerator contract.</p></div>
           <div class="card"><h3>Privacy-constrained weights</h3><p>Attempts one global vector first. Strict runs may use compliant per-dimension fallback; only <code>strategic_consistency</code> guarantees one global vector.</p></div>
           <div class="card"><h3>Output contracts</h3><p>Analysis is internal. Publication is separately sanitized and validated. Both creates the two distinct artifacts.</p></div>
         </div>
+        <h3>Client vs. market</h3>
+        <p>The <strong>Target entity</strong> field decides how the client is positioned:</p>
+        <ul>
+          <li><strong>Target set:</strong> the client is separated from the market. Autobench balances the peers independently and compares the client against the adjusted benchmark, measuring over- or under-performance. Usually the preferred setup when the client already owns its raw data.</li>
+          <li><strong>Target blank (peer-only):</strong> the whole population is balanced together and you get a market view with no target comparison.</li>
+        </ul>
 
         <h2>1 · First access</h2>
         <p>From the Edge Node, run the shared onboarding entry point:</p>
@@ -216,9 +259,20 @@
 export PATH="$HOME/.local/bin:$PATH"
 which autobench
 which autobench-cli</code></pre>
-        <p>The script validates the Release Operator-managed runtime, creates private state under <code>/ads_storage/$USER/.autobench</code>, and installs thin launchers in <code>~/.local/bin</code>. For installation and repair detail, open <a href="#setup-support" data-page-link="setup-support">Setup & Support</a>.</p>
+        <p>The script validates the Release Operator-managed runtime, creates private state under <code>/ads_storage/$USER/.autobench</code>, and installs two thin launchers in <code>~/.local/bin</code>: <code>autobench</code> (the terminal UI) and <code>autobench-cli</code> (the command line). Both use the same engine and give the same results. For installation and repair detail, open <a href="#setup-support" data-page-link="setup-support">Setup & Support</a>.</p>
+        <div class="callout warn"><strong>If onboarding says the shared runtime is missing or invalid,</strong> stop and send the exact error to a Release Operator. Do not run <code>install.sh</code> or <code>pip</code> yourself: analysts cannot repair or replace the shared runtime.</div>
 
-        <h2>2 · Prepare the CSV</h2>
+        <h2>2 · Daily workflow</h2>
+        <p>Three steps, every time:</p>
+        <ol>
+          <li>Extract the data with SQL and land the aggregated CSV in a working directory.</li>
+          <li>Go to that directory and launch <code>autobench</code>. Outputs are written next to your data: relative paths stay relative to where you launched.</li>
+          <li>Configure and run the analysis, then verify the workbook before anything moves on.</li>
+        </ol>
+        <p>The TUI remembers safe, dataset-independent preferences such as the preset, output format, and ordinary option checkboxes. It deliberately does <strong>not</strong> restore CSV or output paths, target entities, or per-run compliance declarations: choose the dataset and target afresh in every session. <strong>Browse…</strong> (<code>Ctrl+O</code>) lists the CSV files in your current directory, so you rarely need to type a path.</p>
+        <div class="callout"><strong>Shortcuts.</strong> <code>Ctrl+O</code> browse · <code>Ctrl+R</code> run · <code>Ctrl+A</code> advanced parameters · <code>Ctrl+E</code> export advanced · <code>Ctrl+L</code> clear log · <code>F1</code> preset guide.</div>
+
+        <h2>3 · Prepare the CSV</h2>
         <p>Use one row per entity, period, and requested cut. Aggregate before loading; do not feed transaction-level records. Column names should be stable, lowercase, and unambiguous.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Role</th><th>Meaning</th><th>Demo column</th></tr></thead>
@@ -240,24 +294,59 @@ which autobench-cli</code></pre>
 FROM source_table
 GROUP BY issuer_name, year_month, card_type, input_mode;</code></pre>
         <div class="callout"><strong>Period-key rule.</strong> Use one non-null, consistent representation. <code>YYYY-MM</code> is recommended when monthly values should sort chronologically, but it is a convention—not a date parser requirement.</div>
+        <h3>Rules that cause most first failures</h3>
+        <ul>
+          <li><strong>Entity names are case-sensitive.</strong> <code>Renner</code> and <code>renner</code> are different entities.</li>
+          <li><strong>Column names are normalized</strong> to lowercase with underscores (<code>Card Type</code> becomes <code>card_type</code>). Refer to them that way.</li>
+          <li><strong>No nulls</strong> in the entity or metric columns. Null-heavy dimension columns cause warnings and balancing difficulties: clean them in SQL or drop the dimension.</li>
+          <li><strong>Units must be consistent</strong> across all rows (same currency, same count definition).</li>
+          <li><strong>You need at least 5 peers</strong> for a normal run (4 for a declared merchant-spend run). Fewer peers means no privacy rule can be satisfied.</li>
+        </ul>
+        <div class="callout warn"><strong>If validation fails, fix the data.</strong> Do not disable validation to force a run: a workbook produced from bad input is not a usable benchmark.</div>
 
-        <h2>3 · Configure the run</h2>
-        <ol>
-          <li>Select the CSV, entity column, and optional target. Entity values are case-sensitive.</li>
-          <li>Keep <code>compliance_strict</code> unless a reviewed requirement justifies another preset.</li>
-          <li>Choose <code>analysis</code> while working; request <code>publication</code> or <code>both</code> only for the publication pipeline.</li>
-          <li>Select the primary metric, optional secondary metrics, and only the dimensions the request actually needs.</li>
-          <li>For issuer fraud or chargeback, <code>total_col</code> must be clearing-spend amount and <code>privacy_basis</code> must be <code>clearing_spend</code>.</li>
-        </ol>
+        <h2>4 · Configure the run</h2>
+        <p>The TUI walks you through the same order every time; the CLI flags mirror it. This section follows the TUI screens.</p>
+        <h3>Data source</h3>
+        <p>Point at your CSV with <strong>Browse…</strong> (<code>Ctrl+O</code>) or type a path. The header row loads and populates every selector that follows.</p>
+        <h3>Entity</h3>
+        <p>Pick the <strong>Entity ID column</strong> (defaults to <code>issuer_name</code> when present) and the <strong>Target entity</strong>, or leave the target blank for a peer-only market run (see Client vs. market above). Entity values are case-sensitive.</p>
+        <h3>Analysis options</h3>
+        <p>Keep <code>compliance_strict</code> unless a reviewed requirement justifies another preset. Recommended checkboxes for normal work:</p>
+        <ul>
+          <li><strong>Analyze impact</strong> (on by default): adds distortion analysis and impact sheets so you can see what the balancing cost you.</li>
+          <li><strong>Validate input</strong> (on by default): checks the CSV before analysis and surfaces problems as warnings and errors.</li>
+          <li><strong>Include calc. metrics (CSV)</strong>: enriches the balanced CSV export with calculated metrics.</li>
+          <li><strong>Compare presets</strong>: optional; runs every preset and reports the impact of each. Useful when choosing a preset for a new dataset.</li>
+        </ul>
+        <p>Keep <strong>Output format</strong> on <code>analysis</code> while working. An analysis workbook is internal and is not client-safe merely because its automated checks pass; anything that leaves the analysis environment must be generated as <code>publication</code> or <code>both</code>.</p>
+        <h3>Metrics and dimensions</h3>
+        <p>On the <strong>Share</strong> tab, pick the primary metric first (usually the approved amount: it is the metric the weights are optimized on), then optional secondary metrics (they receive the same weights), and dimensions last. Every dimension you tick adds privacy constraints, so start with the cuts the request actually needs; if balancing struggles, remove a dimension and rerun.</p>
+        <p>The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved and/or fraud columns, with fraud reported in bps by default. For issuer fraud or chargeback runs, <code>total_col</code> must be the clearing-spend amount and <code>privacy_basis</code> must be <code>clearing_spend</code>: Autobench does not infer or substitute another column.</p>
         <div class="callout warn"><strong>Business eligibility happens first.</strong> Digital-wallet review, dual protected axes, recurring-deliverable rechecks, peer-group changes, reverse-engineering review, Control 3.3, and top-merchant eligibility are resolved with Privacy/governance before data enters Autobench. The tool does not add self-attestation switches for those decisions.</div>
 
-        <h2>4 · Run the known-good demo</h2>
-        <p>Use the <strong>Download demo CSV</strong> control in the navigation, or copy the identical shared fixture on the Edge Node:</p>
+        <h2>5 · Your first run</h2>
+        <p>Do this before touching project data: the demo file is known-good, so you learn the workflow without debugging your data at the same time. Use the <strong>Download demo CSV</strong> control in the navigation, or copy the identical shared fixture on the Edge Node:</p>
         <pre><button class="copy" type="button">Copy</button><code>mkdir -p /ads_storage/$USER/autobench-demo
 cp /ads_storage/autobench/docs/autobench_demo.csv /ads_storage/$USER/autobench-demo/
 cd /ads_storage/$USER/autobench-demo</code></pre>
-        <h3>Share</h3>
-        <pre><button class="copy" type="button">Copy</button><code>autobench-cli share \
+        <div class="tabs" role="tablist" aria-label="Ways to run the demo">
+          <button class="tab" id="tab-tui-en" type="button" role="tab" aria-selected="true" aria-controls="panel-tui-en">TUI (start here)</button>
+          <button class="tab" id="tab-cli-en" type="button" role="tab" aria-selected="false" aria-controls="panel-cli-en">CLI</button>
+        </div>
+        <div class="tab-panel active" id="panel-tui-en" role="tabpanel" aria-labelledby="tab-tui-en">
+          <p>The TUI shows every choice on screen: the best way to learn what the options mean.</p>
+          <ol>
+            <li>Launch <code>autobench</code>, press <strong>Browse…</strong>, and pick <code>autobench_demo.csv</code>.</li>
+            <li>Set <strong>Entity ID column</strong> to <code>issuer_name</code> and <strong>Target entity</strong> to <code>Target</code> (case-sensitive).</li>
+            <li>In Analysis Options: time column <code>year_month</code>, preset <code>compliance_strict</code>. Leave <strong>Analyze impact</strong> and <strong>Validate input</strong> on.</li>
+            <li>On the <strong>Share</strong> tab: primary metric <code>txn_cnt</code>; dimensions <code>card_type</code>, <code>input_mode</code>, and <code>card_type_input_mode</code>.</li>
+            <li>Press <strong>Run Analysis</strong> (<code>Ctrl+R</code>). The log should end with <strong>Analysis completed successfully</strong>.</li>
+          </ol>
+        </div>
+        <div class="tab-panel" id="panel-cli-en" role="tabpanel" aria-labelledby="tab-cli-en">
+          <p>Same run, one command: this is what you script once a configuration is settled.</p>
+          <h3>Share</h3>
+          <pre><button class="copy" type="button">Copy</button><code>autobench-cli share \
   --csv autobench_demo.csv \
   --entity Target \
   --metric txn_cnt \
@@ -265,8 +354,8 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
   --time-col year_month \
   --preset compliance_strict \
   --output autobench_demo_share.xlsx</code></pre>
-        <h3>Rate</h3>
-        <pre><button class="copy" type="button">Copy</button><code>autobench-cli rate \
+          <h3>Rate (also exports a balanced CSV)</h3>
+          <pre><button class="copy" type="button">Copy</button><code>autobench-cli rate \
   --csv autobench_demo.csv \
   --entity Target \
   --total-col total \
@@ -276,16 +365,33 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
   --preset compliance_strict \
   --export-balanced-csv \
   --output autobench_demo_rate.xlsx</code></pre>
+        </div>
         <p>The fixture contains one target, six peers, two monthly period keys, CP/CNP input modes, base dimensions, and a precomputed combined dimension.</p>
 
-        <h2>5 · Check that it worked</h2>
-        <ul>
-          <li>The run ends with <strong>Analysis completed successfully</strong> and explicit output paths.</li>
-          <li><code>Summary</code> records preset, posture, privacy rule, and verdict.</li>
+        <h2>6 · Check that it worked</h2>
+        <p>All of these must be true. If any is false, go to Troubleshooting.</p>
+        <ul class="checks">
+          <li>The CLI exited with code <code>0</code>, or the TUI log ends with <strong>Analysis completed successfully</strong> and explicit output paths.</li>
+          <li>The output file exists in your working directory (the rate run also writes a <code>*_balanced.csv</code>).</li>
+          <li>The <code>Summary</code> sheet shows <code>Input Validation: pass</code> and <code>Compliance Verdict: fully_compliant</code>, and records the preset, posture, and privacy rule.</li>
           <li><code>Weight Methods</code> tells you whether each cut used global or per-dimension weights.</li>
           <li>Dimension sheets reconcile with the requested cuts and period keys.</li>
-          <li>An analysis workbook remains internal even when numeric checks pass.</li>
         </ul>
+        <div class="callout"><strong>Artifact hygiene.</strong> The generated <code>.xlsx</code>, <code>.csv</code>, and <code>benchmark_log_*.txt</code> files are local artifacts: safe to delete and never committed anywhere. An analysis workbook remains internal even when numeric checks pass.</div>
+
+        <h2>Read the workbook</h2>
+        <p>Open <code>Summary</code> first, then the dimension sheets.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Sheet or file</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>Summary</code></td><td>Run inputs, preset, validation result, and compliance verdict. Always check this first.</td></tr>
+            <tr><td>One sheet per dimension</td><td>Target vs. balanced peers per category, with gaps and best-in-class comparisons. This is the answer to the business question.</td></tr>
+            <tr><td><code>Weight Methods</code></td><td>Which weighting strategy each cut used: <code>Global-LP</code>, <code>Per-Dimension-LP</code>, or a per-dimension Bayesian fallback.</td></tr>
+            <tr><td><code>Rank Changes</code></td><td>How the reweighting shifted peer ranks: a distortion check.</td></tr>
+            <tr><td>Balanced CSV</td><td>Balanced metrics for BI tools or pipelines. Written with <code>--export-balanced-csv</code> or the TUI checkbox.</td></tr>
+            <tr><td>Audit package</td><td>One zip with workbooks, CSV, audit log, config snapshot, and validation summary. Written with <code>--audit-package</code>.</td></tr>
+          </tbody>
+        </table></div>
 
         <h2>Preset quick choice</h2>
         <div class="table-wrap"><table>
@@ -298,7 +404,8 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
             <tr><td>Accuracy-first diagnosis</td><td><code>low_distortion</code> / <code>minimal_distortion</code></td><td>Requires explicit consent; warned reports are non-publishable.</td></tr>
           </tbody>
         </table></div>
-        <p>Open <a href="#presets-config" data-page-link="presets-config">Presets & Configuration</a> before overriding optimizer settings.</p>
+        <div class="callout good"><strong>Practical rule from onboarding.</strong> Run <code>compliance_strict</code> first. Move to another preset only when strict is infeasible or the deliverable explicitly needs a single reusable weight vector, and record why.</div>
+        <p>Open <a href="#presets-config" data-page-link="presets-config">Presets & Configuration</a> before overriding optimizer settings. In the TUI, <strong>Preset Guide</strong> (<code>F1</code>) has the full descriptions; <code>autobench-cli config show &lt;preset&gt;</code> prints the exact parameters.</p>
 
         <h2>Privacy rules at a glance</h2>
         <div class="table-wrap"><table>
@@ -322,15 +429,31 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
         </div>
 
         <h2>Troubleshooting</h2>
+        <p>Fix the first concrete error. Most first-run failures are an exact-value mismatch.</p>
         <details><summary><code>autobench: command not found</code></summary><p>Add <code>~/.local/bin</code> to <code>PATH</code>, open a new SSH session, or rerun onboarding. If still missing, contact a Release Operator.</p></details>
-        <details><summary>No target entities appear</summary><p>Confirm the entity column, non-null values, and exact case. Reload after changing the file.</p></details>
+        <details><summary>Stale launcher warning, or launchers behave strangely</summary><p>Rerun <code>/ads_storage/autobench/onboard.sh</code>. It replaces stale launchers without deleting your config or private files.</p></details>
+        <details><summary>Shared runtime missing or invalid</summary><p>Send the exact error to a Release Operator. Analysts cannot repair or replace the shared runtime; do not run <code>install.sh</code> or <code>pip</code> yourself.</p></details>
+        <details><summary>No target entities appear, or “Entity not found”</summary><p>The target must match the CSV exactly, including case (in the demo it is <code>Target</code>, capital T). Confirm the entity column and non-null values, pick the target from the dropdown instead of typing, and reload after changing the file.</p></details>
+        <details><summary>“Column not found”</summary><p>Column names are normalized to lowercase with underscores (<code>Card Type</code> becomes <code>card_type</code>). If unsure, load the file in the TUI and look at the headers it lists.</p></details>
+        <details><summary>Null-related warnings, or balancing keeps failing</summary><p>This is usually the data, not the tool. Simplify and rerun: drop the sparsest dimension, clean nulls upstream in SQL, or collapse thin categories. Get a simple configuration to succeed first, then add dimensions back one at a time.</p></details>
         <details><summary>Balancing is infeasible</summary><p>Read the structural and privacy diagnostics. Remove unrequested cuts or correct aggregation; do not loosen policy merely to obtain a result.</p></details>
+        <details><summary>LP infeasibility warnings or high distortion</summary><p>Some market structures cannot satisfy every constraint; the engine falls back to a weaker method and reports it in <code>Weight Methods</code>. Use <strong>Compare presets</strong> and <strong>Analyze impact</strong> to see the trade-off. This is a data property, not a bug.</p></details>
         <details><summary>Output write fails</summary><p>Relative output paths resolve from the directory where the launcher was started—not beside the input CSV. Use an absolute writable path such as <code>/ads_storage/$USER/project/output.xlsx</code>.</p></details>
+
+        <h2>Go deeper</h2>
+        <p>You are onboarded when you can run the demo, explain which privacy rule applied, and point to the verdict in <code>Summary</code>. This handbook is standalone; the repository documentation continues from here:</p>
+        <ul>
+          <li><code>README.md</code>: full CLI cookbook and output reference.</li>
+          <li><code>onboarding.md</code>: the launcher setup in detail.</li>
+          <li><code>docs/guia-presets-e-configuracao-pt-BR.md</code>: every preset parameter, explained.</li>
+          <li><code>docs/RESOURCE_MANAGEMENT.md</code>: large datasets and <code>--lean</code> mode.</li>
+          <li><code>docs/CORE_TECHNICAL_DOC.md</code>: how the engine works inside.</li>
+        </ul>
 
         <h2>More context</h2>
         <div class="page-links">
           <a href="#setup-support" data-page-link="setup-support"><strong>Setup & Support</strong>Launchers, contacts, and the demo.</a>
-          <a href="#privacy-outputs" data-page-link="privacy-outputs"><strong>Privacy & Outputs</strong>Rules, Citi, eligibility, and publication.</a>
+          <a href="#privacy-outputs" data-page-link="privacy-outputs"><strong>Privacy & Outputs</strong>Rules, Citi, merchant 4/35, eligibility, and publication.</a>
           <a href="#glossary" data-page-link="glossary"><strong>Glossary</strong>Plain-language definitions for new analysts.</a>
         </div>
       </article>
@@ -349,12 +472,20 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
         </div>
 
         <h2>O que o Autobench faz</h2>
+        <p>Uma média simples de pares é fácil de distorcer e fácil de tornar não conforme: um participante dominante (um emissor grande, um adquirente grande) pode exceder o teto de concentração de privacidade em alguns segmentos, tornando a comparação inteira não publicável. O Autobench tenta primeiro um único vetor global de pesos para os cortes selecionados, reduzindo participantes dominantes e ampliando os menores apenas onde necessário, de modo que cada corte solicitado satisfaça as regras de concentração enquanto o retrato de mercado permanece o mais próximo possível da realidade.</p>
+        <p>Os pesos são calculados sobre uma <strong>métrica primária</strong> (tipicamente um valor financeiro) e depois aplicados a cada métrica secundária (valor de fraude, contagem de fraude, contagens de aprovadas e negadas) dentro do cálculo correspondente.</p>
         <div class="card-grid">
           <div class="card"><h3>Análise de share</h3><p>Compara uma entidade-alvo com um grupo governado de pares usando uma métrica primária de volume. Métricas secundárias recebem os pesos finais como contexto.</p></div>
           <div class="card"><h3>Análise de taxa</h3><p>Compara aprovação, fraude ou chargeback usando contratos explícitos de denominador e numerador.</p></div>
           <div class="card"><h3>Pesos com privacidade</h3><p>Tenta primeiro um vetor global. Execuções strict podem usar fallback conforme por dimensão; somente <code>strategic_consistency</code> garante um vetor global.</p></div>
           <div class="card"><h3>Contratos de saída</h3><p>Analysis é interno. Publication é sanitizado e validado separadamente. Both cria os dois artefatos distintos.</p></div>
         </div>
+        <h3>Cliente vs. mercado</h3>
+        <p>O campo <strong>Entidade-alvo</strong> decide como o cliente é posicionado:</p>
+        <ul>
+          <li><strong>Alvo definido:</strong> o cliente é separado do mercado. O Autobench balanceia os pares de forma independente e compara o cliente com o benchmark ajustado, medindo sobre- ou subdesempenho. Normalmente a configuração preferida quando o cliente já possui os próprios dados brutos.</li>
+          <li><strong>Alvo em branco (apenas pares):</strong> toda a população é balanceada junta e você obtém uma visão de mercado sem comparação com alvo.</li>
+        </ul>
 
         <h2>1 · Primeiro acesso</h2>
         <p>No Edge Node, execute o onboarding compartilhado:</p>
@@ -362,9 +493,20 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
 export PATH="$HOME/.local/bin:$PATH"
 which autobench
 which autobench-cli</code></pre>
-        <p>O script valida o runtime gerenciado pelos Release Operators, cria estado privado em <code>/ads_storage/$USER/.autobench</code> e instala launchers em <code>~/.local/bin</code>. Abra <a href="#setup-support" data-page-link="setup-support">Acesso e suporte</a> para instalação e reparo.</p>
+        <p>O script valida o runtime gerenciado pelos Release Operators, cria estado privado em <code>/ads_storage/$USER/.autobench</code> e instala dois launchers finos em <code>~/.local/bin</code>: <code>autobench</code> (interface de terminal) e <code>autobench-cli</code> (linha de comando). Ambos usam o mesmo engine e dão os mesmos resultados. Abra <a href="#setup-support" data-page-link="setup-support">Acesso e suporte</a> para instalação e reparo.</p>
+        <div class="callout warn"><strong>Se o onboarding disser que o runtime compartilhado está ausente ou inválido,</strong> pare e envie o erro exato a um Release Operator. Não execute <code>install.sh</code> nem <code>pip</code> por conta própria: analistas não podem reparar nem substituir o runtime compartilhado.</div>
 
-        <h2>2 · Prepare o CSV</h2>
+        <h2>2 · Fluxo de trabalho diário</h2>
+        <p>Três passos, sempre:</p>
+        <ol>
+          <li>Extraia os dados com SQL e deixe o CSV agregado em um diretório de trabalho.</li>
+          <li>Vá a esse diretório e inicie o <code>autobench</code>. As saídas são gravadas ao lado dos dados: caminhos relativos partem de onde você iniciou.</li>
+          <li>Configure e execute a análise; depois verifique o workbook antes de qualquer próximo passo.</li>
+        </ol>
+        <p>O TUI lembra preferências seguras e independentes do dataset, como preset, formato de saída e os checkboxes comuns. Ele deliberadamente <strong>não</strong> restaura caminhos de CSV ou saída, entidades-alvo nem declarações de conformidade por execução: escolha o dataset e o alvo novamente em cada sessão. <strong>Browse…</strong> (<code>Ctrl+O</code>) lista os CSVs do diretório atual, então raramente é preciso digitar um caminho.</p>
+        <div class="callout"><strong>Atalhos.</strong> <code>Ctrl+O</code> procurar · <code>Ctrl+R</code> executar · <code>Ctrl+A</code> parâmetros avançados · <code>Ctrl+E</code> exportar avançados · <code>Ctrl+L</code> limpar log · <code>F1</code> guia de presets.</div>
+
+        <h2>3 · Prepare o CSV</h2>
         <p>Use uma linha por entidade, período e corte solicitado. Agregue antes de carregar; não use registros transacionais. Nomes de colunas devem ser estáveis, minúsculos e inequívocos.</p>
         <div class="table-wrap"><table><thead><tr><th>Papel</th><th>Significado</th><th>Coluna da demo</th></tr></thead><tbody>
           <tr><td>Entidade</td><td>Identificador do alvo e dos pares.</td><td><code>issuer_name</code></td></tr>
@@ -383,24 +525,59 @@ which autobench-cli</code></pre>
 FROM source_table
 GROUP BY issuer_name, year_month, card_type, input_mode;</code></pre>
         <div class="callout"><strong>Regra da chave de período.</strong> Use uma representação não nula e consistente. <code>YYYY-MM</code> é recomendado para ordenação cronológica mensal, mas é convenção, não requisito de parser.</div>
+        <h3>Regras que causam a maioria das primeiras falhas</h3>
+        <ul>
+          <li><strong>Nomes de entidade diferenciam maiúsculas.</strong> <code>Renner</code> e <code>renner</code> são entidades diferentes.</li>
+          <li><strong>Nomes de coluna são normalizados</strong> para minúsculas com underscores (<code>Card Type</code> vira <code>card_type</code>). Refira-se a eles assim.</li>
+          <li><strong>Sem nulos</strong> nas colunas de entidade e métricas. Colunas de dimensão cheias de nulos causam avisos e dificultam o balanceamento: limpe no SQL ou descarte a dimensão.</li>
+          <li><strong>Unidades consistentes</strong> em todas as linhas (mesma moeda, mesma definição de contagem).</li>
+          <li><strong>São necessários ao menos 5 pares</strong> em execução normal (4 em execução declarada de merchant spend). Com menos pares nenhuma regra de privacidade pode ser satisfeita.</li>
+        </ul>
+        <div class="callout warn"><strong>Se a validação falhar, corrija os dados.</strong> Não desligue a validação para forçar uma execução: um workbook produzido de entrada ruim não é um benchmark utilizável.</div>
 
-        <h2>3 · Configure a execução</h2>
-        <ol>
-          <li>Selecione CSV, coluna de entidade e alvo opcional. Valores de entidade são sensíveis a maiúsculas.</li>
-          <li>Mantenha <code>compliance_strict</code> salvo requisito revisado que justifique outro preset.</li>
-          <li>Use <code>analysis</code> durante o trabalho; solicite <code>publication</code> ou <code>both</code> somente no fluxo de publicação.</li>
-          <li>Selecione métrica primária, métricas secundárias opcionais e somente as dimensões necessárias.</li>
-          <li>Para fraude ou chargeback de emissor, <code>total_col</code> deve ser valor de clearing spend e <code>privacy_basis</code> deve ser <code>clearing_spend</code>.</li>
-        </ol>
+        <h2>4 · Configure a execução</h2>
+        <p>O TUI percorre a mesma ordem sempre; as flags da CLI espelham essa ordem. Esta seção segue as telas do TUI.</p>
+        <h3>Fonte de dados</h3>
+        <p>Aponte para o CSV com <strong>Browse…</strong> (<code>Ctrl+O</code>) ou digite um caminho. A linha de cabeçalho carrega e preenche os seletores seguintes.</p>
+        <h3>Entidade</h3>
+        <p>Escolha a <strong>coluna de ID de entidade</strong> (padrão <code>issuer_name</code> quando presente) e a <strong>entidade-alvo</strong>, ou deixe o alvo em branco para uma execução apenas de mercado (veja Cliente vs. mercado acima). Valores de entidade diferenciam maiúsculas.</p>
+        <h3>Opções de análise</h3>
+        <p>Mantenha <code>compliance_strict</code> salvo requisito revisado que justifique outro preset. Checkboxes recomendados para trabalho normal:</p>
+        <ul>
+          <li><strong>Analyze impact</strong> (ligado por padrão): adiciona análise de distorção e abas de impacto para você ver o que o balanceamento custou.</li>
+          <li><strong>Validate input</strong> (ligado por padrão): valida o CSV antes da análise e expõe problemas como avisos e erros.</li>
+          <li><strong>Include calc. metrics (CSV)</strong>: enriquece o CSV balanceado exportado com métricas calculadas.</li>
+          <li><strong>Compare presets</strong>: opcional; executa todos os presets e reporta o impacto de cada um. Útil ao escolher preset para uma base nova.</li>
+        </ul>
+        <p>Mantenha o <strong>formato de saída</strong> em <code>analysis</code> durante o trabalho. Um workbook de analysis é interno e não se torna seguro para cliente só porque as checagens automáticas passaram; o que sai do ambiente de análise deve ser gerado como <code>publication</code> ou <code>both</code>.</p>
+        <h3>Métricas e dimensões</h3>
+        <p>Na aba <strong>Share</strong>, escolha primeiro a métrica primária (normalmente o valor aprovado: é a métrica sobre a qual os pesos são otimizados), depois métricas secundárias opcionais (recebem os mesmos pesos) e as dimensões por último. Cada dimensão marcada adiciona restrições de privacidade, então comece pelos cortes que a solicitação realmente pede; se o balanceamento sofrer, remova uma dimensão e execute de novo.</p>
+        <p>A aba <strong>Rate</strong> pede uma coluna de total (denominador) e colunas de aprovadas e/ou fraude, com fraude reportada em bps por padrão. Para fraude ou chargeback de emissor, <code>total_col</code> deve ser o valor de clearing spend e <code>privacy_basis</code> deve ser <code>clearing_spend</code>: o Autobench não infere nem substitui outra coluna.</p>
         <div class="callout warn"><strong>Elegibilidade vem antes.</strong> Carteira digital, dois eixos protegidos, recorrência, mudanças no peer group, engenharia reversa, Control 3.3 e top merchants são resolvidos com Privacidade/governança antes dos dados entrarem no Autobench. A ferramenta não cria autodeclarações para essas decisões.</div>
 
-        <h2>4 · Execute a demo conhecida</h2>
-        <p>Use <strong>Baixar CSV de demonstração</strong> na navegação ou copie o arquivo idêntico no Edge Node:</p>
+        <h2>5 · Sua primeira execução</h2>
+        <p>Faça isso antes de tocar em dados de projeto: o arquivo de demonstração é sabidamente bom, então você aprende o fluxo sem depurar seus dados ao mesmo tempo. Use <strong>Baixar CSV de demonstração</strong> na navegação ou copie o arquivo idêntico no Edge Node:</p>
         <pre><button class="copy" type="button">Copiar</button><code>mkdir -p /ads_storage/$USER/autobench-demo
 cp /ads_storage/autobench/docs/autobench_demo.csv /ads_storage/$USER/autobench-demo/
 cd /ads_storage/$USER/autobench-demo</code></pre>
-        <h3>Share</h3>
-        <pre><button class="copy" type="button">Copiar</button><code>autobench-cli share \
+        <div class="tabs" role="tablist" aria-label="Formas de executar a demo">
+          <button class="tab" id="tab-tui-pt" type="button" role="tab" aria-selected="true" aria-controls="panel-tui-pt">TUI (comece aqui)</button>
+          <button class="tab" id="tab-cli-pt" type="button" role="tab" aria-selected="false" aria-controls="panel-cli-pt">CLI</button>
+        </div>
+        <div class="tab-panel active" id="panel-tui-pt" role="tabpanel" aria-labelledby="tab-tui-pt">
+          <p>O TUI mostra cada escolha na tela: a melhor forma de aprender o que as opções significam.</p>
+          <ol>
+            <li>Inicie <code>autobench</code>, pressione <strong>Browse…</strong> e escolha <code>autobench_demo.csv</code>.</li>
+            <li>Defina a <strong>coluna de ID de entidade</strong> como <code>issuer_name</code> e a <strong>entidade-alvo</strong> como <code>Target</code> (diferencia maiúsculas).</li>
+            <li>Em Opções de análise: coluna de tempo <code>year_month</code>, preset <code>compliance_strict</code>. Deixe <strong>Analyze impact</strong> e <strong>Validate input</strong> ligados.</li>
+            <li>Na aba <strong>Share</strong>: métrica primária <code>txn_cnt</code>; dimensões <code>card_type</code>, <code>input_mode</code> e <code>card_type_input_mode</code>.</li>
+            <li>Pressione <strong>Run Analysis</strong> (<code>Ctrl+R</code>). O log deve terminar com <strong>Analysis completed successfully</strong>.</li>
+          </ol>
+        </div>
+        <div class="tab-panel" id="panel-cli-pt" role="tabpanel" aria-labelledby="tab-cli-pt">
+          <p>A mesma execução, um comando: é isso que você transforma em script quando a configuração está definida.</p>
+          <h3>Share</h3>
+          <pre><button class="copy" type="button">Copiar</button><code>autobench-cli share \
   --csv autobench_demo.csv \
   --entity Target \
   --metric txn_cnt \
@@ -408,8 +585,8 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
   --time-col year_month \
   --preset compliance_strict \
   --output autobench_demo_share.xlsx</code></pre>
-        <h3>Taxa</h3>
-        <pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate \
+          <h3>Taxa (também exporta o CSV balanceado)</h3>
+          <pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate \
   --csv autobench_demo.csv \
   --entity Target \
   --total-col total \
@@ -419,16 +596,33 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
   --preset compliance_strict \
   --export-balanced-csv \
   --output autobench_demo_rate.xlsx</code></pre>
+        </div>
         <p>O arquivo contém um alvo, seis pares, dois períodos mensais, modos CP/CNP, dimensões base e uma dimensão combinada pré-calculada.</p>
 
-        <h2>5 · Confirme o resultado</h2>
-        <ul>
-          <li>A execução termina com <strong>Analysis completed successfully</strong> e caminhos explícitos.</li>
-          <li><code>Summary</code> registra preset, postura, regra de privacidade e veredito.</li>
-          <li><code>Weight Methods</code> informa pesos globais ou por dimensão.</li>
-          <li>Abas de dimensão reconciliam com cortes e períodos solicitados.</li>
-          <li>Um workbook de analysis continua interno mesmo após passar nas regras numéricas.</li>
+        <h2>6 · Confirme o resultado</h2>
+        <p>Tudo isto precisa ser verdade. Se algo falhar, vá para Solução de problemas.</p>
+        <ul class="checks">
+          <li>A CLI saiu com código <code>0</code>, ou o log do TUI termina com <strong>Analysis completed successfully</strong> e caminhos explícitos de saída.</li>
+          <li>O arquivo de saída existe no diretório de trabalho (a execução de taxa também grava um <code>*_balanced.csv</code>).</li>
+          <li>A aba <code>Summary</code> mostra <code>Input Validation: pass</code> e <code>Compliance Verdict: fully_compliant</code>, e registra preset, postura e regra de privacidade.</li>
+          <li><code>Weight Methods</code> informa se cada corte usou pesos globais ou por dimensão.</li>
+          <li>As abas de dimensão reconciliam com os cortes e períodos solicitados.</li>
         </ul>
+        <div class="callout"><strong>Higiene de artefatos.</strong> Os arquivos <code>.xlsx</code>, <code>.csv</code> e <code>benchmark_log_*.txt</code> gerados são artefatos locais: podem ser apagados e nunca são commitados. Um workbook de analysis continua interno mesmo após passar nas regras numéricas.</div>
+
+        <h2>Leia o workbook</h2>
+        <p>Abra <code>Summary</code> primeiro, depois as abas de dimensão.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Aba ou arquivo</th><th>O que informa</th></tr></thead>
+          <tbody>
+            <tr><td><code>Summary</code></td><td>Entradas da execução, preset, resultado da validação e veredito de conformidade. Sempre confira primeiro.</td></tr>
+            <tr><td>Uma aba por dimensão</td><td>Alvo vs. pares balanceados por categoria, com gaps e comparações best-in-class. É a resposta à pergunta de negócio.</td></tr>
+            <tr><td><code>Weight Methods</code></td><td>Qual estratégia de pesos cada corte usou: <code>Global-LP</code>, <code>Per-Dimension-LP</code> ou fallback bayesiano por dimensão.</td></tr>
+            <tr><td><code>Rank Changes</code></td><td>Como o rebalanceamento mudou o ranking dos pares: uma checagem de distorção.</td></tr>
+            <tr><td>CSV balanceado</td><td>Métricas balanceadas para ferramentas de BI ou pipelines. Gravado com <code>--export-balanced-csv</code> ou o checkbox do TUI.</td></tr>
+            <tr><td>Pacote de auditoria</td><td>Um zip com workbooks, CSV, log de auditoria, snapshot de config e resumo de validação. Gravado com <code>--audit-package</code>.</td></tr>
+          </tbody>
+        </table></div>
 
         <h2>Escolha rápida de preset</h2>
         <div class="table-wrap"><table><thead><tr><th>Necessidade</th><th>Preset</th><th>Significado</th></tr></thead><tbody>
@@ -438,7 +632,8 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
           <tr><td>Base difícil e esparsa</td><td><code>research_exploratory</code></td><td>Busca mais flexível para diagnóstico.</td></tr>
           <tr><td>Diagnóstico accuracy-first</td><td><code>low_distortion</code> / <code>minimal_distortion</code></td><td>Exige consentimento explícito; relatórios advertidos não são publicáveis.</td></tr>
         </tbody></table></div>
-        <p>Abra <a href="#presets-config" data-page-link="presets-config">Presets e configuração</a> antes de sobrescrever o otimizador.</p>
+        <div class="callout good"><strong>Regra prática do onboarding.</strong> Execute <code>compliance_strict</code> primeiro. Só mude de preset quando strict for inviável ou a entrega exigir explicitamente um único vetor de pesos reutilizável, e registre o porquê.</div>
+        <p>Abra <a href="#presets-config" data-page-link="presets-config">Presets e configuração</a> antes de sobrescrever o otimizador. No TUI, o <strong>Preset Guide</strong> (<code>F1</code>) traz as descrições completas; <code>autobench-cli config show &lt;preset&gt;</code> imprime os parâmetros exatos.</p>
 
         <h2>Regras de privacidade</h2>
         <div class="table-wrap"><table><thead><tr><th>Regra</th><th>Mínimo</th><th>Participação máxima</th><th>Aplicabilidade adicional</th></tr></thead><tbody>
@@ -459,15 +654,31 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
         </div>
 
         <h2>Solução de problemas</h2>
+        <p>Corrija o primeiro erro concreto. A maioria das falhas de primeira execução é uma diferença exata de valor.</p>
         <details><summary><code>autobench: command not found</code></summary><p>Adicione <code>~/.local/bin</code> ao <code>PATH</code>, abra nova sessão SSH ou rode o onboarding. Se persistir, contate um Release Operator.</p></details>
-        <details><summary>Entidades-alvo não aparecem</summary><p>Confira a coluna, valores não nulos e maiúsculas/minúsculas. Recarregue o arquivo.</p></details>
+        <details><summary>Aviso de launcher desatualizado, ou launchers com comportamento estranho</summary><p>Rode novamente <code>/ads_storage/autobench/onboard.sh</code>. Ele substitui launchers desatualizados sem apagar sua config nem arquivos privados.</p></details>
+        <details><summary>Runtime compartilhado ausente ou inválido</summary><p>Envie o erro exato a um Release Operator. Analistas não podem reparar nem substituir o runtime compartilhado; não execute <code>install.sh</code> nem <code>pip</code>.</p></details>
+        <details><summary>Entidades-alvo não aparecem, ou “Entity not found”</summary><p>O alvo deve corresponder exatamente ao CSV, inclusive maiúsculas (na demo é <code>Target</code>, T maiúsculo). Confira a coluna de entidade e valores não nulos, escolha o alvo no dropdown em vez de digitar e recarregue após mudar o arquivo.</p></details>
+        <details><summary>“Column not found”</summary><p>Nomes de coluna são normalizados para minúsculas com underscores (<code>Card Type</code> vira <code>card_type</code>). Em dúvida, carregue o arquivo no TUI e veja os cabeçalhos listados.</p></details>
+        <details><summary>Avisos de nulos, ou balanceamento falhando repetidamente</summary><p>Normalmente é o dado, não a ferramenta. Simplifique e rode de novo: descarte a dimensão mais esparsa, limpe nulos no SQL ou agrupe categorias finas. Faça uma configuração simples funcionar primeiro e reponha dimensões uma a uma.</p></details>
         <details><summary>Balanceamento inviável</summary><p>Leia diagnósticos estruturais e de privacidade. Remova cortes não solicitados ou corrija a agregação; não afrouxe a política apenas para obter resultado.</p></details>
+        <details><summary>Avisos de inviabilidade do LP, ou distorção alta</summary><p>Algumas estruturas de mercado não satisfazem todas as restrições; o engine recua para um método mais fraco e reporta em <code>Weight Methods</code>. Use <strong>Compare presets</strong> e <strong>Analyze impact</strong> para ver o trade-off. É propriedade do dado, não bug.</p></details>
         <details><summary>Falha ao gravar saída</summary><p>Caminhos relativos partem do diretório de lançamento, não do CSV. Use caminho absoluto gravável como <code>/ads_storage/$USER/projeto/output.xlsx</code>.</p></details>
+
+        <h2>Vá além</h2>
+        <p>Você está onboarded quando consegue executar a demo, explicar qual regra de privacidade se aplicou e apontar o veredito em <code>Summary</code>. Este manual é autocontido; a documentação do repositório continua a partir daqui:</p>
+        <ul>
+          <li><code>README.md</code>: cookbook completo da CLI e referência de saídas.</li>
+          <li><code>onboarding.md</code>: a configuração dos launchers em detalhe.</li>
+          <li><code>docs/guia-presets-e-configuracao-pt-BR.md</code>: cada parâmetro de preset, explicado.</li>
+          <li><code>docs/RESOURCE_MANAGEMENT.md</code>: bases grandes e modo <code>--lean</code>.</li>
+          <li><code>docs/CORE_TECHNICAL_DOC.md</code>: como o engine funciona por dentro.</li>
+        </ul>
 
         <h2>Mais contexto</h2>
         <div class="page-links">
           <a href="#setup-support" data-page-link="setup-support"><strong>Acesso e suporte</strong>Launchers, contatos e demo.</a>
-          <a href="#privacy-outputs" data-page-link="privacy-outputs"><strong>Privacidade e saídas</strong>Regras, Citi, elegibilidade e publicação.</a>
+          <a href="#privacy-outputs" data-page-link="privacy-outputs"><strong>Privacidade e saídas</strong>Regras, Citi, merchant 4/35, elegibilidade e publicação.</a>
           <a href="#glossary" data-page-link="glossary"><strong>Glossário</strong>Definições diretas para novos analistas.</a>
         </div>
       </article>
@@ -546,6 +757,22 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <div class="callout good"><strong>4/35 applicability:</strong> explicit anonymized aggregated merchant-spend scope, at least four participants, and no participant above 35%. It has normal output parity with every other authorizing rule.</div>
         <h2>Citi overlay</h2><p>When Citi is included and a Citi competitor receives the output, Citi’s governed share must not exceed 25%. A run declaring a competitor recipient must provide the Citi entity name so the engine can resolve the overlay without failing open.</p>
         <h2>Upstream eligibility</h2><p>Resolve digital-wallet review, dual protected axes, recurring-deliverable rechecks, peer-group changes, reverse-engineering review, Control 3.3, and top-merchant eligibility with the named Privacy contacts before running. Autobench trusts that decision and does not infer it from column names.</p>
+        <h2>Merchant projects</h2>
+        <p>Merchant benchmarking needs a specific configuration; it does not work as a plain issuer-style run.</p>
+        <ol>
+          <li>Set the <strong>Entity ID column</strong> to your merchant column: the <code>issuer_name</code> default does not apply.</li>
+          <li>To make the 4/35 rule applicable, declare the run as anonymized aggregated merchant spend. In the TUI, under Analysis Options, check <em>Anonymized aggregated merchant-spend context (enables 4/35)</em>; in the CLI, pass <code>--anonymized-aggregated-merchant-spend</code>.</li>
+        </ol>
+        <pre><button class="copy" type="button">Copy</button><code>autobench-cli share \
+  --csv merchant_data.csv \
+  --entity-col merchant_name \
+  --entity "Client Merchant" \
+  --metric amount \
+  --dimensions region channel \
+  --preset compliance_strict \
+  --anonymized-aggregated-merchant-spend \
+  --output merchant_share.xlsx</code></pre>
+        <div class="callout warn">The declaration is a statement of fact about the deliverable, not a convenience switch. Only declare it when the output genuinely is anonymized, aggregated merchant spend; when in doubt, confirm the framing with the Privacy contacts before running. Top-merchant deliverables are resolved upstream and are not eligible.</div>
         <h2>Publication gate</h2><ol><li><strong>Sanitization transforms the candidate.</strong> Analysis-only identities, sheets, detailed weights, and metadata are removed or redacted.</li><li><strong>Publishability validation inspects the transformed artifact.</strong> Forbidden sheets, columns, and identity fields must not survive.</li></ol>
         <div class="callout warn">Passing numeric rules does not turn an analysis workbook into a publication workbook. Manual sheet deletion is not a substitute for the publication gate.</div>
       </article>
@@ -556,6 +783,22 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <div class="callout good"><strong>Aplicabilidade de 4/35:</strong> escopo explícito de gasto agregado e anonimizado de merchants, pelo menos quatro participantes e nenhum acima de 35%. As permissões de saída são iguais às demais regras.</div>
         <h2>Overlay Citi</h2><p>Quando Citi está incluído e um concorrente Citi recebe a saída, a participação governada de Citi não pode exceder 25%. A execução deve fornecer o nome da entidade Citi para resolver o overlay sem fail-open.</p>
         <h2>Elegibilidade upstream</h2><p>Resolva carteira digital, eixos protegidos, recorrência, mudanças de peer group, engenharia reversa, Control 3.3 e top merchants com os contatos de Privacidade antes de executar. O Autobench confia nessa decisão e não a infere das colunas.</p>
+        <h2>Projetos de merchant</h2>
+        <p>Benchmarking de merchant exige configuração específica; não funciona como uma execução comum de emissor.</p>
+        <ol>
+          <li>Defina a <strong>coluna de ID de entidade</strong> como a sua coluna de merchant: o padrão <code>issuer_name</code> não se aplica.</li>
+          <li>Para tornar a regra 4/35 aplicável, declare a execução como gasto de merchant agregado e anonimizado. No TUI, em Opções de análise, marque <em>Anonymized aggregated merchant-spend context (enables 4/35)</em>; na CLI, passe <code>--anonymized-aggregated-merchant-spend</code>.</li>
+        </ol>
+        <pre><button class="copy" type="button">Copiar</button><code>autobench-cli share \
+  --csv merchant_data.csv \
+  --entity-col merchant_name \
+  --entity "Client Merchant" \
+  --metric amount \
+  --dimensions region channel \
+  --preset compliance_strict \
+  --anonymized-aggregated-merchant-spend \
+  --output merchant_share.xlsx</code></pre>
+        <div class="callout warn">A declaração é uma afirmação de fato sobre a entrega, não um atalho de conveniência. Só declare quando a saída for genuinamente gasto de merchant agregado e anonimizado; em dúvida, confirme o enquadramento com os contatos de Privacidade antes de executar. Entregas de top merchants são resolvidas upstream e não são elegíveis.</div>
         <h2>Gate de publicação</h2><ol><li><strong>Sanitização transforma o candidato.</strong> Identidades, abas, pesos detalhados e metadados internos são removidos ou redigidos.</li><li><strong>Validação de publicabilidade inspeciona o artefato.</strong> Abas, colunas e identidades proibidas não podem sobreviver.</li></ol>
         <div class="callout warn">Passar nas regras numéricas não transforma analysis em publication. Apagar abas manualmente não substitui o gate.</div>
       </article>
@@ -578,6 +821,13 @@ autobench-cli config validate project-autobench.yaml</code></pre>
         <h2>Fraud</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli rate --csv data.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
   --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+        <h2>Merchant share with the 4/35 declaration</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli share --csv merchant_data.csv \
+  --entity-col merchant_name --entity "Client Merchant" \
+  --metric amount --dimensions region channel \
+  --preset compliance_strict \
+  --anonymized-aggregated-merchant-spend \
+  --output merchant_share.xlsx</code></pre>
+        <p>The declaration is a statement of fact about the deliverable; see <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacy & Outputs</a> before using it.</p>
         <p>Relative paths resolve from the launch directory. Use absolute paths for unattended or repeatable work.</p>
       </article>
       <article class="doc-page" data-page="cli-cookbook" data-lang="pt" hidden>
@@ -598,6 +848,13 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
         <h2>Fraude</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate --csv dados.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
   --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+        <h2>Share de merchant com a declaração 4/35</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli share --csv merchant_data.csv \
+  --entity-col merchant_name --entity "Client Merchant" \
+  --metric amount --dimensions region channel \
+  --preset compliance_strict \
+  --anonymized-aggregated-merchant-spend \
+  --output merchant_share.xlsx</code></pre>
+        <p>A declaração é uma afirmação de fato sobre a entrega; veja <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacidade e saídas</a> antes de usá-la.</p>
         <p>Caminhos relativos partem do diretório de lançamento. Prefira caminhos absolutos para trabalho repetível ou não assistido.</p>
       </article>
 
@@ -669,14 +926,10 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
     (() => {
       const root = document.documentElement;
       const pages = new Set([...document.querySelectorAll('[data-page]')].map(node => node.dataset.page));
-      const savedLanguage = localStorage.getItem('autobench-doc-language');
-      let language = savedLanguage === 'en' || savedLanguage === 'pt'
-        ? savedLanguage
-        : (navigator.language || '').toLowerCase().startsWith('pt') ? 'pt' : 'en';
-      const savedTheme = localStorage.getItem('autobench-doc-theme');
-      let theme = savedTheme === 'dark' || savedTheme === 'light'
-        ? savedTheme
-        : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      // Initial theme and language were resolved by the pre-paint script in <head>.
+      let language = root.dataset.language;
+      let theme = root.dataset.theme;
+      const save = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage may be blocked; toggles still work for this session */ } };
       const languageButton = document.getElementById('language-toggle');
       const themeButton = document.getElementById('theme-toggle');
 
@@ -716,29 +969,70 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
         );
         document.title = `Autobench · ${language === 'pt' ? 'Manual do analista' : 'Analyst handbook'}`;
         if (focus) {
-          window.scrollTo({ top: 0, behavior: 'smooth' });
+          const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+          window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
           document.getElementById('main-content').focus({ preventScroll: true });
         }
       }
 
       languageButton.addEventListener('click', () => {
         language = language === 'en' ? 'pt' : 'en';
-        localStorage.setItem('autobench-doc-language', language);
+        save('autobench-doc-language', language);
         applyState();
       });
       themeButton.addEventListener('click', () => {
         theme = theme === 'dark' ? 'light' : 'dark';
-        localStorage.setItem('autobench-doc-theme', theme);
+        save('autobench-doc-theme', theme);
         applyState();
       });
       addEventListener('hashchange', () => applyState({ focus: true }));
+
+      function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(() => true, () => legacyCopy(text));
+        return Promise.resolve(legacyCopy(text));
+      }
+      // The handbook is often opened from file shares or plain http, where the async clipboard API is unavailable.
+      function legacyCopy(text) {
+        const helper = document.createElement('textarea');
+        helper.value = text;
+        helper.setAttribute('readonly', '');
+        helper.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+        document.body.append(helper);
+        helper.select();
+        let copied = false;
+        try { copied = document.execCommand('copy'); } catch { copied = false; }
+        helper.remove();
+        return copied;
+      }
       document.querySelectorAll('.copy').forEach(button => {
+        const idleLabel = button.textContent;
+        let resetTimer = 0;
         button.addEventListener('click', async () => {
           const text = button.parentElement.querySelector('code').innerText;
-          await navigator.clipboard.writeText(text);
-          const original = button.textContent;
-          button.textContent = language === 'pt' ? 'Copiado' : 'Copied';
-          setTimeout(() => { button.textContent = original; }, 1200);
+          const copied = await copyToClipboard(text);
+          button.textContent = copied
+            ? (language === 'pt' ? 'Copiado' : 'Copied')
+            : (language === 'pt' ? 'Falhou' : 'Failed');
+          clearTimeout(resetTimer);
+          resetTimer = setTimeout(() => { button.textContent = idleLabel; }, 1200);
+        });
+      });
+      document.querySelectorAll('[role="tablist"]').forEach(tablist => {
+        const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+        const panels = tabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+        const activate = tab => {
+          tabs.forEach(item => item.setAttribute('aria-selected', String(item === tab)));
+          panels.forEach(panel => panel.classList.toggle('active', panel.id === tab.getAttribute('aria-controls')));
+        };
+        tabs.forEach((tab, index) => {
+          tab.addEventListener('click', () => activate(tab));
+          tab.addEventListener('keydown', event => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            const next = tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+            next.focus();
+            activate(next);
+          });
         });
       });
       if (!pages.has(location.hash.slice(1))) history.replaceState(null, '', '#onboarding');
