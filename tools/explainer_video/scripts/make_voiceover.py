@@ -14,7 +14,7 @@ than the other way round.
 Usage:
 
     export FISH_API_KEY=...
-    python3 scripts/make_voiceover.py                       # default voice
+    python3 scripts/make_voiceover.py                       # feminine default voice
     python3 scripts/make_voiceover.py --reference-id <id>   # a saved voice model
     python3 scripts/make_voiceover.py --force               # ignore the cache
 
@@ -47,6 +47,9 @@ TTS_URL = "https://api.fish.audio/v1/tts"
 # Prefer it so `npm run assets` works without paid API credit; pass
 # --model s2.1-pro when production credits and SLAs are required.
 DEFAULT_MODEL = "s2.1-pro-free"
+# Classic Female Narration — calm, measured English educational voice from the
+# public Fish Audio library. Override with --reference-id or FISH_VOICE_ID.
+DEFAULT_REFERENCE_ID = "936e9324561f400d81befaf5e387e8cf"
 DEFAULT_FORMAT = "mp3"
 DEFAULT_BITRATE = 128
 REQUEST_TIMEOUT = 180
@@ -173,8 +176,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--reference-id",
-        default=os.environ.get("FISH_VOICE_ID"),
-        help="Voice model id to speak in; omit for the default voice",
+        default=os.environ.get("FISH_VOICE_ID", DEFAULT_REFERENCE_ID),
+        help=(
+            "Voice model id to speak in; default is Classic Female Narration "
+            f"({DEFAULT_REFERENCE_ID})"
+        ),
     )
     parser.add_argument("--speed", type=float, default=1.0, help="prosody.speed, 0.5-2")
     parser.add_argument(
