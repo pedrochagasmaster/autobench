@@ -9,6 +9,7 @@ EXPECTED_PAGES = {
     "onboarding",
     "setup-support",
     "presets-config",
+    "advanced-optimization",
     "privacy-outputs",
     "cli-cookbook",
     "large-data",
