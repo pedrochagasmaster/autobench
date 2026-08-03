@@ -92,3 +92,4 @@ SHA256SUMS
 .edge-deploy-bundles/
 edge-deploy/*
 .cursor/hooks/state/
+docs/videos/*
