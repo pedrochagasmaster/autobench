@@ -211,6 +211,7 @@
         <a href="#onboarding" data-page-link="onboarding" data-label-en="Onboarding" data-label-pt="Onboarding">Onboarding</a>
         <a href="#setup-support" data-page-link="setup-support" data-label-en="Setup & Support" data-label-pt="Acesso e suporte">Setup & Support</a>
         <a href="#presets-config" data-page-link="presets-config" data-label-en="Presets & Config" data-label-pt="Presets e config.">Presets & Config</a>
+        <a href="#advanced-optimization" data-page-link="advanced-optimization" data-label-en="Advanced Parameters" data-label-pt="Parâmetros avançados">Advanced Parameters</a>
         <a href="#privacy-outputs" data-page-link="privacy-outputs" data-label-en="Privacy & Outputs" data-label-pt="Privacidade e saídas">Privacy & Outputs</a>
         <a href="#cli-cookbook" data-page-link="cli-cookbook" data-label-en="CLI Cookbook" data-label-pt="Receitas CLI">CLI Cookbook</a>
         <a href="#large-data" data-page-link="large-data" data-label-en="Large Datasets" data-label-pt="Bases grandes">Large Datasets</a>
@@ -407,7 +408,7 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
           </tbody>
         </table></div>
         <div class="callout good"><strong>Practical rule from onboarding.</strong> Run <code>compliance_strict</code> first. Move to another preset only when strict is infeasible or the deliverable explicitly needs a single reusable weight vector, and record why.</div>
-        <p>Open <a href="#presets-config" data-page-link="presets-config">Presets & Configuration</a> before overriding optimizer settings. In the TUI, <strong>Preset Guide</strong> (<code>F1</code>) has the full descriptions; <code>autobench-cli config show &lt;preset&gt;</code> prints the exact parameters.</p>
+        <p>Open <a href="#presets-config" data-page-link="presets-config">Presets & Configuration</a> before overriding optimizer settings. In the TUI, <strong>Preset Guide</strong> (<code>F1</code>) has the full descriptions; <code>autobench-cli config show &lt;preset&gt;</code> prints the exact parameters. The <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a> page explains what each parameter changes in the engine and in the output.</p>
 
         <h2>Privacy rules at a glance</h2>
         <div class="table-wrap"><table>
@@ -637,7 +638,7 @@ cd /ads_storage/$USER/autobench-demo</code></pre>
           <tr><td>Diagnóstico accuracy-first</td><td><code>low_distortion</code> / <code>minimal_distortion</code></td><td>Exige consentimento explícito; relatórios advertidos não são publicáveis.</td></tr>
         </tbody></table></div>
         <div class="callout good"><strong>Regra prática do onboarding.</strong> Execute <code>compliance_strict</code> primeiro. Só mude de preset quando strict for inviável ou a entrega exigir explicitamente um único vetor de pesos reutilizável, e registre o porquê.</div>
-        <p>Abra <a href="#presets-config" data-page-link="presets-config">Presets e configuração</a> antes de sobrescrever o otimizador. No TUI, o <strong>Preset Guide</strong> (<code>F1</code>) traz as descrições completas; <code>autobench-cli config show &lt;preset&gt;</code> imprime os parâmetros exatos.</p>
+        <p>Abra <a href="#presets-config" data-page-link="presets-config">Presets e configuração</a> antes de sobrescrever o otimizador. No TUI, o <strong>Preset Guide</strong> (<code>F1</code>) traz as descrições completas; <code>autobench-cli config show &lt;preset&gt;</code> imprime os parâmetros exatos. A página <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a> explica o que cada parâmetro muda no engine e na saída.</p>
 
         <h2>Regras de privacidade</h2>
         <div class="table-wrap"><table><thead><tr><th>Regra</th><th>Mínimo</th><th>Participação máxima</th><th>Aplicabilidade adicional</th></tr></thead><tbody>
@@ -733,7 +734,7 @@ autobench-cli -h   # linha de comando</code></pre>
 autobench-cli config validate project-autobench.yaml
 autobench-cli share --csv data.csv --metric txn_cnt \
   --preset compliance_strict --config project-autobench.yaml</code></pre>
-        <p>Store reviewed YAML with controlled project documentation or inputs. Material optimizer overrides require an explicit final <code>compliance_posture</code>. Read <code>Weight Methods</code> after every run; a preset name alone does not prove which fallback was used.</p>
+        <p>Store reviewed YAML with controlled project documentation or inputs. Material optimizer overrides require an explicit final <code>compliance_posture</code>. Read <code>Weight Methods</code> after every run; a preset name alone does not prove which fallback was used. The <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a> page explains the engine-level meaning of every field in the TUI advanced panel.</p>
       </article>
       <article class="doc-page" data-page="presets-config" data-lang="pt" hidden>
         <p class="eyebrow">Página de contexto · comportamento</p><h1>Presets e configuração</h1>
@@ -752,6 +753,404 @@ autobench-cli config validate projeto-autobench.yaml
 autobench-cli share --csv dados.csv --metric txn_cnt \
   --preset compliance_strict --config projeto-autobench.yaml</code></pre>
         <p>Guarde o YAML revisado com a documentação ou entradas controladas do projeto. Overrides materiais exigem <code>compliance_posture</code> final explícita. Leia <code>Weight Methods</code>; o nome do preset não prova qual fallback foi usado.</p>
+        <p>A página <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a> explica o que cada campo do painel avançado do TUI muda no engine e na saída.</p>
+      </article>
+
+      <article class="doc-page" data-page="advanced-optimization" data-lang="en" hidden>
+        <p class="eyebrow">Context page · engine tuning</p><h1>Advanced Optimization Parameters</h1>
+        <p class="lede">Every field in the TUI <strong>Advanced Optimization Parameters</strong> panel (<code>Ctrl+A</code>) mirrors one YAML key under <code>optimization</code>, <code>analysis</code>, or <code>output</code>. This page describes what each parameter changes inside the engine and what changes in the workbook you receive.</p>
+
+        <h2>How overrides reach the engine</h2>
+        <p>Configuration resolves as <strong>internal defaults → preset → custom YAML (<code>--config</code>) → CLI/TUI overrides</strong>. The TUI advanced panel loads the selected preset’s values; <strong>Apply Overrides</strong> writes the edited fields to a temporary YAML and attaches it to the run. <code>autobench-cli config show &lt;preset&gt;</code> prints the exact preset values before you change anything.</p>
+        <div class="callout warn"><strong>Overrides never relax the final verdict.</strong> Numeric privacy rules, the Citi overlay, and the publication gate are evaluated after optimization regardless of these settings. A material optimizer override requires an explicit final <code>compliance_posture</code>: <code>strict</code> runs still fail closed, and <code>accuracy_first</code> runs still require per-run acknowledgement, with non-compliant results written only as <code>NON_PUBLISHABLE</code> diagnostics. Never tune parameters to force a publishable result.</div>
+
+        <h2>The fallback chain these parameters steer</h2>
+        <p>Autobench always attempts one global weight vector first. What happens when that attempt struggles is exactly what the advanced parameters control:</p>
+        <ol>
+          <li><strong>Global-LP:</strong> one linear program across every requested dimension and category, bounded by <code>bounds</code>, guided by <code>tolerance</code>, <code>lambda_penalty</code>, volume-weighted penalties, and <code>volume_preservation</code>.</li>
+          <li><strong>Slacks-first retry</strong> (only when <code>prefer_slacks_first</code> is on and the LP failed): retry the full dimension set with rank preservation switched off before dropping anything.</li>
+          <li><strong>Slack-triggered subset search</strong> (when <code>trigger_on_slack</code> is on): the LP succeeded, but its total cap slack exceeds <code>max_slack_threshold</code>, so the engine searches for a cleaner dimension subset.</li>
+          <li><strong>Subset search on failure</strong> (when <code>enabled</code> is on): find the largest dimension subset that still solves globally; removed dimensions are weighted separately.</li>
+          <li><strong>Per-dimension fallback:</strong> dimensions outside the global set are solved one by one (LP, then the Bayesian heuristic) and reported in <code>Weight Methods</code> as <code>Per-Dimension-LP</code> or <code>Per-Dimension-Bayesian</code>.</li>
+        </ol>
+        <p><code>strategic_consistency</code> sets <code>constraints.enforce_single_weight_set: true</code>, which removes steps 2–5: the run keeps one global vector even when some categories violate.</p>
+
+        <h2>Linear programming</h2>
+        <p>These five parameters shape the single linear program that produces <code>Global-LP</code> weights.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>linear_programming.tolerance</code><br>TUI: Tolerance (pp)</td>
+              <td>The main slack-cost dial. When <code>lambda_penalty</code> is unset, the LP prices each unit of concentration-cap slack at roughly <code>100 / tolerance</code>: <code>0.0</code> (<code>compliance_strict</code>) makes any violation effectively priceless, while <code>25.0</code> (<code>strategic_consistency</code>) makes slack cheap enough to preserve one global vector. In the Bayesian fallback the same value is added to the caps themselves: only shares above cap + tolerance count as violations.</td>
+              <td>Higher tolerance ⇒ more runs finish on one global vector with residual slack reported as warnings instead of method changes; lower tolerance ⇒ more subset searches and more <code>Per-Dimension-*</code> rows in <code>Weight Methods</code>. It is a willingness-to-pay, not a promise that the final violation stays within the value — the workbook’s validation result is always authoritative.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.max_iterations</code><br>TUI: Max Iterations</td>
+              <td>Passed as <code>maxiter</code> to the SciPy HiGHS LP solver, bounding the work of each LP attempt. If the solver exhausts the budget it reports failure and the engine walks the fallback chain (slacks-first, subset search, per-dimension). <code>strategic_consistency</code> raises it to 100000 so the hard single-vector problem has room to converge.</td>
+              <td>Too low can silently flip a cut from <code>Global-LP</code> to subset or per-dimension methods — different weights from the same data — visible only in <code>Weight Methods</code>. Larger values cost runtime, not accuracy.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.lambda_penalty</code><br>TUI: Lambda Penalty</td>
+              <td>Explicit price per unit of cap slack in the LP objective; overrides the <code>100 / tolerance</code> default. <code>100000000</code> (<code>strategic_consistency</code>) makes violations nearly forbidden while any feasible solution exists; <code>1</code> (<code>minimal_distortion</code>) tells the solver to prefer weights near 1.0 and accept violations; <code>low_distortion</code> uses <code>1000</code>.</td>
+              <td>Moves the trade-off between compliance and distortion: higher lambda ⇒ weights bend harder to satisfy the caps (more distortion, fewer violations); lower lambda ⇒ balanced numbers stay closer to raw shares and violations are reported instead of avoided.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.volume_weighted_penalties</code><br>TUI: Enable Volume-Weighted Penalties</td>
+              <td>When on, each category’s slack penalty is scaled by its share of total category volume: violations in high-volume categories cost more, so the solver protects big categories first. When off, every category’s slack costs the same.</td>
+              <td>When slack is unavoidable it migrates to small categories: large categories keep compliant shares while thin categories carry the flagged violations in the validation sheets.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.volume_weighting_exponent</code><br>TUI: Volume Weighting Exponent</td>
+              <td>Exponent applied to the category volume share above; used only when volume-weighted penalties are on. <code>1.0</code> is linear; <code>1.5</code> (<code>strategic_consistency</code>) and <code>2.0</code> (<code>minimal_distortion</code>) concentrate protection ever more strongly on the largest categories.</td>
+              <td>Higher values sharpen the split: the biggest categories are defended almost absolutely, while slack and distortion pile up in the long tail of small categories.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Constraints</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>constraints.volume_preservation</code><br>TUI: Volume Preservation (0.0–1.0)</td>
+              <td>Penalty weight on rank slack in the LP objective: how strongly the weighted volumes must keep the original peer ranking by volume. <code>1.0</code> (<code>balanced_default</code>) is the strongest; <code>0.95</code> in strict and strategic; <code>0.5</code> allows useful reordering on hard data; <code>0.1</code> (<code>minimal_distortion</code>) almost ignores ordering. The slacks-first retry temporarily forces this to <code>0</code>.</td>
+              <td>Higher ⇒ balanced rankings look like the raw market (fewer movements in <code>Rank Changes</code>) at the price of harder feasibility; lower ⇒ the optimizer reorders peers more freely, easing compliance but moving ranks.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Weight bounds</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>bounds.min_weight</code><br>TUI: Min Weight</td>
+              <td>Lower bound for every peer’s weight multiplier in both solvers; final weights are clipped to it as well. A smaller floor lets the engine shrink a dominant or marginal peer further. <code>low_distortion</code> pins it to <code>1.0</code>, where weights may not shrink at all.</td>
+              <td>Bounds how far balanced shares can move below raw shares. A floor too close to 1.0 leaves concentrated markets infeasible or flagged with violations instead of solved.</td>
+            </tr>
+            <tr>
+              <td><code>bounds.max_weight</code><br>TUI: Max Weight</td>
+              <td>Upper bound for the multiplier: <code>10</code> by default and in strict, <code>15</code> in strategic, <code>20</code> in research, <code>50</code> in <code>minimal_distortion</code>. A higher ceiling lets the engine amplify small peers enough to dilute concentration.</td>
+              <td>The same trade-off in the upward direction: more amplification capacity means more solvable markets, and more distortion when that capacity is used.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Subset search</h2>
+        <p>Subset search decides what happens to the dimension set when one global vector cannot be kept cleanly. Each trial re-runs the LP on a candidate subset, so these parameters interact with everything above.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>subset_search.enabled</code><br>TUI: Enable Subset Search</td>
+              <td>Decides what happens when the global LP fails: on ⇒ search for the largest dimension subset that still solves with one vector; off ⇒ fall back directly to weighting each dimension on its own. <code>strategic_consistency</code> and the distortion presets turn it off so dimensions are never dropped.</td>
+              <td>On ⇒ a struggling run still delivers one global vector for most dimensions, with the dropped ones marked <code>Per-Dimension-*</code> in <code>Weight Methods</code>; off ⇒ failures spread per-dimension weighting everywhere (or, with <code>enforce_single_weight_set</code>, no compliant single vector at all).</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.strategy</code><br>TUI: Strategy (greedy / random)</td>
+              <td><code>greedy</code> iteratively removes the dimension with the highest measured unbalance and retries: fast and deterministic. <code>random</code> tests combinations from size n−1 downward in a seeded shuffle: more thorough on difficult data, and still reproducible because the seed is fixed for auditability.</td>
+              <td>Greedy leaves a clean drop sequence in the subset-search diagnostics; random can keep one more dimension in the global set on hard data at the cost of more LP trials.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.max_attempts</code><br>TUI: Max Attempts</td>
+              <td>Caps how many subset candidates are solved (legacy alias <code>max_tests</code>). Strict and balanced use 200, research uses 400, and presets that disable the search keep 1.</td>
+              <td>Bounds the search runtime. Too low can stop before the largest feasible subset is found, pushing extra dimensions into per-dimension weighting.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.trigger_on_slack</code><br>TUI: Trigger on Slack</td>
+              <td>A second, independent trigger: even when the global LP succeeds, reject the solution and run the subset search if its total cap slack exceeds <code>max_slack_threshold</code>. Strict keeps it on; research turns it off to accept slacky solutions.</td>
+              <td>On ⇒ you rarely see residual violations attributed to a <code>Global-LP</code> result, because slacky solutions are replaced by subset or per-dimension weights; off ⇒ slack appears in the report as explicit warnings instead.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.max_slack_threshold</code><br>TUI: Max Slack Threshold</td>
+              <td>The threshold, in percentage points, for the trigger above. <code>0.0</code> re-searches on any slack at all; <code>0.05</code> (<code>balanced_default</code>) tolerates trace slack; <code>999</code> effectively disables the trigger.</td>
+              <td>Defines how much residual violation a “global” report may carry before the engine changes strategy on your behalf.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.prefer_slacks_first</code><br>TUI: Prefer Slacks First</td>
+              <td>When the global LP fails outright, retry the full dimension set once with rank preservation strength forced to <code>0</code> before dropping any dimension. Used by <code>research_exploratory</code> and the distortion presets.</td>
+              <td>More runs keep every dimension on one global vector; the price shows up as more movement in <code>Rank Changes</code>, because ordering pressure was released to find the solution.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Bayesian optimization (fallback)</h2>
+        <p>The heuristic solver runs when LP paths cannot produce compliant weights for a dimension — the <code>Per-Dimension-Bayesian</code> method. Unlike the LP, it also prices the additional rule tiers (such as “at least 3 participants at ≥7%”) and dynamic-constraint relaxations.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>bayesian.max_iterations</code><br>TUI: Max Iterations</td>
+              <td>Iteration budget for the L-BFGS-B heuristic. Typical preset values are 100–200; <code>minimal_distortion</code> uses 500.</td>
+              <td>More iterations give hard dimensions a better chance to converge to compliant weights instead of being flagged with residual violations; each iteration costs runtime.</td>
+            </tr>
+            <tr>
+              <td><code>bayesian.learning_rate</code><br>TUI: Learning Rate</td>
+              <td>Used as the finite-difference step size for gradient estimation in L-BFGS-B. <code>0.01</code> is the preset norm; <code>0.1</code> (<code>minimal_distortion</code>) takes coarser, faster steps.</td>
+              <td>Affects convergence speed and precision on Bayesian-solved dimensions: too large can stop short of the best weights; too small can stall inside the iteration budget.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Analysis settings</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>analysis.best_in_class_percentile</code><br>TUI: Best-in-Class Percentile</td>
+              <td>Reference percentile for best-in-class comparisons. Share and approval-rate analyses use it directly (<code>0.85</code> = 85th percentile, higher is better); fraud-rate analyses invert it automatically to <code>1 − value</code> (0.15) because lower fraud is better. It has no effect on weights, slack, or privacy enforcement.</td>
+              <td>Changes which peers are named best-in-class in the dimension sheets and the size of the reported best-in-class gaps.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Output settings</h2>
+        <p>These two checkboxes change the workbook, not the optimization. Neither one influences the publication gate, which always sanitizes and validates the transformed candidate separately.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td>Adds analysis-only debug sheets with unweighted metrics to the workbook.</td>
+              <td>A richer internal workbook. Debug sheets are analysis-grade material and are removed or redacted when a publication candidate is sanitized.</td>
+            </tr>
+            <tr>
+              <td><code>output.include_privacy_validation</code><br>TUI: Include Privacy Validation</td>
+              <td>Renders the detailed privacy-validation sheet with the per-rule evaluation detail.</td>
+              <td>More audit evidence inside the analysis workbook. It documents the verdict; it does not change it.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>How the presets set these parameters</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Preset</th><th>Weight bounds</th><th>Tolerance</th><th>Lambda</th><th>Vol.-weighted (exp)</th><th>Preservation</th><th>Subset search</th></tr></thead>
+          <tbody>
+            <tr><td><code>compliance_strict</code></td><td>0.01–10</td><td>0.0</td><td>default (≈10⁸)</td><td>off</td><td>0.95</td><td>greedy · 200 · triggers on any slack</td></tr>
+            <tr><td><code>balanced_default</code></td><td>0.01–10</td><td>2.0</td><td>default (≈50)</td><td>off</td><td>1.0</td><td>random · 200 · triggers above 0.05</td></tr>
+            <tr><td><code>strategic_consistency</code></td><td>0.01–15</td><td>25.0</td><td>10⁸</td><td>on (1.5)</td><td>0.95</td><td>disabled — single vector enforced</td></tr>
+            <tr><td><code>research_exploratory</code></td><td>0.005–20</td><td>5.0</td><td>default (≈20)</td><td>off</td><td>0.5</td><td>random · 400 · no slack trigger · slacks first</td></tr>
+            <tr><td><code>low_distortion</code></td><td>1.0–1.0001</td><td>10.0</td><td>1000</td><td>on (1.0)</td><td>0.5</td><td>disabled · slacks first</td></tr>
+            <tr><td><code>minimal_distortion</code></td><td>0.001–50</td><td>100.0</td><td>1</td><td>on (2.0)</td><td>0.1</td><td>disabled · slacks first</td></tr>
+          </tbody>
+        </table></div>
+        <p>When <code>lambda_penalty</code> is not written in the preset, the engine derives it as <code>100 / tolerance</code> at solve time; the ≈ values above are that derived price.</p>
+
+        <h2>What these parameters cannot change</h2>
+        <ul>
+          <li><strong>Which privacy rule applies.</strong> The rule comes from the peer count and the merchant-spend declaration, never from optimizer settings.</li>
+          <li><strong>The additional participant-count conditions</strong> of 6/30, 7/35, and 10/40. They are evaluated after the LP and reported independently.</li>
+          <li><strong>The Citi overlay</strong> and upstream business-eligibility decisions.</li>
+          <li><strong>The publication gate.</strong> Sanitization and publishability validation run on the transformed artifact regardless of how the weights were produced.</li>
+        </ul>
+
+        <h2>Reading the results after a change</h2>
+        <ul>
+          <li><code>Summary</code>: posture, preset, validation result, and compliance verdict of this run.</li>
+          <li><code>Weight Methods</code>: which strategy each cut actually used — <code>Global-LP</code>, <code>Per-Dimension-LP</code>, or <code>Per-Dimension-Bayesian</code>. A preset name alone does not prove which fallback fired.</li>
+          <li><code>Rank Changes</code>: how much reordering the reweighting introduced — the visible cost of low preservation or slacks-first retries.</li>
+          <li>Subset-search diagnostics: which dimensions were dropped from the global set and why.</li>
+        </ul>
+        <div class="callout good"><strong>Practical rule.</strong> Keep a <code>compliance_strict</code> baseline for the same data, change one parameter at a time, and diff <code>Weight Methods</code> and the verdict between runs. If a parameter change is what makes a run pass, write down why that setting is justified for the deliverable.</div>
+      </article>
+      <article class="doc-page" data-page="advanced-optimization" data-lang="pt" hidden>
+        <p class="eyebrow">Página de contexto · ajuste do engine</p><h1>Parâmetros avançados de otimização</h1>
+        <p class="lede">Cada campo do painel <strong>Advanced Optimization Parameters</strong> do TUI (<code>Ctrl+A</code>) espelha uma chave YAML sob <code>optimization</code>, <code>analysis</code> ou <code>output</code>. Esta página descreve o que cada parâmetro muda dentro do engine e o que muda no workbook que você recebe.</p>
+
+        <h2>Como os overrides chegam ao engine</h2>
+        <p>A configuração é resolvida como <strong>defaults internos → preset → YAML customizado (<code>--config</code>) → overrides de CLI/TUI</strong>. O painel avançado do TUI carrega os valores do preset selecionado; <strong>Apply Overrides</strong> grava os campos editados em um YAML temporário e o anexa à execução. <code>autobench-cli config show &lt;preset&gt;</code> imprime os valores exatos do preset antes de você mudar qualquer coisa.</p>
+        <div class="callout warn"><strong>Overrides nunca afrouxam o veredito final.</strong> As regras numéricas de privacidade, o overlay Citi e o gate de publicação são avaliados depois da otimização, independentemente dessas configurações. Um override material do otimizador exige <code>compliance_posture</code> final explícita: execuções <code>strict</code> continuam fail-closed, e execuções <code>accuracy_first</code> continuam exigindo confirmação por execução, com resultados não conformes gravados apenas como diagnósticos <code>NON_PUBLISHABLE</code>. Nunca ajuste parâmetros para forçar um resultado publicável.</div>
+
+        <h2>A cadeia de fallback que esses parâmetros controlam</h2>
+        <p>O Autobench sempre tenta primeiro um único vetor global de pesos. O que acontece quando essa tentativa encontra dificuldade é exatamente o que os parâmetros avançados controlam:</p>
+        <ol>
+          <li><strong>Global-LP:</strong> um único programa linear sobre todas as dimensões e categorias solicitadas, limitado por <code>bounds</code>, guiado por <code>tolerance</code>, <code>lambda_penalty</code>, penalidades ponderadas por volume e <code>volume_preservation</code>.</li>
+          <li><strong>Retry slacks-first</strong> (somente quando <code>prefer_slacks_first</code> está ligado e o LP falhou): tenta de novo o conjunto completo de dimensões com a preservação de ranking desligada antes de descartar qualquer dimensão.</li>
+          <li><strong>Subset search disparada por slack</strong> (quando <code>trigger_on_slack</code> está ligado): o LP teve sucesso, mas o slack total de teto excede <code>max_slack_threshold</code>, então o engine procura um subconjunto de dimensões mais limpo.</li>
+          <li><strong>Subset search em caso de falha</strong> (quando <code>enabled</code> está ligado): encontra o maior subconjunto de dimensões que ainda resolve globalmente; as dimensões removidas são ponderadas separadamente.</li>
+          <li><strong>Fallback por dimensão:</strong> as dimensões fora do conjunto global são resolvidas uma a uma (LP, depois a heurística bayesiana) e reportadas em <code>Weight Methods</code> como <code>Per-Dimension-LP</code> ou <code>Per-Dimension-Bayesian</code>.</li>
+        </ol>
+        <p><code>strategic_consistency</code> define <code>constraints.enforce_single_weight_set: true</code>, o que remove os passos 2–5: a execução mantém um único vetor global mesmo quando algumas categorias violam.</p>
+
+        <h2>Programação linear</h2>
+        <p>Estes cinco parâmetros moldam o único programa linear que produz os pesos <code>Global-LP</code>.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>linear_programming.tolerance</code><br>TUI: Tolerance (pp)</td>
+              <td>O principal controle de custo de slack. Quando <code>lambda_penalty</code> não é informado, o LP precifica cada unidade de slack do teto de concentração em aproximadamente <code>100 / tolerance</code>: <code>0.0</code> (<code>compliance_strict</code>) torna qualquer violação efetivamente sem preço, enquanto <code>25.0</code> (<code>strategic_consistency</code>) torna o slack barato o bastante para preservar um vetor global. No fallback bayesiano, o mesmo valor é somado aos próprios tetos: só contam como violação as participações acima de teto + tolerância.</td>
+              <td>Tolerância maior ⇒ mais execuções terminam em um vetor global com slack residual reportado como aviso, em vez de troca de método; tolerância menor ⇒ mais buscas de subconjunto e mais linhas <code>Per-Dimension-*</code> em <code>Weight Methods</code>. É uma disposição a pagar, não uma promessa de que a violação final ficará dentro do valor — o resultado da validação no workbook é sempre o que vale.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.max_iterations</code><br>TUI: Max Iterations</td>
+              <td>Passado como <code>maxiter</code> ao solver LP HiGHS do SciPy, limitando o trabalho de cada tentativa de LP. Se o solver esgota o orçamento, ele reporta falha e o engine percorre a cadeia de fallback (slacks-first, subset search, por dimensão). <code>strategic_consistency</code> sobe para 100000 para dar espaço de convergência ao difícil problema de vetor único.</td>
+              <td>Baixo demais pode virar silenciosamente um corte de <code>Global-LP</code> para métodos de subconjunto ou por dimensão — pesos diferentes com os mesmos dados — visível apenas em <code>Weight Methods</code>. Valores maiores custam tempo de execução, não acurácia.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.lambda_penalty</code><br>TUI: Lambda Penalty</td>
+              <td>Preço explícito por unidade de slack de teto na função objetivo do LP; sobrescreve o default <code>100 / tolerance</code>. <code>100000000</code> (<code>strategic_consistency</code>) torna violações quase proibidas enquanto existir solução viável; <code>1</code> (<code>minimal_distortion</code>) manda o solver preferir pesos próximos de 1.0 e aceitar violações; <code>low_distortion</code> usa <code>1000</code>.</td>
+              <td>Move o trade-off entre conformidade e distorção: lambda maior ⇒ os pesos se curvam mais para satisfazer os tetos (mais distorção, menos violações); lambda menor ⇒ os números balanceados ficam mais perto das participações brutas e as violações são reportadas em vez de evitadas.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.volume_weighted_penalties</code><br>TUI: Enable Volume-Weighted Penalties</td>
+              <td>Quando ligado, a penalidade de slack de cada categoria é escalada pela sua participação no volume total das categorias: violações em categorias de alto volume custam mais, então o solver protege primeiro as categorias grandes. Desligado, o slack de todas as categorias custa o mesmo.</td>
+              <td>Quando o slack é inevitável, ele migra para categorias pequenas: as grandes mantêm participações conformes enquanto as finas carregam as violações sinalizadas nas abas de validação.</td>
+            </tr>
+            <tr>
+              <td><code>linear_programming.volume_weighting_exponent</code><br>TUI: Volume Weighting Exponent</td>
+              <td>Expoente aplicado à participação de volume da categoria acima; usado somente quando as penalidades ponderadas por volume estão ligadas. <code>1.0</code> é linear; <code>1.5</code> (<code>strategic_consistency</code>) e <code>2.0</code> (<code>minimal_distortion</code>) concentram a proteção cada vez mais nas maiores categorias.</td>
+              <td>Valores maiores acentuam a divisão: as maiores categorias são defendidas quase absolutamente, enquanto slack e distorção se acumulam na cauda longa de categorias pequenas.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Restrições</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>constraints.volume_preservation</code><br>TUI: Volume Preservation (0.0–1.0)</td>
+              <td>Peso da penalidade de slack de ranking na função objetivo do LP: com que força os volumes ponderados devem manter o ranking original dos pares por volume. <code>1.0</code> (<code>balanced_default</code>) é o mais forte; <code>0.95</code> em strict e strategic; <code>0.5</code> permite reordenação útil em dados difíceis; <code>0.1</code> (<code>minimal_distortion</code>) quase ignora a ordenação. O retry slacks-first força temporariamente este valor a <code>0</code>.</td>
+              <td>Maior ⇒ os rankings balanceados se parecem com o mercado bruto (menos movimentos em <code>Rank Changes</code>), ao preço de viabilidade mais difícil; menor ⇒ o otimizador reordena os pares mais livremente, facilitando a conformidade mas movendo posições.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Limites de peso</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>bounds.min_weight</code><br>TUI: Min Weight</td>
+              <td>Limite inferior do multiplicador de peso de cada par nos dois solvers; os pesos finais também são clipados nele. Um piso menor permite ao engine encolher ainda mais um par dominante ou marginal. <code>low_distortion</code> o fixa em <code>1.0</code>, onde os pesos não podem encolher.</td>
+              <td>Limita o quanto as participações balanceadas podem cair em relação às brutas. Um piso perto demais de 1.0 deixa mercados concentrados inviáveis ou sinalizados com violações em vez de resolvidos.</td>
+            </tr>
+            <tr>
+              <td><code>bounds.max_weight</code><br>TUI: Max Weight</td>
+              <td>Limite superior do multiplicador: <code>10</code> por padrão e em strict, <code>15</code> em strategic, <code>20</code> em research, <code>50</code> em <code>minimal_distortion</code>. Um teto maior permite ao engine amplificar pares pequenos o suficiente para diluir a concentração.</td>
+              <td>O mesmo trade-off na direção oposta: mais capacidade de amplificação significa mais mercados solucionáveis, e mais distorção quando essa capacidade é usada.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Subset search</h2>
+        <p>A subset search decide o que acontece com o conjunto de dimensões quando um vetor global não pode ser mantido de forma limpa. Cada tentativa reexecuta o LP em um subconjunto candidato, então estes parâmetros interagem com todos os anteriores.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>subset_search.enabled</code><br>TUI: Enable Subset Search</td>
+              <td>Decide o que acontece quando o LP global falha: ligado ⇒ procura o maior subconjunto de dimensões que ainda resolve com um vetor; desligado ⇒ cai direto para ponderar cada dimensão separadamente. <code>strategic_consistency</code> e os presets de distorção desligam para nunca descartar dimensões.</td>
+              <td>Ligado ⇒ uma execução em dificuldade ainda entrega um vetor global para a maioria das dimensões, com as removidas marcadas <code>Per-Dimension-*</code> em <code>Weight Methods</code>; desligado ⇒ falhas espalham ponderação por dimensão por toda parte (ou, com <code>enforce_single_weight_set</code>, nenhum vetor único conforme).</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.strategy</code><br>TUI: Strategy (greedy / random)</td>
+              <td><code>greedy</code> remove iterativamente a dimensão com maior desequilíbrio medido e tenta de novo: rápido e determinístico. <code>random</code> testa combinações de tamanho n−1 para baixo em ordem embaralhada com semente: mais completo em dados difíceis e ainda reproduzível, porque a semente é fixa para auditoria.</td>
+              <td>Greedy deixa uma sequência limpa de remoções nos diagnósticos de subset search; random pode manter mais uma dimensão no conjunto global em dados difíceis, ao custo de mais tentativas de LP.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.max_attempts</code><br>TUI: Max Attempts</td>
+              <td>Limita quantos subconjuntos candidatos são resolvidos (alias legado <code>max_tests</code>). Strict e balanced usam 200, research usa 400, e os presets que desabilitam a busca mantêm 1.</td>
+              <td>Limita o tempo da busca. Baixo demais pode parar antes de encontrar o maior subconjunto viável, empurrando dimensões extras para ponderação por dimensão.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.trigger_on_slack</code><br>TUI: Trigger on Slack</td>
+              <td>Um segundo gatilho, independente: mesmo quando o LP global tem sucesso, rejeita a solução e roda a subset search se o slack total de teto exceder <code>max_slack_threshold</code>. Strict mantém ligado; research desliga para aceitar soluções com slack.</td>
+              <td>Ligado ⇒ raramente você vê violações residuais atribuídas a um resultado <code>Global-LP</code>, porque soluções com slack são substituídas por pesos de subconjunto ou por dimensão; desligado ⇒ o slack aparece no relatório como avisos explícitos.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.max_slack_threshold</code><br>TUI: Max Slack Threshold</td>
+              <td>O limiar, em pontos percentuais, do gatilho acima. <code>0.0</code> refaz a busca com qualquer slack; <code>0.05</code> (<code>balanced_default</code>) tolera slack residual mínimo; <code>999</code> efetivamente desabilita o gatilho.</td>
+              <td>Define quanta violação residual um relatório “global” pode carregar antes de o engine trocar de estratégia por você.</td>
+            </tr>
+            <tr>
+              <td><code>subset_search.prefer_slacks_first</code><br>TUI: Prefer Slacks First</td>
+              <td>Quando o LP global falha de vez, tenta mais uma vez o conjunto completo de dimensões com a força de preservação de ranking em <code>0</code> antes de descartar qualquer dimensão. Usado por <code>research_exploratory</code> e pelos presets de distorção.</td>
+              <td>Mais execuções mantêm todas as dimensões em um vetor global; o preço aparece como mais movimento em <code>Rank Changes</code>, porque a pressão de ordenação foi liberada para encontrar a solução.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Otimização bayesiana (fallback)</h2>
+        <p>O solver heurístico roda quando os caminhos de LP não conseguem produzir pesos conformes para uma dimensão — o método <code>Per-Dimension-Bayesian</code>. Diferente do LP, ele também precifica as faixas adicionais das regras (como “pelo menos 3 participantes em ≥7%”) e os relaxamentos de restrições dinâmicas.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>bayesian.max_iterations</code><br>TUI: Max Iterations</td>
+              <td>Orçamento de iterações da heurística L-BFGS-B. Os valores típicos de preset são 100–200; <code>minimal_distortion</code> usa 500.</td>
+              <td>Mais iterações dão às dimensões difíceis uma chance melhor de convergir para pesos conformes em vez de serem sinalizadas com violações residuais; cada iteração custa tempo de execução.</td>
+            </tr>
+            <tr>
+              <td><code>bayesian.learning_rate</code><br>TUI: Learning Rate</td>
+              <td>Usado como o tamanho do passo de diferenças finitas na estimativa de gradiente do L-BFGS-B. <code>0.01</code> é o padrão dos presets; <code>0.1</code> (<code>minimal_distortion</code>) dá passos mais grossos e rápidos.</td>
+              <td>Afeta velocidade e precisão de convergência nas dimensões resolvidas pelo bayesiano: grande demais pode parar antes dos melhores pesos; pequeno demais pode estagnar dentro do orçamento de iterações.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Configurações de análise</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>analysis.best_in_class_percentile</code><br>TUI: Best-in-Class Percentile</td>
+              <td>Percentil de referência para comparações best-in-class. Análises de share e de taxa de aprovação o usam diretamente (<code>0.85</code> = percentil 85, maior é melhor); análises de taxa de fraude o invertem automaticamente para <code>1 − valor</code> (0.15), porque fraude menor é melhor. Não afeta pesos, slack nem aplicação de privacidade.</td>
+              <td>Muda quais pares são nomeados best-in-class nas abas de dimensão e o tamanho dos gaps reportados.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Configurações de saída</h2>
+        <p>Estes dois checkboxes mudam o workbook, não a otimização. Nenhum dos dois influencia o gate de publicação, que sempre sanitiza e valida o candidato transformado separadamente.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td>Adiciona ao workbook abas de depuração somente de análise, com métricas sem ponderação.</td>
+              <td>Um workbook interno mais rico. Abas de depuração são material analysis-grade e são removidas ou redigidas quando um candidato de publication é sanitizado.</td>
+            </tr>
+            <tr>
+              <td><code>output.include_privacy_validation</code><br>TUI: Include Privacy Validation</td>
+              <td>Renderiza a aba detalhada de validação de privacidade, com o detalhe da avaliação por regra.</td>
+              <td>Mais evidência de auditoria dentro do workbook de análise. Ela documenta o veredito; não o altera.</td>
+            </tr>
+          </tbody>
+        </table></div>
+
+        <h2>Como os presets definem esses parâmetros</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Preset</th><th>Limites de peso</th><th>Tolerância</th><th>Lambda</th><th>Pond. por volume (exp)</th><th>Preservação</th><th>Subset search</th></tr></thead>
+          <tbody>
+            <tr><td><code>compliance_strict</code></td><td>0.01–10</td><td>0.0</td><td>default (≈10⁸)</td><td>desligada</td><td>0.95</td><td>greedy · 200 · dispara com qualquer slack</td></tr>
+            <tr><td><code>balanced_default</code></td><td>0.01–10</td><td>2.0</td><td>default (≈50)</td><td>desligada</td><td>1.0</td><td>random · 200 · dispara acima de 0.05</td></tr>
+            <tr><td><code>strategic_consistency</code></td><td>0.01–15</td><td>25.0</td><td>10⁸</td><td>ligada (1.5)</td><td>0.95</td><td>desabilitada — vetor único obrigatório</td></tr>
+            <tr><td><code>research_exploratory</code></td><td>0.005–20</td><td>5.0</td><td>default (≈20)</td><td>desligada</td><td>0.5</td><td>random · 400 · sem gatilho de slack · slacks first</td></tr>
+            <tr><td><code>low_distortion</code></td><td>1.0–1.0001</td><td>10.0</td><td>1000</td><td>ligada (1.0)</td><td>0.5</td><td>desabilitada · slacks first</td></tr>
+            <tr><td><code>minimal_distortion</code></td><td>0.001–50</td><td>100.0</td><td>1</td><td>ligada (2.0)</td><td>0.1</td><td>desabilitada · slacks first</td></tr>
+          </tbody>
+        </table></div>
+        <p>Quando <code>lambda_penalty</code> não está escrito no preset, o engine o deriva como <code>100 / tolerance</code> no momento da solução; os valores ≈ acima são esse preço derivado.</p>
+
+        <h2>O que esses parâmetros não podem mudar</h2>
+        <ul>
+          <li><strong>Qual regra de privacidade se aplica.</strong> A regra vem da contagem de pares e da declaração de merchant spend, nunca das configurações do otimizador.</li>
+          <li><strong>As condições adicionais de contagem de participantes</strong> de 6/30, 7/35 e 10/40. Elas são avaliadas depois do LP e reportadas independentemente.</li>
+          <li><strong>O overlay Citi</strong> e as decisões upstream de elegibilidade de negócio.</li>
+          <li><strong>O gate de publicação.</strong> Sanitização e validação de publicabilidade rodam sobre o artefato transformado, independentemente de como os pesos foram produzidos.</li>
+        </ul>
+
+        <h2>Lendo os resultados depois de uma mudança</h2>
+        <ul>
+          <li><code>Summary</code>: postura, preset, resultado da validação e veredito de conformidade desta execução.</li>
+          <li><code>Weight Methods</code>: qual estratégia cada corte realmente usou — <code>Global-LP</code>, <code>Per-Dimension-LP</code> ou <code>Per-Dimension-Bayesian</code>. O nome do preset sozinho não prova qual fallback disparou.</li>
+          <li><code>Rank Changes</code>: quanta reordenação a reponderação introduziu — o custo visível de preservação baixa ou de retries slacks-first.</li>
+          <li>Diagnósticos de subset search: quais dimensões foram removidas do conjunto global e por quê.</li>
+        </ul>
+        <div class="callout good"><strong>Regra prática.</strong> Mantenha uma linha de base em <code>compliance_strict</code> para os mesmos dados, mude um parâmetro por vez e compare <code>Weight Methods</code> e o veredito entre execuções. Se uma mudança de parâmetro é o que faz a execução passar, registre por que aquele ajuste é justificado para a entrega.</div>
       </article>
 
       <article class="doc-page" data-page="privacy-outputs" data-lang="en" hidden>
@@ -919,7 +1318,7 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
       </article>
 
       <footer class="metadata">
-        <span data-copy-en="Documentation revision: 31 Jul 2026" data-copy-pt="Revisão da documentação: 31 jul 2026">Documentation revision: 31 Jul 2026</span>
+        <span data-copy-en="Documentation revision: 3 Aug 2026" data-copy-pt="Revisão da documentação: 3 ago 2026">Documentation revision: 3 Aug 2026</span>
         · Autobench baseline <code>6920cbe</code>
         · Control 3 v5 (2026-06-03)
         · <span data-copy-en="Request a refreshed copy before relying on an old artifact for a client deliverable." data-copy-pt="Solicite uma cópia atualizada antes de usar um artefato antigo em entrega para cliente.">Request a refreshed copy before relying on an old artifact for a client deliverable.</span>
