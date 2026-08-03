@@ -590,7 +590,7 @@ def _fit_privacy_strategy(
                 residual_violations=max(1, int(compliance_state.residual_violations)),
                 verdict="non_compliant",
             )
-            chosen_analyzer.weighting_compliance_state = denied_state
+            setattr(chosen_analyzer, "weighting_compliance_state", denied_state)
             if chosen_result is not None:
                 chosen_result.compliance_state = denied_state
     chosen_analyzer.privacy_rule_strategy_result = strategy_result
