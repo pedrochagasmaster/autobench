@@ -30,6 +30,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [Outputs](#outputs)
 - [Excel Sheet Guide](#excel-sheet-guide)
 - [Troubleshooting](#troubleshooting)
+- [Reproducibility](#reproducibility)
 - [Validation and Testing](#validation-and-testing)
 - [Additional Documentation](#additional-documentation)
 
@@ -687,6 +688,32 @@ Optional diagnostic sheets (appear when enabled or triggered):
 - Unexpectedly high distortion
   - Try `--compare-presets` and inspect impact sheets.
 
+## Reproducibility
+
+Identical input bytes, resolved configuration, Autobench version, and supported
+locked runtime produce identical analytical results. That covers the global
+weights, per-dimension weights, selected and removed dimensions, weight
+methods, calculated benchmark values, privacy verdicts, and suppression
+decisions, and it holds for every preset and every optimization fallback.
+
+Two mechanisms deliver it. Canonical ordering (`core/canonical_order.py`) fixes
+the order of every solver input, so peers, constraints, and dimension
+tie-breaks never depend on set iteration or on the order a caller supplied. A
+fixed seed fixes the exploration order of the `random` subset-search strategy,
+whose name refers to the order subsets are tried in, not to randomness in the
+result.
+
+Two limits are deliberate:
+
+- Generated files are not byte-identical. Timestamps, run and session
+  identifiers, log creation times, and output file names change between runs.
+- The guarantee applies inside the locked runtime pinned by `uv.lock`. A
+  different Python, SciPy, NumPy, or pandas build may pick a different
+  optimal solution when a problem has several.
+
+`docs/CORE_TECHNICAL_DOC.md` Appendix C documents the ordering contract in
+full.
+
 ## Validation and Testing
 
 For contributors, run after changes:
@@ -697,6 +724,10 @@ py -m mypy core/ utils/
 py scripts/perform_gate_test.py
 py -m pytest tests/ -v
 ```
+
+`tests/test_determinism_matrix.py` is part of that run. It re-executes every
+analysis case and shipped preset in subprocesses under six `PYTHONHASHSEED`
+values and compares the normalized analytical results with exact equality.
 
 For a fast inner-loop smoke (not a substitute for the full gate before PR):
 
