@@ -163,6 +163,32 @@ def test_all_safe_tiny_universe_fully_released() -> None:
     _assert_rule_parity(universe, result)
 
 
+def test_all_safe_neutral_optimum_is_proven_with_wide_weight_bounds() -> None:
+    df = build_safe_coverage_getnet_shaped_df()
+    df = df[df["sector"] == "SectorY"].reset_index(drop=True)
+    universe = build_candidate_universe(
+        df,
+        entity_col="issuer_name",
+        metric="transaction_amount",
+        secondary_metrics=["transaction_count", "merchant_count"],
+        dimensions=["sector"],
+        time_col="quarter",
+    )
+
+    result = _run_solver(universe, min_weight=0.5, max_weight=2.0)
+
+    assert result.solver_state == "optimal"
+    assert result.mip_gap == 0.0
+    assert result.mip_dual_bound == float(len(universe))
+    assert result.release_set == tuple(unit.internal_key for unit in universe)
+    assert result.suppression_set == ()
+    assert result.later_objective_values == pytest.approx((0.0, 0.0))
+    assert dict(result.global_weights) == pytest.approx(
+        {peer: 1.0 for peer in _FIXTURE_PEERS}
+    )
+    _assert_rule_parity(universe, result)
+
+
 @pytest.mark.parametrize("rule_name", list(APPROVED_PRIVACY_RULE_NAMES))
 def test_rule_parity_boundary_matches_evaluate_rule(rule_name: str) -> None:
     """Solver-authorized units must pass ``evaluate_rule`` on every metric.

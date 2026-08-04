@@ -965,7 +965,15 @@ def optimize_safe_coverage(
 
     x3 = np.asarray(result3.x, dtype=float)
     n_star = float(result3.fun)
-    tau_n = max(_LEX_TOLERANCE_ABS, _LEX_TOLERANCE_REL * max(1.0, abs(n_star)))
+    # A zero neutral-distance optimum fixes every weight at exactly 1.0.
+    # Do not add lexicographic slack in this case. Slack lets sequential
+    # tie-breaking consume the same tolerance more than once and can make the
+    # last peer solve fail even though the neutral vector is feasible.
+    tau_n = (
+        0.0
+        if n_star == 0.0
+        else max(_LEX_TOLERANCE_ABS, _LEX_TOLERANCE_REL * max(1.0, abs(n_star)))
+    )
     n_bound_constraint = LinearConstraint(
         csr_matrix(c3.reshape(1, -1)),
         -math.inf,
