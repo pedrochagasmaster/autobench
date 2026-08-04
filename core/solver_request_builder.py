@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .canonical_order import canonical_order
 from .contracts import SolverRequest
 
 
@@ -16,9 +17,13 @@ def build_lp_request(
     peer_volumes: Dict[str, float],
     tolerance: Optional[float] = None,
 ) -> SolverRequest:
-    """Build an LP SolverRequest from analyzer-like settings."""
+    """Build an LP SolverRequest from analyzer-like settings.
+
+    Peers are re-ordered canonically here so every solver call sees the same
+    variable layout no matter which caller assembled the list.
+    """
     return SolverRequest(
-        peers=peers,
+        peers=canonical_order(peers),
         categories=categories,
         max_concentration=max_concentration,
         peer_volumes=peer_volumes,
@@ -47,9 +52,13 @@ def build_heuristic_request(
     rule_name: Optional[str],
     tolerance: Optional[float] = None,
 ) -> SolverRequest:
-    """Build a heuristic SolverRequest from analyzer-like settings."""
+    """Build a heuristic SolverRequest from analyzer-like settings.
+
+    Peers are re-ordered canonically here so every solver call sees the same
+    variable layout no matter which caller assembled the list.
+    """
     return SolverRequest(
-        peers=peers,
+        peers=canonical_order(peers),
         categories=categories,
         max_concentration=max_concentration,
         peer_volumes=peer_volumes,

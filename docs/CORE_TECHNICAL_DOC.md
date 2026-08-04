@@ -193,9 +193,14 @@ Performance considerations:
   adaptive batching settings described in `docs/RESOURCE_MANAGEMENT.md`.
 
 Determinism:
-- Greedy subset search is deterministic.
-- Random subset search is non-deterministic by design.
-- L-BFGS-B results can vary slightly due to numeric precision.
+- Identical input bytes, resolved configuration, Autobench version, and
+  supported locked runtime produce identical analytical results.
+- Greedy and random subset search are both deterministic. The random strategy
+  shuffles its exploration order with a fixed seed after dimensions are
+  placed in canonical order.
+- Canonical ordering (`core/canonical_order.py`) fixes solver input order, so
+  L-BFGS-B and LP see the same problem on every run.
+- See Appendix C for the exact scope of the guarantee.
 
 ## Scope
 
@@ -203,6 +208,7 @@ Included files:
 - core/__init__.py
 - core/validation_runner.py
 - core/data_loader.py
+- core/canonical_order.py
 - core/category_builder.py
 - core/diagnostics_engine.py
 - core/privacy_validator.py
@@ -784,11 +790,13 @@ Level 2 - Subset Search Mechanics
 -------------------------------------------------------------------------------
 Greedy strategy:
 1) Start with all dimensions.
-2) If LP fails, drop the most unbalanced dimension.
+2) If LP fails, drop the most unbalanced dimension. Dimensions tied on
+   unbalance score are separated by the canonical key.
 3) Rebuild categories and retry until feasible or max attempts hit.
 
 Random strategy:
-1) Randomly select dimension subsets, starting with size N-1.
+1) Visit dimension subsets starting with size N-1, in an order shuffled by a
+   fixed seed. The same input explores the same subsets in the same sequence.
 2) Attempt LP on each subset until feasible or max attempts hit.
 3) Best feasible subset maximizes dimension count, then minimizes slack.
 
@@ -1271,17 +1279,47 @@ All data must be aggregated in long format:
 -------------------------------------------------------------------------------
 Appendix C - Determinism and Reproducibility
 -------------------------------------------------------------------------------
-Deterministic modes:
-- Greedy subset search is deterministic for the same input.
-- LP results are deterministic given solver behavior and identical inputs.
+The guarantee:
+- Identical input bytes, resolved configuration, Autobench version, and
+  supported locked runtime produce identical analytical results.
+- Analytical results are the global weights, per-dimension weights, selected
+  and removed dimensions, weight methods, calculated benchmark values, privacy
+  verdicts, and suppression decisions.
 
-Non-deterministic modes:
-- Random subset search uses random.shuffle with no fixed seed by default.
-- L-BFGS-B can have small numerical variance across platforms.
+What the guarantee does not cover:
+- Generated files are not byte-identical. Timestamps, run and session
+  identifiers, log creation times, and output file names change between runs.
+- Results across different runtimes. The guarantee holds for one locked
+  runtime: the same Python minor, platform, and wheels resolved from
+  `uv.lock`. A different Python, SciPy, NumPy, or pandas build may return a
+  different vertex for a degenerate optimization problem.
 
-Reproducibility tips:
-- Prefer greedy subset search for repeatable results.
-- Fix input data ordering and use a consistent environment.
+How determinism is enforced:
+- Canonical ordering. `core/canonical_order.py` defines one sort key,
+  `(str(value), type(value).__name__)`. Peer lists from both category paths,
+  time periods, the peer axis of every solver request, LP and heuristic
+  constraint rows, equal-share rank order, dimension lists before subset
+  search, and dimension tie-breaks all use it. No analytical order comes from
+  set iteration. Reversing the caller-supplied dimension list does not change
+  the selected subset or the peer-to-weight mapping.
+- A fixed seed. The random subset-search strategy shuffles its exploration
+  order with `random.Random(0)`, so it explores dimension subsets in the same
+  sequence on every run. The strategy name refers to exploration order, not to
+  randomness in the result.
+
+Numeric equality:
+- Inside one locked runtime the comparison is exact. `tests/test_determinism_
+  matrix.py` compares full-precision values with no tolerance and no rounding
+  of the stored analytical fields. Presentation rounding already applied by
+  report builders (for example six-decimal share cells) is part of the stored
+  value and is compared as stored.
+
+Verifying it:
+- `python -m pytest tests/test_analytical_determinism.py` checks the ordering
+  contract.
+- `python -m pytest tests/test_determinism_matrix.py` re-runs every case and
+  shipped preset in subprocesses under six `PYTHONHASHSEED` values and compares
+  the normalized analytical results.
 
 -------------------------------------------------------------------------------
 Appendix D - Configuration Reference (Core-Relevant)

@@ -2,6 +2,7 @@ import logging
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.canonical_order import canonical_key
 from core.contracts import SolverRequest
 from .base_solver import PrivacySolver, SolverResult
 
@@ -80,17 +81,33 @@ class LPSolver(PrivacySolver):
             return None
         peer_index = {p: i for i, p in enumerate(peers)}
 
-        # Build category vectors v_c in R^P in one pass. The previous nested
-        # scan was quadratic in the number of peer/category records.
+        # Build category vectors v_c in R^P. Scan categories in canonical peer
+        # order within each key so multi-record accumulation does not depend on
+        # the order the caller happened to append records.
         cat_vectors_by_key: Dict[Tuple[Any, Any], np.ndarray] = {}
-        for cat in categories:
+        ordered_categories = sorted(
+            categories,
+            key=lambda cat: (
+                canonical_key(cat.get("dimension")),
+                canonical_key(cat.get("category")),
+                canonical_key(cat.get("peer")),
+            ),
+        )
+        for cat in ordered_categories:
             key = (cat['dimension'], cat['category'])
             if cat['peer'] not in peer_index:
                 continue
             vector = cat_vectors_by_key.setdefault(key, np.zeros(P, dtype=float))
             vector[peer_index[cat['peer']]] += float(cat['category_volume'])
+        # Constraint rows are emitted in canonical key order so the LP matrix
+        # does not inherit the order in which category records were scanned.
         cat_vectors: List[np.ndarray] = [
-            vector for vector in cat_vectors_by_key.values() if vector.sum() > 0
+            cat_vectors_by_key[key]
+            for key in sorted(
+                cat_vectors_by_key,
+                key=lambda entry: (canonical_key(entry[0]), canonical_key(entry[1])),
+            )
+            if cat_vectors_by_key[key].sum() > 0
         ]
 
         if not cat_vectors:
@@ -109,9 +126,14 @@ class LPSolver(PrivacySolver):
         total_vol = float(peer_vol_arr.sum())
         base_shares = peer_vol_arr / total_vol if total_vol > 0 else np.ones(P, dtype=float) / max(P, 1)
         
-        # Create ordered pairs (i,j) where base_shares[i] >= base_shares[j]
+        # Create ordered pairs (i,j) where base_shares[i] >= base_shares[j].
+        # Peers holding an equal base share are ranked by canonical key so the
+        # rank constraints do not depend on the incoming peer order.
         pair_indices: List[Tuple[int, int]] = []
-        order = np.argsort(-base_shares)  # descending
+        order = sorted(
+            range(P),
+            key=lambda idx: (-float(base_shares[idx]), canonical_key(peers[idx])),
+        )
         rank_mode = str(solver_request.rank_constraint_mode).lower()
         rank_k = int(solver_request.rank_constraint_k)
         if rank_mode == 'neighbor':
