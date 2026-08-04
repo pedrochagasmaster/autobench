@@ -2,6 +2,7 @@ import logging
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.canonical_order import canonical_key
 from core.contracts import SolverRequest
 
 try:
@@ -97,7 +98,16 @@ class HeuristicSolver(PrivacySolver):
         # makes production-sized time-aware analyses appear to hang before the
         # optimizer even starts.
         constraint_volumes: Dict[Any, np.ndarray] = {}
-        for cat in categories:
+        ordered_categories = sorted(
+            categories,
+            key=lambda cat: (
+                canonical_key(cat.get("dimension")),
+                canonical_key(cat.get("category")),
+                canonical_key(cat.get("time_period")),
+                canonical_key(cat.get("peer")),
+            ),
+        )
+        for cat in ordered_categories:
             key = (cat['dimension'], cat['category'], cat.get('time_period'))
             row = constraint_volumes.get(key)
             if row is None:
@@ -105,11 +115,16 @@ class HeuristicSolver(PrivacySolver):
                 constraint_volumes[key] = row
             peer_pos = peer_index.get(cat['peer'])
             if peer_pos is not None:
-                # Preserve the previous last-record-wins behavior for duplicate
-                # peer/key records.
-                row[peer_pos] = float(cat.get('category_volume', 0.0))
+                # Aggregate duplicate peer/key records so the objective does
+                # not depend on which duplicate happened to arrive last.
+                row[peer_pos] += float(cat.get('category_volume', 0.0))
 
-        unique_keys_list = list(constraint_volumes)
+        # Constraint rows are emitted in canonical key order so the objective
+        # does not inherit the order in which category records were scanned.
+        unique_keys_list = sorted(
+            constraint_volumes,
+            key=lambda entry: tuple(canonical_key(part) for part in entry),
+        )
         volume_matrix = np.vstack([constraint_volumes[key] for key in unique_keys_list])
 
         if not rule_name:

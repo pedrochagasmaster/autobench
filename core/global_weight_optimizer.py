@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from .canonical_order import canonical_key, canonical_order
 from .category_builder import CategoryBuilder
 from .contracts import WeightingComplianceState, WeightingResult, weighting_result_from_analyzer
 from .solver_request_builder import build_heuristic_request, build_lp_request
@@ -70,7 +71,7 @@ class GlobalWeightOptimizer:
         problem = self.build_weighting_problem(df, metric_col, dimensions)
         state = WeightingSolveState(
             weights={peer: 1.0 for peer in problem.peers},
-            used_dimensions=list(dimensions),
+            used_dimensions=list(problem.dimensions),
         )
 
         lp_solution = self.solve_full_problem(problem)
@@ -91,6 +92,7 @@ class GlobalWeightOptimizer:
     ) -> WeightingProblem:
         analyzer = self.analyzer
         single_weight_mode = bool(getattr(analyzer, "enforce_single_weight_set", False))
+        dimensions = canonical_order(dimensions)
 
         if analyzer.time_column and analyzer.time_column in df.columns:
             all_categories, peer_volumes, peers = analyzer.build_time_aware_categories(
@@ -278,7 +280,10 @@ class GlobalWeightOptimizer:
                     )
             else:
                 scores = analyzer._dimension_unbalance_scores(problem.all_categories)
-                ordered_dims = sorted(scores.keys(), key=lambda dim_name: scores[dim_name], reverse=True)
+                ordered_dims = sorted(
+                    scores,
+                    key=lambda dim_name: (-scores[dim_name], canonical_key(dim_name)),
+                )
                 logger.warning(
                     "LP infeasible; attempting fallback by dropping most unbalanced dimensions in order: %s",
                     ordered_dims,
@@ -506,7 +511,11 @@ class GlobalWeightOptimizer:
             if peer in categories_by_peer:
                 categories_by_peer[peer].append(cat)
 
-        for peer in sorted(problem.peers, key=lambda peer_name: weights[peer_name], reverse=True):
+        peers_by_weight = sorted(
+            problem.peers,
+            key=lambda peer_name: (-weights[peer_name], canonical_key(peer_name)),
+        )
+        for peer in peers_by_weight:
             peer_violation_dims: List[str] = []
             for cat in categories_by_peer.get(peer, []):
 

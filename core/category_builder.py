@@ -3,6 +3,8 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import pandas as pd
 
+from .canonical_order import canonical_order
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,14 +65,14 @@ class CategoryBuilder:
         for dim in dimensions:
             entity_dim_agg = df.groupby([self.entity_column, dim]).agg({metric_col: 'sum'}).reset_index()
             entity_totals = entity_dim_agg.groupby(self.entity_column)[metric_col].sum()
-            categories = entity_dim_agg[dim].unique()
+            categories = canonical_order(entity_dim_agg[dim].unique())
             for category in categories:
                 category_df = entity_dim_agg[entity_dim_agg[dim] == category].copy()
                 if self.target_entity is not None:
                     peer_df = category_df[category_df[self.entity_column] != self.target_entity]
                 else:
                     peer_df = category_df
-                for peer_entity in peer_df[self.entity_column].unique():
+                for peer_entity in canonical_order(peer_df[self.entity_column].unique()):
                     peer_category_vol = peer_df[peer_df[self.entity_column] == peer_entity][metric_col].sum()
                     peer_total_vol = entity_totals[peer_entity]
                     peer_share_pct = (peer_category_vol / peer_total_vol * 100) if peer_total_vol > 0 else 0
@@ -82,7 +84,7 @@ class CategoryBuilder:
                         'category_volume': peer_category_vol,
                         'share_pct': peer_share_pct
                     })
-        peers = list(set([c['peer'] for c in all_categories]))
+        peers = canonical_order(c['peer'] for c in all_categories)
         peer_volumes: Dict[str, float] = {}
         for cat in all_categories:
             if cat['peer'] not in peer_volumes:
@@ -110,7 +112,7 @@ class CategoryBuilder:
         logger.info("Building time-aware categories using time column: %s", self.time_column)
 
         all_categories: List[Dict[str, Any]] = []
-        time_periods = sorted(df[self.time_column].dropna().unique())
+        time_periods = canonical_order(df[self.time_column].dropna().unique())
         logger.info("Found %s governed time periods", len(time_periods))
 
         for time_period in time_periods:
@@ -121,7 +123,7 @@ class CategoryBuilder:
             else:
                 peer_totals = entity_totals
 
-            for peer_entity in peer_totals.index:
+            for peer_entity in canonical_order(peer_totals.index):
                 peer_monthly_vol = peer_totals[peer_entity]
                 all_categories.append({
                     'peer': peer_entity,
@@ -142,7 +144,7 @@ class CategoryBuilder:
                     continue
 
                 entity_dim_agg = time_df.groupby([self.entity_column, dim]).agg({metric_col: 'sum'}).reset_index()
-                categories = entity_dim_agg[dim].unique()
+                categories = canonical_order(entity_dim_agg[dim].unique())
 
                 for category in categories:
                     category_df = entity_dim_agg[entity_dim_agg[dim] == category].copy()
@@ -152,7 +154,7 @@ class CategoryBuilder:
                         peer_df = category_df
 
                     total_time_cat_vol = peer_df[metric_col].sum()
-                    for peer_entity in peer_df[self.entity_column].unique():
+                    for peer_entity in canonical_order(peer_df[self.entity_column].unique()):
                         peer_category_vol = peer_df[peer_df[self.entity_column] == peer_entity][metric_col].sum()
                         all_categories.append({
                             'peer': peer_entity,
@@ -172,10 +174,10 @@ class CategoryBuilder:
             peer_totals = entity_totals[entity_totals.index != self.target_entity]
         else:
             peer_totals = entity_totals
-        for peer_entity in peer_totals.index:
+        for peer_entity in canonical_order(peer_totals.index):
             peer_volumes[peer_entity] = float(peer_totals[peer_entity])
 
-        peers = list(peer_volumes.keys())
+        peers = canonical_order(peer_volumes.keys())
         logger.info(
             "Built %s time-aware category constraints for %s peers across %s time periods",
             len(all_categories),

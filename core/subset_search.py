@@ -9,6 +9,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
+from .canonical_order import canonical_key, canonical_order
 from .solver_request_builder import build_lp_request
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,11 @@ def _record_trial(
             "Note": note,
         }
     )
+
+
+def _most_unbalanced_dimension(trial_dims: List[str], scores: Dict[str, float]) -> str:
+    """Return the dimension to drop, breaking equal scores by canonical key."""
+    return min(trial_dims, key=lambda dim: (-scores.get(dim, 0.0), canonical_key(dim)))
 
 
 def _update_best(
@@ -106,7 +112,12 @@ def search_largest_feasible_subset(
     peers: List[str],
     all_categories: List[Dict[str, Any]],
 ) -> Tuple[List[str], Optional[Dict[str, float]]]:
-    """Search for the largest feasible dimension subset under privacy caps."""
+    """Search for the largest feasible dimension subset under privacy caps.
+
+    Dimensions are re-ordered canonically before exploration so the chosen
+    subset does not depend on the order the caller supplied them in.
+    """
+    dimensions = canonical_order(dimensions)
     analyzer.subset_search_results.clear()
     best_dims: List[str] = []
     best_weights: Optional[Dict[str, float]] = None
@@ -127,7 +138,7 @@ def search_largest_feasible_subset(
                 scores = analyzer._dimension_unbalance_scores(
                     all_categories if all_categories else trial.categories
                 )
-                drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
+                drop_dim = _most_unbalanced_dimension(trial_dims, scores)
                 _record_trial(
                     analyzer, tested, trial_dims, success=False,
                     note=f"No cats; dropping {drop_dim}",
@@ -144,7 +155,7 @@ def search_largest_feasible_subset(
             if len(trial_dims) <= 1:
                 break
             scores = analyzer._dimension_unbalance_scores(trial.categories)
-            drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
+            drop_dim = _most_unbalanced_dimension(trial_dims, scores)
             trial_dims = [d for d in trial_dims if d != drop_dim]
     else:
         # Seeded RNG: the "random" strategy is about exploration order, not
