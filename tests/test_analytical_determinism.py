@@ -361,6 +361,24 @@ def test_heuristic_fallback_uses_canonical_peer_order() -> None:
         assert list(analyzer.per_dimension_weights[dimension]) == CANONICAL_PEERS
 
 
+def test_global_heuristic_fallback_uses_canonical_peer_order() -> None:
+    """When the global LP fails outright, the heuristic sees canonical peers."""
+    analyzer = _capturing_analyzer(SCRAMBLED_PEERS)
+    analyzer.consistent_weights = True
+    analyzer.enforce_single_weight_set = True
+    analyzer.auto_subset_search = False
+    analyzer.trigger_subset_on_slack = False
+
+    analyzer.fit_privacy_weights(
+        _peer_frame(SCRAMBLED_PEERS), "txn_cnt", ["card_type", "channel"]
+    )
+
+    assert analyzer.seen_heuristic_peers, "global heuristic fallback was never called"
+    assert all(seen == CANONICAL_PEERS for seen in analyzer.seen_heuristic_peers)
+    assert list(analyzer.global_weights) == CANONICAL_PEERS
+    assert set(analyzer.weight_methods.values()) == {"Global-Bayesian"}
+
+
 def test_heuristic_request_builder_canonicalizes_peers() -> None:
     request = build_heuristic_request(
         SimpleNamespace(
