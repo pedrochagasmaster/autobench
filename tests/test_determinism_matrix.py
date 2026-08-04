@@ -104,20 +104,15 @@ def test_reversed_dimension_order_produces_same_weight_mapping(
     preset: str,
     fingerprint_matrix: Dict[Tuple[str, str], Dict[str, str]],
 ) -> None:
-    """Supplying the dimensions in reverse must not move any peer's weight."""
+    """Supplying the dimensions in reverse must not change the analytical solve."""
     forward = json.loads(fingerprint_matrix[("solve_fallbacks", preset)][HASH_SEEDS[0]])
     reversed_run = json.loads(
         fingerprint_matrix[("solve_fallbacks_reversed", preset)][HASH_SEEDS[0]]
     )
 
-    forward_weights = forward["analyzer"]["global_weights"]
-    reversed_weights = reversed_run["analyzer"]["global_weights"]
-
-    assert forward_weights
-    assert list(forward_weights) == list(reversed_weights)
-    assert {peer: record["multiplier"] for peer, record in forward_weights.items()} == {
-        peer: record["multiplier"] for peer, record in reversed_weights.items()
-    }
+    assert forward["analyzer"] is not None
+    assert reversed_run["analyzer"] is not None
+    assert forward["analyzer"] == reversed_run["analyzer"]
 
 
 @pytest.mark.parametrize("preset", PRESETS)

@@ -558,7 +558,7 @@ class DimensionalAnalyzer:
         series = df[self.time_column].dropna()
         if series.empty:
             return []
-        return sorted(series.unique())
+        return canonical_order(series.unique())
 
     def _build_constraint_stats(
         self,
@@ -959,6 +959,7 @@ class DimensionalAnalyzer:
         if self.consistent_weights:
             return self.calculate_global_privacy_weights(df, metric_col, dimensions)
 
+        dimensions = canonical_order(dimensions)
         _, _, peers = self.build_categories(df, metric_col, dimensions)
         rule_name, max_concentration = self._get_privacy_rule(len(peers))
         self._solve_per_dimension_weights(

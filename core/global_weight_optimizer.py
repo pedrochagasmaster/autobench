@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from .canonical_order import canonical_key
+from .canonical_order import canonical_key, canonical_order
 from .category_builder import CategoryBuilder
 from .contracts import WeightingComplianceState, WeightingResult, weighting_result_from_analyzer
 from .solver_request_builder import build_heuristic_request, build_lp_request
@@ -71,7 +71,7 @@ class GlobalWeightOptimizer:
         problem = self.build_weighting_problem(df, metric_col, dimensions)
         state = WeightingSolveState(
             weights={peer: 1.0 for peer in problem.peers},
-            used_dimensions=list(dimensions),
+            used_dimensions=list(problem.dimensions),
         )
 
         lp_solution = self.solve_full_problem(problem)
@@ -92,6 +92,7 @@ class GlobalWeightOptimizer:
     ) -> WeightingProblem:
         analyzer = self.analyzer
         single_weight_mode = bool(getattr(analyzer, "enforce_single_weight_set", False))
+        dimensions = canonical_order(dimensions)
 
         if analyzer.time_column and analyzer.time_column in df.columns:
             all_categories, peer_volumes, peers = analyzer.build_time_aware_categories(

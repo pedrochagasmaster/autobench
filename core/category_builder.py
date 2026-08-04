@@ -112,7 +112,7 @@ class CategoryBuilder:
         logger.info("Building time-aware categories using time column: %s", self.time_column)
 
         all_categories: List[Dict[str, Any]] = []
-        time_periods = sorted(df[self.time_column].dropna().unique())
+        time_periods = canonical_order(df[self.time_column].dropna().unique())
         logger.info("Found %s governed time periods", len(time_periods))
 
         for time_period in time_periods:

@@ -196,7 +196,8 @@ Determinism:
 - Identical input bytes, resolved configuration, Autobench version, and
   supported locked runtime produce identical analytical results.
 - Greedy and random subset search are both deterministic. The random strategy
-  shuffles its exploration order with a fixed seed.
+  shuffles its exploration order with a fixed seed after dimensions are
+  placed in canonical order.
 - Canonical ordering (`core/canonical_order.py`) fixes solver input order, so
   L-BFGS-B and LP see the same problem on every run.
 - See Appendix C for the exact scope of the guarantee.
@@ -1288,16 +1289,19 @@ The guarantee:
 What the guarantee does not cover:
 - Generated files are not byte-identical. Timestamps, run and session
   identifiers, log creation times, and output file names change between runs.
-- Results across different runtimes. The guarantee holds inside the locked
-  runtime pinned by `uv.lock`; a different Python, SciPy, NumPy, or pandas
-  build may return a different vertex for a degenerate optimization problem.
+- Results across different runtimes. The guarantee holds for one locked
+  runtime: the same Python minor, platform, and wheels resolved from
+  `uv.lock`. A different Python, SciPy, NumPy, or pandas build may return a
+  different vertex for a degenerate optimization problem.
 
 How determinism is enforced:
 - Canonical ordering. `core/canonical_order.py` defines one sort key,
-  `(str(value), type(value).__name__)`, and every analytical sequence passes
-  through it: peer lists from both category paths, the peer axis of every
-  solver request, LP and heuristic constraint rows, equal-share rank order,
-  and dimension tie-breaks. No analytical order comes from set iteration.
+  `(str(value), type(value).__name__)`. Peer lists from both category paths,
+  time periods, the peer axis of every solver request, LP and heuristic
+  constraint rows, equal-share rank order, dimension lists before subset
+  search, and dimension tie-breaks all use it. No analytical order comes from
+  set iteration. Reversing the caller-supplied dimension list does not change
+  the selected subset or the peer-to-weight mapping.
 - A fixed seed. The random subset-search strategy shuffles its exploration
   order with `random.Random(0)`, so it explores dimension subsets in the same
   sequence on every run. The strategy name refers to exploration order, not to
@@ -1305,7 +1309,10 @@ How determinism is enforced:
 
 Numeric equality:
 - Inside one locked runtime the comparison is exact. `tests/test_determinism_
-  matrix.py` compares full-precision values with no tolerance and no rounding.
+  matrix.py` compares full-precision values with no tolerance and no rounding
+  of the stored analytical fields. Presentation rounding already applied by
+  report builders (for example six-decimal share cells) is part of the stored
+  value and is compared as stored.
 
 Verifying it:
 - `python -m pytest tests/test_analytical_determinism.py` checks the ordering

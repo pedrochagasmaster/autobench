@@ -98,7 +98,16 @@ class HeuristicSolver(PrivacySolver):
         # makes production-sized time-aware analyses appear to hang before the
         # optimizer even starts.
         constraint_volumes: Dict[Any, np.ndarray] = {}
-        for cat in categories:
+        ordered_categories = sorted(
+            categories,
+            key=lambda cat: (
+                canonical_key(cat.get("dimension")),
+                canonical_key(cat.get("category")),
+                canonical_key(cat.get("time_period")),
+                canonical_key(cat.get("peer")),
+            ),
+        )
+        for cat in ordered_categories:
             key = (cat['dimension'], cat['category'], cat.get('time_period'))
             row = constraint_volumes.get(key)
             if row is None:
@@ -106,9 +115,9 @@ class HeuristicSolver(PrivacySolver):
                 constraint_volumes[key] = row
             peer_pos = peer_index.get(cat['peer'])
             if peer_pos is not None:
-                # Preserve the previous last-record-wins behavior for duplicate
-                # peer/key records.
-                row[peer_pos] = float(cat.get('category_volume', 0.0))
+                # Aggregate duplicate peer/key records so the objective does
+                # not depend on which duplicate happened to arrive last.
+                row[peer_pos] += float(cat.get('category_volume', 0.0))
 
         # Constraint rows are emitted in canonical key order so the objective
         # does not inherit the order in which category records were scanned.

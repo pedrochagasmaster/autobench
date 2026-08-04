@@ -9,7 +9,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
-from .canonical_order import canonical_key
+from .canonical_order import canonical_key, canonical_order
 from .solver_request_builder import build_lp_request
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,12 @@ def search_largest_feasible_subset(
     peers: List[str],
     all_categories: List[Dict[str, Any]],
 ) -> Tuple[List[str], Optional[Dict[str, float]]]:
-    """Search for the largest feasible dimension subset under privacy caps."""
+    """Search for the largest feasible dimension subset under privacy caps.
+
+    Dimensions are re-ordered canonically before exploration so the chosen
+    subset does not depend on the order the caller supplied them in.
+    """
+    dimensions = canonical_order(dimensions)
     analyzer.subset_search_results.clear()
     best_dims: List[str] = []
     best_weights: Optional[Dict[str, float]] = None

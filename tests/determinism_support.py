@@ -20,7 +20,7 @@ import logging
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -119,6 +119,11 @@ CASES: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _typed_key(value: Any) -> Tuple[str, str]:
+    """Sort key that keeps ``1`` and ``\"1\"`` as distinct dictionary keys."""
+    return (str(value), type(value).__name__)
+
+
 def _number(value: Any) -> Any:
     """Serialize a float without losing bits, so equality stays exact."""
     if isinstance(value, float):
@@ -132,7 +137,19 @@ def _number(value: Any) -> Any:
 
 def _normalize(value: Any) -> Any:
     if isinstance(value, dict):
-        return {str(key): _normalize(val) for key, val in sorted(value.items(), key=str)}
+        # Keep typed keys so peer IDs ``1`` and ``"1"`` cannot collide. Encode
+        # the type in the serialized key only when a string collision exists.
+        items = sorted(value.items(), key=lambda item: _typed_key(item[0]))
+        encoded: Dict[str, Any] = {}
+        string_counts: Dict[str, int] = {}
+        for key, _ in items:
+            string_counts[str(key)] = string_counts.get(str(key), 0) + 1
+        for key, val in items:
+            label = str(key)
+            if string_counts[label] > 1:
+                label = f"{label!r}:{type(key).__name__}"
+            encoded[label] = _normalize(val)
+        return encoded
     if isinstance(value, (list, tuple)):
         return [_normalize(item) for item in value]
     if isinstance(value, pd.DataFrame):
@@ -188,6 +205,9 @@ def analytical_fingerprint(artifacts: Any) -> Dict[str, Any]:
         "suppressed_categories": _normalize(metadata.get("suppressed_categories")),
         "suppressed_metric_categories": _normalize(
             metadata.get("suppressed_metric_categories")
+        ),
+        "suppressed_output_categories": _normalize(
+            metadata.get("suppressed_output_categories")
         ),
         "privacy_publication_authorized": (
             None if decision is None else decision.privacy_publication_authorized

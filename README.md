@@ -694,22 +694,24 @@ Identical input bytes, resolved configuration, Autobench version, and supported
 locked runtime produce identical analytical results. That covers the global
 weights, per-dimension weights, selected and removed dimensions, weight
 methods, calculated benchmark values, privacy verdicts, and suppression
-decisions, and it holds for every preset and every optimization fallback.
+decisions. The same guarantee holds for every shipped preset.
 
 Two mechanisms deliver it. Canonical ordering (`core/canonical_order.py`) fixes
-the order of every solver input, so peers, constraints, and dimension
-tie-breaks never depend on set iteration or on the order a caller supplied. A
-fixed seed fixes the exploration order of the `random` subset-search strategy,
-whose name refers to the order subsets are tried in, not to randomness in the
-result.
+solver inputs: peers, constraint rows, equal-share rank ties, dimension
+tie-breaks, and the dimension list handed to subset search. Those sequences no
+longer depend on set iteration, dataframe row order, or the order a caller
+listed dimensions. A fixed seed fixes the exploration order of the `random`
+subset-search strategy, whose name refers to the order subsets are tried in,
+not to randomness in the result.
 
 Two limits are deliberate:
 
 - Generated files are not byte-identical. Timestamps, run and session
   identifiers, log creation times, and output file names change between runs.
-- The guarantee applies inside the locked runtime pinned by `uv.lock`. A
-  different Python, SciPy, NumPy, or pandas build may pick a different
-  optimal solution when a problem has several.
+- The guarantee applies inside one locked runtime: the same Python minor,
+  platform, and wheels resolved from `uv.lock`. A different Python, SciPy,
+  NumPy, or pandas build may pick a different optimal solution when a problem
+  has several.
 
 `docs/CORE_TECHNICAL_DOC.md` Appendix C documents the ordering contract in
 full.

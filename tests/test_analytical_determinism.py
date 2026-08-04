@@ -99,6 +99,15 @@ def test_canonical_order_removes_duplicates() -> None:
     assert canonical_order(["P2", "P1", "P2"]) == ["P1", "P2"]
 
 
+def test_fingerprint_normalize_keeps_mixed_type_keys_distinct() -> None:
+    from tests.determinism_support import _normalize
+
+    assert _normalize({1: "int-peer", "1": "str-peer"}) == {
+        "'1':int": "int-peer",
+        "'1':str": "str-peer",
+    }
+
+
 def test_standard_category_building_returns_canonical_peer_order() -> None:
     builder = _builder(consistent_weights=False)
     _, _, peers = builder.build_categories(
@@ -284,6 +293,51 @@ def _record_trial_order(dimensions: List[str], monkeypatch: pytest.MonkeyPatch) 
         [],
     )
     return [row["Dimensions"] for row in analyzer.subset_search_results]
+
+
+def test_reversed_dimension_order_selects_same_subset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When two equal-sized subsets are feasible, exploration order must not decide."""
+    monkeypatch.setattr(subset_search, "build_lp_request", lambda *_a, **_kw: object())
+
+    class _SlackByDims:
+        def solve(self, _request: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                success=True,
+                weights={"P1": 1.0},
+                stats={"sum_slack": 0.0, "max_slack": 0.0, "method": "highs"},
+            )
+
+    def _run(dimensions: List[str]) -> List[str]:
+        analyzer = SimpleNamespace(
+            lp_solver=_SlackByDims(),
+            last_lp_stats={},
+            trigger_subset_on_slack=True,
+            max_cap_slack=0.0,
+            greedy_subset_search=False,
+            subset_search_max_tests=1,
+            subset_search_results=[],
+        )
+        analyzer.build_categories = lambda _df, _metric, dims: (
+            [{"dimension": dims[0], "category": "c", "peer": "P1", "category_volume": 1.0}],
+            {"P1": 1.0},
+            ["P1"],
+        )
+        analyzer._is_slack_excess = lambda slack: bool(slack and slack > 0.0)
+        best_dims, _ = search_largest_feasible_subset(
+            analyzer,
+            pd.DataFrame({"txn_cnt": [1]}),
+            "txn_cnt",
+            dimensions,
+            30.0,
+            {"P1": 1.0},
+            ["P1"],
+            [],
+        )
+        return best_dims
+
+    assert _run(["channel", "card_type"]) == _run(["card_type", "channel"])
 
 
 def test_random_subset_search_repeats_the_same_trial_order(

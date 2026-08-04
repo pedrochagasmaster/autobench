@@ -81,10 +81,19 @@ class LPSolver(PrivacySolver):
             return None
         peer_index = {p: i for i, p in enumerate(peers)}
 
-        # Build category vectors v_c in R^P in one pass. The previous nested
-        # scan was quadratic in the number of peer/category records.
+        # Build category vectors v_c in R^P. Scan categories in canonical peer
+        # order within each key so multi-record accumulation does not depend on
+        # the order the caller happened to append records.
         cat_vectors_by_key: Dict[Tuple[Any, Any], np.ndarray] = {}
-        for cat in categories:
+        ordered_categories = sorted(
+            categories,
+            key=lambda cat: (
+                canonical_key(cat.get("dimension")),
+                canonical_key(cat.get("category")),
+                canonical_key(cat.get("peer")),
+            ),
+        )
+        for cat in ordered_categories:
             key = (cat['dimension'], cat['category'])
             if cat['peer'] not in peer_index:
                 continue

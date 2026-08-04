@@ -2,9 +2,9 @@
 
 Analytical results must not depend on how a label happened to reach the
 optimizer. Python set iteration order changes between processes, and pandas
-first-appearance order changes when rows are reordered, so every analytical
-sequence (peers, dimensions, constraint keys) passes through the single
-ordering rule defined here before it reaches a solver.
+first-appearance order changes when rows are reordered, so solver-facing
+sequences (peers, dimensions, constraint keys, time periods) pass through the
+single ordering rule defined here before they reach a solver.
 
 The canonical key is ``(str(value), type(value).__name__)``. The string form is
 primary so labels sort the way an analyst reads them, and the type name is the
