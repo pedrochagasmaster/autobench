@@ -15,11 +15,6 @@ from .solver_request_builder import build_lp_request
 logger = logging.getLogger(__name__)
 
 
-def _most_unbalanced_dimension(trial_dims: List[str], scores: Dict[str, float]) -> str:
-    """Return the dimension to drop, breaking equal scores by canonical key."""
-    return min(trial_dims, key=lambda dim: (-scores.get(dim, 0.0), canonical_key(dim)))
-
-
 class _TrialResult(NamedTuple):
     """Trial outcome: empty categories are unrecorded by _solve_trial (callers
     record no-category notes); weights is None when there is no accepted
@@ -50,6 +45,11 @@ def _record_trial(
             "Note": note,
         }
     )
+
+
+def _most_unbalanced_dimension(trial_dims: List[str], scores: Dict[str, float]) -> str:
+    """Return the dimension to drop, breaking equal scores by canonical key."""
+    return min(trial_dims, key=lambda dim: (-scores.get(dim, 0.0), canonical_key(dim)))
 
 
 def _update_best(
