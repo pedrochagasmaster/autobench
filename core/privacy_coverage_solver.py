@@ -445,13 +445,13 @@ def optimize_safe_coverage(
                     ub[idx] = 0.0
                     break
 
-    for key_tuple, idx in z_index.items():
+    for _z_key, idx in z_index.items():
         integrality[idx] = 1
         lb[idx] = 0.0
         ub[idx] = 1.0
 
     m_d = float(max_weight - min_weight)
-    for key_tuple, idx in d_index.items():
+    for _d_key, idx in d_index.items():
         integrality[idx] = 0
         lb[idx] = 0.0
         ub[idx] = m_d if m_d > 0.0 else 0.0

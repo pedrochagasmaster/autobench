@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
 import pandas as pd
 
@@ -225,7 +225,7 @@ def build_candidate_universe(
 
     primary_records = metric_category_records[required_metrics[0]]
     cells = _collect_output_cells(primary_records)
-    suppressed = list(suppressed_categories or ())
+    suppressed = cast(List[Dict[str, Any]], list(suppressed_categories or ()))
     overlays = _mandatory_overlays(
         citibank_entity_name=citibank_entity_name,
         citi_competitor_receives_output=citi_competitor_receives_output,
