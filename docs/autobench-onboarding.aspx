@@ -798,10 +798,14 @@ autobench-cli -h   # linha de comando</code></pre>
           <p>This rule concerns comparisons between views. Categories inside one dimension still share that dimension's weights.</p>
         </details>
         <details><summary>Do the same data and settings always produce the same results?</summary>
-          <p>Not always. Autobench does not yet guarantee identical weights across every fresh run and every optimization method.</p>
-          <p>A fixed environment usually gives the same result. Some current cases can produce different valid weight vectors.</p>
-          <p>For controlled work, save the outputs, settings, runtime version, and exact multipliers with each run.</p>
-          <p>Do not use the preset or method name alone as proof that two runs used the same weights.</p>
+          <p>Yes, when all reproducibility inputs stay equal.</p>
+          <p>Use identical input bytes, resolved configuration, Autobench version, and supported locked runtime.</p>
+          <p>The locked runtime means the same Python minor, platform, and wheels resolved from <code>uv.lock</code>.</p>
+          <p>Under these conditions, every shipped preset produces identical analytical results.</p>
+          <p>This guarantee covers global and per-dimension weights, selected and removed dimensions, weight methods, benchmark values, privacy verdicts, and suppression decisions.</p>
+          <p>Generated files are not byte-identical. Timestamps, run identifiers, session identifiers, log times, and file names can change.</p>
+          <p>A different runtime can select another valid solution when several optimal solutions exist.</p>
+          <p>For controlled work, save the input, resolved configuration, Autobench version, runtime identity, and analytical outputs.</p>
         </details>
         <details><summary>Can I directly compare dimensions, periods, or runs that use different weights?</summary>
           <p>No. Different weights represent different adjusted peer compositions.</p>
@@ -997,10 +1001,14 @@ STORED AS PARQUET;</code></pre>
           <p>Esta regra trata de comparações entre visões. As categorias de uma dimensão ainda compartilham os pesos dessa dimensão.</p>
         </details>
         <details><summary>Os mesmos dados e configurações sempre produzem os mesmos resultados?</summary>
-          <p>Nem sempre. O Autobench ainda não garante pesos idênticos em toda nova execução e em todo método de otimização.</p>
-          <p>Um ambiente fixo geralmente produz o mesmo resultado. Alguns casos atuais podem gerar vetores válidos diferentes.</p>
-          <p>Para trabalho controlado, guarde saídas, configurações, versão do runtime e multiplicadores exatos com cada execução.</p>
-          <p>Não use somente o nome do preset ou método como prova de pesos iguais.</p>
+          <p>Sim, quando todas as entradas de reprodutibilidade permanecem iguais.</p>
+          <p>Use bytes de entrada idênticos, configuração resolvida, versão do Autobench e runtime bloqueado suportado.</p>
+          <p>O runtime bloqueado exige a mesma versão secundária do Python, plataforma e pacotes definidos por <code>uv.lock</code>.</p>
+          <p>Nessas condições, todos os presets fornecidos produzem resultados analíticos idênticos.</p>
+          <p>A garantia cobre pesos globais e por dimensão, dimensões usadas e removidas, métodos, benchmarks, decisões de privacidade e supressões.</p>
+          <p>Os arquivos gerados não são idênticos em bytes. Datas, identificadores, horários de logs e nomes de arquivos podem mudar.</p>
+          <p>Outro runtime pode selecionar uma solução válida diferente quando existem várias soluções ótimas.</p>
+          <p>Para trabalho controlado, guarde entrada, configuração resolvida, versão do Autobench, identidade do runtime e resultados analíticos.</p>
         </details>
         <details><summary>Posso comparar diretamente dimensões, períodos ou execuções com pesos diferentes?</summary>
           <p>Não. Pesos diferentes representam composições ajustadas diferentes.</p>
