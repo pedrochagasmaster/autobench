@@ -7,11 +7,16 @@ names. No confidential Getnet values.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 import pandas as pd
+import yaml
 
 FIXTURE_CSV_NAME = "safe_coverage_getnet_shaped.csv"
+
+# Proven under these bounds by the Commit 4/5 fixture contract.
+FIXTURE_MIN_WEIGHT = 0.5
+FIXTURE_MAX_WEIGHT = 2.0
 
 # Peer names are synthetic. PeerA is intentionally dominant in SectorX so that
 # SectorX fails primary-cap / secondary checks under global weights that keep
@@ -103,3 +108,30 @@ def write_safe_coverage_getnet_shaped_csv(path: Path) -> Path:
 
 def default_fixture_csv_path() -> Path:
     return Path(__file__).with_name(FIXTURE_CSV_NAME)
+
+
+def write_safe_coverage_bounds_config(
+    path: Path,
+    *,
+    compliance_posture: str = "best_effort",
+    min_weight: float = FIXTURE_MIN_WEIGHT,
+    max_weight: float = FIXTURE_MAX_WEIGHT,
+    extra: Dict[str, Any] | None = None,
+) -> Path:
+    """Write a minimal YAML config with the fixture's proven weight bounds."""
+    payload: Dict[str, Any] = {
+        "version": "3.0",
+        "compliance_posture": compliance_posture,
+        "privacy_release_mode": "complete-output",
+        "optimization": {
+            "bounds": {
+                "min_weight": float(min_weight),
+                "max_weight": float(max_weight),
+            }
+        },
+    }
+    if extra:
+        payload.update(extra)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return path
