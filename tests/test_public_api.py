@@ -22,6 +22,11 @@ _EXAMPLE_REQUEST_FIELDS = {
     "preset",
     "compliance_posture",
     "output",
+    "privacy_release_mode",
+    "privacy_rule_strategy",
+    "secondary_metrics",
+    "mode",
+    "df",
 }
 
 # Minimum return-contract fields documented for consumers.
@@ -30,7 +35,16 @@ _ARTIFACTS_FIELDS = {
     "csv_output",
     "report_paths",
     "privacy_output_decision",
+    "safe_coverage_result",
+    "coverage_certificate",
+    "coverage_certificate_output",
 }
+
+_PRIVACY_RELEASE_PUBLIC_EXPORTS = (
+    "PrivacyReleaseMode",
+    "SafeCoverageResult",
+    "CoverageCertificate",
+)
 
 
 def test_public_api_imports() -> None:
@@ -44,11 +58,31 @@ def test_public_api_imports() -> None:
     from core.contracts import AnalysisArtifacts, AnalysisRunRequest  # noqa: F401
 
 
+def test_privacy_release_public_exports() -> None:
+    import core
+
+    for name in _PRIVACY_RELEASE_PUBLIC_EXPORTS:
+        assert name in core.__all__
+        assert hasattr(core, name)
+
+
 def test_privacy_release_mode_public_values() -> None:
     from core import PrivacyReleaseMode
 
     assert PrivacyReleaseMode.COMPLETE_OUTPUT.value == "complete-output"
     assert PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value == "maximize-safe-coverage"
+
+
+def test_example_maximize_safe_coverage_request_uses_enum_form() -> None:
+    from examples.run_from_python import example_maximize_safe_coverage_request
+    from core import PrivacyReleaseMode, PrivacyRuleStrategy
+
+    request = example_maximize_safe_coverage_request(dataframe=None)
+    assert request.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert (
+        request.privacy_rule_strategy
+        is PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
+    )
 
 
 def test_execute_share_run_signature() -> None:

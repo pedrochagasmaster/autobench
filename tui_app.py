@@ -67,9 +67,11 @@ try:
         execute_run,
     )
     from core.contracts import (
+        AnalysisArtifacts,
         AnalysisRunRequest,
         DEFAULT_PRESET_NAME,
         PreparedDataset,
+        PrivacyReleaseMode,
         PrivacyRuleStrategy,
     )
     from core.preset_workflow import PresetWorkflow
@@ -114,6 +116,7 @@ SESSION_SELECT_IDS = (
     "time_col",
     "preset_select",
     "output_format",
+    "privacy_release_mode",
     "share_metric",
     "rate_total",
     "rate_approved",
@@ -456,6 +459,7 @@ TUI_REQUEST_FIELDS = frozenset({
     "fraud_col",
     "fraud_in_bps",
     "privacy_rule_strategy",
+    "privacy_release_mode",
     "is_anonymized_aggregated_merchant_spend",
     "citibank_entity_name",
     "citi_competitor_receives_output",
@@ -471,6 +475,14 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
     "report_format",
     "control3_overrides",
 })
+
+_PRIVACY_RELEASE_MODE_OPTIONS = (
+    ("Complete output", PrivacyReleaseMode.COMPLETE_OUTPUT.value),
+    ("Maximum safe coverage", PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value),
+)
+_PRIVACY_RELEASE_MODE_VALUES = frozenset(
+    value for _, value in _PRIVACY_RELEASE_MODE_OPTIONS
+)
 
 
 class BenchmarkApp(App):
@@ -888,6 +900,23 @@ class BenchmarkApp(App):
                                 value="analysis",
                                 allow_blank=False,
                             )
+                    yield Label(
+                        "Privacy release mode",
+                        classes="field-label",
+                        id="privacy_release_mode_label",
+                    )
+                    yield Select(
+                        list(_PRIVACY_RELEASE_MODE_OPTIONS),
+                        id="privacy_release_mode",
+                        value=PrivacyReleaseMode.COMPLETE_OUTPUT.value,
+                        allow_blank=False,
+                    )
+                    yield Static(
+                        "Maximum safe coverage publishes only verified safe units. "
+                        "Missing units are privacy-suppressed.",
+                        id="privacy_release_mode_hint",
+                        classes="field-hint",
+                    )
                     yield Checkbox(
                         "Privacy rule sweep mode",
                         id="privacy_rule_sweep_mode",
@@ -1080,10 +1109,19 @@ class BenchmarkApp(App):
         self._last_status_text: Optional[str] = None
         self._last_telemetry_surface: Optional[str] = None
         self._telemetry_session_started = False
+        # Prior privacy-rule-sweep checkbox value while Maximum Safe Coverage
+        # locks the control; restored when the operator returns to Complete output.
+        self._privacy_sweep_before_lock: Optional[bool] = None
+        self._restored_privacy_release_mode: Optional[str] = None
+        # Suppress preset-driven release-mode refresh until after session restore
+        # and any deferred Select.Changed messages from load_presets settle.
+        self._tui_bootstrapping = True
         self.load_presets()
         self.setup_logging_capture()
         self._refresh_run_status()
         self._restore_session()
+        self._tui_bootstrapping = False
+        self.call_after_refresh(self._finalize_privacy_release_mode_bootstrap)
 
         # Set initial focus
         self.query_one("#csv_path").focus()
@@ -1203,6 +1241,8 @@ class BenchmarkApp(App):
         # selections. Never restore those values; the operator must choose the
         # dataset afresh for each process.
         for widget_id in SESSION_SELECT_IDS:
+            if widget_id == "privacy_release_mode":
+                continue  # Restored after checkboxes so sweep coupling sees prior value.
             value = session.get(widget_id)
             if value is None:
                 continue
@@ -1221,6 +1261,10 @@ class BenchmarkApp(App):
                 self.query_one(f"#{widget_id}", Checkbox).value = bool(session[widget_id])
             except NoMatches:
                 continue
+        # Restore release mode after the sweep checkbox so locking preserves the
+        # operator's prior sweep preference from the session.
+        if "privacy_release_mode" in session:
+            self._restore_privacy_release_mode(session.get("privacy_release_mode"))
         for widget_id in SESSION_SELECTION_LIST_IDS:
             values = session.get(widget_id)
             if not isinstance(values, list):
@@ -1236,6 +1280,48 @@ class BenchmarkApp(App):
             for value in values:
                 if value in available:
                     s_list.select(value)
+
+    def _restore_privacy_release_mode(self, value: Any) -> None:
+        """Restore a session release mode; unknown values fall back safely."""
+        try:
+            select = self.query_one("#privacy_release_mode", Select)
+        except NoMatches:
+            return
+        if value in _PRIVACY_RELEASE_MODE_VALUES:
+            try:
+                select.value = value
+                self._restored_privacy_release_mode = str(value)
+            except Exception:
+                select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
+                self._restored_privacy_release_mode = (
+                    PrivacyReleaseMode.COMPLETE_OUTPUT.value
+                )
+            return
+        select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
+        self._restored_privacy_release_mode = PrivacyReleaseMode.COMPLETE_OUTPUT.value
+        self.notify(
+            "Saved privacy release mode was unknown or stale; "
+            "fell back to Complete output.",
+            title="Session Restore",
+            severity="warning",
+            timeout=6,
+        )
+
+    def _finalize_privacy_release_mode_bootstrap(self) -> None:
+        """Re-assert session release mode after deferred preset events settle."""
+        restored = getattr(self, "_restored_privacy_release_mode", None)
+        if restored is not None:
+            try:
+                select = self.query_one("#privacy_release_mode", Select)
+                if select.value != restored:
+                    select.value = restored
+            except NoMatches:
+                pass
+        self._sync_privacy_release_mode_visibility()
+        self._apply_privacy_release_mode_coupling(
+            self._privacy_release_mode_value_from_widget()
+        )
+
     # ──────────────────────────────────────────────────────────────────
     # Run status / results panels
     # ──────────────────────────────────────────────────────────────────
@@ -1401,6 +1487,77 @@ class BenchmarkApp(App):
         if output:
             self.call_from_thread(log_widget.write, output + "\n")
         return artifacts
+
+    @staticmethod
+    def _safe_coverage_summary_facts(artifacts: AnalysisArtifacts) -> Optional[Dict[str, Any]]:
+        """Return client-safe Maximum Safe Coverage facts, or None.
+
+        Reads only ``CoverageCertificate`` and ``coverage_certificate_output``.
+        Never surfaces suppressed keys, category names, or failure details.
+        """
+        certificate = artifacts.coverage_certificate
+        if certificate is None:
+            return None
+        if certificate.privacy_release_mode is not PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+            return None
+        return {
+            "mode": "Maximum safe coverage",
+            "candidate_unit_count": certificate.candidate_unit_count,
+            "released_unit_count": certificate.released_unit_count,
+            "suppressed_unit_count": certificate.suppressed_unit_count,
+            "coverage_percentage": certificate.coverage_percentage,
+            "coverage_certificate_output": artifacts.coverage_certificate_output,
+            "verified_optimal": (
+                certificate.solver_state == "optimal"
+                and certificate.mip_gap == 0.0
+            ),
+        }
+
+    @classmethod
+    def _format_safe_coverage_summary_markup(
+        cls, artifacts: AnalysisArtifacts
+    ) -> List[str]:
+        """Markup lines for the Last Run panel (client-safe facts only)."""
+        facts = cls._safe_coverage_summary_facts(artifacts)
+        if facts is None:
+            return []
+        lines = [
+            f"[dim]Release[/dim]  {facts['mode']}",
+            (
+                f"[dim]Coverage[/dim] "
+                f"{facts['released_unit_count']}/{facts['candidate_unit_count']} "
+                f"released · {facts['suppressed_unit_count']} suppressed · "
+                f"{facts['coverage_percentage']:.4g}%"
+            ),
+        ]
+        cert_path = facts["coverage_certificate_output"]
+        if cert_path:
+            lines.append(f"[dim]Certificate[/dim] {cert_path}")
+        if facts["verified_optimal"]:
+            lines.append("[dim]Status[/dim]  Verified optimal (zero-gap proof)")
+        return lines
+
+    @classmethod
+    def _format_safe_coverage_summary_plain(
+        cls, artifacts: AnalysisArtifacts
+    ) -> List[str]:
+        """Plain lines for the execution log (client-safe facts only)."""
+        facts = cls._safe_coverage_summary_facts(artifacts)
+        if facts is None:
+            return []
+        lines = [
+            f"Privacy release mode: {facts['mode']}",
+            f"Candidate units: {facts['candidate_unit_count']}",
+            f"Released units: {facts['released_unit_count']}",
+            f"Suppressed units: {facts['suppressed_unit_count']}",
+            f"Coverage: {facts['coverage_percentage']:.4g}%",
+        ]
+        cert_path = facts["coverage_certificate_output"]
+        if cert_path:
+            lines.append(f"Coverage Certificate: {cert_path}")
+        if facts["verified_optimal"]:
+            lines.append("Verified optimal: maximum coverage has a zero-gap proof.")
+        return lines
 
     # ──────────────────────────────────────────────────────────────────
     # CSV loading
@@ -1580,6 +1737,10 @@ class BenchmarkApp(App):
             self.update_advanced_parameters(default_preset)
             self._update_preset_blurb(default_preset)
         self.advanced_config_path = None
+        # Do not refresh privacy_release_mode here: load_presets runs before
+        # session restore, and a deferred preset Select.Changed must not wipe
+        # a restored Maximum Safe Coverage selection. User-driven preset
+        # changes refresh via on_select_changed.
 
     def _update_preset_blurb(self, preset_name: str) -> None:
         """Show the preset's own description under the selector."""
@@ -1712,6 +1873,10 @@ class BenchmarkApp(App):
                 self.preset_workflow = PresetWorkflow()
             tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
             self.advanced_config_path = str(tmp_path)
+            # Optimization override files usually omit privacy_release_mode; only
+            # refresh the Select when the loaded YAML declares the field.
+            if self._config_file_declares_privacy_release_mode(str(tmp_path)):
+                self._refresh_privacy_release_mode_from_config()
             self.notify(
                 f"Advanced overrides applied (file: {tmp_path.name})",
                 title="Advanced Overrides",
@@ -1806,9 +1971,32 @@ class BenchmarkApp(App):
         except NoMatches:
             return False
 
-    def _privacy_strategy_values_from_widgets(self) -> Dict[str, Any]:
-        """Return the privacy strategy fields for the normal run request."""
-        return {
+    def _privacy_release_mode_value_from_widget(self) -> str:
+        """Return the stored Select value, defaulting to complete-output."""
+        try:
+            value = self.query_one("#privacy_release_mode", Select).value
+        except NoMatches:
+            return PrivacyReleaseMode.COMPLETE_OUTPUT.value
+        if value == SELECT_BLANK or value is None:
+            return PrivacyReleaseMode.COMPLETE_OUTPUT.value
+        return str(value)
+
+    def _privacy_release_mode_from_widget(self) -> PrivacyReleaseMode:
+        """Return the selected PrivacyReleaseMode enum for share requests."""
+        value = self._privacy_release_mode_value_from_widget()
+        try:
+            return PrivacyReleaseMode(value)
+        except ValueError:
+            return PrivacyReleaseMode.COMPLETE_OUTPUT
+
+    def _privacy_values_from_widgets(self) -> Dict[str, Any]:
+        """Return privacy request fields from TUI widgets.
+
+        Includes rule strategy, release mode (share only), and compliance
+        attestations. Rate analysis never receives a hidden Maximum Safe
+        Coverage selection from the release-mode widget.
+        """
+        values: Dict[str, Any] = {
             "privacy_rule_strategy": (
                 PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
                 if self._privacy_sweep_enabled()
@@ -1827,6 +2015,86 @@ class BenchmarkApp(App):
                 Checkbox,
             ).value,
         }
+        if self._analysis_mode() == "share":
+            values["privacy_release_mode"] = self._privacy_release_mode_from_widget()
+        else:
+            # Do not let a hidden maximize-safe-coverage widget value reach a
+            # rate request. Leave None so configuration resolution stays clear.
+            values["privacy_release_mode"] = None
+        return values
+
+    def _sync_privacy_release_mode_visibility(self) -> None:
+        """Show the release-mode control for share; hide it for rate."""
+        hide = self._analysis_mode() != "share"
+        for widget_id in (
+            "privacy_release_mode_label",
+            "privacy_release_mode",
+            "privacy_release_mode_hint",
+        ):
+            try:
+                widget = self.query_one(f"#{widget_id}")
+            except NoMatches:
+                continue
+            if hide:
+                widget.add_class("hidden")
+            else:
+                widget.remove_class("hidden")
+
+    def _apply_privacy_release_mode_coupling(self, mode_value: str) -> None:
+        """Enable and lock rule sweep while Maximum Safe Coverage is selected."""
+        try:
+            sweep = self.query_one("#privacy_rule_sweep_mode", Checkbox)
+        except NoMatches:
+            return
+        if mode_value == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value:
+            if getattr(self, "_privacy_sweep_before_lock", None) is None:
+                self._privacy_sweep_before_lock = bool(sweep.value)
+            sweep.value = True
+            sweep.disabled = True
+            return
+        was_locked = sweep.disabled
+        sweep.disabled = False
+        prior = getattr(self, "_privacy_sweep_before_lock", None)
+        if was_locked and prior is not None:
+            sweep.value = prior
+        self._privacy_sweep_before_lock = None
+
+    def _config_file_declares_privacy_release_mode(self, path: str) -> bool:
+        """Return True when a YAML/JSON config file sets privacy_release_mode."""
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        except Exception:
+            return False
+        return isinstance(data, dict) and "privacy_release_mode" in data
+
+    def _refresh_privacy_release_mode_from_config(self) -> None:
+        """Refresh the Select from the resolved preset/YAML configuration."""
+        try:
+            preset_val = self.query_one("#preset_select", Select).value
+        except NoMatches:
+            return
+        preset = None if preset_val == SELECT_BLANK else str(preset_val)
+        config_file = getattr(self, "advanced_config_path", None)
+        try:
+            resolved = ConfigManager(
+                config_file=config_file,
+                preset=preset,
+            ).resolve()
+            mode_value = resolved.privacy_release_mode.value
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Could not resolve privacy_release_mode from configuration: %s",
+                exc,
+            )
+            return
+        try:
+            select = self.query_one("#privacy_release_mode", Select)
+        except NoMatches:
+            return
+        if select.value != mode_value:
+            select.value = mode_value
+        self._apply_privacy_release_mode_coupling(mode_value)
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
@@ -1895,12 +2163,19 @@ class BenchmarkApp(App):
             if event.value != SELECT_BLANK:
                 self.update_advanced_parameters(event.value)
                 self._update_preset_blurb(str(event.value))
+                if not getattr(self, "_tui_bootstrapping", False):
+                    self._refresh_privacy_release_mode_from_config()
                 self._refresh_run_status()
                 if not self.query_one("#advanced_opt").collapsed:
                     self.notify(f"Preset '{event.value}' parameters refreshed", title="Advanced Optimization", severity="information", timeout=4)
 
+        elif event.select.id == "privacy_release_mode":
+            if event.value != SELECT_BLANK and event.value is not None:
+                self._apply_privacy_release_mode_coupling(str(event.value))
+
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         """Keep the status panel's mode line current; emit surface on real changes."""
+        self._sync_privacy_release_mode_visibility()
         self._refresh_run_status()
         self._emit_surface_if_changed(self._analysis_mode())
 
@@ -2016,7 +2291,7 @@ class BenchmarkApp(App):
                     "compare_presets": getattr(self.query_one("#compare_presets"), 'value', False),
                     "include_calculated": getattr(self.query_one("#include_calculated"), 'value', False),
                     "output_format": getattr(self.query_one("#output_format"), 'value', 'analysis'),
-                    **self._privacy_strategy_values_from_widgets(),
+                    **self._privacy_values_from_widgets(),
                 }
                 if preset and not values["config"]:
                     posture = None
@@ -2054,7 +2329,13 @@ class BenchmarkApp(App):
                     values["dimensions"] = list(dims) if dims and not values["auto"] else None
                     values["debug"] = self.query_one("#share_debug").value
                     values["export_balanced_csv"] = self.query_one("#share_export_csv").value
+                    # Share analysis uses one global weight vector. Maximum Safe
+                    # Coverage also requires global weights; keep this explicit.
                     values["per_dimension_weights"] = False
+                    assert values["per_dimension_weights"] is False, (
+                        "share analysis requires global weights "
+                        "(per_dimension_weights must be False)"
+                    )
                 else:
                     total_val = self.query_one("#rate_total").value
                     values["total_col"] = total_val if total_val != SELECT_BLANK else None
@@ -2237,6 +2518,8 @@ class BenchmarkApp(App):
                 log_widget.write,
                 f"Compliance: posture={posture} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
             )
+            for line in self._format_safe_coverage_summary_plain(artifacts):
+                self.call_from_thread(log_widget.write, f"{line}\n")
             report_paths = [str(p) for p in (artifacts.report_paths or [artifacts.analysis_output_file]) if p]
             verdict = str(summary.get('compliance_verdict'))
             if verdict == 'fully_compliant':
@@ -2251,7 +2534,15 @@ class BenchmarkApp(App):
             ]
             for path in report_paths:
                 summary_lines.append(f"[dim]Report[/dim]   {path}")
+            summary_lines.extend(self._format_safe_coverage_summary_markup(artifacts))
             if hard_privacy_block:
+                if (
+                    request.privacy_release_mode
+                    is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+                ):
+                    summary_lines.append(
+                        "[dim]Release[/dim]  Maximum safe coverage"
+                    )
                 summary_lines.append(
                     "[red]Publication withheld[/red] "
                     f"[dim]({privacy_decision.withholding_reason})[/dim]"
