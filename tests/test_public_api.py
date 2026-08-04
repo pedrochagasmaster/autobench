@@ -34,9 +34,21 @@ _ARTIFACTS_FIELDS = {
 
 
 def test_public_api_imports() -> None:
-    from core import PrivacyOutputDecision  # noqa: F401
+    from core import (  # noqa: F401
+        CoverageCertificate,
+        PrivacyOutputDecision,
+        PrivacyReleaseMode,
+        SafeCoverageResult,
+    )
     from core.analysis_run import execute_share_run, execute_rate_run  # noqa: F401
     from core.contracts import AnalysisArtifacts, AnalysisRunRequest  # noqa: F401
+
+
+def test_privacy_release_mode_public_values() -> None:
+    from core import PrivacyReleaseMode
+
+    assert PrivacyReleaseMode.COMPLETE_OUTPUT.value == "complete-output"
+    assert PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value == "maximize-safe-coverage"
 
 
 def test_execute_share_run_signature() -> None:

@@ -13,6 +13,14 @@ version: "3.0"
 #   a numerically non-compliant run writes only a NON_PUBLISHABLE-prefixed diagnostic workbook
 compliance_posture: "strict"
 
+# Which safe Publication Units can reach client output:
+# - complete-output (default): current behavior. Publish the complete governed
+#   output only when the current privacy policy authorizes that output.
+# - maximize-safe-coverage: release the maximum proven-safe subset of eligible
+#   share-analysis Publication Units. Missing cells are privacy-suppressed and
+#   downstream consumers must not restore them. Share analysis only.
+privacy_release_mode: "complete-output"
+
 # ============================================================================
 # NOTE: Column names are specified via CLI flags, not in config files
 # ============================================================================

@@ -7,6 +7,7 @@ import logging
 from typing import Dict, Any, List
 from pathlib import Path
 from core.compliance import VALID_COMPLIANCE_POSTURES
+from core.contracts import PrivacyReleaseMode
 
 try:
     import yaml
@@ -35,6 +36,7 @@ class ConfigValidator:
     OPTIONAL_FIELDS = {
         'preset_name': str,
         'description': str,
+        'privacy_release_mode': str,
         'input': dict,
         'output': dict,
         'optimization': dict,
@@ -44,6 +46,7 @@ class ConfigValidator:
         'column_mappings': dict,
         'advanced': dict,
     }
+    VALID_PRIVACY_RELEASE_MODES = tuple(mode.value for mode in PrivacyReleaseMode)
     VALID_PRIVACY_BASES = ['clearing_spend', 'transaction_count', 'transaction_amount']
     
     VALID_ALGORITHMS = ['linear_programming', 'bayesian', 'hybrid']
@@ -125,6 +128,18 @@ class ConfigValidator:
                 "compliance_posture must be one of: "
                 + ", ".join(VALID_COMPLIANCE_POSTURES)
             )
+
+        if 'privacy_release_mode' in config:
+            release_mode = config['privacy_release_mode']
+            if not isinstance(release_mode, str):
+                errors.append(
+                    "Invalid type for privacy_release_mode: expected str"
+                )
+            elif release_mode not in cls.VALID_PRIVACY_RELEASE_MODES:
+                errors.append(
+                    "privacy_release_mode must be one of: "
+                    + ", ".join(cls.VALID_PRIVACY_RELEASE_MODES)
+                )
         
         # Validate structure - check for unknown fields at root level
         known_fields = set(cls.REQUIRED_FIELDS.keys()) | set(cls.OPTIONAL_FIELDS.keys())

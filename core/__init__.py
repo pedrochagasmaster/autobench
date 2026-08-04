@@ -3,12 +3,15 @@
 from .contracts import (
     AnalysisArtifacts,
     AnalysisRunRequest,
+    COVERAGE_CERTIFICATE_ARTIFACT_TYPE,
+    CoverageCertificate,
     PrivacyConcentrationBasis,
     PrivacyEvaluationStatus,
     PrivacyFailureReason,
     PrivacyMandatoryOverlayEvaluation,
     PrivacyMetricContext,
     PrivacyOutputDecision,
+    PrivacyReleaseMode,
     PrivacyRuleStrategy,
     PrivacyRuleStrategyEvaluation,
     PrivacyRuleStrategyResult,
@@ -18,6 +21,8 @@ from .contracts import (
     PrivacySweepResult,
     PrivacySweepStatus,
     PrivacyThresholdEvaluation,
+    PublicationUnit,
+    SafeCoverageResult,
 )
 from .privacy_policy import evaluate_privacy_rule_sweep
 from .dimensional_analyzer import DimensionalAnalyzer
@@ -28,9 +33,12 @@ from .report_generator import ReportGenerator
 __all__ = [
     'AnalysisRunRequest',
     'AnalysisArtifacts',
+    'COVERAGE_CERTIFICATE_ARTIFACT_TYPE',
+    'CoverageCertificate',
     'PrivacySweepRequest',
     'PrivacyMetricContext',
     'PrivacyOutputDecision',
+    'PrivacyReleaseMode',
     'PrivacyRuleStrategy',
     'PrivacyRuleStrategyEvaluation',
     'PrivacyRuleStrategyResult',
@@ -43,6 +51,8 @@ __all__ = [
     'PrivacyMandatoryOverlayEvaluation',
     'PrivacySweepAuditMetadata',
     'PrivacySweepResult',
+    'PublicationUnit',
+    'SafeCoverageResult',
     'evaluate_privacy_rule_sweep',
     'execute_share_run',
     'execute_rate_run',

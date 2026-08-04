@@ -39,6 +39,7 @@ from core.contracts import (
     PrivacyFailureReason,
     PrivacyMandatoryOverlayEvaluation,
     PrivacyOutputDecision,
+    PrivacyReleaseMode,
     PrivacyRuleStrategy,
     PrivacyRuleStrategyEvaluation,
     PrivacyRuleStrategyResult,
@@ -102,6 +103,7 @@ COMMON_CLI_OVERRIDES = (
     'validate_export',
     'lean',
     'compliance_posture',
+    'privacy_release_mode',
 )
 
 
@@ -1260,6 +1262,86 @@ def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRun
 
 def build_run_request(mode: str, args: argparse.Namespace) -> AnalysisRunRequest:
     return AnalysisRunRequest.from_namespace(mode, args)
+
+
+def resolve_privacy_release_mode(
+    request: AnalysisRunRequest,
+    resolved_config: ResolvedConfig,
+) -> AnalysisRunRequest:
+    """Resolve the effective ``PrivacyReleaseMode`` for this run.
+
+    Precedence, applied here so every Interface (CLI, TUI, Python) uses the
+    same seam:
+
+    1. An explicit ``request.privacy_release_mode`` (must be a
+       ``PrivacyReleaseMode`` value; strings were rejected at request
+       construction time).
+    2. The resolved YAML / preset value on ``resolved_config``.
+    3. ``PrivacyReleaseMode.COMPLETE_OUTPUT`` as the ultimate default.
+
+    The caller's request is not mutated. A new request with a non-null
+    ``privacy_release_mode`` is returned via ``dataclasses.replace``.
+    """
+    if request.privacy_release_mode is not None:
+        if not isinstance(request.privacy_release_mode, PrivacyReleaseMode):
+            raise RunAborted(
+                "privacy_release_mode on AnalysisRunRequest must be a "
+                "PrivacyReleaseMode value"
+            )
+        effective = request.privacy_release_mode
+    elif isinstance(resolved_config.privacy_release_mode, PrivacyReleaseMode):
+        effective = resolved_config.privacy_release_mode
+    else:
+        effective = PrivacyReleaseMode.COMPLETE_OUTPUT
+    if request.privacy_release_mode is effective:
+        return request
+    return replace(request, privacy_release_mode=effective)
+
+
+def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> None:
+    """Reject unsupported combinations after mode resolution.
+
+    Called after ``resolve_privacy_release_mode`` produces a request with a
+    non-null enum value. This runs before data loading or solver work so a
+    bad combination fails fast with a clear message.
+
+    Rejects:
+
+    - ``MAXIMIZE_SAFE_COVERAGE`` with rate analysis.
+    - ``MAXIMIZE_SAFE_COVERAGE`` with ``per_dimension_weights=True``.
+    - ``MAXIMIZE_SAFE_COVERAGE`` with an incompatible explicit rule strategy
+      (Python callers must supply ``SWEEP_ANY_APPLICABLE``; the CLI and TUI
+      set that strategy automatically when the mode is selected).
+    - Any unknown or untyped release-mode value.
+    """
+    mode = request.privacy_release_mode
+    if not isinstance(mode, PrivacyReleaseMode):
+        raise RunAborted(
+            "privacy_release_mode must be resolved to a PrivacyReleaseMode "
+            "value before compatibility checks"
+        )
+    if mode == PrivacyReleaseMode.COMPLETE_OUTPUT:
+        return
+    if mode != PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+        raise RunAborted(
+            f"Unsupported privacy_release_mode: {mode!r}"
+        )
+    if request.is_rate:
+        raise RunAborted(
+            "privacy_release_mode=maximize-safe-coverage is not supported for "
+            "rate analysis; use complete-output"
+        )
+    if request.per_dimension_weights:
+        raise RunAborted(
+            "privacy_release_mode=maximize-safe-coverage requires one global "
+            "weight vector; --per-dimension-weights is not supported"
+        )
+    if request.privacy_rule_strategy != PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE:
+        raise RunAborted(
+            "privacy_release_mode=maximize-safe-coverage requires "
+            "privacy_rule_strategy=SWEEP_ANY_APPLICABLE; got "
+            f"{request.privacy_rule_strategy.value!s}"
+        )
 
 
 def execute_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
