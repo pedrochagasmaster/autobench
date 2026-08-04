@@ -1,14 +1,15 @@
 # Autobench Implementation Plans
 
-Generated on 2026-07-16. Execute plans in the order below. Each executor must
-read the complete plan, honor its STOP conditions, and update the status row
-when finished.
+Generated on 2026-07-16. Use the dependency and isolation notes below. Each
+executor must read the complete plan, honor its STOP conditions, and update the
+status row when finished.
 
 ## Execution order and status
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | IN PROGRESS |
+| 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | IN PROGRESS |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.
@@ -21,6 +22,8 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 - Do not split ownership of this migration across concurrent executors. The
   installer, launcher, deployment profile, production harness, tests, and docs
   encode one operating contract and must evolve together.
+- Plan 002 has no functional dependency on Plan 001. Use a separate branch and
+  worktree. Do not combine runtime migration and privacy feature changes.
 
 ## Findings considered and rejected
 
