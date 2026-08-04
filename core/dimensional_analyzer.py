@@ -13,6 +13,7 @@ import warnings
 from time import perf_counter
 
 from .privacy_validator import PrivacyValidator
+from .canonical_order import canonical_key, canonical_order
 from .category_builder import CategoryBuilder
 from .diagnostics_engine import DiagnosticsEngine
 from .analysis_calculator import AnalysisCalculator
@@ -863,10 +864,12 @@ class DimensionalAnalyzer:
 
     def _get_all_peers(self, entity_totals: pd.Series, time_period: Optional[Any]) -> List[str]:
         if self.consistent_weights and self.global_weights:
-            return list(self.global_weights.keys())
+            return canonical_order(self.global_weights.keys())
         if time_period and time_period != "General":
-            return list(set(k[0] if isinstance(k, tuple) else k for k in entity_totals.index))
-        return list(entity_totals.index)
+            return canonical_order(
+                k[0] if isinstance(k, tuple) else k for k in entity_totals.index
+            )
+        return canonical_order(entity_totals.index)
 
     def _store_final_weights(self, peers: List[str], peer_volumes: Dict[str, float], weights: Dict[str, float]) -> None:
         """Persist final weights into self.global_weights as dict with volume, weight, multiplier.
@@ -914,8 +917,8 @@ class DimensionalAnalyzer:
             base_share_pct = {p: ((peer_volumes.get(p, 0.0) / total_base_vol) * 100.0) if total_base_vol > 0 else 0.0 for p in peers}
             adj_share_pct = {p: float(self.global_weights.get(p, {}).get('weight', 0.0)) for p in peers}
             # Ranks: 1 is highest share
-            base_rank_order = sorted(peers, key=lambda p: base_share_pct[p], reverse=True)
-            adj_rank_order = sorted(peers, key=lambda p: adj_share_pct[p], reverse=True)
+            base_rank_order = sorted(peers, key=lambda p: (-base_share_pct[p], canonical_key(p)))
+            adj_rank_order = sorted(peers, key=lambda p: (-adj_share_pct[p], canonical_key(p)))
             base_rank = {p: i + 1 for i, p in enumerate(base_rank_order)}
             adj_rank = {p: i + 1 for i, p in enumerate(adj_rank_order)}
             rows = []

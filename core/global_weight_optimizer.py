@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from .canonical_order import canonical_key
 from .category_builder import CategoryBuilder
 from .contracts import WeightingComplianceState, WeightingResult, weighting_result_from_analyzer
 from .solver_request_builder import build_heuristic_request, build_lp_request
@@ -278,7 +279,10 @@ class GlobalWeightOptimizer:
                     )
             else:
                 scores = analyzer._dimension_unbalance_scores(problem.all_categories)
-                ordered_dims = sorted(scores.keys(), key=lambda dim_name: scores[dim_name], reverse=True)
+                ordered_dims = sorted(
+                    scores,
+                    key=lambda dim_name: (-scores[dim_name], canonical_key(dim_name)),
+                )
                 logger.warning(
                     "LP infeasible; attempting fallback by dropping most unbalanced dimensions in order: %s",
                     ordered_dims,
@@ -506,7 +510,11 @@ class GlobalWeightOptimizer:
             if peer in categories_by_peer:
                 categories_by_peer[peer].append(cat)
 
-        for peer in sorted(problem.peers, key=lambda peer_name: weights[peer_name], reverse=True):
+        peers_by_weight = sorted(
+            problem.peers,
+            key=lambda peer_name: (-weights[peer_name], canonical_key(peer_name)),
+        )
+        for peer in peers_by_weight:
             peer_violation_dims: List[str] = []
             for cat in categories_by_peer.get(peer, []):
 

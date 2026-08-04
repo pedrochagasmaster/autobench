@@ -9,9 +9,15 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 
+from .canonical_order import canonical_key
 from .solver_request_builder import build_lp_request
 
 logger = logging.getLogger(__name__)
+
+
+def _most_unbalanced_dimension(trial_dims: List[str], scores: Dict[str, float]) -> str:
+    """Return the dimension to drop, breaking equal scores by canonical key."""
+    return min(trial_dims, key=lambda dim: (-scores.get(dim, 0.0), canonical_key(dim)))
 
 
 class _TrialResult(NamedTuple):
@@ -127,7 +133,7 @@ def search_largest_feasible_subset(
                 scores = analyzer._dimension_unbalance_scores(
                     all_categories if all_categories else trial.categories
                 )
-                drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
+                drop_dim = _most_unbalanced_dimension(trial_dims, scores)
                 _record_trial(
                     analyzer, tested, trial_dims, success=False,
                     note=f"No cats; dropping {drop_dim}",
@@ -144,7 +150,7 @@ def search_largest_feasible_subset(
             if len(trial_dims) <= 1:
                 break
             scores = analyzer._dimension_unbalance_scores(trial.categories)
-            drop_dim = max(trial_dims, key=lambda d: scores.get(d, 0.0))
+            drop_dim = _most_unbalanced_dimension(trial_dims, scores)
             trial_dims = [d for d in trial_dims if d != drop_dim]
     else:
         # Seeded RNG: the "random" strategy is about exploration order, not

@@ -2,6 +2,7 @@ import logging
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.canonical_order import canonical_key
 from core.contracts import SolverRequest
 
 try:
@@ -109,7 +110,12 @@ class HeuristicSolver(PrivacySolver):
                 # peer/key records.
                 row[peer_pos] = float(cat.get('category_volume', 0.0))
 
-        unique_keys_list = list(constraint_volumes)
+        # Constraint rows are emitted in canonical key order so the objective
+        # does not inherit the order in which category records were scanned.
+        unique_keys_list = sorted(
+            constraint_volumes,
+            key=lambda entry: tuple(canonical_key(part) for part in entry),
+        )
         volume_matrix = np.vstack([constraint_volumes[key] for key in unique_keys_list])
 
         if not rule_name:
