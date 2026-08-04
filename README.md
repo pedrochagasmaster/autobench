@@ -21,6 +21,7 @@ Privacy-safe benchmarking for issuers, banks, and merchants with automatic Maste
 - [First Successful Run (Copy/Paste)](#first-successful-run-copypaste)
 - [Input Data Requirements](#input-data-requirements)
 - [Privacy Rules (Auto-Applied)](#privacy-rules-auto-applied)
+- [Maximum Safe Coverage](#maximum-safe-coverage)
 - [TUI Workflow](#tui-workflow)
 - [CLI Cookbook](#cli-cookbook)
 - [Offline Telemetry](#offline-telemetry)
@@ -187,6 +188,144 @@ The engine selects the rule based on peer count.
 
 You do not manually configure these caps during normal runs.
 
+## Maximum Safe Coverage
+
+Share analysis has two privacy release modes. The control selects which safe
+Publication Units can reach client output. It does not change Control 3 limits.
+
+| Mode | CLI / YAML | Python | Behavior |
+|---|---|---|---|
+| Complete output (default) | `complete-output` | `PrivacyReleaseMode.COMPLETE_OUTPUT` | Unchanged current behavior: authorize the complete governed output, or withhold every benchmark-bearing artifact. |
+| Maximum safe coverage | `maximize-safe-coverage` | `PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE` | Release the largest proven-safe subset of eligible share units under one global weight vector. |
+
+`complete-output` remains the explicit default on every interface when the mode
+is omitted from CLI, YAML, and Python.
+
+### Terminology
+
+- **Publication Unit** — one all-or-nothing client output cell (stable output
+  scope: dimension, category, time period, and applicable output scope). All
+  governed metrics for that key belong to the same unit. A metric row is not a
+  Publication Unit.
+- **Candidate Universe** — the fixed set of privacy-eligible Publication Units
+  after structural category suppression and before coverage optimization.
+- **Release Set** — Publication Units authorized for client output.
+- **Suppression Set** — Candidate Universe minus Release Set.
+- **Coverage Certificate** — client-safe evidence for the exact released
+  artifact (no suppressed keys or category names).
+- **Suppressed Publication View** — the filtered client artifact containing
+  only the Release Set.
+
+### Applicability
+
+`maximize-safe-coverage` applies only to share analysis, and only when all of
+these hold: missing units mean unavailable output; each Publication Unit has a
+stable unique key; one global weight vector is required; all required metrics
+for a unit can be evaluated together; the consumer preserves the Release Set
+and may suppress more units but cannot restore them; visible totals do not
+reconstruct suppressed units; and a later process supplies complementary
+suppression when needed.
+
+It is not applicable when any of these hold: a complete table is mandatory;
+missing output reveals protected information; required scope evidence is
+invalid or incomplete; a consumer can restore a suppressed unit; published
+totals can reconstruct a suppressed unit; per-dimension weights are required;
+or rate analysis is requested.
+
+Autobench rejects `maximize-safe-coverage` with rate analysis and with
+`--per-dimension-weights`. It does not silently change either setting.
+
+### Three independent controls
+
+| Control | Question |
+|---|---|
+| `privacy_release_mode` | Which safe units can reach client output? |
+| `privacy_rule_strategy` | Which approved rules can authorize a unit? |
+| `compliance_posture` | How does the run handle non-compliant analysis? |
+
+`maximize-safe-coverage` requires `SWEEP_ANY_APPLICABLE` semantics: one released
+unit may use a different applicable rule from another, but all released units
+share one global weight vector. CLI and TUI auto-select that strategy when this
+mode is selected. Python callers must supply
+`PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE` themselves. `complete-output`
+accepts both current rule strategies.
+
+### Proof and verification
+
+Results are called maximum only with an optimal zero-gap proof plus independent
+verification. A time limit, a feasible-only state, or a small nonzero gap is
+not proof. Empty, unproven, or verifier-failed results produce only a safe
+denial audit — never benchmark-bearing client output.
+
+### Consumer contract
+
+```text
+final_release_set must be a subset of autobench_release_set
+```
+
+Consumers may suppress more Publication Units. Consumers must never restore an
+Autobench-suppressed unit.
+
+### Limits (read carefully)
+
+- `maximize-safe-coverage` does not weaken privacy limits.
+- It can produce an incomplete view.
+- Missing cells are privacy-suppressed.
+- Consumers must not restore them.
+- This mode does **not** prove reconstruction safety.
+- Recurring releases need a joint disclosure review.
+
+Autobench proves only direct Control 3 privacy for this mode. Merchant checks,
+visible-total reconstruction, complementary suppression, and recurring-release
+review remain consumer duties.
+
+### Interfaces
+
+Share CLI flag (not available on rate):
+
+```text
+--privacy-release-mode {complete-output,maximize-safe-coverage}
+```
+
+TUI Analysis Options labels for share analysis: `Complete output` and
+`Maximum safe coverage`. The field is hidden or disabled for rate analysis.
+
+YAML (top-level; CLI overrides YAML; YAML overrides the default):
+
+```yaml
+privacy_release_mode: "complete-output"
+```
+
+CLI example:
+
+```powershell
+uv run --locked --no-sync python benchmark.py share `
+  --csv data.csv `
+  --metric transaction_amount `
+  --secondary-metrics transaction_count merchant_count `
+  --dimensions quarter region sector `
+  --privacy-rule-sweep `
+  --privacy-release-mode maximize-safe-coverage
+```
+
+Python example (enum values only; strings are rejected):
+
+```python
+request = AnalysisRunRequest(
+    mode="share",
+    df=dataframe,
+    metric="transaction_amount",
+    secondary_metrics=["transaction_count", "merchant_count"],
+    dimensions=["quarter", "region", "sector"],
+    privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+)
+```
+
+Policy detail: [docs/adr/0002-maximum-safe-coverage.md](docs/adr/0002-maximum-safe-coverage.md).
+Analyst handbook: [docs/autobench-onboarding.html](docs/autobench-onboarding.html)
+(`Privacy & Outputs`).
+
 ## TUI Workflow
 
 The TUI (`tui_app.py`) is best for first-time users:
@@ -309,6 +448,9 @@ the CLI and TUI use instead of shelling out to `benchmark.py`.
 | `core.analysis_run.execute_share_run` | Run share analysis |
 | `core.analysis_run.execute_rate_run` | Run rate analysis |
 | `core.contracts.AnalysisArtifacts` | Return type (paths and DataFrames) |
+| `core.PrivacyReleaseMode` | Share privacy release mode (`complete-output` default, or `maximize-safe-coverage`) |
+| `core.SafeCoverageResult` | Trusted Maximum Safe Coverage result (exact Release Set; not a client artifact) |
+| `core.CoverageCertificate` | Client-safe coverage evidence for the released artifact |
 | `core.PrivacySweepRequest` | Compact evidence for the numeric privacy-rule sweep |
 | `core.evaluate_privacy_rule_sweep` | Evaluate every applicable rule and mandatory numeric overlay |
 | `core.PrivacySweepResult` | Immutable, scope-aware sweep result |
@@ -368,6 +510,11 @@ The feature is opt-in on all three supported interfaces:
 - CLI: add `--privacy-rule-sweep` to a normal `share` or `rate` invocation.
 - TUI: check **Privacy rule sweep mode** and run the normal loaded-data
   analysis.
+
+`privacy_rule_strategy` is independent of `privacy_release_mode`. See
+[Maximum Safe Coverage](#maximum-safe-coverage): that release mode requires
+sweep semantics (`SWEEP_ANY_APPLICABLE`), while Complete output accepts both
+current rule strategies.
 
 Sweep mode first makes an independent optimization attempt for each applicable
 rule. `feasible_candidate_rules` records which rule-specific attempts worked.
@@ -679,6 +826,11 @@ Weight fallback is separate. Fallback keeps a group with another valid weight
 scope. Suppression removes one unsafe group. Full-run withholding prevents all
 normal output when no emitted candidate has verified Control 3 authorization.
 
+Maximum Safe Coverage is a later share-only release step: after structural
+suppression builds the Candidate Universe, it may authorize a verified Release
+Set and emit a Suppressed Publication View. That mode is documented under
+[Maximum Safe Coverage](#maximum-safe-coverage).
+
 External SQL must apply the same omissions and privacy checks. Multipliers alone
 do not authorize a category.
 
@@ -804,6 +956,8 @@ into `<output>_audit_package.zip`.
 - `docs/RESOURCE_MANAGEMENT.md` - lean mode, adaptive batching, and low-memory run guidance
 - `SETUP.md` - deployment/setup notes
 - `docs/CORE_TECHNICAL_DOC.md` - core engine technical reference
+- `docs/adr/0002-maximum-safe-coverage.md` - Maximum Safe Coverage release policy
+- `docs/autobench-onboarding.html` - analyst handbook (includes Privacy & Outputs)
 - `utils/CSV_VALIDATOR_README.md` - CSV validator details
 
 Generate a full agent/audit context bundle:

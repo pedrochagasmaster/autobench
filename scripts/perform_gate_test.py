@@ -20,6 +20,10 @@ import numpy as np
 from openpyxl import load_workbook
 
 from scripts.gate_expectations import resolve_expectation  # noqa: E402
+from scripts.gate_safe_coverage import (  # noqa: E402
+    OWNED_CASE_IDS,
+    run_owned_safe_coverage_cases,
+)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -694,27 +698,37 @@ class GateTestRunner:
         
         # 3. Load
         cases = self.load_cases()
-        total_loaded = len(cases)
+        owned_available = set(OWNED_CASE_IDS)
+        total_loaded = len(cases) + len(owned_available)
+        run_owned = True
         if self.only_case_ids:
             requested = set(self.only_case_ids)
-            available = {case["id"] for case in cases}
+            available = {case["id"] for case in cases} | owned_available
             missing = requested - available
             if missing:
                 logger.error("Unknown case id(s): %s", ", ".join(sorted(missing)))
                 sys.exit(1)
             cases = [case for case in cases if case["id"] in requested]
+            run_owned = bool(requested & owned_available)
             logger.warning("=" * 60)
             logger.warning(
                 "SMOKE RUN: --only filter active; this is NOT the mandatory full gate."
             )
             logger.warning(
                 "Running %d of %d cases: %s",
-                len(cases),
+                len(cases) + (len(requested & owned_available) if run_owned else 0),
                 total_loaded,
-                ", ".join(case["id"] for case in cases),
+                ", ".join(
+                    list(case["id"] for case in cases)
+                    + sorted(requested & owned_available)
+                ),
             )
             logger.warning("=" * 60)
-        logger.info(f"Loaded {len(cases)} cases.")
+        logger.info(
+            "Loaded %d generated cases (+ %d owned safe-coverage cases).",
+            len(cases),
+            len(owned_available) if run_owned else 0,
+        )
         gate_log_dir = (
             self.root_dir / self.output_dir / "outputs" / "logs"
         ).resolve()
@@ -782,7 +796,14 @@ class GateTestRunner:
             except Exception as e:
                 logger.error(f"Error processing {case_id}: {e}")
                 results["errors"] += 1
-                
+
+        # 5. Owned Maximum Safe Coverage cases (temp dirs only; never committed).
+        if run_owned:
+            owned = run_owned_safe_coverage_cases(only_case_ids=self.only_case_ids)
+            results["passed"] += owned["passed"]
+            results["failed"] += owned["failed"]
+            results["errors"] += owned["errors"]
+
         logger.info("-" * 40)
         logger.info(f"Summary: Passed {results['passed']}, Failed {results['failed']}, Errors {results['errors']}")
         if results['failed'] > 0 or results['errors'] > 0:

@@ -4,7 +4,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from scripts.gate_expectations import resolve_expectation
+from scripts.gate_safe_coverage import (
+    CASE_E2E_ID,
+    CASE_PARITY_ID,
+    OWNED_CASE_IDS,
+)
 from scripts.perform_gate_test import GateTestRunner
+
+
+def test_owned_safe_coverage_gate_case_ids_are_stable() -> None:
+    assert OWNED_CASE_IDS == (
+        CASE_E2E_ID,
+        CASE_PARITY_ID,
+    )
+    assert CASE_E2E_ID == "share_maximize_safe_coverage_getnet_shaped"
+    assert CASE_PARITY_ID == "share_maximize_safe_coverage_cross_interface_parity"
+
+
+def test_owned_safe_coverage_expectation_tokens_are_registered() -> None:
+    for token in (
+        "safe_coverage_proven_maximum",
+        "safe_coverage_cross_interface_parity",
+    ):
+        spec = resolve_expectation(token)
+        assert spec is not None
+        assert spec.token == token
+        assert spec.status == "enforced"
 
 
 def test_gate_command_parser_preserves_quoted_entity_names() -> None:
