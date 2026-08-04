@@ -8,6 +8,7 @@ DOCUMENT = Path("docs/autobench-onboarding.html")
 EXPECTED_PAGES = {
     "onboarding",
     "setup-support",
+    "faq",
     "presets-config",
     "advanced-optimization",
     "privacy-outputs",
@@ -67,6 +68,12 @@ def test_standalone_onboarding_has_no_filesystem_document_links() -> None:
         if not href.startswith(("#", "mailto:", "data:"))
     ]
     assert non_standalone == []
+
+
+def test_standalone_onboarding_does_not_mutate_browser_history() -> None:
+    source = DOCUMENT.read_text(encoding="utf-8")
+
+    assert "history.replaceState" not in source
 
 
 def test_standalone_onboarding_embeds_named_demo_download() -> None:

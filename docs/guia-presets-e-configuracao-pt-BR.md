@@ -775,6 +775,67 @@ Esse modo tende a melhorar a viabilidade local, mas deve ser sinalizado ao
 consumidor do relatório porque os resultados deixam de compartilhar um único
 vetor de pesos.
 
+### 11.5 Ler e tratar supressões
+
+Uma categoria ausente pode ser uma decisão de privacidade. O Autobench aplica
+a supressão depois da análise e antes de gravar os artefatos. A origem não é
+alterada.
+
+Há duas causas possíveis:
+
+1. `below_min_entities`: o grupo tem menos peers contribuintes que o mínimo da
+   regra ativa. O alvo não entra na contagem. Somente valores governados
+   positivos contam.
+2. `structurally_infeasible`: nenhum peso dentro dos limites configurados reduz
+   a participação dominante até o teto permitido.
+
+O mínimo de participantes depende da regra autorizadora:
+
+| Regra | Mínimo de peers contribuintes |
+| --- | ---: |
+| `5/25` | 5 |
+| `6/30` | 6 |
+| `7/35` | 7 |
+| `10/40` | 10 |
+| merchant `4/35` | 4 |
+
+O escopo também depende do tipo de análise:
+
+- **Share:** uma categoria insegura na métrica principal remove a linha
+  completa. Uma métrica secundária insegura pode ser omitida sem remover a
+  métrica principal.
+- **Taxa:** aprovação e fraude podem ter conjuntos visíveis diferentes. A
+  contagem usa o denominador governado. Para fraude de emissor, use clearing
+  spend. Poucos eventos de fraude, sozinhos, não causam a supressão.
+- **Tempo:** a supressão pode atingir uma categoria em um período. Um registro
+  sem período remove essa categoria de todos os períodos.
+
+A omissão é propagada para todas as saídas que poderiam revelar o grupo:
+
+- Abas de dimensão e métricas secundárias.
+- CSV balanceado e JSON.
+- Privacy Validation, Impact e comparação de presets.
+- Pacote de auditoria e artefato de publicação.
+- Diagnósticos de peers que aparecem somente em grupos suprimidos.
+
+Os metadados persistidos não guardam o nome da categoria suprimida. Eles guardam
+somente motivo, contagem de participantes, métrica ou tipo de saída. Essa regra
+impede que o aviso revele o próprio grupo protegido.
+
+No consumo do resultado:
+
+1. Leia a quantidade de supressões e o aviso geral em `Summary`.
+2. Trate o valor ausente como indisponível, nunca como zero.
+3. Não reconstrua a categoria com abas de diagnóstico ou categorias visíveis.
+4. Ao reutilizar pesos em SQL, aplique as mesmas supressões e verificações.
+5. Não confunda supressão com fallback. Fallback mantém o grupo com outros
+   pesos. Supressão remove o grupo inseguro.
+
+Se nenhum candidato receber autorização verificável do Control 3, não há
+supressão parcial. O Autobench retém todas as saídas normais. A exceção
+`accuracy_first` grava somente um workbook interno marcado como não publicável,
+quando todas as condições dessa postura forem atendidas.
+
 ## 12. Como validar uma configuração
 
 Não avalie uma configuração apenas pelo fato de o comando terminar. Verifique,
@@ -791,6 +852,8 @@ nesta ordem:
 6. **Subset Search:** dimensões testadas, retiradas e slack das tentativas.
 7. **Audit/config snapshot:** confirmação de que a configuração resolvida é a
    esperada.
+8. **Supressões:** quantidade registrada em `Summary`, diferenças entre saídas
+   de aprovação e fraude, e ausência dos grupos no CSV/JSON.
 
 Para comparar alternativas:
 

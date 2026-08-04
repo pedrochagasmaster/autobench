@@ -53,6 +53,9 @@ High-level pipeline:
   Per-dimension analysis (share/rate, BIC)
       |
       v
+  CategorySuppression -> remove unsafe groups, metrics, and identities
+      |
+      v
   ReportGenerator (Excel/CSV/JSON; publication and audit outputs)
 
 Key integration invariants:
@@ -166,6 +169,141 @@ Level 2 - Failure Modes and Recovery Paths
      uses identity weights (no reweighting).
 
 -------------------------------------------------------------------------------
+Level 2 - Category, Metric, and Output Suppression
+-------------------------------------------------------------------------------
+
+Suppression is a fail-closed output transformation. It runs after analysis and
+before reports, balanced CSV, JSON, impact, and comparison artifacts are built.
+It does not modify the input DataFrame or source file.
+
+### Suppression record types
+
+`core/category_suppression.py` creates three related record sets:
+
+1) `suppressed_categories`
+   - Applies to a complete dimension/category group.
+   - Share mode uses the primary weighting metric.
+   - A record can apply to one period or to every period.
+
+2) `suppressed_metric_categories`
+   - Applies to one governed metric inside a dimension/category group.
+   - It lets a safe primary metric remain while an unsafe secondary metric is
+     omitted.
+
+3) `suppressed_output_categories`
+   - Applies to one rate surface, currently `approval` or `fraud`.
+   - It lets one rate surface remain while another is omitted.
+
+Every record is scoped by dimension, category, and optional time period. Metric
+records also include the metric name. Output records also include the rate
+surface.
+
+### Suppression triggers
+
+There are exactly two category-suppression reasons:
+
+1) `below_min_entities`
+   - Exclude the target entity before counting.
+   - Count only peers with a positive value for the governed metric.
+   - Compare the count with the active rule minimum: 5, 6, 7, 10, or merchant
+     4.
+   - A null, zero, or non-positive value does not add a participant.
+
+2) `structurally_infeasible`
+   - Diagnostics compute each peer's minimum achievable share under the
+     configured weight bounds.
+   - The category is infeasible when that minimum remains above the active cap
+     plus tolerance.
+   - This reason applies to the primary weighting category. Metric-specific
+     suppression does not repeat the structural test.
+
+When both reasons apply to the same group, `below_min_entities` wins through
+deduplication.
+
+### Time behavior
+
+With a time column, participant checks run at two levels:
+
+- One check for each dimension/category/period group.
+- One check for the dimension/category group across all periods.
+
+A period record omits only that period. A record with no period omits the
+category from every period. Suppression does not apply directly to the internal
+`_TIME_TOTAL_` dimensions because only requested dimensions enter the category
+suppression pass.
+
+### Share behavior
+
+`weight_suppressions` uses the share primary metric. A matching record removes
+the complete category row from `artifacts.results`.
+
+Each configured secondary metric receives its own participant check. An unsafe
+secondary metric is omitted from that group while the primary result remains.
+If all groups suppress that metric, the complete secondary output column can be
+absent.
+
+### Rate behavior
+
+Rate weights use `total_col`. The same column is the governed privacy basis in
+the current rate pipeline. For issuer fraud and chargeback analysis, Control 3
+requires clearing spend in this field.
+
+- Approval output receives the complete `weight_suppressions` set. This set can
+  include both minimum-participant and structural-infeasibility records.
+- Fraud output receives metric suppression records for the governed privacy
+  basis. Fraud numerator sparsity alone does not trigger category suppression.
+- Secondary rate metrics receive independent metric-level suppression.
+
+The balanced export omits raw totals, balanced totals, numerators, rates, and
+impact fields when their rate surface is suppressed. It drops a CSV row when
+only dimension, category, and time identifiers remain.
+
+### Propagation to every output
+
+`apply_suppression_to_results` filters the in-memory share or rate result before
+the report model is built. The same suppression sets then reach:
+
+- Analysis dimension sheets.
+- Secondary Metrics.
+- Balanced CSV.
+- JSON output.
+- Privacy Validation.
+- Impact Detail and the recomputed Impact Summary.
+- Preset Comparison.
+- Audit packages and publication artifacts.
+
+`filter_suppressed_diagnostic_rows` removes any persisted diagnostic row that
+contains a suppressed dimension/category/time key. Structural Summary and
+Structural Detail are removed from the normal persisted diagnostic boundary.
+
+### Identity and metadata protection
+
+The output boundary builds `safe_peers` from peers that contribute a positive
+governed value to at least one emitted group. A peer that contributes only to
+suppressed groups is removed from peer-level diagnostics, including weights,
+methods, validation, and rank changes.
+
+Before persistence, detailed suppression records are reduced to reason,
+participant count, metric, or output type. Category names and peer identities
+are not retained in saved suppression metadata. The report receives one generic
+warning that governed output groups were omitted.
+
+### Suppression versus fallback and withholding
+
+- Weight fallback keeps a group and changes its valid weight scope.
+- Suppression removes one unsafe group or metric and keeps other safe output.
+- Full-run withholding denies every normal output sink when the emitted
+  candidate has no verified Control 3 authorization.
+- A consented `accuracy_first` exception can write one marked internal
+  diagnostic workbook. It does not authorize CSV, JSON, publication, or audit
+  packages.
+
+Consumers must treat an omitted value as unavailable. They must not replace it
+with zero, restore it from diagnostic data, or infer it from visible rollups.
+External SQL reuse must apply the same suppression decisions. Weight
+multipliers alone do not authorize an output group.
+
+-------------------------------------------------------------------------------
 Level 2 - Observability and Diagnostics
 -------------------------------------------------------------------------------
 Diagnostics are generated at multiple points:
@@ -174,7 +312,9 @@ Diagnostics are generated at multiple points:
 - Privacy validation: per-category compliance, including dynamic threshold notes.
 - Impact analysis: raw vs balanced effects (share and rate).
 
-These diagnostics feed both debug sheets and validation outputs.
+These diagnostics guide the run. The output boundary filters unsafe category
+and peer rows. It does not persist Structural Summary or Structural Detail in
+normal output.
 
 -------------------------------------------------------------------------------
 Level 2 - Performance and Determinism
@@ -204,6 +344,7 @@ Included files:
 - core/validation_runner.py
 - core/data_loader.py
 - core/category_builder.py
+- core/category_suppression.py
 - core/diagnostics_engine.py
 - core/privacy_validator.py
 - core/report_generator.py
@@ -237,7 +378,11 @@ Included files:
 5) Analyze dimensions
 - DimensionalAnalyzer computes per-dimension share or rate results, including balanced peer averages and Best-in-Class (BIC) percentiles.
 
-6) Produce reports
+6) Apply suppression
+- CategorySuppression removes unsafe category, metric, period, and identity
+  records from every in-memory result and persisted diagnostic frame.
+
+7) Produce reports
 - ReportGenerator writes Excel/CSV/JSON outputs and optional audit and publication workbooks.
 
 ## Interaction Model and Core Integration
@@ -769,10 +914,11 @@ Balanced peer rate (rate analysis):
 Secondary metrics:
   - Requested secondary metrics are rendered as supplemental balanced totals
     using the final peer multipliers from the primary analysis surface.
-  - They do not create independent privacy-compliance surfaces.
-  - The strict compliance verdict is based on the primary share metric or the
-    rate analysis denominator/numerator contract, plus input data quality and
-    final privacy validation.
+  - Each secondary metric receives its own minimum-participant suppression
+    check for every category and optional period.
+  - Share secondary metrics also enter emitted-output privacy revalidation.
+  - An unsafe secondary value is omitted without forcing a safe primary value
+    to disappear.
 
 Best-in-class (BIC):
   - Uses configured percentile (analysis.best_in_class_percentile).
@@ -815,7 +961,8 @@ Analysis workbook:
 - Privacy Validation: per-category compliance, including `_TIME_TOTAL_` rows for time-aware runs
 - Preset Comparison: preset and per-dimension comparison metrics (if enabled)
 - Impact Detail / Impact Summary: detailed and aggregated distortion or impact (if enabled)
-- Secondary Metrics: supplemental weighted context, not an independent compliance verdict surface
+- Secondary Metrics: supplemental weighted context with independent
+  minimum-participant suppression by metric/category/time
 - Data Quality: validation issues when input validation runs, including structured details and sample rows when available
 - Metadata: serialized runtime metadata and compact diagnostics references
 
@@ -825,6 +972,12 @@ Publication workbook:
 CSV/JSON:
 - CSV: either a single DataFrame or per-metric outputs; balanced totals are peer-weighted totals
 - JSON: metadata + results as structured records
+- Both formats receive the same category, metric, time, and identity suppression
+  before serialization.
+
+All listed analysis sheets are subject to suppression. A sheet can omit rows,
+cells, columns, periods, or peer records. The Summary sheet keeps only safe
+counts, reasons, and a generic warning. It does not identify a hidden category.
 
 ## Preset and Config Improvement Opportunities (Core-Relevant)
 

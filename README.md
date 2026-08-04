@@ -618,8 +618,9 @@ Choose the output contract before running:
 Main output is Excel (`.xlsx`), optionally with balanced CSV. Set
 `--report-format json` (or `output.format: json` in config) to also write a
 machine-readable `.json` sidecar beside the analysis workbook; the JSON is
-analysis-grade and not publication-redacted. Manual sheet deletion does not
-replace publication sanitization and validation.
+analysis-grade and not publication-redacted. Category and metric suppression
+still applies before JSON creation. Manual sheet deletion does not replace
+publication sanitization and validation.
 
 All of these are benchmark-bearing outputs. A hard Control 3 numeric-rule,
 evidence, governed-basis, or mandatory-overlay denial withholds every one of
@@ -636,9 +637,49 @@ Common sheets:
 Balanced CSV is useful for BI ingestion (Power BI, Tableau, pipelines).
 
 Secondary metrics requested with `--secondary-metrics` are exported as
-supplemental weighted context using the final peer weights. They are not
-independent privacy-compliance surfaces; the compliance verdict is based on the
-primary share metric or rate denominator/numerator contract for the run.
+supplemental weighted context using the final peer weights. Each secondary
+metric receives its own minimum-participant check. Autobench can omit an unsafe
+secondary metric while keeping the primary metric.
+
+### Category and metric suppression
+
+Autobench can omit unsafe output groups while keeping safe groups. This process
+does not change the source data.
+
+Suppression has two triggers:
+
+- `below_min_entities`: after excluding the target, fewer positive contributors
+  remain than the active rule requires.
+- `structurally_infeasible`: no weight combination inside the configured bounds
+  can reduce a dominant peer below the active cap.
+
+The active minimum is 5, 6, 7, 10, or merchant 4. With a time column, the check
+runs for each category-period and for the category across all periods. An
+all-period suppression removes that category from every period.
+
+Share analysis removes a complete category when its primary metric is unsafe.
+It can omit one secondary metric while keeping other safe metrics. Rate analysis
+can omit approval or fraud separately. The rate participant check uses the
+governed denominator. Issuer fraud uses clearing spend, not the fraud numerator.
+
+Suppression propagates to every saved representation of that group:
+
+- Dimension sheets and Secondary Metrics.
+- Balanced CSV and JSON.
+- Privacy Validation, Impact, and Preset Comparison.
+- Audit packages and publication artifacts.
+- Peer diagnostics when a peer contributes only to suppressed groups.
+
+Saved warnings and metadata do not retain the hidden category name. They retain
+only a generic warning and safe suppression facts. Treat an omitted value as
+unavailable. Do not replace it with zero or infer it from visible categories.
+
+Weight fallback is separate. Fallback keeps a group with another valid weight
+scope. Suppression removes one unsafe group. Full-run withholding prevents all
+normal output when no emitted candidate has verified Control 3 authorization.
+
+External SQL must apply the same omissions and privacy checks. Multipliers alone
+do not authorize a category.
 
 ## Excel Sheet Guide
 
@@ -665,9 +706,8 @@ Optional diagnostic sheets (appear when enabled or triggered):
   - Use for audit trails and deep validation.
 - `Privacy Validation` (debug)
   - Per-category compliance checks and concentration caps.
-- `Structural Summary` / `Structural Detail`
-  - Buckets that are infeasible under strict caps.
-  - Useful for explaining unavoidable residual violations.
+- Structural diagnostics are used during analysis but are removed from the
+  normal persisted output boundary. They can identify unsafe groups.
 - `Subset Search`
   - Logs subset search attempts when global LP is infeasible.
 - `Impact Summary` / `Impact Detail` (analyze impact)
