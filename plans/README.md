@@ -9,7 +9,7 @@ status row when finished.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | IN PROGRESS |
-| 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | IN PROGRESS |
+| 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | DONE |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.
