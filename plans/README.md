@@ -10,7 +10,7 @@ status row when finished.
 |------|-------|----------|--------|------------|--------|
 | 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | IN PROGRESS |
 | 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | DONE |
-| 003 | Scale the Maximum Safe Coverage solver | P0 | L | 002 | IN PROGRESS |
+| 003 | Scale the Maximum Safe Coverage solver | P0 | L | 002 | BLOCKED: Getnet 2025Q1 Stage 1 exceeds the 15-minute STOP limit |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.
