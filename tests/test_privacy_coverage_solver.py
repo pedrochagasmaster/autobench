@@ -25,13 +25,22 @@ from core.privacy_coverage import (
 )
 from core.privacy_coverage_solver import (
     SafeCoverageSolverError,
+    _optimize_safe_coverage_scipy_oracle,
     optimize_safe_coverage,
     weighted_shares,
 )
+from core.privacy_coverage_verifier import (
+    build_coverage_certificate,
+    verify_safe_coverage_result,
+)
+from core.privacy_policy import PrivacyPolicy
 from core.privacy_rules import evaluate_rule
+from tests.fixtures.production_scale_coverage import build_production_scale_universe
 from tests.fixtures.safe_coverage_fixture import (
     build_safe_coverage_getnet_shaped_df,
 )
+
+_RULE_SET_DIGEST = PrivacyPolicy.rule_set_digest()
 
 
 _FIXTURE_PEERS: Tuple[str, ...] = (
@@ -281,32 +290,26 @@ def test_mocked_nonzero_gap_flags_unproven(monkeypatch) -> None:
     """Simulate a HiGHS response with nonzero mip_gap and assert unproven."""
     from core import privacy_coverage_solver as solver_module
 
-    real_milp = solver_module.milp
+    real_solve = solver_module._solve_highs_stage
     call_count = {"n": 0}
 
-    def flaky_milp(*args, **kwargs):
+    def flaky_highs_stage(*args, **kwargs):
         call_count["n"] += 1
-        res = real_milp(*args, **kwargs)
+        res = real_solve(*args, **kwargs)
         if call_count["n"] == 1:
             # Tamper with the stage 1 proof evidence.
-            try:
-                res.mip_gap = 0.5
-            except (AttributeError, TypeError):
-                # Fall back to a light shim so tests remain portable.
-                class _Shim:
-                    pass
-
-                shim = _Shim()
-                for name in (
-                    "status", "success", "x", "fun",
-                    "mip_dual_bound", "mip_gap",
-                ):
-                    setattr(shim, name, getattr(res, name))
-                shim.mip_gap = 0.5
-                res = shim
+            return SimpleNamespace(
+                status=getattr(res, "status", 0),
+                success=getattr(res, "success", True),
+                x=getattr(res, "x", None),
+                fun=getattr(res, "fun", None),
+                mip_dual_bound=getattr(res, "mip_dual_bound", None),
+                mip_gap=0.5,
+                highs_version=getattr(res, "highs_version", "1.15.1"),
+            )
         return res
 
-    monkeypatch.setattr(solver_module, "milp", flaky_milp)
+    monkeypatch.setattr(solver_module, "_solve_highs_stage", flaky_highs_stage)
 
     universe = _fixture_universe()
     result = _run_solver(universe)
@@ -324,9 +327,9 @@ def test_mocked_stage1_timeout_fails_closed(monkeypatch) -> None:
 
     call_count = {"n": 0}
 
-    def timeout_milp(*args, **kwargs):
+    def timeout_highs_stage(*args, **kwargs):
         call_count["n"] += 1
-        # SciPy/HiGHS status 5 maps to time_limit via ``_classify_status``.
+        # Status 5 maps to time_limit via ``_classify_status``.
         return SimpleNamespace(
             status=5,
             success=False,
@@ -334,9 +337,10 @@ def test_mocked_stage1_timeout_fails_closed(monkeypatch) -> None:
             fun=None,
             mip_dual_bound=None,
             mip_gap=None,
+            highs_version="1.15.1",
         )
 
-    monkeypatch.setattr(solver_module, "milp", timeout_milp)
+    monkeypatch.setattr(solver_module, "_solve_highs_stage", timeout_highs_stage)
 
     result = _run_solver(_fixture_universe())
     assert result.solver_state in {"time_limit", "unproven_maximum", "iteration_limit"}
@@ -353,7 +357,7 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
 
     call_count = {"n": 0}
 
-    def infeasible_milp(*args, **kwargs):
+    def infeasible_highs_stage(*args, **kwargs):
         call_count["n"] += 1
         return SimpleNamespace(
             status=2,
@@ -362,9 +366,10 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
             fun=None,
             mip_dual_bound=None,
             mip_gap=None,
+            highs_version="1.15.1",
         )
 
-    monkeypatch.setattr(solver_module, "milp", infeasible_milp)
+    monkeypatch.setattr(solver_module, "_solve_highs_stage", infeasible_highs_stage)
 
     result = _run_solver(_fixture_universe())
     assert result.solver_state == "infeasible"
@@ -385,6 +390,7 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
                 fun=0.0,
                 mip_dual_bound=0.0,
                 mip_gap=0.0,
+                highs_version="1.15.1",
             ),
             id="missing_x",
         ),
@@ -396,6 +402,7 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
                 fun=float("nan"),
                 mip_dual_bound=0.0,
                 mip_gap=0.0,
+                highs_version="1.15.1",
             ),
             id="nonfinite_fun",
         ),
@@ -407,6 +414,7 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
                 fun=0.0,
                 mip_dual_bound=0.0,
                 mip_gap=0.0,
+                highs_version="1.15.1",
             ),
             id="wrong_shape_x",
         ),
@@ -415,16 +423,16 @@ def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
 def test_mocked_stage1_malformed_output_fails_closed(
     monkeypatch, malformed_factory
 ) -> None:
-    """Malformed Stage 1 milp output must surface as solver_error, not a crash."""
+    """Malformed Stage 1 HiGHS seam output must surface as solver_error, not a crash."""
     from core import privacy_coverage_solver as solver_module
 
     call_count = {"n": 0}
 
-    def malformed_milp(*args, **kwargs):
+    def malformed_highs_stage(*args, **kwargs):
         call_count["n"] += 1
         return malformed_factory()
 
-    monkeypatch.setattr(solver_module, "milp", malformed_milp)
+    monkeypatch.setattr(solver_module, "_solve_highs_stage", malformed_highs_stage)
 
     result = _run_solver(_fixture_universe())
     assert result.solver_state == "solver_error"
@@ -491,3 +499,232 @@ def test_solver_rejects_invalid_weight_bounds() -> None:
         _run_solver(universe, min_weight=1.5, max_weight=2.0)
     with pytest.raises(SafeCoverageSolverError):
         _run_solver(universe, min_weight=0.5, max_weight=0.9)
+
+
+def _run_parity_solver(
+    runner,
+    universe: Tuple[PublicationUnit, ...],
+    *,
+    peers: Tuple[str, ...] = _FIXTURE_PEERS,
+    min_weight: float = 0.5,
+    max_weight: float = 2.0,
+    citibank_entity_name: str | None = None,
+) -> SafeCoverageResult:
+    return runner(
+        universe,
+        peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        rule_configs={},
+        citibank_entity_name=citibank_entity_name,
+        input_digest=_DIGEST,
+        configuration_digest=_DIGEST,
+        policy_version="v5",
+        policy_source="docs/control-3-v5.md",
+        rule_set_digest=_RULE_SET_DIGEST,
+        candidate_universe_digest=candidate_universe_digest(universe),
+    )
+
+
+def _run_scipy_oracle(
+    universe: Tuple[PublicationUnit, ...],
+    *,
+    peers: Tuple[str, ...] = _FIXTURE_PEERS,
+    min_weight: float = 0.5,
+    max_weight: float = 2.0,
+    citibank_entity_name: str | None = None,
+) -> SafeCoverageResult:
+    return _run_parity_solver(
+        _optimize_safe_coverage_scipy_oracle,
+        universe,
+        peers=peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        citibank_entity_name=citibank_entity_name,
+    )
+
+
+def _run_highs_for_parity(
+    universe: Tuple[PublicationUnit, ...],
+    *,
+    peers: Tuple[str, ...] = _FIXTURE_PEERS,
+    min_weight: float = 0.5,
+    max_weight: float = 2.0,
+    citibank_entity_name: str | None = None,
+) -> SafeCoverageResult:
+    return _run_parity_solver(
+        optimize_safe_coverage,
+        universe,
+        peers=peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        citibank_entity_name=citibank_entity_name,
+    )
+
+
+def _assert_highs_stage1_proof(result: SafeCoverageResult) -> None:
+    assert result.solver_state == "optimal"
+    assert result.mip_gap == 0.0
+    assert result.mip_dual_bound == float(result.primary_objective_value)
+    assert result.solver_name == "highspy.Highs"
+
+
+def _assert_highs_scipy_parity(
+    highs: SafeCoverageResult,
+    scipy_result: SafeCoverageResult,
+    *,
+    min_weight: float,
+    max_weight: float,
+) -> None:
+    assert highs.release_set == scipy_result.release_set
+    assert highs.suppression_set == scipy_result.suppression_set
+    assert dict(highs.authorizing_rules) == dict(scipy_result.authorizing_rules)
+    assert highs.primary_objective_value == scipy_result.primary_objective_value
+    assert highs.later_objective_values == pytest.approx(
+        scipy_result.later_objective_values, rel=1e-9, abs=1e-9
+    )
+    assert highs.release_mask_digest == scipy_result.release_mask_digest
+    for peer in highs.global_weights:
+        assert highs.global_weights[peer] == pytest.approx(
+            scipy_result.global_weights[peer], rel=1e-9, abs=1e-9
+        )
+
+    highs_verify = verify_safe_coverage_result(
+        highs, min_weight=min_weight, max_weight=max_weight
+    )
+    scipy_verify = verify_safe_coverage_result(
+        scipy_result, min_weight=min_weight, max_weight=max_weight
+    )
+    assert highs_verify.passed
+    assert scipy_verify.passed
+    assert highs_verify.computed_release_mask_digest == highs.release_mask_digest
+    assert scipy_verify.computed_release_mask_digest == scipy_result.release_mask_digest
+
+    artifact_hashes = {"report": _DIGEST}
+    highs_cert = build_coverage_certificate(highs, artifact_hashes=artifact_hashes)
+    scipy_cert = build_coverage_certificate(
+        scipy_result, artifact_hashes=artifact_hashes
+    )
+    # Certificate digest embeds solver_name/solver_version; compare the rest.
+    assert highs_cert.solver_name != scipy_cert.solver_name
+    assert highs_cert.privacy_release_mode == scipy_cert.privacy_release_mode
+    assert highs_cert.candidate_unit_count == scipy_cert.candidate_unit_count
+    assert highs_cert.released_unit_count == scipy_cert.released_unit_count
+    assert highs_cert.suppressed_unit_count == scipy_cert.suppressed_unit_count
+    assert highs_cert.coverage_percentage == pytest.approx(
+        scipy_cert.coverage_percentage
+    )
+    assert highs_cert.visible_publication_unit_keys == (
+        scipy_cert.visible_publication_unit_keys
+    )
+    assert dict(highs_cert.authorizing_rules) == dict(scipy_cert.authorizing_rules)
+    assert highs_cert.global_weights is not None
+    assert scipy_cert.global_weights is not None
+    for peer in highs_cert.global_weights:
+        assert highs_cert.global_weights[peer] == pytest.approx(
+            scipy_cert.global_weights[peer], rel=1e-9, abs=1e-9
+        )
+    assert highs_cert.policy_version == scipy_cert.policy_version
+    assert highs_cert.policy_source == scipy_cert.policy_source
+    assert highs_cert.rule_set_digest == scipy_cert.rule_set_digest
+    assert highs_cert.primary_objective_value == scipy_cert.primary_objective_value
+    assert highs_cert.mip_dual_bound == pytest.approx(scipy_cert.mip_dual_bound)
+    assert highs_cert.mip_gap == pytest.approx(scipy_cert.mip_gap)
+    assert highs_cert.solver_state == scipy_cert.solver_state
+    assert highs_cert.artifact_hashes == scipy_cert.artifact_hashes
+
+
+def test_highs_scipy_parity_on_small_fixture() -> None:
+    universe = _fixture_universe()
+    highs_first = _run_highs_for_parity(universe)
+    highs_second = _run_highs_for_parity(universe)
+    scipy_result = _run_scipy_oracle(universe)
+
+    _assert_highs_stage1_proof(highs_first)
+    _assert_highs_stage1_proof(highs_second)
+    assert highs_first.release_mask_digest == highs_second.release_mask_digest
+    highs_cert_a = build_coverage_certificate(
+        highs_first, artifact_hashes={"report": _DIGEST}
+    )
+    highs_cert_b = build_coverage_certificate(
+        highs_second, artifact_hashes={"report": _DIGEST}
+    )
+    assert highs_cert_a.certificate_digest == highs_cert_b.certificate_digest
+
+    _assert_highs_scipy_parity(
+        highs_first, scipy_result, min_weight=0.5, max_weight=2.0
+    )
+    assert highs_first.verifier_result == "not_run"
+    assert scipy_result.verifier_result == "not_run"
+
+
+def test_highs_scipy_parity_on_all_safe_and_empty_release_fixtures() -> None:
+    df = build_safe_coverage_getnet_shaped_df()
+    safe_df = df[df["sector"] == "SectorY"].reset_index(drop=True)
+    safe_universe = build_candidate_universe(
+        safe_df,
+        entity_col="issuer_name",
+        metric="transaction_amount",
+        secondary_metrics=["transaction_count", "merchant_count"],
+        dimensions=["sector"],
+        time_col="quarter",
+    )
+    for min_w, max_w in ((1.0, 1.0), (0.5, 2.0)):
+        highs = _run_highs_for_parity(safe_universe, min_weight=min_w, max_weight=max_w)
+        scipy_result = _run_scipy_oracle(
+            safe_universe, min_weight=min_w, max_weight=max_w
+        )
+        _assert_highs_stage1_proof(highs)
+        _assert_highs_scipy_parity(
+            highs, scipy_result, min_weight=min_w, max_weight=max_w
+        )
+
+    universe = _fixture_universe()
+    unsafe = tuple(
+        unit
+        for unit in universe
+        if unit.category.startswith(("SectorX_", "SectorZ_", "South_"))
+    )
+    highs_empty = _run_highs_for_parity(unsafe, min_weight=1.0, max_weight=1.0)
+    scipy_empty = _run_scipy_oracle(unsafe, min_weight=1.0, max_weight=1.0)
+    _assert_highs_stage1_proof(highs_empty)
+    assert highs_empty.primary_objective_value == 0
+    _assert_highs_scipy_parity(
+        highs_empty, scipy_empty, min_weight=1.0, max_weight=1.0
+    )
+
+
+@pytest.mark.slow
+def test_highs_scipy_parity_on_production_scale_fixture() -> None:
+    """Sanitized 242x33x3 parity: HiGHS public path vs SciPy oracle (~12s/solve)."""
+    universe, peers, min_weight, max_weight = build_production_scale_universe()
+    highs_first = _run_highs_for_parity(
+        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
+    )
+    highs_second = _run_highs_for_parity(
+        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
+    )
+    scipy_result = _run_scipy_oracle(
+        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
+    )
+
+    _assert_highs_stage1_proof(highs_first)
+    _assert_highs_stage1_proof(highs_second)
+    assert highs_first.release_mask_digest == highs_second.release_mask_digest
+    cert_a = build_coverage_certificate(
+        highs_first, artifact_hashes={"report": _DIGEST}
+    )
+    cert_b = build_coverage_certificate(
+        highs_second, artifact_hashes={"report": _DIGEST}
+    )
+    assert cert_a.certificate_digest == cert_b.certificate_digest
+
+    _assert_highs_scipy_parity(
+        highs_first,
+        scipy_result,
+        min_weight=min_weight,
+        max_weight=max_weight,
+    )
+    assert verify_safe_coverage_result(
+        highs_first, min_weight=min_weight, max_weight=max_weight
+    ).passed

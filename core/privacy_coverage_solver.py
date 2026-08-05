@@ -1,9 +1,13 @@
-"""Maximum Safe Coverage MILP solver using ``scipy.optimize.milp``.
+"""Maximum Safe Coverage staged MILP solver (direct highspy).
 
 Owns the staged mixed-integer solve for
 ``PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE``. Sparse model compilation lives in
 ``core.privacy_coverage_model``; this Module keeps the public
 ``optimize_safe_coverage`` contract and proof / fail-closed behavior.
+
+The public path uses ``core.privacy_coverage_highs`` (Strategy A: direct exact
+maximization for Stage 1 with a complete neutral MIP start). SciPy
+``milp`` remains importable as a private test oracle only.
 
 The independent verifier remains a separate Module and must recalculate every
 policy check from the original inputs and the final global weight vector.
@@ -18,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -47,7 +53,8 @@ __all__ = [
     "weighted_shares",
 ]
 
-_SOLVER_NAME = "scipy.optimize.milp"
+_SOLVER_NAME = "highspy.Highs"
+_SCIPY_ORACLE_SOLVER_NAME = "scipy.optimize.milp"
 _STATE_OPTIMAL = "optimal"
 _STATE_INFEASIBLE = "infeasible"
 _STATE_UNBOUNDED = "unbounded"
@@ -55,6 +62,10 @@ _STATE_TIME_LIMIT = "time_limit"
 _STATE_ITERATION_LIMIT = "iteration_limit"
 _STATE_ERROR = "solver_error"
 _STATE_UNPROVEN = "unproven_maximum"
+
+# Private seam: ``"highs"`` is the public path; ``"scipy"`` is the test oracle.
+_BACKEND_HIGHS = "highs"
+_BACKEND_SCIPY = "scipy"
 
 # Stage 2/3 lexicographic slack. Chosen from a single documented solver
 # feasibility scale (not from a privacy epsilon). Wide enough that HiGHS
@@ -238,6 +249,8 @@ def _empty_release_result(
     policy_source: str,
     rule_set_digest: str,
     candidate_universe_digest: str,
+    solver_name: str,
+    solver_version: str,
 ) -> SafeCoverageResult:
     """Return a valid partition with zero releases for failure or K=0 paths."""
     keys = tuple(unit.internal_key for unit in universe)
@@ -253,8 +266,8 @@ def _empty_release_result(
         solver_state=solver_state,
         mip_dual_bound=float(mip_dual_bound),
         mip_gap=float(mip_gap),
-        solver_name=_SOLVER_NAME,
-        solver_version=str(scipy.__version__),
+        solver_name=solver_name,
+        solver_version=solver_version,
         input_digest=input_digest,
         configuration_digest=configuration_digest,
         policy_version=policy_version,
@@ -275,8 +288,15 @@ def _solve_stage(
     bounds_ub: Optional[np.ndarray] = None,
     constraints_lb: Optional[np.ndarray] = None,
     constraints_ub: Optional[np.ndarray] = None,
+    maximize: bool = False,
+    mip_start: Optional[np.ndarray] = None,
 ) -> Any:
-    """Run one ``milp`` call with a single CSC ``LinearConstraint``."""
+    """Run one SciPy ``milp`` call with a single CSC ``LinearConstraint``.
+
+    ``maximize`` and ``mip_start`` are accepted for seam parity with the HiGHS
+    path; SciPy milp ignores both (minimize-sense objectives only).
+    """
+    del maximize, mip_start
     lb = stage.bounds_lb if bounds_lb is None else bounds_lb
     ub = stage.bounds_ub if bounds_ub is None else bounds_ub
     row_lb = stage.constraints_lb if constraints_lb is None else constraints_lb
@@ -289,6 +309,176 @@ def _solve_stage(
         constraints=constraint,
         options=dict(options),
     )
+
+
+def _highs_time_limit(options: Mapping[str, Any]) -> Optional[float]:
+    raw = options.get("time_limit")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0.0:
+        return None
+    return value
+
+
+def _solve_highs_stage(
+    stage: StageConstraintSet,
+    *,
+    objective: np.ndarray,
+    options: Mapping[str, Any],
+    bounds_lb: Optional[np.ndarray] = None,
+    bounds_ub: Optional[np.ndarray] = None,
+    constraints_lb: Optional[np.ndarray] = None,
+    constraints_ub: Optional[np.ndarray] = None,
+    maximize: bool = False,
+    mip_start: Optional[np.ndarray] = None,
+) -> Any:
+    """Run one HiGHS stage and return a SciPy-milp-shaped namespace.
+
+    Patch point for fail-closed Stage-1 fault tests. Objective vectors use the
+    same numeric sense as the ``maximize`` flag (positive costs when maximizing).
+    Returned ``fun`` / ``mip_dual_bound`` always use SciPy minimize-sense so the
+    shared ``_stage1_proof`` and later-stage readers stay unchanged.
+    """
+    # Circular import: privacy_coverage_highs imports weighted_shares from here.
+    from core.privacy_coverage_highs import HighsCoverageSession
+
+    stage_for_solve = replace(
+        stage,
+        objective=np.asarray(objective, dtype=float),
+        bounds_lb=stage.bounds_lb if bounds_lb is None else np.asarray(bounds_lb, dtype=float),
+        bounds_ub=stage.bounds_ub if bounds_ub is None else np.asarray(bounds_ub, dtype=float),
+        constraints_lb=(
+            stage.constraints_lb
+            if constraints_lb is None
+            else np.asarray(constraints_lb, dtype=float)
+        ),
+        constraints_ub=(
+            stage.constraints_ub
+            if constraints_ub is None
+            else np.asarray(constraints_ub, dtype=float)
+        ),
+    )
+    session = HighsCoverageSession(
+        stage_for_solve,
+        time_limit=_highs_time_limit(options),
+        maximize=bool(maximize),
+    )
+    if mip_start is not None:
+        session.set_complete_start(np.asarray(mip_start, dtype=float))
+    result = session.solve()
+
+    def _minimize_sense(value: float) -> float:
+        return -float(value) if maximize else float(value)
+
+    obj = float(result.objective_value)
+    dual = float(result.mip_dual_bound)
+    gap = float(result.mip_gap)
+    x_vec = np.asarray(result.column_values, dtype=float)
+
+    if result.model_status == _STATE_OPTIMAL:
+        return SimpleNamespace(
+            status=0,
+            success=True,
+            x=x_vec,
+            fun=_minimize_sense(obj),
+            mip_dual_bound=_minimize_sense(dual),
+            mip_gap=gap,
+            highs_version=session.highs_version,
+        )
+    if result.model_status == _STATE_INFEASIBLE:
+        return SimpleNamespace(
+            status=2,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+            highs_version=session.highs_version,
+        )
+    if result.model_status == _STATE_UNBOUNDED:
+        return SimpleNamespace(
+            status=3,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+            highs_version=session.highs_version,
+        )
+    if result.model_status == _STATE_TIME_LIMIT:
+        return SimpleNamespace(
+            status=5,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+            highs_version=session.highs_version,
+        )
+    if result.model_status == _STATE_ITERATION_LIMIT:
+        return SimpleNamespace(
+            status=1,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+            highs_version=session.highs_version,
+        )
+    if result.model_status == _STATE_UNPROVEN:
+        # Preserve nonzero gaps for the shared Stage-1 proof gate. Other
+        # unproven causes clear the dual so ``_stage1_proof`` fails closed.
+        fun_val = _minimize_sense(obj) if math.isfinite(obj) else None
+        if math.isfinite(gap) and gap != 0.0 and fun_val is not None:
+            dual_val: Optional[float] = (
+                _minimize_sense(dual) if math.isfinite(dual) else None
+            )
+            gap_val: Optional[float] = gap
+        else:
+            dual_val = None
+            gap_val = gap if math.isfinite(gap) else None
+        return SimpleNamespace(
+            status=0,
+            success=True,
+            x=x_vec if x_vec.shape == (stage.n_vars,) else None,
+            fun=fun_val if fun_val is not None else 0.0,
+            mip_dual_bound=dual_val,
+            mip_gap=gap_val,
+            highs_version=session.highs_version,
+        )
+    return SimpleNamespace(
+        status=4,
+        success=False,
+        x=None,
+        fun=None,
+        mip_dual_bound=None,
+        mip_gap=None,
+        highs_version=session.highs_version,
+    )
+
+
+def _stage_solver(backend: str):
+    if backend == _BACKEND_SCIPY:
+        return _solve_stage
+    if backend == _BACKEND_HIGHS:
+        return _solve_highs_stage
+    raise RuntimeError(f"unknown coverage solver backend: {backend!r}")
+
+
+def _solver_identity(backend: str, stage_result: Any = None) -> Tuple[str, str]:
+    if backend == _BACKEND_SCIPY:
+        return _SCIPY_ORACLE_SOLVER_NAME, str(scipy.__version__)
+    version = getattr(stage_result, "highs_version", None)
+    if not version:
+        # Circular import: privacy_coverage_highs imports weighted_shares from here.
+        from highspy import Highs
+
+        version = str(Highs().version())
+    return _SOLVER_NAME, str(version)
 
 
 def _validate_result(res: Any, n_vars: int) -> Optional[str]:
@@ -464,6 +654,8 @@ def _finalize_result(
     policy_source: str,
     rule_set_digest: str,
     candidate_universe_digest: str,
+    solver_name: str,
+    solver_version: str,
 ) -> SafeCoverageResult:
     released_sorted = tuple(sorted(released_keys, key=canonical_key))
     suppressed_sorted = tuple(sorted(suppressed_keys, key=canonical_key))
@@ -510,8 +702,8 @@ def _finalize_result(
         solver_state=solver_state,
         mip_dual_bound=float(mip_dual_bound),
         mip_gap=float(mip_gap),
-        solver_name=_SOLVER_NAME,
-        solver_version=str(scipy.__version__),
+        solver_name=solver_name,
+        solver_version=solver_version,
         input_digest=input_digest,
         configuration_digest=configuration_digest,
         policy_version=policy_version,
@@ -542,6 +734,8 @@ def _finalize_from_partial_x(
     policy_source: str,
     rule_set_digest: str,
     candidate_universe_digest: str,
+    solver_name: str,
+    solver_version: str,
 ) -> SafeCoverageResult:
     weights = _weights_from_x(
         x_vec,
@@ -581,6 +775,8 @@ def _finalize_from_partial_x(
         policy_source=policy_source,
         rule_set_digest=rule_set_digest,
         candidate_universe_digest=candidate_universe_digest,
+        solver_name=solver_name,
+        solver_version=solver_version,
     )
 
 
@@ -619,6 +815,77 @@ def optimize_safe_coverage(
     ``verifier_result='not_run'``. The caller must invoke the independent
     verifier before authorizing any client sink.
     """
+    return _optimize_safe_coverage_impl(
+        candidate_universe,
+        governed_peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        rule_configs=rule_configs,
+        citibank_entity_name=citibank_entity_name,
+        input_digest=input_digest,
+        configuration_digest=configuration_digest,
+        policy_version=policy_version,
+        policy_source=policy_source,
+        rule_set_digest=rule_set_digest,
+        candidate_universe_digest=candidate_universe_digest,
+        solver_options=solver_options,
+        backend=_BACKEND_HIGHS,
+    )
+
+
+def _optimize_safe_coverage_scipy_oracle(
+    candidate_universe: Tuple[PublicationUnit, ...],
+    governed_peers: Tuple[str, ...],
+    *,
+    min_weight: float,
+    max_weight: float,
+    rule_configs: Mapping[str, Mapping[str, Any]],
+    citibank_entity_name: Optional[str],
+    input_digest: str,
+    configuration_digest: str,
+    policy_version: str,
+    policy_source: str,
+    rule_set_digest: str,
+    candidate_universe_digest: str,
+    solver_options: Optional[Mapping[str, Any]] = None,
+) -> SafeCoverageResult:
+    """Private SciPy ``milp`` oracle for sanitized HiGHS parity tests only."""
+    return _optimize_safe_coverage_impl(
+        candidate_universe,
+        governed_peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        rule_configs=rule_configs,
+        citibank_entity_name=citibank_entity_name,
+        input_digest=input_digest,
+        configuration_digest=configuration_digest,
+        policy_version=policy_version,
+        policy_source=policy_source,
+        rule_set_digest=rule_set_digest,
+        candidate_universe_digest=candidate_universe_digest,
+        solver_options=solver_options,
+        backend=_BACKEND_SCIPY,
+    )
+
+
+def _optimize_safe_coverage_impl(
+    candidate_universe: Tuple[PublicationUnit, ...],
+    governed_peers: Tuple[str, ...],
+    *,
+    min_weight: float,
+    max_weight: float,
+    rule_configs: Mapping[str, Mapping[str, Any]],
+    citibank_entity_name: Optional[str],
+    input_digest: str,
+    configuration_digest: str,
+    policy_version: str,
+    policy_source: str,
+    rule_set_digest: str,
+    candidate_universe_digest: str,
+    solver_options: Optional[Mapping[str, Any]] = None,
+    backend: str = _BACKEND_HIGHS,
+) -> SafeCoverageResult:
+    """Shared staged solve used by the public HiGHS path and SciPy oracle."""
     if not math.isfinite(min_weight) or min_weight <= 0.0:
         raise SafeCoverageSolverError(
             "min_weight must be a positive finite value"
@@ -644,6 +911,7 @@ def optimize_safe_coverage(
 
     sanitized_options = _sanitize_solver_options(solver_options)
     cert_options = _certifying_options(sanitized_options)
+    solve_stage = _stage_solver(backend)
 
     sorted_universe = tuple(
         sorted(
@@ -703,100 +971,124 @@ def optimize_safe_coverage(
         enable_structural_presolve=True,
     )
 
-    # ---------------- Stage 1: maximize sum r_u ----------------
-    stage1 = model.stage1
-    result1 = _solve_stage(stage1, objective=stage1.objective, options=cert_options)
-    stage1_failure = _validate_result(result1, stage1.n_vars)
-    if stage1_failure is not None:
+    solver_name, solver_version = _solver_identity(backend)
+
+    def _empty(
+        *,
+        solver_state: str,
+        mip_dual_bound: float = 0.0,
+        mip_gap: float = 0.0,
+    ) -> SafeCoverageResult:
         return _empty_release_result(
             universe=sorted_universe,
             peers=peers,
-            solver_state=stage1_failure,
-            mip_dual_bound=0.0,
-            mip_gap=0.0,
+            solver_state=solver_state,
+            mip_dual_bound=mip_dual_bound,
+            mip_gap=mip_gap,
             input_digest=input_digest,
             configuration_digest=configuration_digest,
             policy_version=policy_version,
             policy_source=policy_source,
             rule_set_digest=rule_set_digest,
             candidate_universe_digest=candidate_universe_digest,
+            solver_name=solver_name,
+            solver_version=solver_version,
         )
 
-    x1 = np.asarray(result1.x, dtype=float)
-    sum_r_stage1 = -float(result1.fun)
-    if not math.isfinite(sum_r_stage1):
-        return _empty_release_result(
-            universe=sorted_universe,
-            peers=peers,
-            solver_state=_STATE_ERROR,
-            mip_dual_bound=0.0,
-            mip_gap=0.0,
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
-        )
-
-    proven, k_rounded, dual_bound_normalized, mip_gap_value = _stage1_proof(
-        result1, sum_r_stage1
-    )
-    if not proven:
-        return _empty_release_result(
-            universe=sorted_universe,
-            peers=peers,
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
-        )
-
-    if k_rounded == 0:
-        return _empty_release_result(
-            universe=sorted_universe,
-            peers=peers,
-            solver_state=_STATE_OPTIMAL,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
-        )
-
-    # ---------------- Stage 2: minimize distortion ----------------
-    stage2 = model.extend_stage2(k_rounded)
-    # Release Stage-1 matrix local reference before the larger stage grows.
-    del stage1
-    result2 = _solve_stage(stage2, objective=stage2.objective, options=cert_options)
-    stage2_failure = _validate_result(result2, stage2.n_vars)
-    if stage2_failure is not None:
+    def _partial(
+        x_vec: np.ndarray,
+        *,
+        solver_state: str,
+        mip_dual_bound: float,
+        mip_gap: float,
+        later_objectives: Tuple[float, float],
+    ) -> SafeCoverageResult:
         return _finalize_from_partial_x(
-            x_vec=x1,
+            x_vec=x_vec,
             model=model,
             unit_data=unit_data,
             keys=keys,
             peers=peers,
             rule_configs=rule_configs,
             sorted_universe=sorted_universe,
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            later_objectives=(0.0, 0.0),
+            solver_state=solver_state,
+            mip_dual_bound=mip_dual_bound,
+            mip_gap=mip_gap,
+            later_objectives=later_objectives,
             input_digest=input_digest,
             configuration_digest=configuration_digest,
             policy_version=policy_version,
             policy_source=policy_source,
             rule_set_digest=rule_set_digest,
             candidate_universe_digest=candidate_universe_digest,
+            solver_name=solver_name,
+            solver_version=solver_version,
+        )
+
+    # ---------------- Stage 1: maximize sum r_u ----------------
+    stage1 = model.stage1
+    stage1_mip_start: Optional[np.ndarray] = None
+    if backend == _BACKEND_HIGHS:
+        # Circular import: privacy_coverage_highs imports weighted_shares from here.
+        from core.privacy_coverage_highs import build_neutral_mip_start
+
+        stage1_mip_start = build_neutral_mip_start(
+            model, unit_data, rule_configs=rule_configs
+        )
+        # Strategy A: maximize with +1 release costs (compiled objective is -1).
+        stage1_objective = -np.asarray(stage1.objective, dtype=float)
+        stage1_maximize = True
+    else:
+        stage1_objective = stage1.objective
+        stage1_maximize = False
+
+    result1 = solve_stage(
+        stage1,
+        objective=stage1_objective,
+        options=cert_options,
+        maximize=stage1_maximize,
+        mip_start=stage1_mip_start,
+    )
+    solver_name, solver_version = _solver_identity(backend, result1)
+    stage1_failure = _validate_result(result1, stage1.n_vars)
+    if stage1_failure is not None:
+        return _empty(solver_state=stage1_failure)
+
+    x1 = np.asarray(result1.x, dtype=float)
+    sum_r_stage1 = -float(result1.fun)
+    if not math.isfinite(sum_r_stage1):
+        return _empty(solver_state=_STATE_ERROR)
+
+    proven, k_rounded, dual_bound_normalized, mip_gap_value = _stage1_proof(
+        result1, sum_r_stage1
+    )
+    if not proven:
+        return _empty(
+            solver_state=_STATE_UNPROVEN,
+            mip_dual_bound=dual_bound_normalized,
+            mip_gap=mip_gap_value,
+        )
+
+    if k_rounded == 0:
+        return _empty(
+            solver_state=_STATE_OPTIMAL,
+            mip_dual_bound=dual_bound_normalized,
+            mip_gap=mip_gap_value,
+        )
+
+    # ---------------- Stage 2: minimize distortion ----------------
+    stage2 = model.extend_stage2(k_rounded)
+    # Release Stage-1 matrix local reference before the larger stage grows.
+    del stage1
+    result2 = solve_stage(stage2, objective=stage2.objective, options=cert_options)
+    stage2_failure = _validate_result(result2, stage2.n_vars)
+    if stage2_failure is not None:
+        return _partial(
+            x1,
+            solver_state=_STATE_UNPROVEN,
+            mip_dual_bound=dual_bound_normalized,
+            mip_gap=mip_gap_value,
+            later_objectives=(0.0, 0.0),
         )
 
     x2 = np.asarray(result2.x, dtype=float)
@@ -813,27 +1105,15 @@ def optimize_safe_coverage(
         distortion_ub,
     )
     del stage3_base
-    result3 = _solve_stage(stage3, objective=stage3.objective, options=cert_options)
+    result3 = solve_stage(stage3, objective=stage3.objective, options=cert_options)
     stage3_failure = _validate_result(result3, stage3.n_vars)
     if stage3_failure is not None:
-        return _finalize_from_partial_x(
-            x_vec=x2,
-            model=model,
-            unit_data=unit_data,
-            keys=keys,
-            peers=peers,
-            rule_configs=rule_configs,
-            sorted_universe=sorted_universe,
+        return _partial(
+            x2,
             solver_state=_STATE_UNPROVEN,
             mip_dual_bound=dual_bound_normalized,
             mip_gap=mip_gap_value,
             later_objectives=(d_star, 0.0),
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
         )
 
     x3 = np.asarray(result3.x, dtype=float)
@@ -861,7 +1141,7 @@ def optimize_safe_coverage(
         for idx, coef in zip(block.variable_indices, block.coefficients):
             objective[idx] = -float(coef)
         row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
-        step_result = _solve_stage(
+        step_result = solve_stage(
             stage4,
             objective=objective,
             options=cert_options,
@@ -872,24 +1152,12 @@ def optimize_safe_coverage(
         )
         fail = _validate_result(step_result, stage4.n_vars)
         if fail is not None:
-            return _finalize_from_partial_x(
-                x_vec=x3,
-                model=model,
-                unit_data=unit_data,
-                keys=keys,
-                peers=peers,
-                rule_configs=rule_configs,
-                sorted_universe=sorted_universe,
+            return _partial(
+                x3,
                 solver_state=_STATE_UNPROVEN,
                 mip_dual_bound=dual_bound_normalized,
                 mip_gap=mip_gap_value,
                 later_objectives=(d_star, n_star),
-                input_digest=input_digest,
-                configuration_digest=configuration_digest,
-                policy_version=policy_version,
-                policy_source=policy_source,
-                rule_set_digest=rule_set_digest,
-                candidate_universe_digest=candidate_universe_digest,
             )
         x_step = np.asarray(step_result.x, dtype=float)
         try:
@@ -897,24 +1165,12 @@ def optimize_safe_coverage(
                 _extract_binary(x_step, idx) for idx in block.variable_indices
             ]
         except RuntimeError:
-            return _finalize_from_partial_x(
-                x_vec=x3,
-                model=model,
-                unit_data=unit_data,
-                keys=keys,
-                peers=peers,
-                rule_configs=rule_configs,
-                sorted_universe=sorted_universe,
+            return _partial(
+                x3,
                 solver_state=_STATE_UNPROVEN,
                 mip_dual_bound=dual_bound_normalized,
                 mip_gap=mip_gap_value,
                 later_objectives=(d_star, n_star),
-                input_digest=input_digest,
-                configuration_digest=configuration_digest,
-                policy_version=policy_version,
-                policy_source=policy_source,
-                rule_set_digest=rule_set_digest,
-                candidate_universe_digest=candidate_universe_digest,
             )
         block_value = int(
             sum(
@@ -934,7 +1190,7 @@ def optimize_safe_coverage(
         objective = np.zeros(stage4.n_vars, dtype=float)
         objective[idx] = 1.0
         row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
-        step_result = _solve_stage(
+        step_result = solve_stage(
             stage4,
             objective=objective,
             options=cert_options,
@@ -945,45 +1201,21 @@ def optimize_safe_coverage(
         )
         fail = _validate_result(step_result, stage4.n_vars)
         if fail is not None:
-            return _finalize_from_partial_x(
-                x_vec=x3,
-                model=model,
-                unit_data=unit_data,
-                keys=keys,
-                peers=peers,
-                rule_configs=rule_configs,
-                sorted_universe=sorted_universe,
+            return _partial(
+                x3,
                 solver_state=_STATE_UNPROVEN,
                 mip_dual_bound=dual_bound_normalized,
                 mip_gap=mip_gap_value,
                 later_objectives=(d_star, n_star),
-                input_digest=input_digest,
-                configuration_digest=configuration_digest,
-                policy_version=policy_version,
-                policy_source=policy_source,
-                rule_set_digest=rule_set_digest,
-                candidate_universe_digest=candidate_universe_digest,
             )
         w_val = float(step_result.x[idx])
         if not math.isfinite(w_val):
-            return _finalize_from_partial_x(
-                x_vec=x3,
-                model=model,
-                unit_data=unit_data,
-                keys=keys,
-                peers=peers,
-                rule_configs=rule_configs,
-                sorted_universe=sorted_universe,
+            return _partial(
+                x3,
                 solver_state=_STATE_UNPROVEN,
                 mip_dual_bound=dual_bound_normalized,
                 mip_gap=mip_gap_value,
                 later_objectives=(d_star, n_star),
-                input_digest=input_digest,
-                configuration_digest=configuration_digest,
-                policy_version=policy_version,
-                policy_source=policy_source,
-                rule_set_digest=rule_set_digest,
-                candidate_universe_digest=candidate_universe_digest,
             )
         w_val = max(min_weight, min(max_weight, w_val))
         bounds_lb[idx] = w_val
@@ -1018,7 +1250,7 @@ def optimize_safe_coverage(
     # 4d. Final feasibility solve with fixed release mask and weights.
     row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
     final_obj = np.zeros(stage4.n_vars, dtype=float)
-    final_result = _solve_stage(
+    final_result = solve_stage(
         stage4,
         objective=final_obj,
         options=cert_options,
@@ -1029,24 +1261,12 @@ def optimize_safe_coverage(
     )
     final_failure = _validate_result(final_result, stage4.n_vars)
     if final_failure is not None:
-        return _finalize_from_partial_x(
-            x_vec=x3,
-            model=model,
-            unit_data=unit_data,
-            keys=keys,
-            peers=peers,
-            rule_configs=rule_configs,
-            sorted_universe=sorted_universe,
+        return _partial(
+            x3,
             solver_state=_STATE_UNPROVEN,
             mip_dual_bound=dual_bound_normalized,
             mip_gap=mip_gap_value,
             later_objectives=(d_star, n_star),
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
         )
 
     return _finalize_result(
@@ -1068,4 +1288,6 @@ def optimize_safe_coverage(
         policy_source=policy_source,
         rule_set_digest=rule_set_digest,
         candidate_universe_digest=candidate_universe_digest,
+        solver_name=solver_name,
+        solver_version=solver_version,
     )
