@@ -75,6 +75,16 @@ def test_textual_75_node_bundle_is_supported() -> None:
     assert "textual==7.5.0" in constraints
 
 
+def test_highspy_115_node_bundle_is_supported() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    constraints = (ROOT / "constraints.txt").read_text(encoding="utf-8")
+
+    assert '"highspy>=1.15.1,<1.16"' in pyproject
+    assert "highspy>=1.15.1,<1.16" in requirements
+    assert "highspy==1.15.1" in constraints
+
+
 def test_installer_requires_core_verified_dependency_bundle() -> None:
     install = (ROOT / "install.sh").read_text(encoding="utf-8")
     runtime = (ROOT / "shared_runtime.py").read_text(encoding="utf-8")

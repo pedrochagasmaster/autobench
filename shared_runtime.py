@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - Windows never installs the runtime
 
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 REQUIREMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?")
-REQUIRED_IMPORTS = ("pandas", "numpy", "openpyxl", "yaml", "scipy", "textual")
+REQUIRED_IMPORTS = ("pandas", "numpy", "openpyxl", "yaml", "scipy", "highspy", "textual")
 COMPLETE_MARKER = ".complete.json"
 
 

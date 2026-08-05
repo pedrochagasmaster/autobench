@@ -387,7 +387,7 @@ def test_build_validates_in_order_and_records_completion(
     assert calls[2][1:] == ["-m", "pip", "check"]
     assert calls[3][1:] == [
         "-c",
-        "import pandas; import numpy; import openpyxl; import yaml; import scipy; import textual",
+        "import pandas; import numpy; import openpyxl; import yaml; import scipy; import highspy; import textual",
     ]
     metadata = json.loads(
         (runtime / shared_runtime.COMPLETE_MARKER).read_text(encoding="utf-8")

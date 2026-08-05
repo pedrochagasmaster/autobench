@@ -241,6 +241,7 @@ def _prepare_onboarding_root(tmp_path: Path) -> tuple[Path, Path]:
                     "openpyxl",
                     "yaml",
                     "scipy",
+                    "highspy",
                     "textual",
                 ],
             }
@@ -396,6 +397,7 @@ def test_running_process_remains_pinned_to_resolved_runtime_after_activation_swi
                         "openpyxl",
                         "yaml",
                         "scipy",
+                        "highspy",
                         "textual",
                     ],
                 }

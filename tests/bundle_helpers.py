@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_FILES = {
     "requirements/requirements.txt": (
-        b"pandas\nnumpy\nopenpyxl\nPyYAML\nscipy\ntextual\n"
+        b"pandas\nnumpy\nopenpyxl\nPyYAML\nscipy\nhighspy\ntextual\n"
     )
 }
 
