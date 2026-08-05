@@ -11,6 +11,7 @@ status row when finished.
 | 001 | Mirror the Dispatch shared global runtime architecture | P1 | L | - | IN PROGRESS |
 | 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | DONE |
 | 003 | Scale the Maximum Safe Coverage solver | P0 | L | 002 | BLOCKED: Getnet 2025Q1 Stage 1 exceeds the 15-minute STOP limit |
+| 004 | Prove Maximum Safe Coverage with direct HiGHS | P0 | L | 003 | TODO |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.
@@ -27,6 +28,8 @@ Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
   worktree. Do not combine runtime migration and privacy feature changes.
 - Plan 003 depends on Plan 002. Use a separate branch and worktree. Do not
   combine solver-scale work with the shared runtime migration.
+- Plan 004 starts from the complete Plan 003 branch. It replaces only the
+  Maximum Safe Coverage solver transport after exact proof succeeds.
 
 ## Findings considered and rejected
 

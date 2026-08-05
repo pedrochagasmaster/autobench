@@ -34,7 +34,7 @@ Stop and report when a STOP condition occurs. Do not tune around a failed proof.
 
 ## Status
 
-- **Execution**: TODO
+- **Execution**: BLOCKED: Getnet 2025Q1 Stage 1 exceeded the 15-minute proof limit
 - **Priority**: P0
 - **Effort**: L
 - **Risk**: HIGH
