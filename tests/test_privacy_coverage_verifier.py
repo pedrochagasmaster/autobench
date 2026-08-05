@@ -28,7 +28,7 @@ from core.privacy_coverage import (
     build_candidate_universe,
     candidate_universe_digest,
 )
-from core.privacy_coverage_solver import optimize_safe_coverage
+from core.privacy_coverage_solver import optimize_safe_coverage, weighted_shares
 from core.privacy_coverage_verifier import (
     SafeCoverageVerifierError,
     VerificationOutcome,
@@ -61,6 +61,7 @@ from core.privacy_coverage_verifier import (
     V_WEIGHT_OUT_OF_BOUNDS,
 )
 from core.privacy_policy import PrivacyPolicy
+from core.privacy_rules import evaluate_rule
 from tests.fixtures.safe_coverage_fixture import (
     build_safe_coverage_getnet_shaped_df,
 )
@@ -214,6 +215,57 @@ def test_tamper_global_weight_is_blocked(fixture_result: SafeCoverageResult) -> 
     assert V_WEIGHT_OUT_OF_BOUNDS in codes
 
 
+def test_tamper_global_weight_in_bounds_breaks_rules(
+    fixture_result: SafeCoverageResult,
+) -> None:
+    # Keep every weight inside [min_weight, max_weight] but change one peer
+    # enough that recomputed shares fail the recorded authorizing rules.
+    if not fixture_result.release_set:
+        pytest.skip("fixture must release at least one unit")
+    unit_map = {
+        unit.internal_key: unit for unit in fixture_result.candidate_universe
+    }
+    base_weights = dict(fixture_result.global_weights)
+    tampered_weights = None
+    for peer in base_weights:
+        for candidate in (0.5, 0.6, 0.7, 0.8, 1.2, 1.5, 1.8, 2.0):
+            trial = dict(base_weights)
+            if abs(float(trial[peer]) - candidate) <= 1e-12:
+                continue
+            trial[peer] = candidate
+            broken = False
+            for key in fixture_result.release_set:
+                unit = unit_map[key]
+                rule_name = fixture_result.authorizing_rules[key]
+                for record in unit.metric_records:
+                    shares = weighted_shares(record["peer_volumes"], trial)
+                    if not evaluate_rule(
+                        rule_name, list(shares.values())
+                    ).strict_passed:
+                        broken = True
+                        break
+                if broken:
+                    break
+            if broken:
+                tampered_weights = trial
+                break
+        if tampered_weights is not None:
+            break
+    if tampered_weights is None:
+        pytest.skip("could not find an in-bounds weight tamper that breaks rules")
+
+    tampered = _bypass_result_replace(
+        fixture_result, global_weights=tampered_weights
+    )
+    outcome = verify_safe_coverage_result(
+        tampered, min_weight=0.5, max_weight=2.0
+    )
+    assert not outcome.passed
+    codes = _codes(outcome)
+    assert V_WEIGHT_OUT_OF_BOUNDS not in codes
+    assert V_RULE_DID_NOT_PASS in codes
+
+
 def test_tamper_visible_unit_key_is_blocked(fixture_result: SafeCoverageResult) -> None:
     # Replace one visible key with a value that is not in the Candidate
     # Universe.
@@ -288,6 +340,89 @@ def test_tamper_authorizing_rule_is_blocked(
     assert not outcome.passed
     codes = _codes(outcome)
     assert V_AUTHORIZING_RULE_UNKNOWN in codes
+
+
+def test_tamper_authorizing_rule_to_wrong_approved_rule_is_blocked(
+    fixture_result: SafeCoverageResult,
+) -> None:
+    # Map a released unit to a different approved applicable rule that does not
+    # pass under the released weights (North_2025Q1 is authorized by 6/30;
+    # 5/25 fails on recomputation for that unit).
+    if not fixture_result.release_set:
+        pytest.skip("fixture must release at least one unit")
+    unit_map = {
+        unit.internal_key: unit for unit in fixture_result.candidate_universe
+    }
+    target_key = None
+    wrong_rule = None
+    for key in fixture_result.release_set:
+        original = fixture_result.authorizing_rules[key]
+        unit = unit_map[key]
+        for candidate in unit.applicable_rules:
+            if candidate == original or candidate not in APPROVED_PRIVACY_RULE_NAMES:
+                continue
+            passes = True
+            for record in unit.metric_records:
+                shares = weighted_shares(
+                    record["peer_volumes"], fixture_result.global_weights
+                )
+                if not evaluate_rule(candidate, list(shares.values())).strict_passed:
+                    passes = False
+                    break
+            if not passes:
+                target_key = key
+                wrong_rule = candidate
+                break
+        if target_key is not None:
+            break
+    if target_key is None or wrong_rule is None:
+        pytest.skip(
+            "fixture has no released unit with a failing alternate approved rule"
+        )
+
+    tampered_map = dict(fixture_result.authorizing_rules)
+    tampered_map[target_key] = wrong_rule
+    tampered = _bypass_result_replace(fixture_result, authorizing_rules=tampered_map)
+    outcome = verify_safe_coverage_result(
+        tampered, min_weight=0.5, max_weight=2.0
+    )
+    assert not outcome.passed
+    assert V_RULE_DID_NOT_PASS in _codes(outcome)
+
+
+def test_tamper_release_count_vs_dual_bound_is_blocked(
+    fixture_result: SafeCoverageResult,
+) -> None:
+    # Shrink the Release Set while keeping the original dual bound so the
+    # proof count no longer matches len(release_set).
+    if len(fixture_result.release_set) < 1:
+        pytest.skip("fixture must release at least one unit")
+    dropped = fixture_result.release_set[0]
+    new_release = tuple(fixture_result.release_set[1:])
+    new_suppression = tuple(fixture_result.suppression_set) + (dropped,)
+    new_rules = {
+        key: rule
+        for key, rule in dict(fixture_result.authorizing_rules).items()
+        if key != dropped
+    }
+    universe_keys = tuple(
+        unit.internal_key for unit in fixture_result.candidate_universe
+    )
+    new_mask = compute_release_mask_digest(sorted(universe_keys), new_release)
+    tampered = _bypass_result_replace(
+        fixture_result,
+        release_set=new_release,
+        suppression_set=new_suppression,
+        authorizing_rules=new_rules,
+        primary_objective_value=len(new_release),
+        release_mask_digest=new_mask,
+        # mip_dual_bound intentionally left at the original proven count
+    )
+    outcome = verify_safe_coverage_result(
+        tampered, min_weight=0.5, max_weight=2.0
+    )
+    assert not outcome.passed
+    assert V_DUAL_BOUND_MISMATCH in _codes(outcome)
 
 
 def test_tamper_policy_digest_is_blocked(fixture_result: SafeCoverageResult) -> None:

@@ -8,8 +8,10 @@ helpers.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, Tuple
 
+import numpy as np
 import pytest
 
 from core.contracts import (
@@ -309,9 +311,145 @@ def test_mocked_nonzero_gap_flags_unproven(monkeypatch) -> None:
     universe = _fixture_universe()
     result = _run_solver(universe)
     assert result.solver_state == "unproven_maximum"
-    # Even under an unproven primary, later stages may still finish; the
-    # candidate release set is retained but is not authoritative.
+    assert result.verifier_result == "not_run"
+    # Candidate release evidence may be retained under an unproven primary, but
+    # it is not authoritative for release gating.
     assert result.mip_gap == pytest.approx(0.5)
+    assert call_count["n"] >= 1
+
+
+def test_mocked_stage1_timeout_fails_closed(monkeypatch) -> None:
+    """Stage 1 time-limit status must fail closed without a release certificate."""
+    from core import privacy_coverage_solver as solver_module
+
+    call_count = {"n": 0}
+
+    def timeout_milp(*args, **kwargs):
+        call_count["n"] += 1
+        # SciPy/HiGHS status 5 maps to time_limit via ``_classify_status``.
+        return SimpleNamespace(
+            status=5,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+        )
+
+    monkeypatch.setattr(solver_module, "milp", timeout_milp)
+
+    result = _run_solver(_fixture_universe())
+    assert result.solver_state in {"time_limit", "unproven_maximum", "iteration_limit"}
+    assert result.release_set == ()
+    assert result.primary_objective_value == 0
+    assert result.verifier_result == "not_run"
+    # Hard Stage 1 failure must not proceed to later stages.
+    assert call_count["n"] == 1
+
+
+def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
+    """Stage 1 infeasible status must return an empty fail-closed release."""
+    from core import privacy_coverage_solver as solver_module
+
+    call_count = {"n": 0}
+
+    def infeasible_milp(*args, **kwargs):
+        call_count["n"] += 1
+        return SimpleNamespace(
+            status=2,
+            success=False,
+            x=None,
+            fun=None,
+            mip_dual_bound=None,
+            mip_gap=None,
+        )
+
+    monkeypatch.setattr(solver_module, "milp", infeasible_milp)
+
+    result = _run_solver(_fixture_universe())
+    assert result.solver_state == "infeasible"
+    assert result.release_set == ()
+    assert result.primary_objective_value == 0
+    assert result.verifier_result == "not_run"
+    assert call_count["n"] == 1
+
+
+@pytest.mark.parametrize(
+    "malformed_factory",
+    [
+        pytest.param(
+            lambda: SimpleNamespace(
+                status=0,
+                success=True,
+                x=None,
+                fun=0.0,
+                mip_dual_bound=0.0,
+                mip_gap=0.0,
+            ),
+            id="missing_x",
+        ),
+        pytest.param(
+            lambda: SimpleNamespace(
+                status=0,
+                success=True,
+                x=np.zeros(8, dtype=float),
+                fun=float("nan"),
+                mip_dual_bound=0.0,
+                mip_gap=0.0,
+            ),
+            id="nonfinite_fun",
+        ),
+        pytest.param(
+            lambda: SimpleNamespace(
+                status=0,
+                success=True,
+                x=np.zeros(3, dtype=float),
+                fun=0.0,
+                mip_dual_bound=0.0,
+                mip_gap=0.0,
+            ),
+            id="wrong_shape_x",
+        ),
+    ],
+)
+def test_mocked_stage1_malformed_output_fails_closed(
+    monkeypatch, malformed_factory
+) -> None:
+    """Malformed Stage 1 milp output must surface as solver_error, not a crash."""
+    from core import privacy_coverage_solver as solver_module
+
+    call_count = {"n": 0}
+
+    def malformed_milp(*args, **kwargs):
+        call_count["n"] += 1
+        return malformed_factory()
+
+    monkeypatch.setattr(solver_module, "milp", malformed_milp)
+
+    result = _run_solver(_fixture_universe())
+    assert result.solver_state == "solver_error"
+    assert result.release_set == ()
+    assert result.primary_objective_value == 0
+    assert result.verifier_result == "not_run"
+    assert call_count["n"] == 1
+
+
+def test_solver_repeated_run_is_identical() -> None:
+    """Canonical release mask must be identical across repeated solves."""
+    universe = _fixture_universe()
+    first = _run_solver(universe)
+    second = _run_solver(universe)
+
+    assert first.solver_state == "optimal"
+    assert second.solver_state == first.solver_state
+    assert second.release_set == first.release_set
+    assert second.suppression_set == first.suppression_set
+    assert dict(second.authorizing_rules) == dict(first.authorizing_rules)
+    for peer in _FIXTURE_PEERS:
+        assert second.global_weights[peer] == pytest.approx(
+            first.global_weights[peer], rel=1e-9, abs=1e-9
+        )
+    assert second.release_mask_digest == first.release_mask_digest
 
 
 def test_empty_release_optimal_when_no_unit_can_pass() -> None:
