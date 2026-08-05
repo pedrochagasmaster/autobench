@@ -32,7 +32,9 @@ CONTROL3_INVALID_EVIDENCE = "control3_invalid_privacy_evidence"
 CONTROL3_MANDATORY_OVERLAY_BLOCKED = "control3_mandatory_overlay_blocked"
 CONTROL3_NUMERIC_POLICY_BLOCKED = "control3_numeric_policy_blocked"
 CONTROL3_SAFE_COVERAGE_EMPTY = "control3_safe_coverage_empty_release"
-CONTROL3_SAFE_COVERAGE_UNPROVEN = "control3_safe_coverage_unproven"
+CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE = (
+    "control3_safe_coverage_search_incomplete"
+)
 CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED = "control3_safe_coverage_verifier_failed"
 CONTROL3_POLICY_VERSION = CONTROL3_NUMERIC_POLICY_VERSION
 CONTROL3_POLICY_SOURCE = CONTROL3_NUMERIC_POLICY_SOURCE
@@ -68,7 +70,7 @@ _CANONICAL_WITHHOLDING_REASONS = frozenset(
         CONTROL3_MANDATORY_OVERLAY_BLOCKED,
         CONTROL3_NUMERIC_POLICY_BLOCKED,
         CONTROL3_SAFE_COVERAGE_EMPTY,
-        CONTROL3_SAFE_COVERAGE_UNPROVEN,
+        CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE,
         CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
     }
 )
@@ -85,7 +87,7 @@ class _PrivacyOutputAttestation:
 
 @dataclass(frozen=True)
 class _SafeCoverageOutputAttestation:
-    """Sink capability for a verified Maximum Safe Coverage Release Set."""
+    """Sink capability for a verified Verified Safe Coverage Release Set."""
 
     nonce: object
     result: SafeCoverageResult
@@ -303,25 +305,21 @@ def decide_privacy_output(result: PrivacyRuleStrategyResult) -> PrivacyOutputDec
     )
 
 
-def _safe_coverage_is_proven(result: SafeCoverageResult) -> bool:
-    """Return True only for an optimal zero-gap, dual-bound-proven result."""
-    if result.solver_state != "optimal":
-        return False
-    if result.mip_gap != 0.0:
-        return False
-    if round(result.mip_dual_bound) != len(result.release_set):
-        return False
-    if result.primary_objective_value != len(result.release_set):
-        return False
-    return True
+def _safe_coverage_search_is_complete(result: SafeCoverageResult) -> bool:
+    """Return true only for a complete deterministic search result."""
+    return bool(
+        result.search_state == "search_complete"
+        and result.search_method
+        and result.candidate_vectors_evaluated > 0
+    )
 
 
 def decide_safe_coverage_output(
     result: SafeCoverageResult,
 ) -> PrivacyOutputDecision:
-    """Authorize Maximum Safe Coverage output only after proof and verification.
+    """Authorize Verified Safe Coverage output after independent verification.
 
-    Fail closed for verifier failure, empty Release Set, or unproven optimum.
+    Fail closed for verifier failure, an incomplete search, or an empty set.
     """
     if not isinstance(result, SafeCoverageResult):
         return PrivacyOutputDecision(
@@ -329,7 +327,7 @@ def decide_safe_coverage_output(
             hard_privacy_block=True,
             withholding_reason=CONTROL3_INVALID_EVIDENCE,
         )
-    if result.release_mode != PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+    if result.release_mode != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
         return PrivacyOutputDecision(
             privacy_publication_authorized=False,
             hard_privacy_block=True,
@@ -341,11 +339,11 @@ def decide_safe_coverage_output(
             hard_privacy_block=True,
             withholding_reason=CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
         )
-    if not _safe_coverage_is_proven(result):
+    if not _safe_coverage_search_is_complete(result):
         return PrivacyOutputDecision(
             privacy_publication_authorized=False,
             hard_privacy_block=True,
-            withholding_reason=CONTROL3_SAFE_COVERAGE_UNPROVEN,
+            withholding_reason=CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE,
         )
     if not result.release_set:
         return PrivacyOutputDecision(
@@ -373,7 +371,7 @@ def _attest_safe_coverage_output(
         return None
     if result.verifier_result != VERIFIER_RESULT_PASSED:
         return None
-    if not _safe_coverage_is_proven(result):
+    if not _safe_coverage_search_is_complete(result):
         return None
     if not result.release_set:
         return None

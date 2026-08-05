@@ -74,7 +74,7 @@ from core.privacy_coverage import (
 )
 from core.privacy_coverage_solver import (
     SafeCoverageSolverError,
-    optimize_safe_coverage,
+    find_verified_safe_coverage,
 )
 from core.privacy_coverage_verifier import (
     VERIFIER_RESULT_FAILED,
@@ -1338,9 +1338,9 @@ def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> Non
 
     Rejects:
 
-    - ``MAXIMIZE_SAFE_COVERAGE`` with rate analysis.
-    - ``MAXIMIZE_SAFE_COVERAGE`` with ``per_dimension_weights=True``.
-    - ``MAXIMIZE_SAFE_COVERAGE`` with an incompatible explicit rule strategy
+    - ``VERIFIED_SAFE_COVERAGE`` with rate analysis.
+    - ``VERIFIED_SAFE_COVERAGE`` with ``per_dimension_weights=True``.
+    - ``VERIFIED_SAFE_COVERAGE`` with an incompatible explicit rule strategy
       (Python callers must supply ``SWEEP_ANY_APPLICABLE``; the CLI and TUI
       set that strategy automatically when the mode is selected).
     - Any unknown or untyped release-mode value.
@@ -1353,23 +1353,23 @@ def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> Non
         )
     if mode == PrivacyReleaseMode.COMPLETE_OUTPUT:
         return
-    if mode != PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+    if mode != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
         raise RunAborted(
             f"Unsupported privacy_release_mode: {mode!r}"
         )
     if request.is_rate:
         raise RunAborted(
-            "privacy_release_mode=maximize-safe-coverage is not supported for "
+            "privacy_release_mode=verified-safe-coverage is not supported for "
             "rate analysis; use complete-output"
         )
     if request.per_dimension_weights:
         raise RunAborted(
-            "privacy_release_mode=maximize-safe-coverage requires one global "
+            "privacy_release_mode=verified-safe-coverage requires one global "
             "weight vector; --per-dimension-weights is not supported"
         )
     if request.privacy_rule_strategy != PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE:
         raise RunAborted(
-            "privacy_release_mode=maximize-safe-coverage requires "
+            "privacy_release_mode=verified-safe-coverage requires "
             "privacy_rule_strategy=SWEEP_ANY_APPLICABLE; got "
             f"{request.privacy_rule_strategy.value!s}"
         )
@@ -1433,7 +1433,7 @@ def _coverage_placeholder_strategy_result(
 ) -> PrivacyRuleStrategyResult:
     """Build a non-authorizing complete-output strategy result for MSC runs.
 
-    Maximum Safe Coverage authorizes sinks through the Release-Set attestation
+    Verified Safe Coverage authorizes sinks through the Release-Set attestation
     path. The complete-output strategy result remains non-authorizing so the
     two authorization seams cannot silently substitute for each other.
     """
@@ -1446,7 +1446,7 @@ def _coverage_placeholder_strategy_result(
                     code="strict_optimization_not_compliant",
                     message=(
                         "Complete-output authorization is not used for "
-                        "maximize-safe-coverage; Release-Set attestation decides publication"
+                        "verified-safe-coverage; Release-Set attestation decides publication"
                     ),
                 ),
             ),
@@ -1477,7 +1477,7 @@ def _coverage_placeholder_strategy_result(
     )
 
 
-def _run_maximize_safe_coverage(
+def _run_verified_safe_coverage(
     *,
     request: AnalysisRunRequest,
     analyzer: DimensionalAnalyzer,
@@ -1493,7 +1493,7 @@ def _run_maximize_safe_coverage(
     max_weight: float,
     logger: logging.Logger,
 ) -> Tuple[SafeCoverageResult, Tuple[PublicationUnit, ...], List[Dict[str, Any]]]:
-    """Build the Candidate Universe, optimize coverage, and return trusted evidence.
+    """Build the Candidate Universe, search coverage, and return trusted evidence.
 
     The returned ``SafeCoverageResult`` still has ``verifier_result='not_run'``.
     The caller must verify before authorizing any client sink.
@@ -1502,7 +1502,7 @@ def _run_maximize_safe_coverage(
     peers = tuple(str(peer) for peer in governed_peers)
     if not peers:
         raise RunAborted(
-            "maximize-safe-coverage requires a non-empty governed peer population"
+            "verified-safe-coverage requires a non-empty governed peer population"
         )
     min_entities = _structural_min_entities_for_coverage(
         len(peers),
@@ -1549,7 +1549,7 @@ def _run_maximize_safe_coverage(
     )
     configuration_digest = _stable_digest(
         {
-            "privacy_release_mode": PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value,
+            "privacy_release_mode": PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value,
             "privacy_rule_strategy": request.privacy_rule_strategy.value,
             "min_weight": float(min_weight),
             "max_weight": float(max_weight),
@@ -1561,7 +1561,7 @@ def _run_maximize_safe_coverage(
         }
     )
     try:
-        coverage_result = optimize_safe_coverage(
+        coverage_result = find_verified_safe_coverage(
             universe,
             peers,
             min_weight=float(min_weight),
@@ -1579,13 +1579,13 @@ def _run_maximize_safe_coverage(
         raise RunAborted(str(exc)) from exc
 
     logger.info(
-        "Maximum safe coverage candidate: %d candidate units, %d released, "
-        "%d suppressed (solver_state=%s, mip_gap=%s)",
+        "Verified safe coverage: %d candidate units, %d released, "
+        "%d suppressed (search_state=%s, candidates=%d)",
         len(coverage_result.candidate_universe),
         len(coverage_result.release_set),
         len(coverage_result.suppression_set),
-        coverage_result.solver_state,
-        coverage_result.mip_gap,
+        coverage_result.search_state,
+        coverage_result.candidate_vectors_evaluated,
     )
     _apply_coverage_weights_to_analyzer(
         analyzer,
@@ -1645,10 +1645,9 @@ def _coverage_certificate_payload(certificate: CoverageCertificate) -> Dict[str,
         "rule_set_digest": certificate.rule_set_digest,
         "solver_name": certificate.solver_name,
         "solver_version": certificate.solver_version,
-        "primary_objective_value": certificate.primary_objective_value,
-        "mip_dual_bound": certificate.mip_dual_bound,
-        "mip_gap": certificate.mip_gap,
-        "solver_state": certificate.solver_state,
+        "search_method": certificate.search_method,
+        "search_state": certificate.search_state,
+        "candidate_vectors_evaluated": certificate.candidate_vectors_evaluated,
         "artifact_hashes": dict(certificate.artifact_hashes),
         "certificate_digest": certificate.certificate_digest,
     }
@@ -2561,13 +2560,13 @@ def _execute_run_impl(
         ]
         if (
             request.privacy_release_mode
-            == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+            == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         ):
             (
                 safe_coverage_result,
                 coverage_release_units,
                 coverage_structural_suppressions,
-            ) = _run_maximize_safe_coverage(
+            ) = _run_verified_safe_coverage(
                 request=request,
                 analyzer=analyzer,
                 df=df,
@@ -2620,7 +2619,7 @@ def _execute_run_impl(
     rule_cfg = PrivacyValidator.get_rule_config(privacy_rule_name or '')
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     ):
         min_entities = _structural_min_entities_for_coverage(
             len(getattr(analyzer, "global_weights", {}) or {}),
@@ -2731,11 +2730,11 @@ def _execute_run_impl(
             time_col=time_col,
         )
 
-    # Maximum Safe Coverage: filter client-bound analytical results through the
+    # Verified Safe Coverage: filter client-bound analytical results through the
     # exact Release Set once, before secondary metrics / metadata / formatting.
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and safe_coverage_result is not None
     ):
         results = filter_results_to_release_set(
@@ -2760,7 +2759,7 @@ def _execute_run_impl(
     coverage_export_suppressions: List[Dict[str, Any]] = []
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and safe_coverage_result is not None
     ):
         for unit in safe_coverage_result.candidate_universe:
@@ -3028,7 +3027,7 @@ def _execute_run_impl(
     safe_coverage_attestation: Optional[_SafeCoverageOutputAttestation] = None
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and safe_coverage_result is not None
     ):
         # Fail closed: verifier must run before any client sink authorization.
@@ -3240,7 +3239,7 @@ def _execute_run_impl(
     analysis_output_file = mode_spec.resolve_output_filename(request, resolved_entity, results)
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and privacy_sink_authorized
     ):
         metadata.setdefault("run_warnings", [])
@@ -3274,7 +3273,7 @@ def _execute_run_impl(
     artifacts.safe_coverage_result = safe_coverage_result
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and privacy_sink_authorized
         and safe_coverage_result is not None
     ):
@@ -3374,7 +3373,7 @@ def _execute_run_impl(
         )
     if (
         request.privacy_release_mode
-        == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and privacy_sink_authorized
         and safe_coverage_result is not None
         and safe_coverage_result.verifier_result == VERIFIER_RESULT_PASSED
@@ -3398,13 +3397,14 @@ def _execute_run_impl(
         if artifacts.metadata is not None:
             artifacts.metadata["safe_coverage_summary"] = {
                 "privacy_release_mode": (
-                    PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                    PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
                 ),
                 "candidate_unit_count": certificate.candidate_unit_count,
                 "released_unit_count": certificate.released_unit_count,
                 "suppressed_unit_count": certificate.suppressed_unit_count,
                 "coverage_percentage": certificate.coverage_percentage,
-                "verified_optimal": True,
+                "independent_verification_passed": True,
+                "maximum_claim": False,
             }
         # Disk write only when the request asked for file output.
         if request.output:
@@ -3427,11 +3427,11 @@ def _execute_run_impl(
     # prefix and metadata marking. Invalid evidence and mandatory-overlay
     # failures are never exempted, and every
     # other sink (publication, CSV, JSON, audit package) stays withheld.
-    # Maximum Safe Coverage denials never use this exception path.
+    # Verified Safe Coverage denials never use this exception path.
     accuracy_first_diagnostic = bool(
         not privacy_sink_authorized
         and request.privacy_release_mode
-        != PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and compliance_context['compliance_posture'] == 'accuracy_first'
         and compliance_context['acknowledgement_given']
         and privacy_output_decision.withholding_reason

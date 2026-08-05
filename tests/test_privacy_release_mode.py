@@ -50,28 +50,21 @@ def _safe_coverage_result(
     *,
     release_keys: Tuple[str, ...] = ("u1",),
     suppression_keys: Tuple[str, ...] = ("u2",),
-    primary_objective_value: Optional[int] = None,
     authorizing_rules: Optional[Mapping[str, str]] = None,
     **overrides: Any,
 ) -> SafeCoverageResult:
     units = tuple(_unit(key) for key in (*release_keys, *suppression_keys))
     kwargs: Dict[str, Any] = {
-        "release_mode": PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        "release_mode": PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         "global_weights": {"P1": 1.0, "P2": 1.0},
         "candidate_universe": units,
         "release_set": release_keys,
         "suppression_set": suppression_keys,
         "authorizing_rules": authorizing_rules
         or {key: "5/25" for key in release_keys},
-        "primary_objective_value": (
-            len(release_keys)
-            if primary_objective_value is None
-            else primary_objective_value
-        ),
-        "later_objective_values": (0.0, 0.0),
-        "solver_state": "optimal",
-        "mip_dual_bound": float(len(release_keys)),
-        "mip_gap": 0.0,
+        "search_method": "test-search-v1",
+        "search_state": "search_complete",
+        "candidate_vectors_evaluated": 10,
         "solver_name": "scipy.optimize.milp",
         "solver_version": "1.18.0",
         "input_digest": "input",
@@ -90,7 +83,7 @@ def _safe_coverage_result(
 def test_privacy_release_mode_has_exactly_two_values() -> None:
     assert tuple(mode.value for mode in PrivacyReleaseMode) == (
         "complete-output",
-        "maximize-safe-coverage",
+        "verified-safe-coverage",
     )
 
 
@@ -104,7 +97,7 @@ def test_request_rejects_string_privacy_release_mode() -> None:
         AnalysisRunRequest(
             mode="share",
             metric="amount",
-            privacy_release_mode="maximize-safe-coverage",  # type: ignore[arg-type]
+            privacy_release_mode="verified-safe-coverage",  # type: ignore[arg-type]
         )
 
 
@@ -123,7 +116,7 @@ def test_resolve_uses_yaml_when_request_is_none(tmp_path) -> None:
             {
                 "version": "3.0",
                 "compliance_posture": "strict",
-                "privacy_release_mode": "maximize-safe-coverage",
+                "privacy_release_mode": "verified-safe-coverage",
             }
         ),
         encoding="utf-8",
@@ -131,7 +124,7 @@ def test_resolve_uses_yaml_when_request_is_none(tmp_path) -> None:
     request = AnalysisRunRequest(mode="share", metric="amount")
     resolved = ConfigManager(config_file=str(path)).resolve()
     effective = resolve_privacy_release_mode(request, resolved)
-    assert effective.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert effective.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
 
 
 def test_explicit_enum_overrides_yaml(tmp_path) -> None:
@@ -141,7 +134,7 @@ def test_explicit_enum_overrides_yaml(tmp_path) -> None:
             {
                 "version": "3.0",
                 "compliance_posture": "strict",
-                "privacy_release_mode": "maximize-safe-coverage",
+                "privacy_release_mode": "verified-safe-coverage",
             }
         ),
         encoding="utf-8",
@@ -164,7 +157,7 @@ def test_cli_none_does_not_override_yaml_privacy_release_mode(tmp_path) -> None:
             {
                 "version": "3.0",
                 "compliance_posture": "strict",
-                "privacy_release_mode": "maximize-safe-coverage",
+                "privacy_release_mode": "verified-safe-coverage",
             }
         ),
         encoding="utf-8",
@@ -173,10 +166,10 @@ def test_cli_none_does_not_override_yaml_privacy_release_mode(tmp_path) -> None:
         config_file=str(path),
         cli_overrides={"privacy_release_mode": None},
     )
-    assert config.get("privacy_release_mode") == "maximize-safe-coverage"
+    assert config.get("privacy_release_mode") == "verified-safe-coverage"
     assert (
         config.resolve().privacy_release_mode
-        is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     )
 
 
@@ -195,10 +188,10 @@ def test_cli_enum_override_writes_string_value(tmp_path) -> None:
     config = ConfigManager(
         config_file=str(path),
         cli_overrides={
-            "privacy_release_mode": PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+            "privacy_release_mode": PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         },
     )
-    assert config.get("privacy_release_mode") == "maximize-safe-coverage"
+    assert config.get("privacy_release_mode") == "verified-safe-coverage"
 
 
 def test_unknown_yaml_privacy_release_mode_rejected(tmp_path) -> None:
@@ -228,45 +221,45 @@ def test_config_validator_rejects_unknown_privacy_release_mode() -> None:
     assert any("privacy_release_mode" in error for error in errors)
 
 
-def test_maximize_rejects_rate_analysis() -> None:
+def test_verified_rejects_rate_analysis() -> None:
     request = AnalysisRunRequest(
         mode="rate",
         total_col="total",
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
     with pytest.raises(RunAborted, match="rate analysis"):
         check_privacy_release_mode_compatibility(request)
 
 
-def test_maximize_rejects_per_dimension_weights() -> None:
+def test_verified_rejects_per_dimension_weights() -> None:
     request = AnalysisRunRequest(
         mode="share",
         metric="amount",
         per_dimension_weights=True,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
     with pytest.raises(RunAborted, match="global weight vector"):
         check_privacy_release_mode_compatibility(request)
 
 
-def test_maximize_rejects_incompatible_rule_strategy() -> None:
+def test_verified_rejects_incompatible_rule_strategy() -> None:
     request = AnalysisRunRequest(
         mode="share",
         metric="amount",
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         privacy_rule_strategy=PrivacyRuleStrategy.SELECT_BY_PEER_COUNT,
     )
     with pytest.raises(RunAborted, match="SWEEP_ANY_APPLICABLE"):
         check_privacy_release_mode_compatibility(request)
 
 
-def test_maximize_accepts_compatible_share_request() -> None:
+def test_verified_accepts_compatible_share_request() -> None:
     request = AnalysisRunRequest(
         mode="share",
         metric="amount",
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
     check_privacy_release_mode_compatibility(request)
@@ -293,15 +286,15 @@ def test_safe_coverage_result_rejects_overlapping_sets() -> None:
         )
 
 
-def test_safe_coverage_result_rejects_primary_objective_mismatch() -> None:
-    with pytest.raises(ValueError, match="primary_objective_value"):
-        _safe_coverage_result(primary_objective_value=99)
+def test_safe_coverage_result_rejects_incomplete_search() -> None:
+    with pytest.raises(ValueError, match="search_state"):
+        _safe_coverage_result(search_state="incomplete")
 
 
 def test_coverage_certificate_rejects_wrong_artifact_type() -> None:
     with pytest.raises(ValueError, match="artifact_type"):
         CoverageCertificate(
-            privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+            privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
             candidate_unit_count=1,
             released_unit_count=1,
             suppressed_unit_count=0,
@@ -314,10 +307,9 @@ def test_coverage_certificate_rejects_wrong_artifact_type() -> None:
             rule_set_digest="rules",
             solver_name="scipy.optimize.milp",
             solver_version="1.18.0",
-            primary_objective_value=1,
-            mip_dual_bound=1.0,
-            mip_gap=0.0,
-            solver_state="optimal",
+            search_method="test-search-v1",
+            search_state="search_complete",
+            candidate_vectors_evaluated=10,
             artifact_hashes={"analysis": "abc"},
             certificate_digest="digest",
             artifact_type="coverage_certificate.v0",
@@ -326,7 +318,7 @@ def test_coverage_certificate_rejects_wrong_artifact_type() -> None:
 
 def test_coverage_certificate_accepts_valid_payload() -> None:
     certificate = CoverageCertificate(
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         candidate_unit_count=2,
         released_unit_count=1,
         suppressed_unit_count=1,
@@ -339,10 +331,9 @@ def test_coverage_certificate_accepts_valid_payload() -> None:
         rule_set_digest="rules",
         solver_name="scipy.optimize.milp",
         solver_version="1.18.0",
-        primary_objective_value=1,
-        mip_dual_bound=1.0,
-        mip_gap=0.0,
-        solver_state="optimal",
+        search_method="test-search-v1",
+        search_state="search_complete",
+        candidate_vectors_evaluated=10,
         artifact_hashes={"analysis": "abc"},
         certificate_digest="digest",
     )

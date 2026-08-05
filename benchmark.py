@@ -224,8 +224,8 @@ EXAMPLES:
   # Normal share analysis using the any-applicable-rule strategy
   python benchmark.py share --csv data.csv --metric txn_cnt --auto --privacy-rule-sweep
 
-  # Maximum safe coverage (share only; auto-selects rule sweep)
-  python benchmark.py share --csv data.csv --metric transaction_amount --secondary-metrics transaction_count merchant_count --dimensions quarter region sector --privacy-rule-sweep --privacy-release-mode maximize-safe-coverage
+  # Verified safe coverage (share only; auto-selects rule sweep)
+  python benchmark.py share --csv data.csv --metric transaction_amount --secondary-metrics transaction_count merchant_count --dimensions quarter region sector --privacy-rule-sweep --privacy-release-mode verified-safe-coverage
 
   # List available presets
   python benchmark.py config list
@@ -281,7 +281,7 @@ EXAMPLES:
             'Which safe Publication Units can reach client output '
             '(effective default: complete-output). '
             'complete-output requires a complete authorized output. '
-            'maximize-safe-coverage can publish an incomplete safe view; '
+            'verified-safe-coverage can publish an incomplete safe view; '
             'requires global weights and rule sweep semantics; '
             'missing units are privacy-suppressed. '
             'Share analysis only.'
@@ -618,9 +618,9 @@ def _print_privacy_output_status(artifacts: AnalysisArtifacts) -> bool:
 
 
 def _print_safe_coverage_summary(artifacts: AnalysisArtifacts) -> None:
-    """Print client-safe Maximum Safe Coverage facts only.
+    """Print client-safe Verified Safe Coverage facts only.
 
-    Sources counts, coverage percentage, and proof status exclusively from
+    Sources counts, coverage percentage, and verification status from
     ``CoverageCertificate`` (and the certificate disk path from
     ``coverage_certificate_output``). Never reads suppressed keys, category
     names, or failure details from ``SafeCoverageResult``.
@@ -628,9 +628,9 @@ def _print_safe_coverage_summary(artifacts: AnalysisArtifacts) -> None:
     certificate = artifacts.coverage_certificate
     if certificate is None:
         return
-    if certificate.privacy_release_mode is not PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+    if certificate.privacy_release_mode is not PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
         return
-    print("Privacy release mode: Maximum safe coverage")
+    print("Privacy release mode: Verified safe coverage")
     print(f"Candidate units: {certificate.candidate_unit_count}")
     print(f"Released units: {certificate.released_unit_count}")
     print(f"Suppressed units: {certificate.suppressed_unit_count}")
@@ -638,11 +638,8 @@ def _print_safe_coverage_summary(artifacts: AnalysisArtifacts) -> None:
     cert_path = artifacts.coverage_certificate_output
     if cert_path:
         print(f"Coverage Certificate: {cert_path}")
-    if (
-        certificate.solver_state == "optimal"
-        and certificate.mip_gap == 0.0
-    ):
-        print("Maximum coverage has a zero-gap proof.")
+    print("Independent privacy verification: passed")
+    print("Coverage is not a maximum claim.")
 
 
 def _format_analysis_failure_message(exc: Exception) -> str:
@@ -719,9 +716,9 @@ def _finalize_denied_run_logging(logger: logging.Logger) -> None:
         print(f"Non-publishable run log (do not share): {quarantine_path}")
 
 
-# Copyable share CLI example from plans/002-maximize-safe-coverage.md.
+# Copyable share CLI example from plans/005-verified-safe-coverage.md.
 # Validated against create_parser() in tests/test_cli_privacy_release_mode.py.
-MAXIMIZE_SAFE_COVERAGE_CLI_EXAMPLE = (
+VERIFIED_SAFE_COVERAGE_CLI_EXAMPLE = (
     "share",
     "--csv",
     "data.csv",
@@ -736,28 +733,28 @@ MAXIMIZE_SAFE_COVERAGE_CLI_EXAMPLE = (
     "sector",
     "--privacy-rule-sweep",
     "--privacy-release-mode",
-    "maximize-safe-coverage",
+    "verified-safe-coverage",
 )
 
 
 def apply_share_privacy_release_mode_cli_coupling(
     args: argparse.Namespace,
 ) -> None:
-    """Apply share CLI coupling for Maximum Safe Coverage.
+    """Apply share CLI coupling for Verified Safe Coverage.
 
     Interfaces stay thin: shared resolution and hard compatibility checks live
     in ``core.analysis_run``. This only:
 
-    - rejects ``maximize-safe-coverage`` with ``--per-dimension-weights``
+    - rejects ``verified-safe-coverage`` with ``--per-dimension-weights``
     - auto-selects rule-sweep semantics (``SWEEP_ANY_APPLICABLE``) when the
       mode is selected on the CLI
     """
     mode = getattr(args, "privacy_release_mode", None)
-    if mode is not PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+    if mode is not PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
         return
     if getattr(args, "per_dimension_weights", None):
         raise ValueError(
-            "privacy_release_mode=maximize-safe-coverage requires one global "
+            "privacy_release_mode=verified-safe-coverage requires one global "
             "weight vector; --per-dimension-weights is not supported"
         )
     # Prefer the existing privacy_rule_sweep seam so from_namespace maps to
@@ -769,7 +766,7 @@ def build_run_request(mode: str, args: argparse.Namespace) -> AnalysisRunRequest
     """CLI-facing request builder.
 
     Preserves an explicit CLI ``PrivacyReleaseMode`` enum on the request and
-    applies share-only Maximum Safe Coverage coupling before the shared core
+    applies share-only Verified Safe Coverage coupling before the shared core
     builder runs.
     """
     if mode == "share":

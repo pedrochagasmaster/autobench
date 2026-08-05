@@ -1,20 +1,8 @@
-"""Maximum Safe Coverage staged MILP solver (direct highspy).
+"""Deterministic search for verified safe privacy coverage.
 
-Owns the staged mixed-integer solve for
-``PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE``. Sparse model compilation lives in
-``core.privacy_coverage_model``; this Module keeps the public
-``optimize_safe_coverage`` contract and proof / fail-closed behavior.
-
-The public path uses ``core.privacy_coverage_highs`` (Strategy A: direct exact
-maximization for Stage 1 with a complete neutral MIP start). SciPy
-``milp`` remains importable as a private test oracle only.
-
-The independent verifier remains a separate Module and must recalculate every
-policy check from the original inputs and the final global weight vector.
-
-This Module must not authorize a client sink. It produces a trusted internal
-``SafeCoverageResult`` with ``verifier_result='not_run'`` until the verifier
-attests the release.
+This module finds one global weight vector for share analysis. It does not
+claim that the result has maximum coverage. The independent verifier must
+recalculate the final release partition before any client output.
 """
 
 from __future__ import annotations
@@ -23,14 +11,13 @@ import hashlib
 import json
 import math
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-import scipy
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.stats import qmc
 
 from core.canonical_order import canonical_key, canonical_order
+from core.constants import COMPARISON_EPSILON
 from core.contracts import (
     APPROVED_PRIVACY_RULE_NAMES,
     PrivacyReleaseMode,
@@ -39,59 +26,50 @@ from core.contracts import (
 )
 from core.privacy_coverage import CITIBANK_OVERLAY_NAME
 from core.privacy_coverage_model import (
-    CoverageModel,
     CoverageRuleView,
-    ReleaseBlock,
-    StageConstraintSet,
     compile_coverage_model,
 )
 from core.privacy_rules import evaluate_rule, privacy_rule_from_config
 
 __all__ = [
     "SafeCoverageSolverError",
-    "optimize_safe_coverage",
+    "find_verified_safe_coverage",
     "weighted_shares",
 ]
 
-_SOLVER_NAME = "highspy.Highs"
-_SCIPY_ORACLE_SOLVER_NAME = "scipy.optimize.milp"
-_STATE_OPTIMAL = "optimal"
-_STATE_INFEASIBLE = "infeasible"
-_STATE_UNBOUNDED = "unbounded"
-_STATE_TIME_LIMIT = "time_limit"
-_STATE_ITERATION_LIMIT = "iteration_limit"
-_STATE_ERROR = "solver_error"
-_STATE_UNPROVEN = "unproven_maximum"
-
-# Private seam: ``"highs"`` is the public path; ``"scipy"`` is the test oracle.
-_BACKEND_HIGHS = "highs"
-_BACKEND_SCIPY = "scipy"
-
-# Stage 2/3 lexicographic slack. Chosen from a single documented solver
-# feasibility scale (not from a privacy epsilon). Wide enough that HiGHS
-# feasibility tolerances do not accidentally exclude a valid tied solution
-# in later stages, tight enough to preserve lexicographic priority.
-_LEX_TOLERANCE_ABS = 1e-6
-_LEX_TOLERANCE_REL = 1e-6
-
-# Read-back tolerance for extracting integer values from a HiGHS x vector.
-_INTEGRALITY_READBACK_TOLERANCE = 1e-6
-
-# Only allow-listed keys are forwarded to ``milp(options=...)``. The proof
-# contract still requires an exact zero gap, so a positive requested gap
-# cannot weaken acceptance downstream.
-_ALLOWED_SOLVER_OPTIONS = frozenset(
-    {"disp", "presolve", "time_limit", "node_limit", "mip_rel_gap"}
-)
+_ANCHOR_NODE_LIMIT = 20
+_ANCHOR_TIME_LIMIT_SECONDS = 90.0
+_SEARCH_SEED = 20260805
+_SOBOL_POWER = 12
+_LOCAL_SAMPLE_COUNT = 4096
+_LOCAL_SIGMAS = (1.0, 0.5, 0.25)
+_COORDINATE_GRID_SIZE = 31
+_COORDINATE_SWEEPS = 3
+_MAX_CANDIDATE_MATRIX_VALUES = 4_000_000
+_SEARCH_METHOD = "highs-anchor-20-nodes+deterministic-refinement-v1"
+_SEARCH_STATE = "search_complete"
+_CITIBANK_MAXIMUM_SHARE = 25.0
 
 
 class SafeCoverageSolverError(ValueError):
-    """Raised when solver inputs are structurally invalid.
+    """Report invalid search inputs before search work starts."""
 
-    This is a fail-closed input contract error, not a solver-runtime failure.
-    Runtime failures (infeasible, timeout, malformed HiGHS output) are reported
-    on the returned ``SafeCoverageResult.solver_state``.
-    """
+
+def weighted_shares(
+    peer_volumes: Mapping[str, float],
+    weights: Mapping[str, float],
+) -> Dict[str, float]:
+    """Return positive-volume peer shares under the selected weights."""
+    filtered: List[Tuple[str, float]] = []
+    for peer, volume in peer_volumes.items():
+        raw = float(volume)
+        if raw <= 0.0:
+            continue
+        filtered.append((peer, raw * float(weights.get(peer, 1.0))))
+    total = sum(value for _peer, value in filtered)
+    if total <= 0.0:
+        return {peer: 0.0 for peer, _value in filtered}
+    return {peer: 100.0 * value / total for peer, value in filtered}
 
 
 def _build_rule_view(
@@ -100,16 +78,17 @@ def _build_rule_view(
 ) -> CoverageRuleView:
     if name not in APPROVED_PRIVACY_RULE_NAMES:
         raise SafeCoverageSolverError(f"unknown privacy rule: {name!r}")
-    cfg = rule_configs.get(name)
+    config = rule_configs.get(name)
     resolved = privacy_rule_from_config(
-        name, dict(cfg) if cfg is not None else None
-    )
-    tier_items = sorted(
-        resolved.secondary_requirements.values(),
-        key=lambda item: -float(item[1]),
+        name,
+        dict(config) if config is not None else None,
     )
     tiers = tuple(
-        (int(count), float(threshold)) for count, threshold in tier_items
+        (int(count), float(threshold))
+        for count, threshold in sorted(
+            resolved.secondary_requirements.values(),
+            key=lambda item: -float(item[1]),
+        )
     )
     return CoverageRuleView(
         name=resolved.name,
@@ -119,681 +98,425 @@ def _build_rule_view(
     )
 
 
-def weighted_shares(
-    peer_volumes: Mapping[str, float],
-    weights: Mapping[str, float],
-) -> Dict[str, float]:
-    """Return positive-volume peer shares as percentages under ``weights``.
-
-    Peers with zero source volume are dropped, mirroring the structural
-    participant count used by ``evaluate_rule``. Missing peers in ``weights``
-    default to a neutral multiplier of ``1.0``.
-    """
-    filtered: List[Tuple[str, float]] = []
-    for peer, volume in peer_volumes.items():
-        raw = float(volume)
-        if raw <= 0.0:
-            continue
-        multiplier = float(weights.get(peer, 1.0))
-        filtered.append((peer, raw * multiplier))
-    total = sum(value for _peer, value in filtered)
-    if total <= 0.0:
-        return {peer: 0.0 for peer, _value in filtered}
-    return {peer: 100.0 * value / total for peer, value in filtered}
-
-
 def _canonicalize_metric_records(
     unit: PublicationUnit,
     peers: Sequence[str],
 ) -> List[Dict[str, Any]]:
-    seen_metric_names: set = set()
+    seen: set[str] = set()
     records: List[Dict[str, Any]] = []
     for record in unit.metric_records:
-        metric_name_raw = record.get("metric")
-        if not metric_name_raw:
+        metric_raw = record.get("metric")
+        if not metric_raw:
             raise SafeCoverageSolverError(
                 f"unit {unit.internal_key!r} has an unnamed governed metric"
             )
-        metric_name = str(metric_name_raw)
-        if metric_name in seen_metric_names:
+        metric = str(metric_raw)
+        if metric in seen:
             raise SafeCoverageSolverError(
-                f"unit {unit.internal_key!r} has duplicate metric "
-                f"{metric_name!r}"
+                f"unit {unit.internal_key!r} has duplicate metric {metric!r}"
             )
-        seen_metric_names.add(metric_name)
-        raw_volumes = record.get("peer_volumes", {})
+        seen.add(metric)
+        source = record.get("peer_volumes", {})
         aligned: Dict[str, float] = {}
         for peer in peers:
-            value = float(raw_volumes.get(peer, 0.0))
+            value = float(source.get(peer, 0.0))
             if not math.isfinite(value) or value < 0.0:
                 raise SafeCoverageSolverError(
-                    f"unit {unit.internal_key!r} metric {metric_name!r} has "
-                    "non-finite or negative peer volume"
+                    f"unit {unit.internal_key!r} metric {metric!r} has invalid volume"
                 )
             aligned[peer] = value
         total = float(sum(aligned.values()))
         if total <= 0.0:
             raise SafeCoverageSolverError(
-                f"unit {unit.internal_key!r} metric {metric_name!r} has zero "
-                "total volume; a zero-total metric cannot be authorized"
+                f"unit {unit.internal_key!r} metric {metric!r} has zero total volume"
             )
-        positive_peers = tuple(peer for peer in peers if aligned[peer] > 0.0)
         records.append(
             {
-                "metric": metric_name,
+                "metric": metric,
                 "aligned_volumes": aligned,
                 "total": total,
-                "positive_peers": positive_peers,
+                "positive_peers": tuple(
+                    peer for peer in peers if aligned[peer] > 0.0
+                ),
+                "fractions": np.asarray(
+                    [aligned[peer] / total for peer in peers],
+                    dtype=float,
+                ),
             }
         )
     records.sort(key=lambda item: canonical_key(item["metric"]))
     return records
 
 
-def _sanitize_solver_options(
-    options: Optional[Mapping[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    if options is None:
-        return None
-    unknown = set(options) - _ALLOWED_SOLVER_OPTIONS
-    if unknown:
-        raise SafeCoverageSolverError(
-            f"solver_options contains unsupported keys: {sorted(unknown)!r}"
-        )
-    return {str(key): options[key] for key in options}
-
-
-def _certifying_options(
-    sanitized: Optional[Mapping[str, Any]],
-) -> Dict[str, Any]:
-    """Caller time/node limits pass through; relative gap is forced to zero."""
-    options = dict(sanitized) if sanitized is not None else {}
-    options["mip_rel_gap"] = 0
-    return options
-
-
-def _classify_status(status_code: int) -> str:
-    if status_code == 2:
-        return _STATE_INFEASIBLE
-    if status_code == 3:
-        return _STATE_UNBOUNDED
-    if status_code == 4:
-        return _STATE_ERROR
-    if status_code == 5:
-        return _STATE_TIME_LIMIT
-    if status_code == 1:
-        return _STATE_ITERATION_LIMIT
-    return _STATE_ERROR
-
-
-def _release_mask_digest(sorted_keys: Sequence[str], released_keys: Iterable[str]) -> str:
-    released_set = set(released_keys)
-    mask_payload = [
-        {"key": key, "released": key in released_set}
+def _release_mask_digest(
+    sorted_keys: Sequence[str],
+    released_keys: Iterable[str],
+) -> str:
+    released = set(released_keys)
+    payload = [
+        {"key": key, "released": key in released}
         for key in sorted_keys
     ]
-    encoded = json.dumps(mask_payload, separators=(",", ":"))
+    encoded = json.dumps(payload, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _empty_release_result(
-    *,
-    universe: Tuple[PublicationUnit, ...],
-    peers: Sequence[str],
-    solver_state: str,
-    mip_dual_bound: float,
-    mip_gap: float,
-    input_digest: str,
-    configuration_digest: str,
-    policy_version: str,
-    policy_source: str,
-    rule_set_digest: str,
-    candidate_universe_digest: str,
-    solver_name: str,
-    solver_version: str,
-) -> SafeCoverageResult:
-    """Return a valid partition with zero releases for failure or K=0 paths."""
-    keys = tuple(unit.internal_key for unit in universe)
-    return SafeCoverageResult(
-        release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
-        global_weights={peer: 1.0 for peer in peers},
-        candidate_universe=universe,
-        release_set=(),
-        suppression_set=keys,
-        authorizing_rules={},
-        primary_objective_value=0,
-        later_objective_values=(0.0, 0.0),
-        solver_state=solver_state,
-        mip_dual_bound=float(mip_dual_bound),
-        mip_gap=float(mip_gap),
-        solver_name=solver_name,
-        solver_version=solver_version,
-        input_digest=input_digest,
-        configuration_digest=configuration_digest,
-        policy_version=policy_version,
-        policy_source=policy_source,
-        rule_set_digest=rule_set_digest,
-        candidate_universe_digest=candidate_universe_digest,
-        release_mask_digest=_release_mask_digest(keys, ()),
-        verifier_result="not_run",
-    )
-
-
-def _solve_stage(
-    stage: StageConstraintSet,
-    *,
-    objective: np.ndarray,
-    options: Mapping[str, Any],
-    bounds_lb: Optional[np.ndarray] = None,
-    bounds_ub: Optional[np.ndarray] = None,
-    constraints_lb: Optional[np.ndarray] = None,
-    constraints_ub: Optional[np.ndarray] = None,
-    maximize: bool = False,
-    mip_start: Optional[np.ndarray] = None,
-) -> Any:
-    """Run one SciPy ``milp`` call with a single CSC ``LinearConstraint``.
-
-    ``maximize`` and ``mip_start`` are accepted for seam parity with the HiGHS
-    path; SciPy milp ignores both (minimize-sense objectives only).
-    """
-    del maximize, mip_start
-    lb = stage.bounds_lb if bounds_lb is None else bounds_lb
-    ub = stage.bounds_ub if bounds_ub is None else bounds_ub
-    row_lb = stage.constraints_lb if constraints_lb is None else constraints_lb
-    row_ub = stage.constraints_ub if constraints_ub is None else constraints_ub
-    constraint = LinearConstraint(stage.constraints, row_lb, row_ub)
-    return milp(
-        c=objective,
-        integrality=stage.integrality,
-        bounds=Bounds(np.asarray(lb, dtype=float), np.asarray(ub, dtype=float)),
-        constraints=constraint,
-        options=dict(options),
-    )
-
-
-def _highs_time_limit(options: Mapping[str, Any]) -> Optional[float]:
-    raw = options.get("time_limit")
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value) or value < 0.0:
-        return None
-    return value
-
-
-def _solve_highs_stage(
-    stage: StageConstraintSet,
-    *,
-    objective: np.ndarray,
-    options: Mapping[str, Any],
-    bounds_lb: Optional[np.ndarray] = None,
-    bounds_ub: Optional[np.ndarray] = None,
-    constraints_lb: Optional[np.ndarray] = None,
-    constraints_ub: Optional[np.ndarray] = None,
-    maximize: bool = False,
-    mip_start: Optional[np.ndarray] = None,
-) -> Any:
-    """Run one HiGHS stage and return a SciPy-milp-shaped namespace.
-
-    Patch point for fail-closed Stage-1 fault tests. Objective vectors use the
-    same numeric sense as the ``maximize`` flag (positive costs when maximizing).
-    Returned ``fun`` / ``mip_dual_bound`` always use SciPy minimize-sense so the
-    shared ``_stage1_proof`` and later-stage readers stay unchanged.
-    """
-    # Circular import: privacy_coverage_highs imports weighted_shares from here.
-    from core.privacy_coverage_highs import HighsCoverageSession
-
-    stage_for_solve = replace(
-        stage,
-        objective=np.asarray(objective, dtype=float),
-        bounds_lb=stage.bounds_lb if bounds_lb is None else np.asarray(bounds_lb, dtype=float),
-        bounds_ub=stage.bounds_ub if bounds_ub is None else np.asarray(bounds_ub, dtype=float),
-        constraints_lb=(
-            stage.constraints_lb
-            if constraints_lb is None
-            else np.asarray(constraints_lb, dtype=float)
-        ),
-        constraints_ub=(
-            stage.constraints_ub
-            if constraints_ub is None
-            else np.asarray(constraints_ub, dtype=float)
+def _select_anchor_rule(
+    rule_names: Sequence[str],
+    rules: Mapping[str, CoverageRuleView],
+) -> str:
+    primary_only = [
+        name for name in rule_names if not rules[name].secondary_tiers
+    ]
+    candidates = primary_only or list(rule_names)
+    return max(
+        candidates,
+        key=lambda name: (
+            rules[name].max_concentration,
+            rules[name].min_entities,
+            tuple(-ord(character) for character in name),
         ),
     )
-    session = HighsCoverageSession(
-        stage_for_solve,
-        time_limit=_highs_time_limit(options),
-        maximize=bool(maximize),
+
+
+def _candidate_batch_size(peer_count: int, requested: int) -> int:
+    by_memory = max(1, _MAX_CANDIDATE_MATRIX_VALUES // max(1, peer_count))
+    return max(1, min(requested, by_memory))
+
+
+def _rule_pass_mask(
+    weighted: np.ndarray,
+    positive_count: int,
+    rule: CoverageRuleView,
+) -> np.ndarray:
+    count = weighted.shape[0]
+    if positive_count < rule.min_entities:
+        return np.zeros(count, dtype=bool)
+    totals = weighted.sum(axis=1)
+    valid = totals > 0.0
+    shares = np.zeros_like(weighted)
+    if np.any(valid):
+        shares[valid] = 100.0 * weighted[valid] / totals[valid, None]
+    passed = valid & (
+        shares.max(axis=1) <= rule.max_concentration + COMPARISON_EPSILON
     )
-    if mip_start is not None:
-        session.set_complete_start(np.asarray(mip_start, dtype=float))
-    result = session.solve()
-
-    def _minimize_sense(value: float) -> float:
-        return -float(value) if maximize else float(value)
-
-    obj = float(result.objective_value)
-    dual = float(result.mip_dual_bound)
-    gap = float(result.mip_gap)
-    x_vec = np.asarray(result.column_values, dtype=float)
-
-    if result.model_status == _STATE_OPTIMAL:
-        return SimpleNamespace(
-            status=0,
-            success=True,
-            x=x_vec,
-            fun=_minimize_sense(obj),
-            mip_dual_bound=_minimize_sense(dual),
-            mip_gap=gap,
-            highs_version=session.highs_version,
-        )
-    if result.model_status == _STATE_INFEASIBLE:
-        return SimpleNamespace(
-            status=2,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version=session.highs_version,
-        )
-    if result.model_status == _STATE_UNBOUNDED:
-        return SimpleNamespace(
-            status=3,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version=session.highs_version,
-        )
-    if result.model_status == _STATE_TIME_LIMIT:
-        return SimpleNamespace(
-            status=5,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version=session.highs_version,
-        )
-    if result.model_status == _STATE_ITERATION_LIMIT:
-        return SimpleNamespace(
-            status=1,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version=session.highs_version,
-        )
-    if result.model_status == _STATE_UNPROVEN:
-        # Preserve nonzero gaps for the shared Stage-1 proof gate. Other
-        # unproven causes clear the dual so ``_stage1_proof`` fails closed.
-        fun_val = _minimize_sense(obj) if math.isfinite(obj) else None
-        if math.isfinite(gap) and gap != 0.0 and fun_val is not None:
-            dual_val: Optional[float] = (
-                _minimize_sense(dual) if math.isfinite(dual) else None
-            )
-            gap_val: Optional[float] = gap
-        else:
-            dual_val = None
-            gap_val = gap if math.isfinite(gap) else None
-        return SimpleNamespace(
-            status=0,
-            success=True,
-            x=x_vec if x_vec.shape == (stage.n_vars,) else None,
-            fun=fun_val if fun_val is not None else 0.0,
-            mip_dual_bound=dual_val,
-            mip_gap=gap_val,
-            highs_version=session.highs_version,
-        )
-    return SimpleNamespace(
-        status=4,
-        success=False,
-        x=None,
-        fun=None,
-        mip_dual_bound=None,
-        mip_gap=None,
-        highs_version=session.highs_version,
-    )
+    for required, threshold in rule.secondary_tiers:
+        passed &= np.sum(
+            shares + COMPARISON_EPSILON >= threshold,
+            axis=1,
+        ) >= required
+    return passed
 
 
-def _stage_solver(backend: str):
-    if backend == _BACKEND_SCIPY:
-        return _solve_stage
-    if backend == _BACKEND_HIGHS:
-        return _solve_highs_stage
-    raise RuntimeError(f"unknown coverage solver backend: {backend!r}")
-
-
-def _solver_identity(backend: str, stage_result: Any = None) -> Tuple[str, str]:
-    if backend == _BACKEND_SCIPY:
-        return _SCIPY_ORACLE_SOLVER_NAME, str(scipy.__version__)
-    version = getattr(stage_result, "highs_version", None)
-    if not version:
-        # Circular import: privacy_coverage_highs imports weighted_shares from here.
-        from highspy import Highs
-
-        version = str(Highs().version())
-    return _SOLVER_NAME, str(version)
-
-
-def _validate_result(res: Any, n_vars: int) -> Optional[str]:
-    if getattr(res, "status", None) is None:
-        return _STATE_ERROR
-    if int(res.status) != 0 or not bool(getattr(res, "success", False)):
-        return _classify_status(int(res.status))
-    x_vec = getattr(res, "x", None)
-    if x_vec is None:
-        return _STATE_ERROR
-    arr = np.asarray(x_vec, dtype=float)
-    if arr.shape != (n_vars,) or not np.all(np.isfinite(arr)):
-        return _STATE_ERROR
-    fun_val = getattr(res, "fun", None)
-    if fun_val is None or not math.isfinite(float(fun_val)):
-        return _STATE_ERROR
-    return None
-
-
-def _extract_binary(x_vec: np.ndarray, idx: int) -> int:
-    value = float(x_vec[idx])
-    if not math.isfinite(value):
-        raise RuntimeError("non-finite binary component in solver output")
-    rounded = round(value)
-    if abs(value - rounded) > _INTEGRALITY_READBACK_TOLERANCE:
-        raise RuntimeError("non-integer binary component in solver output")
-    if rounded not in (0, 1):
-        raise RuntimeError("binary variable outside {0,1} in solver output")
-    return int(rounded)
-
-
-def _stage1_proof(
-    result: Any,
-    sum_r: float,
-) -> Tuple[bool, int, float, float]:
-    """Return (proven, K, dual_bound_normalized, mip_gap)."""
-    k_rounded = int(round(sum_r))
-    proven = abs(sum_r - k_rounded) <= _INTEGRALITY_READBACK_TOLERANCE
-    dual_bound_normalized = 0.0
-    raw_dual = getattr(result, "mip_dual_bound", None)
-    if raw_dual is None:
-        proven = False
-    else:
-        try:
-            dual_bound_normalized = -float(raw_dual)
-        except (TypeError, ValueError):
-            proven = False
-    if not math.isfinite(dual_bound_normalized):
-        proven = False
-        dual_bound_normalized = 0.0
-
-    mip_gap_value = 0.0
-    raw_gap = getattr(result, "mip_gap", None)
-    if raw_gap is None:
-        proven = False
-    else:
-        try:
-            mip_gap_value = float(raw_gap)
-        except (TypeError, ValueError):
-            proven = False
-    if not math.isfinite(mip_gap_value) or mip_gap_value < 0.0:
-        proven = False
-        mip_gap_value = 0.0
-    if mip_gap_value != 0.0:
-        proven = False
-    if round(dual_bound_normalized) != k_rounded:
-        proven = False
-    return proven, k_rounded, dual_bound_normalized, mip_gap_value
-
-
-def _lex_tolerance(optimum: float) -> float:
-    return max(_LEX_TOLERANCE_ABS, _LEX_TOLERANCE_REL * max(1.0, abs(optimum)))
-
-
-def _select_authorizing_rules(
+def _score_candidates(
     unit_data: Sequence[Mapping[str, Any]],
-    released_keys: Sequence[str],
-    weights: Mapping[str, float],
-    rule_configs: Mapping[str, Mapping[str, Any]],
-) -> Tuple[Dict[str, str], List[str]]:
-    """Return (authorizing_rules, units_missing_authorizer).
-
-    Uses the first canonical applicable rule that passes every metric under
-    ``evaluate_rule`` / ``weighted_shares``.
-    """
-    released = set(released_keys)
-    authorizing: Dict[str, str] = {}
-    missing: List[str] = []
-    for unit in unit_data:
-        key = str(unit["key"])
-        if key not in released:
-            continue
-        selected: Optional[str] = None
-        for rule_name in unit["rules"]:
-            cfg = rule_configs.get(rule_name)
-            rule_config = dict(cfg) if cfg is not None else None
-            passes = True
-            for metric in unit["metrics"]:
-                shares = weighted_shares(metric["aligned_volumes"], weights)
-                evaluation = evaluate_rule(
-                    rule_name,
-                    list(shares.values()),
-                    rule_config=rule_config,
-                )
-                if not evaluation.strict_passed:
-                    passes = False
-                    break
-            if passes:
-                selected = str(rule_name)
-                break
-        if selected is None:
-            missing.append(key)
-        else:
-            authorizing[key] = selected
-    return authorizing, missing
-
-
-def _weights_from_x(
-    x_vec: np.ndarray,
+    rules: Mapping[str, CoverageRuleView],
     peers: Sequence[str],
-    w_index: Mapping[str, int],
+    candidates: np.ndarray,
+    citi_peer: Optional[str],
+) -> np.ndarray:
+    scores = np.zeros(len(candidates), dtype=np.int32)
+    citi_index = peers.index(citi_peer) if citi_peer in peers else None
+    for unit in unit_data:
+        unit_pass = np.zeros(len(candidates), dtype=bool)
+        for rule_name in unit["rules"]:
+            rule_pass = np.ones(len(candidates), dtype=bool)
+            for metric in unit["metrics"]:
+                fractions = metric["fractions"]
+                weighted = candidates * fractions[None, :]
+                rule_pass &= _rule_pass_mask(
+                    weighted,
+                    len(metric["positive_peers"]),
+                    rules[str(rule_name)],
+                )
+            unit_pass |= rule_pass
+        if (
+            CITIBANK_OVERLAY_NAME in unit["overlays"]
+            and citi_index is not None
+        ):
+            for metric in unit["metrics"]:
+                fractions = metric["fractions"]
+                weighted = candidates * fractions[None, :]
+                totals = weighted.sum(axis=1)
+                citi_share = np.full(len(candidates), math.inf, dtype=float)
+                valid = totals > 0.0
+                citi_share[valid] = (
+                    100.0 * weighted[valid, citi_index] / totals[valid]
+                )
+                unit_pass &= (
+                    citi_share
+                    <= _CITIBANK_MAXIMUM_SHARE + COMPARISON_EPSILON
+                )
+        scores += unit_pass.astype(np.int32)
+    return scores
+
+
+def _best_candidate(
+    unit_data: Sequence[Mapping[str, Any]],
+    rules: Mapping[str, CoverageRuleView],
+    peers: Sequence[str],
+    candidates: np.ndarray,
+    citi_peer: Optional[str],
+) -> Tuple[np.ndarray, int, float]:
+    scores = _score_candidates(unit_data, rules, peers, candidates, citi_peer)
+    distance = np.sum(np.abs(np.log(candidates)), axis=1)
+    best_score = int(scores.max())
+    eligible = np.flatnonzero(scores == best_score)
+    best_distance = float(distance[eligible].min())
+    tied = eligible[
+        np.isclose(
+            distance[eligible],
+            best_distance,
+            rtol=0.0,
+            atol=1e-12,
+        )
+    ]
+    index = int(tied[0])
+    return candidates[index].copy(), best_score, best_distance
+
+
+def _resolve_citi_peer(
+    peers: Sequence[str],
+    unit_data: Sequence[Mapping[str, Any]],
+    citibank_entity_name: Optional[str],
+) -> Optional[str]:
+    if not any(
+        CITIBANK_OVERLAY_NAME in unit["overlays"] for unit in unit_data
+    ):
+        return None
+    if not citibank_entity_name:
+        raise SafeCoverageSolverError(
+            "citibank_entity_name is required for the Citibank overlay"
+        )
+    needle = citibank_entity_name.casefold()
+    matches = [peer for peer in peers if peer.casefold() == needle]
+    if len(matches) != 1:
+        raise SafeCoverageSolverError(
+            "citibank peer identity must exist once in governed_peers"
+        )
+    return matches[0]
+
+
+def _anchor_candidate(
+    unit_data: Sequence[Mapping[str, Any]],
+    peers: Sequence[str],
+    rules: Mapping[str, CoverageRuleView],
+    rule_configs: Mapping[str, Mapping[str, Any]],
     *,
     min_weight: float,
     max_weight: float,
-) -> Dict[str, float]:
-    weights: Dict[str, float] = {}
-    for peer in peers:
-        value = float(x_vec[w_index[peer]])
-        if not math.isfinite(value):
-            value = 1.0
-        weights[peer] = max(min_weight, min(max_weight, value))
-    return weights
+    citibank_entity_name: Optional[str],
+) -> Tuple[Optional[np.ndarray], str, str]:
+    from core.privacy_coverage_highs import (
+        HighsCoverageSession,
+        NeutralMipStartError,
+        build_neutral_mip_start,
+        validate_start_against_stage,
+    )
+
+    anchor_units: List[Dict[str, Any]] = []
+    anchor_rules: Dict[str, CoverageRuleView] = {}
+    for unit in unit_data:
+        rule_name = _select_anchor_rule(unit["rules"], rules)
+        anchor_units.append(
+            {
+                "key": unit["key"],
+                "metrics": unit["metrics"],
+                "rules": (rule_name,),
+                "overlays": unit["overlays"],
+            }
+        )
+        anchor_rules[rule_name] = replace(
+            rules[rule_name],
+            secondary_tiers=(),
+        )
+    model = compile_coverage_model(
+        anchor_units,
+        peers,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        rules=anchor_rules,
+        citibank_entity_name=citibank_entity_name,
+        enable_rule_dominance=True,
+        enable_structural_presolve=True,
+    )
+    stage = replace(model.stage1, objective=-model.stage1.objective)
+    session = HighsCoverageSession(
+        stage,
+        time_limit=_ANCHOR_TIME_LIMIT_SECONDS,
+        maximize=True,
+        threads=1,
+        mip_max_nodes=_ANCHOR_NODE_LIMIT,
+    )
+    try:
+        start = build_neutral_mip_start(
+            model,
+            anchor_units,
+            rule_configs=rule_configs,
+        )
+        session.set_complete_start(start)
+        result = session.solve()
+        validate_start_against_stage(stage, result.column_values)
+    except (NeutralMipStartError, RuntimeError, ValueError):
+        return None, "anchor_failed", session.highs_version
+    weights = np.asarray(
+        [result.column_values[model.w_index[peer]] for peer in peers],
+        dtype=float,
+    )
+    if (
+        weights.shape != (len(peers),)
+        or not np.all(np.isfinite(weights))
+        or np.any(weights < min_weight)
+        or np.any(weights > max_weight)
+    ):
+        return None, "anchor_failed", session.highs_version
+    return weights, str(result.model_status), session.highs_version
 
 
-def _release_keys_from_x(
-    x_vec: np.ndarray,
+def _refine_candidates(
     unit_data: Sequence[Mapping[str, Any]],
-    r_index: Mapping[str, int],
-) -> Tuple[List[str], List[str]]:
+    rules: Mapping[str, CoverageRuleView],
+    peers: Sequence[str],
+    *,
+    min_weight: float,
+    max_weight: float,
+    anchor: Optional[np.ndarray],
+    citi_peer: Optional[str],
+) -> Tuple[np.ndarray, int]:
+    dimension = len(peers)
+    evaluated = 0
+    requested = 2 ** _SOBOL_POWER
+    sample_count = _candidate_batch_size(dimension, requested)
+    power = int(math.floor(math.log2(sample_count)))
+    sample_count = 2 ** max(0, power)
+    sampler = qmc.Sobol(d=dimension, scramble=True, seed=_SEARCH_SEED)
+    unit_cube = sampler.random_base2(m=max(0, power))
+    candidates = np.exp(
+        math.log(min_weight)
+        + unit_cube * (math.log(max_weight) - math.log(min_weight))
+    )
+    initial = [np.ones(dimension, dtype=float)]
+    if anchor is not None:
+        initial.insert(0, anchor)
+    candidates = np.vstack([*initial, candidates])
+    best, _score, _distance = _best_candidate(
+        unit_data,
+        rules,
+        peers,
+        candidates,
+        citi_peer,
+    )
+    evaluated += len(candidates)
+
+    rng = np.random.default_rng(_SEARCH_SEED)
+    local_count = _candidate_batch_size(dimension, _LOCAL_SAMPLE_COUNT)
+    for sigma in _LOCAL_SIGMAS:
+        perturbation = rng.normal(0.0, sigma, size=(local_count, dimension))
+        local = np.clip(
+            np.exp(np.log(best)[None, :] + perturbation),
+            min_weight,
+            max_weight,
+        )
+        local = np.vstack([best, local])
+        best, _score, _distance = _best_candidate(
+            unit_data,
+            rules,
+            peers,
+            local,
+            citi_peer,
+        )
+        evaluated += len(local)
+
+    grid = np.geomspace(min_weight, max_weight, _COORDINATE_GRID_SIZE)
+    for _sweep in range(_COORDINATE_SWEEPS):
+        changed = False
+        for coordinate in range(dimension):
+            coordinate_candidates = np.repeat(
+                best[None, :],
+                len(grid) + 1,
+                axis=0,
+            )
+            coordinate_candidates[:-1, coordinate] = grid
+            candidate, _candidate_score, _distance = _best_candidate(
+                unit_data,
+                rules,
+                peers,
+                coordinate_candidates,
+                citi_peer,
+            )
+            evaluated += len(coordinate_candidates)
+            if not np.array_equal(candidate, best):
+                changed = True
+            best = candidate
+        if not changed:
+            break
+    return best, evaluated
+
+
+def _direct_release_partition(
+    unit_data: Sequence[Mapping[str, Any]],
+    peers: Sequence[str],
+    weights: np.ndarray,
+    citi_peer: Optional[str],
+    rule_configs: Mapping[str, Mapping[str, Any]],
+) -> Tuple[List[str], List[str], Dict[str, str]]:
+    weight_map = {
+        peer: float(weights[index]) for index, peer in enumerate(peers)
+    }
     released: List[str] = []
     suppressed: List[str] = []
+    authorizing: Dict[str, str] = {}
     for unit in unit_data:
+        citi_passed = True
+        if CITIBANK_OVERLAY_NAME in unit["overlays"]:
+            if citi_peer is None:
+                citi_passed = False
+            else:
+                for metric in unit["metrics"]:
+                    shares = weighted_shares(
+                        metric["aligned_volumes"],
+                        weight_map,
+                    )
+                    if (
+                        shares.get(citi_peer, 0.0)
+                        > _CITIBANK_MAXIMUM_SHARE + COMPARISON_EPSILON
+                    ):
+                        citi_passed = False
+                        break
+        authorizer: Optional[str] = None
+        if citi_passed:
+            for rule_name in unit["rules"]:
+                passed = True
+                for metric in unit["metrics"]:
+                    shares = weighted_shares(
+                        metric["aligned_volumes"],
+                        weight_map,
+                    )
+                    evaluation = evaluate_rule(
+                        str(rule_name),
+                        list(shares.values()),
+                        rule_config=(
+                            dict(rule_configs[str(rule_name)])
+                            if str(rule_name) in rule_configs
+                            else None
+                        ),
+                    )
+                    if not evaluation.strict_passed:
+                        passed = False
+                        break
+                if passed:
+                    authorizer = str(rule_name)
+                    break
         key = str(unit["key"])
-        raw = float(x_vec[r_index[key]])
-        rounded = int(round(raw))
-        if abs(raw - rounded) > _INTEGRALITY_READBACK_TOLERANCE or rounded not in (0, 1):
+        if authorizer is None:
             suppressed.append(key)
-            continue
-        if rounded == 1:
-            released.append(key)
         else:
-            suppressed.append(key)
-    return released, suppressed
+            released.append(key)
+            authorizing[key] = authorizer
+    return released, suppressed, authorizing
 
 
-def _finalize_result(
-    *,
-    unit_data: Sequence[Mapping[str, Any]],
-    keys: Sequence[str],
-    peers: Sequence[str],
-    weights: Mapping[str, float],
-    released_keys: Sequence[str],
-    suppressed_keys: Sequence[str],
-    authorizing_rules: Mapping[str, str],
-    sorted_universe: Tuple[PublicationUnit, ...],
-    solver_state: str,
-    mip_dual_bound: float,
-    mip_gap: float,
-    later_objectives: Tuple[float, float],
-    input_digest: str,
-    configuration_digest: str,
-    policy_version: str,
-    policy_source: str,
-    rule_set_digest: str,
-    candidate_universe_digest: str,
-    solver_name: str,
-    solver_version: str,
-) -> SafeCoverageResult:
-    released_sorted = tuple(sorted(released_keys, key=canonical_key))
-    suppressed_sorted = tuple(sorted(suppressed_keys, key=canonical_key))
-
-    all_keys = set(released_sorted) | set(suppressed_sorted)
-    if all_keys != set(keys) or len(released_sorted) + len(suppressed_sorted) != len(keys):
-        canonical_all = set(keys)
-        missing = canonical_all - all_keys
-        for missing_key in sorted(missing, key=canonical_key):
-            suppressed_sorted = suppressed_sorted + (missing_key,)
-        released_sorted = tuple(k for k in released_sorted if k in canonical_all)
-        solver_state = _STATE_UNPROVEN
-
-    # Drop authorizing rules for units that are no longer released.
-    released_set = set(released_sorted)
-    authorizing_out = {
-        key: rule
-        for key, rule in authorizing_rules.items()
-        if key in released_set
-    }
-    if set(authorizing_out) != released_set:
-        solver_state = _STATE_UNPROVEN
-
-    primary_objective_value = len(released_sorted)
-    if solver_state == _STATE_OPTIMAL and math.isfinite(mip_dual_bound):
-        if round(mip_dual_bound) != primary_objective_value:
-            solver_state = _STATE_UNPROVEN
-
-    weights_out = {peer: float(weights.get(peer, 1.0)) for peer in peers}
-    for peer, value in weights_out.items():
-        if not math.isfinite(value):
-            weights_out[peer] = 1.0
-            solver_state = _STATE_UNPROVEN
-
-    return SafeCoverageResult(
-        release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
-        global_weights=weights_out,
-        candidate_universe=sorted_universe,
-        release_set=released_sorted,
-        suppression_set=suppressed_sorted,
-        authorizing_rules=authorizing_out,
-        primary_objective_value=primary_objective_value,
-        later_objective_values=tuple(float(v) for v in later_objectives),
-        solver_state=solver_state,
-        mip_dual_bound=float(mip_dual_bound),
-        mip_gap=float(mip_gap),
-        solver_name=solver_name,
-        solver_version=solver_version,
-        input_digest=input_digest,
-        configuration_digest=configuration_digest,
-        policy_version=policy_version,
-        policy_source=policy_source,
-        rule_set_digest=rule_set_digest,
-        candidate_universe_digest=candidate_universe_digest,
-        release_mask_digest=_release_mask_digest(keys, released_sorted),
-        verifier_result="not_run",
-    )
-
-
-def _finalize_from_partial_x(
-    *,
-    x_vec: np.ndarray,
-    model: CoverageModel,
-    unit_data: Sequence[Mapping[str, Any]],
-    keys: Sequence[str],
-    peers: Sequence[str],
-    rule_configs: Mapping[str, Mapping[str, Any]],
-    sorted_universe: Tuple[PublicationUnit, ...],
-    solver_state: str,
-    mip_dual_bound: float,
-    mip_gap: float,
-    later_objectives: Tuple[float, float],
-    input_digest: str,
-    configuration_digest: str,
-    policy_version: str,
-    policy_source: str,
-    rule_set_digest: str,
-    candidate_universe_digest: str,
-    solver_name: str,
-    solver_version: str,
-) -> SafeCoverageResult:
-    weights = _weights_from_x(
-        x_vec,
-        peers,
-        model.w_index,
-        min_weight=model.min_weight,
-        max_weight=model.max_weight,
-    )
-    released, suppressed = _release_keys_from_x(x_vec, unit_data, model.r_index)
-    authorizing, missing = _select_authorizing_rules(
-        unit_data, released, weights, rule_configs
-    )
-    if missing:
-        solver_state = _STATE_UNPROVEN
-        for key in missing:
-            if key in released:
-                released.remove(key)
-            if key not in suppressed:
-                suppressed.append(key)
-            authorizing.pop(key, None)
-    return _finalize_result(
-        unit_data=unit_data,
-        keys=keys,
-        peers=peers,
-        weights=weights,
-        released_keys=released,
-        suppressed_keys=suppressed,
-        authorizing_rules=authorizing,
-        sorted_universe=sorted_universe,
-        solver_state=solver_state,
-        mip_dual_bound=mip_dual_bound,
-        mip_gap=mip_gap,
-        later_objectives=later_objectives,
-        input_digest=input_digest,
-        configuration_digest=configuration_digest,
-        policy_version=policy_version,
-        policy_source=policy_source,
-        rule_set_digest=rule_set_digest,
-        candidate_universe_digest=candidate_universe_digest,
-        solver_name=solver_name,
-        solver_version=solver_version,
-    )
-
-
-def _sync_block_bounds(
-    stage: StageConstraintSet,
-    block_row_indices: Sequence[int],
-    blocks: Sequence[ReleaseBlock],
-) -> Tuple[np.ndarray, np.ndarray]:
-    row_lb = stage.constraints_lb.copy()
-    row_ub = stage.constraints_ub.copy()
-    for row_idx, block in zip(block_row_indices, blocks):
-        row_lb[row_idx] = float(block.lb)
-        row_ub[row_idx] = float(block.ub)
-    return row_lb, row_ub
-
-
-def optimize_safe_coverage(
+def find_verified_safe_coverage(
     candidate_universe: Tuple[PublicationUnit, ...],
     governed_peers: Tuple[str, ...],
     *,
@@ -809,485 +532,111 @@ def optimize_safe_coverage(
     candidate_universe_digest: str,
     solver_options: Optional[Mapping[str, Any]] = None,
 ) -> SafeCoverageResult:
-    """Solve maximum safe coverage via a 4-stage lexicographic MILP.
+    """Find a deterministic safe release subset.
 
-    The returned candidate is trusted internal evidence with
-    ``verifier_result='not_run'``. The caller must invoke the independent
-    verifier before authorizing any client sink.
+    The search does not prove a maximum. The caller must run the independent
+    verifier before it authorizes a client sink.
     """
-    return _optimize_safe_coverage_impl(
-        candidate_universe,
-        governed_peers,
-        min_weight=min_weight,
-        max_weight=max_weight,
-        rule_configs=rule_configs,
-        citibank_entity_name=citibank_entity_name,
-        input_digest=input_digest,
-        configuration_digest=configuration_digest,
-        policy_version=policy_version,
-        policy_source=policy_source,
-        rule_set_digest=rule_set_digest,
-        candidate_universe_digest=candidate_universe_digest,
-        solver_options=solver_options,
-        backend=_BACKEND_HIGHS,
-    )
-
-
-def _optimize_safe_coverage_scipy_oracle(
-    candidate_universe: Tuple[PublicationUnit, ...],
-    governed_peers: Tuple[str, ...],
-    *,
-    min_weight: float,
-    max_weight: float,
-    rule_configs: Mapping[str, Mapping[str, Any]],
-    citibank_entity_name: Optional[str],
-    input_digest: str,
-    configuration_digest: str,
-    policy_version: str,
-    policy_source: str,
-    rule_set_digest: str,
-    candidate_universe_digest: str,
-    solver_options: Optional[Mapping[str, Any]] = None,
-) -> SafeCoverageResult:
-    """Private SciPy ``milp`` oracle for sanitized HiGHS parity tests only."""
-    return _optimize_safe_coverage_impl(
-        candidate_universe,
-        governed_peers,
-        min_weight=min_weight,
-        max_weight=max_weight,
-        rule_configs=rule_configs,
-        citibank_entity_name=citibank_entity_name,
-        input_digest=input_digest,
-        configuration_digest=configuration_digest,
-        policy_version=policy_version,
-        policy_source=policy_source,
-        rule_set_digest=rule_set_digest,
-        candidate_universe_digest=candidate_universe_digest,
-        solver_options=solver_options,
-        backend=_BACKEND_SCIPY,
-    )
-
-
-def _optimize_safe_coverage_impl(
-    candidate_universe: Tuple[PublicationUnit, ...],
-    governed_peers: Tuple[str, ...],
-    *,
-    min_weight: float,
-    max_weight: float,
-    rule_configs: Mapping[str, Mapping[str, Any]],
-    citibank_entity_name: Optional[str],
-    input_digest: str,
-    configuration_digest: str,
-    policy_version: str,
-    policy_source: str,
-    rule_set_digest: str,
-    candidate_universe_digest: str,
-    solver_options: Optional[Mapping[str, Any]] = None,
-    backend: str = _BACKEND_HIGHS,
-) -> SafeCoverageResult:
-    """Shared staged solve used by the public HiGHS path and SciPy oracle."""
-    if not math.isfinite(min_weight) or min_weight <= 0.0:
+    if solver_options is not None:
         raise SafeCoverageSolverError(
-            "min_weight must be a positive finite value"
+            "solver_options are not supported by verified-safe-coverage"
         )
+    if not math.isfinite(min_weight) or min_weight <= 0.0:
+        raise SafeCoverageSolverError("min_weight must be positive and finite")
     if not math.isfinite(max_weight) or max_weight < min_weight:
         raise SafeCoverageSolverError(
-            "max_weight must be finite and at least min_weight"
+            "max_weight must be finite and not less than min_weight"
         )
     if min_weight > 1.0 or max_weight < 1.0:
         raise SafeCoverageSolverError(
             "weight bounds must satisfy 0 < min_weight <= 1 <= max_weight"
         )
-    if not isinstance(candidate_universe, tuple):
-        raise SafeCoverageSolverError("candidate_universe must be a tuple")
-    if not candidate_universe:
-        raise SafeCoverageSolverError("candidate_universe must not be empty")
-
+    if not isinstance(candidate_universe, tuple) or not candidate_universe:
+        raise SafeCoverageSolverError("candidate_universe must be a non-empty tuple")
     peers = tuple(canonical_order(governed_peers))
     if not peers or len(set(governed_peers)) != len(governed_peers):
         raise SafeCoverageSolverError(
-            "governed_peers must be a non-empty sequence of distinct identities"
+            "governed_peers must contain distinct identities"
         )
 
-    sanitized_options = _sanitize_solver_options(solver_options)
-    cert_options = _certifying_options(sanitized_options)
-    solve_stage = _stage_solver(backend)
-
-    sorted_universe = tuple(
-        sorted(
-            candidate_universe,
-            key=lambda unit: canonical_key(unit.internal_key),
-        )
+    universe = tuple(
+        sorted(candidate_universe, key=lambda unit: canonical_key(unit.internal_key))
     )
-    keys = tuple(unit.internal_key for unit in sorted_universe)
+    keys = tuple(unit.internal_key for unit in universe)
     if len(set(keys)) != len(keys):
         raise SafeCoverageSolverError(
             "candidate_universe contains duplicate internal keys"
         )
-
-    rule_cache: Dict[str, CoverageRuleView] = {}
+    rules: Dict[str, CoverageRuleView] = {}
     unit_data: List[Dict[str, Any]] = []
-    for unit in sorted_universe:
-        metric_records = _canonicalize_metric_records(unit, peers)
-        rules_canonical = tuple(sorted(unit.applicable_rules, key=canonical_key))
-        if len(set(rules_canonical)) != len(rules_canonical):
+    for unit in universe:
+        rule_names = tuple(sorted(unit.applicable_rules, key=canonical_key))
+        if not rule_names:
             raise SafeCoverageSolverError(
-                f"unit {unit.internal_key!r} has duplicate applicable rules"
+                f"unit {unit.internal_key!r} has no applicable privacy rule"
             )
-        for rule_name in rules_canonical:
-            if rule_name not in rule_cache:
-                rule_cache[rule_name] = _build_rule_view(rule_name, rule_configs)
+        for rule_name in rule_names:
+            rules.setdefault(rule_name, _build_rule_view(rule_name, rule_configs))
         unit_data.append(
             {
                 "key": unit.internal_key,
-                "metrics": metric_records,
-                "rules": rules_canonical,
+                "metrics": _canonicalize_metric_records(unit, peers),
+                "rules": rule_names,
                 "overlays": tuple(unit.mandatory_overlays),
             }
         )
 
-    if any(CITIBANK_OVERLAY_NAME in u["overlays"] for u in unit_data):
-        if not citibank_entity_name:
-            raise SafeCoverageSolverError(
-                "citibank_entity_name is required when a unit carries the "
-                "citibank overlay"
-            )
-        needle = citibank_entity_name.casefold()
-        matches = [peer for peer in peers if peer.casefold() == needle]
-        if len(matches) != 1:
-            raise SafeCoverageSolverError(
-                "citibank peer identity must exist exactly once in "
-                "governed_peers"
-            )
-
-    model = compile_coverage_model(
+    citi_peer = _resolve_citi_peer(
+        peers,
         unit_data,
+        citibank_entity_name,
+    )
+    anchor, _anchor_state, solver_version = _anchor_candidate(
+        unit_data,
+        peers,
+        rules,
+        rule_configs,
+        min_weight=min_weight,
+        max_weight=max_weight,
+        citibank_entity_name=citibank_entity_name,
+    )
+    weights, evaluated = _refine_candidates(
+        unit_data,
+        rules,
         peers,
         min_weight=min_weight,
         max_weight=max_weight,
-        rules=rule_cache,
-        citibank_entity_name=citibank_entity_name,
-        enable_rule_dominance=True,
-        enable_structural_presolve=True,
+        anchor=anchor,
+        citi_peer=citi_peer,
     )
-
-    solver_name, solver_version = _solver_identity(backend)
-
-    def _empty(
-        *,
-        solver_state: str,
-        mip_dual_bound: float = 0.0,
-        mip_gap: float = 0.0,
-    ) -> SafeCoverageResult:
-        return _empty_release_result(
-            universe=sorted_universe,
-            peers=peers,
-            solver_state=solver_state,
-            mip_dual_bound=mip_dual_bound,
-            mip_gap=mip_gap,
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
-            solver_name=solver_name,
-            solver_version=solver_version,
-        )
-
-    def _partial(
-        x_vec: np.ndarray,
-        *,
-        solver_state: str,
-        mip_dual_bound: float,
-        mip_gap: float,
-        later_objectives: Tuple[float, float],
-    ) -> SafeCoverageResult:
-        return _finalize_from_partial_x(
-            x_vec=x_vec,
-            model=model,
-            unit_data=unit_data,
-            keys=keys,
-            peers=peers,
-            rule_configs=rule_configs,
-            sorted_universe=sorted_universe,
-            solver_state=solver_state,
-            mip_dual_bound=mip_dual_bound,
-            mip_gap=mip_gap,
-            later_objectives=later_objectives,
-            input_digest=input_digest,
-            configuration_digest=configuration_digest,
-            policy_version=policy_version,
-            policy_source=policy_source,
-            rule_set_digest=rule_set_digest,
-            candidate_universe_digest=candidate_universe_digest,
-            solver_name=solver_name,
-            solver_version=solver_version,
-        )
-
-    # ---------------- Stage 1: maximize sum r_u ----------------
-    stage1 = model.stage1
-    stage1_mip_start: Optional[np.ndarray] = None
-    if backend == _BACKEND_HIGHS:
-        # Circular import: privacy_coverage_highs imports weighted_shares from here.
-        from core.privacy_coverage_highs import build_neutral_mip_start
-
-        stage1_mip_start = build_neutral_mip_start(
-            model, unit_data, rule_configs=rule_configs
-        )
-        # Strategy A: maximize with +1 release costs (compiled objective is -1).
-        stage1_objective = -np.asarray(stage1.objective, dtype=float)
-        stage1_maximize = True
-    else:
-        stage1_objective = stage1.objective
-        stage1_maximize = False
-
-    result1 = solve_stage(
-        stage1,
-        objective=stage1_objective,
-        options=cert_options,
-        maximize=stage1_maximize,
-        mip_start=stage1_mip_start,
+    released, suppressed, authorizing = _direct_release_partition(
+        unit_data,
+        peers,
+        weights,
+        citi_peer,
+        rule_configs,
     )
-    solver_name, solver_version = _solver_identity(backend, result1)
-    stage1_failure = _validate_result(result1, stage1.n_vars)
-    if stage1_failure is not None:
-        return _empty(solver_state=stage1_failure)
-
-    x1 = np.asarray(result1.x, dtype=float)
-    sum_r_stage1 = -float(result1.fun)
-    if not math.isfinite(sum_r_stage1):
-        return _empty(solver_state=_STATE_ERROR)
-
-    proven, k_rounded, dual_bound_normalized, mip_gap_value = _stage1_proof(
-        result1, sum_r_stage1
-    )
-    if not proven:
-        return _empty(
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-        )
-
-    if k_rounded == 0:
-        return _empty(
-            solver_state=_STATE_OPTIMAL,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-        )
-
-    # ---------------- Stage 2: minimize distortion ----------------
-    stage2 = model.extend_stage2(k_rounded)
-    # Release Stage-1 matrix local reference before the larger stage grows.
-    del stage1
-    result2 = solve_stage(stage2, objective=stage2.objective, options=cert_options)
-    stage2_failure = _validate_result(result2, stage2.n_vars)
-    if stage2_failure is not None:
-        return _partial(
-            x1,
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            later_objectives=(0.0, 0.0),
-        )
-
-    x2 = np.asarray(result2.x, dtype=float)
-    d_star = float(result2.fun)
-    tau_d = _lex_tolerance(d_star)
-    distortion_ub = d_star + tau_d
-
-    # ---------------- Stage 3: minimize neutral-weight distance ----------------
-    stage3_base = model.extend_stage3(stage2)
-    del stage2
-    stage3 = model.with_linear_upper_bound(
-        stage3_base,
-        {idx: 1.0 for idx in stage3_base.d_index.values()},
-        distortion_ub,
-    )
-    del stage3_base
-    result3 = solve_stage(stage3, objective=stage3.objective, options=cert_options)
-    stage3_failure = _validate_result(result3, stage3.n_vars)
-    if stage3_failure is not None:
-        return _partial(
-            x2,
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            later_objectives=(d_star, 0.0),
-        )
-
-    x3 = np.asarray(result3.x, dtype=float)
-    n_star = float(result3.fun)
-    # A zero neutral-distance optimum fixes every weight at exactly 1.0.
-    # Do not add lexicographic slack in this case.
-    tau_n = 0.0 if n_star == 0.0 else _lex_tolerance(n_star)
-    neutral_ub = n_star + tau_n
-
-    # ---------------- Stage 4: deterministic canonical tie-breaking ----------
-    stage4, block_row_indices = model.build_stage4(
-        stage3,
-        distortion_ub=distortion_ub,
-        neutral_ub=neutral_ub,
-    )
-    del stage3
-
-    bounds_lb = stage4.bounds_lb.copy()
-    bounds_ub = stage4.bounds_ub.copy()
-    blocks = model.release_blocks
-
-    # 4a. Release-mask blocks: maximize integer block value, then fix.
-    for block in blocks:
-        objective = np.zeros(stage4.n_vars, dtype=float)
-        for idx, coef in zip(block.variable_indices, block.coefficients):
-            objective[idx] = -float(coef)
-        row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
-        step_result = solve_stage(
-            stage4,
-            objective=objective,
-            options=cert_options,
-            bounds_lb=bounds_lb,
-            bounds_ub=bounds_ub,
-            constraints_lb=row_lb,
-            constraints_ub=row_ub,
-        )
-        fail = _validate_result(step_result, stage4.n_vars)
-        if fail is not None:
-            return _partial(
-                x3,
-                solver_state=_STATE_UNPROVEN,
-                mip_dual_bound=dual_bound_normalized,
-                mip_gap=mip_gap_value,
-                later_objectives=(d_star, n_star),
-            )
-        x_step = np.asarray(step_result.x, dtype=float)
-        try:
-            bit_values = [
-                _extract_binary(x_step, idx) for idx in block.variable_indices
-            ]
-        except RuntimeError:
-            return _partial(
-                x3,
-                solver_state=_STATE_UNPROVEN,
-                mip_dual_bound=dual_bound_normalized,
-                mip_gap=mip_gap_value,
-                later_objectives=(d_star, n_star),
-            )
-        block_value = int(
-            sum(
-                coef * bit
-                for coef, bit in zip(block.coefficients, bit_values)
-            )
-        )
-        block.fix(block_value)
-        # Also pin the individual release variables for numerical stability.
-        for idx, bit in zip(block.variable_indices, bit_values):
-            bounds_lb[idx] = float(bit)
-            bounds_ub[idx] = float(bit)
-
-    # 4b. Weights: visit peers in canonical order and minimize w_p, then fix.
-    for peer in peers:
-        idx = model.w_index[peer]
-        objective = np.zeros(stage4.n_vars, dtype=float)
-        objective[idx] = 1.0
-        row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
-        step_result = solve_stage(
-            stage4,
-            objective=objective,
-            options=cert_options,
-            bounds_lb=bounds_lb,
-            bounds_ub=bounds_ub,
-            constraints_lb=row_lb,
-            constraints_ub=row_ub,
-        )
-        fail = _validate_result(step_result, stage4.n_vars)
-        if fail is not None:
-            return _partial(
-                x3,
-                solver_state=_STATE_UNPROVEN,
-                mip_dual_bound=dual_bound_normalized,
-                mip_gap=mip_gap_value,
-                later_objectives=(d_star, n_star),
-            )
-        w_val = float(step_result.x[idx])
-        if not math.isfinite(w_val):
-            return _partial(
-                x3,
-                solver_state=_STATE_UNPROVEN,
-                mip_dual_bound=dual_bound_normalized,
-                mip_gap=mip_gap_value,
-                later_objectives=(d_star, n_star),
-            )
-        w_val = max(min_weight, min(max_weight, w_val))
-        bounds_lb[idx] = w_val
-        bounds_ub[idx] = w_val
-
-    weights = {peer: float(bounds_lb[model.w_index[peer]]) for peer in peers}
-    released = [
-        str(unit["key"])
-        for unit in unit_data
-        if bounds_lb[model.r_index[str(unit["key"])]] >= 1.0 - _INTEGRALITY_READBACK_TOLERANCE
-    ]
-    suppressed = [
-        str(unit["key"])
-        for unit in unit_data
-        if str(unit["key"]) not in set(released)
-    ]
-
-    # 4c. Canonical authorizing rules from direct policy evaluation (no per-rule solves).
-    authorizing, missing = _select_authorizing_rules(
-        unit_data, released, weights, rule_configs
-    )
-    solver_state = _STATE_OPTIMAL
-    if missing:
-        solver_state = _STATE_UNPROVEN
-        for key in missing:
-            if key in released:
-                released.remove(key)
-            if key not in suppressed:
-                suppressed.append(key)
-            authorizing.pop(key, None)
-
-    # 4d. Final feasibility solve with fixed release mask and weights.
-    row_lb, row_ub = _sync_block_bounds(stage4, block_row_indices, blocks)
-    final_obj = np.zeros(stage4.n_vars, dtype=float)
-    final_result = solve_stage(
-        stage4,
-        objective=final_obj,
-        options=cert_options,
-        bounds_lb=bounds_lb,
-        bounds_ub=bounds_ub,
-        constraints_lb=row_lb,
-        constraints_ub=row_ub,
-    )
-    final_failure = _validate_result(final_result, stage4.n_vars)
-    if final_failure is not None:
-        return _partial(
-            x3,
-            solver_state=_STATE_UNPROVEN,
-            mip_dual_bound=dual_bound_normalized,
-            mip_gap=mip_gap_value,
-            later_objectives=(d_star, n_star),
-        )
-
-    return _finalize_result(
-        unit_data=unit_data,
-        keys=keys,
-        peers=peers,
-        weights=weights,
-        released_keys=released,
-        suppressed_keys=suppressed,
+    weight_map = {
+        peer: float(weights[index]) for index, peer in enumerate(peers)
+    }
+    return SafeCoverageResult(
+        release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
+        global_weights=weight_map,
+        candidate_universe=universe,
+        release_set=tuple(released),
+        suppression_set=tuple(suppressed),
         authorizing_rules=authorizing,
-        sorted_universe=sorted_universe,
-        solver_state=solver_state,
-        mip_dual_bound=dual_bound_normalized,
-        mip_gap=mip_gap_value,
-        later_objectives=(d_star, n_star),
+        search_method=_SEARCH_METHOD,
+        search_state=_SEARCH_STATE,
+        candidate_vectors_evaluated=evaluated,
+        solver_name="highspy.Highs",
+        solver_version=solver_version,
         input_digest=input_digest,
         configuration_digest=configuration_digest,
         policy_version=policy_version,
         policy_source=policy_source,
         rule_set_digest=rule_set_digest,
         candidate_universe_digest=candidate_universe_digest,
-        solver_name=solver_name,
-        solver_version=solver_version,
+        release_mask_digest=_release_mask_digest(keys, released),
+        verifier_result="not_run",
     )

@@ -16,17 +16,17 @@ compliance_posture: "strict"
 # Which safe Publication Units can reach client output:
 # - complete-output (default): current behavior. Publish the complete governed
 #   output only when the current privacy policy authorizes that output.
-# - maximize-safe-coverage: release the maximum proven-safe subset of eligible
-#   share-analysis Publication Units. Missing cells are privacy-suppressed and
-#   downstream consumers must not restore them. Share analysis only.
+# - verified-safe-coverage: release a deterministic verified-safe subset of
+#   eligible share units. This is not a maximum claim. Missing cells are
+#   privacy-suppressed. Downstream consumers must not restore them.
 #
-# CLI override (share only): --privacy-release-mode {complete-output,maximize-safe-coverage}
+# CLI override (share only): --privacy-release-mode {complete-output,verified-safe-coverage}
 # Explicit CLI values override this YAML field; omit the flag to keep YAML.
-# maximize-safe-coverage requires one global weight vector (not
+# verified-safe-coverage requires one global weight vector (not
 # --per-dimension-weights) and SWEEP_ANY_APPLICABLE rule-sweep semantics
 # (--privacy-rule-sweep on the CLI; Python callers pass PrivacyRuleStrategy).
 # Example:
-#   privacy_release_mode: "maximize-safe-coverage"
+#   privacy_release_mode: "verified-safe-coverage"
 privacy_release_mode: "complete-output"
 
 # ============================================================================

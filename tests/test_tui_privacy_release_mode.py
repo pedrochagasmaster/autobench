@@ -58,15 +58,16 @@ def test_privacy_release_mode_shows_both_visible_labels() -> None:
             select = app.query_one("#privacy_release_mode", Select)
             labels = {label for label, _value in select._options}
             values = {value for _label, value in select._options}
-            assert labels == {"Complete output", "Maximum safe coverage"}
+            assert labels == {"Complete output", "Verified safe coverage"}
             assert values == {
                 PrivacyReleaseMode.COMPLETE_OUTPUT.value,
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value,
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value,
             }
             hint = app.query_one("#privacy_release_mode_hint", Static)
             assert str(hint.render()) == (
-                "Maximum safe coverage publishes only verified safe units. "
-                "Missing units are privacy-suppressed."
+                "Verified safe coverage publishes only verified safe units. "
+                "Missing units are privacy-suppressed. "
+                "Coverage is not a maximum claim."
             )
 
     asyncio.run(scenario())
@@ -110,7 +111,7 @@ def test_privacy_release_mode_hidden_for_rate_analysis() -> None:
     asyncio.run(scenario())
 
 
-def test_maximize_safe_coverage_enables_and_locks_rule_sweep() -> None:
+def test_verified_safe_coverage_enables_and_locks_rule_sweep() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
@@ -120,7 +121,7 @@ def test_maximize_safe_coverage_enables_and_locks_rule_sweep() -> None:
             assert sweep.disabled is False
 
             app.query_one("#privacy_release_mode", Select).value = (
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
 
@@ -140,7 +141,7 @@ def test_return_to_complete_output_restores_sweep_control() -> None:
 
             sweep.value = False
             await pilot.pause()
-            release.value = PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+            release.value = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             await pilot.pause()
             assert sweep.value is True
             assert sweep.disabled is True
@@ -152,7 +153,7 @@ def test_return_to_complete_output_restores_sweep_control() -> None:
 
             sweep.value = True
             await pilot.pause()
-            release.value = PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+            release.value = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             await pilot.pause()
             release.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
             await pilot.pause()
@@ -169,7 +170,7 @@ def test_yaml_refresh_updates_privacy_release_mode_selection(tmp_path: Path) -> 
             {
                 "version": "3.0",
                 "compliance_posture": "strict",
-                "privacy_release_mode": "maximize-safe-coverage",
+                "privacy_release_mode": "verified-safe-coverage",
             }
         ),
         encoding="utf-8",
@@ -186,7 +187,7 @@ def test_yaml_refresh_updates_privacy_release_mode_selection(tmp_path: Path) -> 
             app._refresh_privacy_release_mode_from_config()
             await pilot.pause()
 
-            assert select.value == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+            assert select.value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             assert sweep.value is True
             assert sweep.disabled is True
@@ -200,7 +201,7 @@ def test_preset_refresh_shows_resolved_complete_output() -> None:
             app = pilot.app
             await pilot.pause()
             select = app.query_one("#privacy_release_mode", Select)
-            select.value = PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+            select.value = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             await pilot.pause()
 
             # Stock presets resolve to complete-output; preset load refreshes.
@@ -220,7 +221,7 @@ def test_session_save_and_restore_privacy_release_mode(tmp_path: Path, monkeypat
             app = pilot.app
             await pilot.pause()
             app.query_one("#privacy_release_mode", Select).value = (
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
             app._save_session()
@@ -228,7 +229,7 @@ def test_session_save_and_restore_privacy_release_mode(tmp_path: Path, monkeypat
     asyncio.run(save_scenario())
 
     saved = yaml.safe_load(session_file.read_text(encoding="utf-8"))
-    assert saved["privacy_release_mode"] == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+    assert saved["privacy_release_mode"] == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
 
     async def restore_scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
@@ -237,7 +238,7 @@ def test_session_save_and_restore_privacy_release_mode(tmp_path: Path, monkeypat
             # Allow call_after_refresh bootstrap finalizer to re-assert session.
             await pilot.pause()
             select = app.query_one("#privacy_release_mode", Select)
-            assert select.value == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+            assert select.value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             assert sweep.value is True
             assert sweep.disabled is True
@@ -284,7 +285,7 @@ def test_from_widget_values_builds_privacy_release_mode_enum() -> None:
             app = pilot.app
             await pilot.pause()
             app.query_one("#privacy_release_mode", Select).value = (
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
 
@@ -297,7 +298,7 @@ def test_from_widget_values_builds_privacy_release_mode_enum() -> None:
             request = AnalysisRunRequest.from_widget_values("share", values)
             assert (
                 request.privacy_release_mode
-                is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+                is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
             )
             assert (
                 request.privacy_rule_strategy
@@ -308,13 +309,13 @@ def test_from_widget_values_builds_privacy_release_mode_enum() -> None:
     asyncio.run(scenario())
 
 
-def test_hidden_maximize_value_never_reaches_rate_request() -> None:
+def test_hidden_verified_value_never_reaches_rate_request() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
             app.query_one("#privacy_release_mode", Select).value = (
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
 
@@ -323,10 +324,10 @@ def test_hidden_maximize_value_never_reaches_rate_request() -> None:
             await pilot.pause()
             assert app._analysis_mode() == "rate"
             assert app.query_one("#privacy_release_mode").has_class("hidden")
-            # Widget still holds maximize, but rate request construction must not.
+            # Widget still holds verified safe coverage, but rate request construction must not.
             assert (
                 app.query_one("#privacy_release_mode", Select).value
-                == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             values = app._privacy_values_from_widgets()
             assert values["privacy_release_mode"] is None
@@ -373,7 +374,7 @@ def _msc_share_request(tmp_path: Path, df, *, output_name: str) -> AnalysisRunRe
         export_balanced_csv=False,
         audit_package=False,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         validate_input=False,
         compliance_posture="best_effort",
         config=str(config_path),
@@ -391,7 +392,7 @@ def _client_certificate(
     suppressed = candidate - released
     visible = tuple(f"visible_unit_{i}" for i in range(released))
     return CoverageCertificate(
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         candidate_unit_count=candidate,
         released_unit_count=released,
         suppressed_unit_count=suppressed,
@@ -404,10 +405,9 @@ def _client_certificate(
         rule_set_digest="rules",
         solver_name="scipy.optimize.milp",
         solver_version="1.18.0",
-        primary_objective_value=released,
-        mip_dual_bound=float(released),
-        mip_gap=0.0,
-        solver_state="optimal",
+        search_method="test-search-v1",
+        search_state="search_complete",
+        candidate_vectors_evaluated=10,
         artifact_hashes={"analysis": "abc"},
         certificate_digest="digest",
     )
@@ -422,7 +422,7 @@ def test_tui_maximize_executes_through_shared_executor(
             app = pilot.app
             await pilot.pause()
             app.query_one("#privacy_release_mode", Select).value = (
-                PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value
+                PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
             df = build_safe_coverage_getnet_shaped_df()
@@ -485,7 +485,7 @@ def test_tui_safe_result_summary(tmp_path: Path) -> None:
         AnalysisRunRequest(
             mode="share",
             metric="transaction_amount",
-            privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+            privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
             privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
         ),
         None,
@@ -494,20 +494,20 @@ def test_tui_safe_result_summary(tmp_path: Path) -> None:
 
     assert app._end_run_ui.call_args.args[0] == "success"
     summary = app._end_run_ui.call_args.args[1]
-    assert "Maximum safe coverage" in summary
+    assert "Verified safe coverage" in summary
     assert "4/9 released" in summary
     assert "5 suppressed" in summary
     assert cert_path in summary
-    assert "Verified optimal" in summary
+    assert "Independent privacy verification passed" in summary
     log_text = "\n".join(
         str(call.args[0]) for call in log.write.call_args_list if call.args
     )
-    assert "Privacy release mode: Maximum safe coverage" in log_text
+    assert "Privacy release mode: Verified safe coverage" in log_text
     assert "Candidate units: 9" in log_text
     assert "Released units: 4" in log_text
     assert "Suppressed units: 5" in log_text
     assert f"Coverage Certificate: {cert_path}" in log_text
-    assert "zero-gap proof" in log_text
+    assert "Coverage is not a maximum claim." in log_text
     assert "visible_unit_0" not in summary
     assert "visible_unit_0" not in log_text
 
@@ -544,7 +544,7 @@ def test_tui_empty_release_set_denial(tmp_path: Path) -> None:
         AnalysisRunRequest(
             mode="share",
             metric="transaction_amount",
-            privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+            privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
             privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
         ),
         None,
@@ -553,7 +553,7 @@ def test_tui_empty_release_set_denial(tmp_path: Path) -> None:
 
     assert app._end_run_ui.call_args.args[0] == "blocked"
     summary = app._end_run_ui.call_args.args[1]
-    assert "Maximum safe coverage" in summary
+    assert "Verified safe coverage" in summary
     assert "Publication withheld" in summary
     assert CONTROL3_SAFE_COVERAGE_EMPTY in summary
     assert any(
@@ -617,6 +617,6 @@ def test_tui_no_suppressed_marker_in_widgets_or_notices(
             assert SUPPRESSED_MARKER not in summary
             assert SUPPRESSED_MARKER not in log_text
             assert all(SUPPRESSED_MARKER not in msg for msg in notices)
-            assert "Maximum safe coverage" in summary
+            assert "Verified safe coverage" in summary
 
     asyncio.run(scenario())

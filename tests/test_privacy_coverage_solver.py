@@ -1,49 +1,25 @@
-"""Tests for the Maximum Safe Coverage MILP solver.
-
-These tests exercise the ``optimize_safe_coverage`` public interface and the
-``weighted_shares`` helper. They must call ``evaluate_rule`` directly for rule
-parity so that the parity oracle does not share code with the MILP constraint
-helpers.
-"""
+"""Tests for the deterministic Verified Safe Coverage search."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, Dict, Tuple
 
 import numpy as np
 import pytest
 
-from core.contracts import (
-    APPROVED_PRIVACY_RULE_NAMES,
-    PublicationUnit,
-    SafeCoverageResult,
-)
-from core.privacy_coverage import (
-    build_candidate_universe,
-    candidate_universe_digest,
-)
+from core.contracts import PublicationUnit, SafeCoverageResult
+from core.privacy_coverage import build_candidate_universe, candidate_universe_digest
 from core.privacy_coverage_solver import (
     SafeCoverageSolverError,
-    _optimize_safe_coverage_scipy_oracle,
-    optimize_safe_coverage,
+    find_verified_safe_coverage,
     weighted_shares,
 )
-from core.privacy_coverage_verifier import (
-    build_coverage_certificate,
-    verify_safe_coverage_result,
-)
+from core.privacy_coverage_verifier import verify_safe_coverage_result
 from core.privacy_policy import PrivacyPolicy
 from core.privacy_rules import evaluate_rule
-from tests.fixtures.production_scale_coverage import build_production_scale_universe
-from tests.fixtures.safe_coverage_fixture import (
-    build_safe_coverage_getnet_shaped_df,
-)
+from tests.fixtures.safe_coverage_fixture import build_safe_coverage_getnet_shaped_df
 
-_RULE_SET_DIGEST = PrivacyPolicy.rule_set_digest()
-
-
-_FIXTURE_PEERS: Tuple[str, ...] = (
+_PEERS: Tuple[str, ...] = (
     "PeerA",
     "PeerB",
     "PeerC",
@@ -55,27 +31,29 @@ _DIGEST = "0" * 64
 
 
 def _fixture_universe(**overrides: Any) -> Tuple[PublicationUnit, ...]:
-    df = build_safe_coverage_getnet_shaped_df()
-    kwargs: Dict[str, Any] = {
+    settings: Dict[str, Any] = {
         "entity_col": "issuer_name",
         "metric": "transaction_amount",
         "secondary_metrics": ["transaction_count", "merchant_count"],
         "dimensions": ["region", "sector"],
         "time_col": "quarter",
     }
-    kwargs.update(overrides)
-    return build_candidate_universe(df, **kwargs)
+    settings.update(overrides)
+    return build_candidate_universe(
+        build_safe_coverage_getnet_shaped_df(),
+        **settings,
+    )
 
 
-def _run_solver(
+def _run_search(
     universe: Tuple[PublicationUnit, ...],
     *,
-    peers: Tuple[str, ...] = _FIXTURE_PEERS,
     min_weight: float = 0.5,
     max_weight: float = 2.0,
+    peers: Tuple[str, ...] = _PEERS,
     citibank_entity_name: str | None = None,
 ) -> SafeCoverageResult:
-    return optimize_safe_coverage(
+    return find_verified_safe_coverage(
         universe,
         peers,
         min_weight=min_weight,
@@ -86,645 +64,160 @@ def _run_solver(
         configuration_digest=_DIGEST,
         policy_version="v5",
         policy_source="docs/control-3-v5.md",
-        rule_set_digest=_DIGEST,
+        rule_set_digest=PrivacyPolicy.rule_set_digest(),
         candidate_universe_digest=candidate_universe_digest(universe),
     )
 
 
-def _assert_rule_parity(
+def _expected_release_keys(
     universe: Tuple[PublicationUnit, ...],
     result: SafeCoverageResult,
-) -> None:
-    """Every released unit's authorizing rule must pass ``evaluate_rule``."""
-    unit_map = {unit.internal_key: unit for unit in universe}
-    for released_key in result.release_set:
-        unit = unit_map[released_key]
-        rule_name = result.authorizing_rules[released_key]
-        assert rule_name in unit.applicable_rules
-        for record in unit.metric_records:
-            shares_map = weighted_shares(record["peer_volumes"], result.global_weights)
-            evaluation = evaluate_rule(rule_name, list(shares_map.values()))
-            assert evaluation.strict_passed, (
-                f"unit={released_key!r} metric={record['metric']!r} "
-                f"rule={rule_name!r} evaluation={evaluation}"
-            )
+) -> Tuple[str, ...]:
+    expected = []
+    for unit in universe:
+        for rule_name in sorted(unit.applicable_rules):
+            if all(
+                evaluate_rule(
+                    rule_name,
+                    weighted_shares(
+                        record["peer_volumes"],
+                        result.global_weights,
+                    ).values(),
+                ).strict_passed
+                for record in unit.metric_records
+            ):
+                expected.append(unit.internal_key)
+                break
+    return tuple(sorted(expected))
 
 
-def test_fixture_returns_proven_optimal_with_partial_coverage() -> None:
+def test_search_returns_verified_partial_coverage() -> None:
     universe = _fixture_universe()
-    result = _run_solver(universe)
+    result = _run_search(universe)
 
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert result.mip_dual_bound == float(result.primary_objective_value)
-
+    assert result.search_state == "search_complete"
+    assert result.search_method
+    assert result.candidate_vectors_evaluated > 1
     assert 0 < len(result.release_set) < len(universe)
     assert len(result.release_set) + len(result.suppression_set) == len(universe)
+    assert tuple(result.release_set) == _expected_release_keys(universe, result)
 
-    released = set(result.release_set)
-    suppressed = set(result.suppression_set)
-
-    # Every safe SectorY unit must be released. Every purely-unsafe SectorX
-    # unit must be suppressed. Every secondary-fail unit (SectorZ_2025Q1 and
-    # South_2025Q1, whose merchant_count share concentrates at PeerA) must be
-    # suppressed under bounded weights.
-    for unit in universe:
-        if unit.category.startswith("SectorY_"):
-            assert unit.internal_key in released, unit.internal_key
-        if unit.category.startswith("SectorX_"):
-            assert unit.internal_key in suppressed, unit.internal_key
-        if (
-            unit.category == "SectorZ_2025Q1"
-            or unit.category == "South_2025Q1"
-        ):
-            assert unit.internal_key in suppressed, unit.internal_key
-
-    # Authorizing rule map must partition the release set exactly.
-    assert set(result.authorizing_rules) == released
-    for rule_name in result.authorizing_rules.values():
-        assert rule_name in APPROVED_PRIVACY_RULE_NAMES
-
-    _assert_rule_parity(universe, result)
-
-
-def test_all_safe_tiny_universe_fully_released() -> None:
-    df = build_safe_coverage_getnet_shaped_df()
-    # Keep only SectorY rows: those are internally safe under neutral weights
-    # for every governed metric.
-    df = df[df["sector"] == "SectorY"].reset_index(drop=True)
-    universe = build_candidate_universe(
-        df,
-        entity_col="issuer_name",
-        metric="transaction_amount",
-        secondary_metrics=["transaction_count", "merchant_count"],
-        dimensions=["sector"],
-        time_col="quarter",
-    )
-    assert universe, "SectorY-only fixture must yield some units"
-
-    result = _run_solver(universe, min_weight=1.0, max_weight=1.0)
-
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert len(result.release_set) == len(universe)
-    assert result.suppression_set == ()
-    assert result.primary_objective_value == len(universe)
-    for peer, value in result.global_weights.items():
-        assert value == pytest.approx(1.0)
-    _assert_rule_parity(universe, result)
-
-
-def test_all_safe_neutral_optimum_is_proven_with_wide_weight_bounds() -> None:
-    df = build_safe_coverage_getnet_shaped_df()
-    df = df[df["sector"] == "SectorY"].reset_index(drop=True)
-    universe = build_candidate_universe(
-        df,
-        entity_col="issuer_name",
-        metric="transaction_amount",
-        secondary_metrics=["transaction_count", "merchant_count"],
-        dimensions=["sector"],
-        time_col="quarter",
-    )
-
-    result = _run_solver(universe, min_weight=0.5, max_weight=2.0)
-
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert result.mip_dual_bound == float(len(universe))
-    assert result.release_set == tuple(unit.internal_key for unit in universe)
-    assert result.suppression_set == ()
-    assert result.later_objective_values == pytest.approx((0.0, 0.0))
-    assert dict(result.global_weights) == pytest.approx(
-        {peer: 1.0 for peer in _FIXTURE_PEERS}
-    )
-    _assert_rule_parity(universe, result)
-
-
-@pytest.mark.parametrize("rule_name", list(APPROVED_PRIVACY_RULE_NAMES))
-def test_rule_parity_boundary_matches_evaluate_rule(rule_name: str) -> None:
-    """Solver-authorized units must pass ``evaluate_rule`` on every metric.
-
-    Iterates the fixture solve and asserts parity for whichever base rule is
-    chosen on each released unit. Because the fixture universe carries units
-    that would be evaluated under each of the approved rules if enough peers
-    were present, this check exercises the full rule table indirectly.
-    """
-    # Fixture has 6 governed peers, so rules with min_entities > 6 are
-    # applicable-by-count only when merchant_spend_scope is True (for 4/35)
-    # or never (for 7/35, 10/40). We still assert parity when it applies.
-    df = build_safe_coverage_getnet_shaped_df()
-    universe = build_candidate_universe(
-        df,
-        entity_col="issuer_name",
-        metric="transaction_amount",
-        secondary_metrics=["transaction_count", "merchant_count"],
-        dimensions=["region", "sector"],
-        time_col="quarter",
-        merchant_spend_scope=(rule_name == "4/35"),
-    )
-    result = _run_solver(universe)
-    matched = False
-    unit_map = {unit.internal_key: unit for unit in universe}
-    for released_key in result.release_set:
-        chosen_rule = result.authorizing_rules[released_key]
-        if chosen_rule != rule_name:
-            continue
-        matched = True
-        unit = unit_map[released_key]
-        for record in unit.metric_records:
-            shares = weighted_shares(record["peer_volumes"], result.global_weights)
-            evaluation = evaluate_rule(rule_name, list(shares.values()))
-            assert evaluation.strict_passed, (
-                f"parity failure: unit={released_key!r} metric="
-                f"{record['metric']!r} rule={rule_name!r} eval={evaluation}"
-            )
-    if not matched:
-        # If the solver did not select this rule for any released unit under
-        # the 6-peer fixture, assert only that at least one released unit
-        # uses an approved rule that also passes evaluate_rule. The fixture
-        # deliberately caps at 6 governed peers, so 7/35 and 10/40 will not
-        # be selected. This case is not a solver defect; a stronger positive
-        # coverage assertion is made in ``test_fixture_returns_proven_optimal``.
-        pytest.skip(f"rule {rule_name} not selected by solver on 6-peer fixture")
-
-
-def test_solver_is_deterministic_under_shuffled_inputs() -> None:
-    universe_base = _fixture_universe()
-    result_base = _run_solver(universe_base)
-
-    # Reversed unit order, reversed peer order — canonicalization must produce
-    # the same solve.
-    reversed_universe = tuple(reversed(universe_base))
-    reversed_peers = tuple(reversed(_FIXTURE_PEERS))
-    result_reversed = optimize_safe_coverage(
-        reversed_universe,
-        reversed_peers,
+    outcome = verify_safe_coverage_result(
+        result,
         min_weight=0.5,
         max_weight=2.0,
-        rule_configs={},
-        citibank_entity_name=None,
-        input_digest=_DIGEST,
-        configuration_digest=_DIGEST,
-        policy_version="v5",
-        policy_source="docs/control-3-v5.md",
-        rule_set_digest=_DIGEST,
-        candidate_universe_digest=candidate_universe_digest(reversed_universe),
+        client_release_keys=result.release_set,
     )
-
-    assert result_reversed.solver_state == result_base.solver_state
-    assert result_reversed.primary_objective_value == result_base.primary_objective_value
-    assert set(result_reversed.release_set) == set(result_base.release_set)
-    assert result_reversed.release_set == result_base.release_set
-    assert result_reversed.suppression_set == result_base.suppression_set
-    assert dict(result_reversed.authorizing_rules) == dict(
-        result_base.authorizing_rules
-    )
-    for peer in _FIXTURE_PEERS:
-        assert result_reversed.global_weights[peer] == pytest.approx(
-            result_base.global_weights[peer], rel=1e-9, abs=1e-9
-        )
-    assert result_reversed.release_mask_digest == result_base.release_mask_digest
+    assert outcome.passed, outcome.failures
 
 
-def test_mocked_nonzero_gap_flags_unproven(monkeypatch) -> None:
-    """Simulate a HiGHS response with nonzero mip_gap and assert unproven."""
-    from core import privacy_coverage_solver as solver_module
-
-    real_solve = solver_module._solve_highs_stage
-    call_count = {"n": 0}
-
-    def flaky_highs_stage(*args, **kwargs):
-        call_count["n"] += 1
-        res = real_solve(*args, **kwargs)
-        if call_count["n"] == 1:
-            # Tamper with the stage 1 proof evidence.
-            return SimpleNamespace(
-                status=getattr(res, "status", 0),
-                success=getattr(res, "success", True),
-                x=getattr(res, "x", None),
-                fun=getattr(res, "fun", None),
-                mip_dual_bound=getattr(res, "mip_dual_bound", None),
-                mip_gap=0.5,
-                highs_version=getattr(res, "highs_version", "1.15.1"),
-            )
-        return res
-
-    monkeypatch.setattr(solver_module, "_solve_highs_stage", flaky_highs_stage)
-
+def test_repeated_search_is_deterministic() -> None:
     universe = _fixture_universe()
-    result = _run_solver(universe)
-    assert result.solver_state == "unproven_maximum"
-    assert result.verifier_result == "not_run"
-    # Candidate release evidence may be retained under an unproven primary, but
-    # it is not authoritative for release gating.
-    assert result.mip_gap == pytest.approx(0.5)
-    assert call_count["n"] >= 1
+    first = _run_search(universe)
+    second = _run_search(universe)
+
+    assert first.global_weights == second.global_weights
+    assert first.release_set == second.release_set
+    assert first.release_mask_digest == second.release_mask_digest
+    assert (
+        first.candidate_vectors_evaluated
+        == second.candidate_vectors_evaluated
+    )
 
 
-def test_mocked_stage1_timeout_fails_closed(monkeypatch) -> None:
-    """Stage 1 time-limit status must fail closed without a release certificate."""
-    from core import privacy_coverage_solver as solver_module
+def test_all_passing_units_are_released() -> None:
+    universe = _fixture_universe()
+    result = _run_search(universe)
+    assert set(result.release_set) == set(_expected_release_keys(universe, result))
 
-    call_count = {"n": 0}
 
-    def timeout_highs_stage(*args, **kwargs):
-        call_count["n"] += 1
-        # Status 5 maps to time_limit via ``_classify_status``.
-        return SimpleNamespace(
-            status=5,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version="1.15.1",
+def test_fixed_neutral_weights_release_all_safe_units() -> None:
+    frame = build_safe_coverage_getnet_shaped_df()
+    frame = frame[frame["sector"] == "SectorY"].reset_index(drop=True)
+    universe = build_candidate_universe(
+        frame,
+        entity_col="issuer_name",
+        metric="transaction_amount",
+        secondary_metrics=["transaction_count", "merchant_count"],
+        dimensions=["sector"],
+        time_col="quarter",
+    )
+    result = _run_search(universe, min_weight=1.0, max_weight=1.0)
+    assert len(result.release_set) == len(universe)
+    assert result.suppression_set == ()
+    assert set(result.global_weights.values()) == {1.0}
+
+
+def test_unproven_anchor_candidate_can_enter_safe_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe = _fixture_universe()
+
+    def fake_anchor(*args: Any, **kwargs: Any) -> Tuple[np.ndarray, str, str]:
+        del args, kwargs
+        return np.ones(len(_PEERS)), "limit_reached", "test"
+
+    monkeypatch.setattr(
+        "core.privacy_coverage_solver._anchor_candidate",
+        fake_anchor,
+    )
+    result = _run_search(universe)
+    assert result.search_state == "search_complete"
+    assert result.release_set
+
+
+def test_solver_options_are_rejected() -> None:
+    universe = _fixture_universe()
+    with pytest.raises(SafeCoverageSolverError, match="solver_options"):
+        find_verified_safe_coverage(
+            universe,
+            _PEERS,
+            min_weight=0.5,
+            max_weight=2.0,
+            rule_configs={},
+            citibank_entity_name=None,
+            input_digest=_DIGEST,
+            configuration_digest=_DIGEST,
+            policy_version="v5",
+            policy_source="docs",
+            rule_set_digest=_DIGEST,
+            candidate_universe_digest=candidate_universe_digest(universe),
+            solver_options={"time_limit": 1},
         )
-
-    monkeypatch.setattr(solver_module, "_solve_highs_stage", timeout_highs_stage)
-
-    result = _run_solver(_fixture_universe())
-    assert result.solver_state in {"time_limit", "unproven_maximum", "iteration_limit"}
-    assert result.release_set == ()
-    assert result.primary_objective_value == 0
-    assert result.verifier_result == "not_run"
-    # Hard Stage 1 failure must not proceed to later stages.
-    assert call_count["n"] == 1
-
-
-def test_mocked_stage1_infeasible_fails_closed(monkeypatch) -> None:
-    """Stage 1 infeasible status must return an empty fail-closed release."""
-    from core import privacy_coverage_solver as solver_module
-
-    call_count = {"n": 0}
-
-    def infeasible_highs_stage(*args, **kwargs):
-        call_count["n"] += 1
-        return SimpleNamespace(
-            status=2,
-            success=False,
-            x=None,
-            fun=None,
-            mip_dual_bound=None,
-            mip_gap=None,
-            highs_version="1.15.1",
-        )
-
-    monkeypatch.setattr(solver_module, "_solve_highs_stage", infeasible_highs_stage)
-
-    result = _run_solver(_fixture_universe())
-    assert result.solver_state == "infeasible"
-    assert result.release_set == ()
-    assert result.primary_objective_value == 0
-    assert result.verifier_result == "not_run"
-    assert call_count["n"] == 1
 
 
 @pytest.mark.parametrize(
-    "malformed_factory",
-    [
-        pytest.param(
-            lambda: SimpleNamespace(
-                status=0,
-                success=True,
-                x=None,
-                fun=0.0,
-                mip_dual_bound=0.0,
-                mip_gap=0.0,
-                highs_version="1.15.1",
-            ),
-            id="missing_x",
-        ),
-        pytest.param(
-            lambda: SimpleNamespace(
-                status=0,
-                success=True,
-                x=np.zeros(8, dtype=float),
-                fun=float("nan"),
-                mip_dual_bound=0.0,
-                mip_gap=0.0,
-                highs_version="1.15.1",
-            ),
-            id="nonfinite_fun",
-        ),
-        pytest.param(
-            lambda: SimpleNamespace(
-                status=0,
-                success=True,
-                x=np.zeros(3, dtype=float),
-                fun=0.0,
-                mip_dual_bound=0.0,
-                mip_gap=0.0,
-                highs_version="1.15.1",
-            ),
-            id="wrong_shape_x",
-        ),
-    ],
+    ("minimum", "maximum"),
+    ((0.0, 2.0), (1.1, 2.0), (0.5, 0.9), (2.0, 1.0)),
 )
-def test_mocked_stage1_malformed_output_fails_closed(
-    monkeypatch, malformed_factory
+def test_invalid_weight_bounds_are_rejected(
+    minimum: float,
+    maximum: float,
 ) -> None:
-    """Malformed Stage 1 HiGHS seam output must surface as solver_error, not a crash."""
-    from core import privacy_coverage_solver as solver_module
-
-    call_count = {"n": 0}
-
-    def malformed_highs_stage(*args, **kwargs):
-        call_count["n"] += 1
-        return malformed_factory()
-
-    monkeypatch.setattr(solver_module, "_solve_highs_stage", malformed_highs_stage)
-
-    result = _run_solver(_fixture_universe())
-    assert result.solver_state == "solver_error"
-    assert result.release_set == ()
-    assert result.primary_objective_value == 0
-    assert result.verifier_result == "not_run"
-    assert call_count["n"] == 1
-
-
-def test_solver_repeated_run_is_identical() -> None:
-    """Canonical release mask must be identical across repeated solves."""
-    universe = _fixture_universe()
-    first = _run_solver(universe)
-    second = _run_solver(universe)
-
-    assert first.solver_state == "optimal"
-    assert second.solver_state == first.solver_state
-    assert second.release_set == first.release_set
-    assert second.suppression_set == first.suppression_set
-    assert dict(second.authorizing_rules) == dict(first.authorizing_rules)
-    for peer in _FIXTURE_PEERS:
-        assert second.global_weights[peer] == pytest.approx(
-            first.global_weights[peer], rel=1e-9, abs=1e-9
-        )
-    assert second.release_mask_digest == first.release_mask_digest
-
-
-def test_empty_release_optimal_when_no_unit_can_pass() -> None:
-    universe = _fixture_universe()
-    # Tighten bounds to neutral weights only: PeerA-dominated categories then
-    # exceed every base cap and no unit can pass.
-    fully_unsafe = tuple(
-        unit for unit in universe
-        if unit.category.startswith(("SectorX_", "SectorZ_", "South_"))
-    )
-    assert fully_unsafe, "expected some structurally unsafe fixture units"
-    result = _run_solver(fully_unsafe, min_weight=1.0, max_weight=1.0)
-
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert result.primary_objective_value == 0
-    assert result.release_set == ()
-    assert set(result.suppression_set) == {
-        unit.internal_key for unit in fully_unsafe
-    }
-    assert dict(result.authorizing_rules) == {}
-
-
-def test_weighted_shares_matches_manual_calculation() -> None:
-    volumes = {"A": 70.0, "B": 15.0, "C": 15.0}
-    weights = {"A": 0.5, "B": 1.0, "C": 1.0}
-    shares = weighted_shares(volumes, weights)
-    expected_total = 70.0 * 0.5 + 15.0 + 15.0
-    assert shares["A"] == pytest.approx(100.0 * 35.0 / expected_total)
-    assert shares["B"] == pytest.approx(100.0 * 15.0 / expected_total)
-    assert shares["C"] == pytest.approx(100.0 * 15.0 / expected_total)
-
-
-def test_solver_rejects_invalid_weight_bounds() -> None:
     universe = _fixture_universe()
     with pytest.raises(SafeCoverageSolverError):
-        _run_solver(universe, min_weight=0.0, max_weight=2.0)
-    with pytest.raises(SafeCoverageSolverError):
-        _run_solver(universe, min_weight=1.5, max_weight=2.0)
-    with pytest.raises(SafeCoverageSolverError):
-        _run_solver(universe, min_weight=0.5, max_weight=0.9)
+        _run_search(universe, min_weight=minimum, max_weight=maximum)
 
 
-def _run_parity_solver(
-    runner,
-    universe: Tuple[PublicationUnit, ...],
-    *,
-    peers: Tuple[str, ...] = _FIXTURE_PEERS,
-    min_weight: float = 0.5,
-    max_weight: float = 2.0,
-    citibank_entity_name: str | None = None,
-) -> SafeCoverageResult:
-    return runner(
-        universe,
-        peers,
-        min_weight=min_weight,
-        max_weight=max_weight,
-        rule_configs={},
-        citibank_entity_name=citibank_entity_name,
-        input_digest=_DIGEST,
-        configuration_digest=_DIGEST,
-        policy_version="v5",
-        policy_source="docs/control-3-v5.md",
-        rule_set_digest=_RULE_SET_DIGEST,
-        candidate_universe_digest=candidate_universe_digest(universe),
+def test_weighted_shares_drop_zero_volume_peers() -> None:
+    shares = weighted_shares(
+        {"A": 10.0, "B": 0.0, "C": 30.0},
+        {"A": 2.0, "B": 5.0, "C": 1.0},
     )
+    assert shares == pytest.approx({"A": 40.0, "C": 60.0})
 
 
-def _run_scipy_oracle(
-    universe: Tuple[PublicationUnit, ...],
-    *,
-    peers: Tuple[str, ...] = _FIXTURE_PEERS,
-    min_weight: float = 0.5,
-    max_weight: float = 2.0,
-    citibank_entity_name: str | None = None,
-) -> SafeCoverageResult:
-    return _run_parity_solver(
-        _optimize_safe_coverage_scipy_oracle,
-        universe,
-        peers=peers,
-        min_weight=min_weight,
-        max_weight=max_weight,
-        citibank_entity_name=citibank_entity_name,
+def test_unknown_rule_is_rejected() -> None:
+    source = _fixture_universe()[0]
+    bad = PublicationUnit(
+        internal_key=source.internal_key,
+        dimension=source.dimension,
+        category=source.category,
+        time_period=source.time_period,
+        output_scope=source.output_scope,
+        metric_records=source.metric_records,
+        applicable_rules=("unknown",),
+        mandatory_overlays=source.mandatory_overlays,
     )
-
-
-def _run_highs_for_parity(
-    universe: Tuple[PublicationUnit, ...],
-    *,
-    peers: Tuple[str, ...] = _FIXTURE_PEERS,
-    min_weight: float = 0.5,
-    max_weight: float = 2.0,
-    citibank_entity_name: str | None = None,
-) -> SafeCoverageResult:
-    return _run_parity_solver(
-        optimize_safe_coverage,
-        universe,
-        peers=peers,
-        min_weight=min_weight,
-        max_weight=max_weight,
-        citibank_entity_name=citibank_entity_name,
-    )
-
-
-def _assert_highs_stage1_proof(result: SafeCoverageResult) -> None:
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert result.mip_dual_bound == float(result.primary_objective_value)
-    assert result.solver_name == "highspy.Highs"
-
-
-def _assert_highs_scipy_parity(
-    highs: SafeCoverageResult,
-    scipy_result: SafeCoverageResult,
-    *,
-    min_weight: float,
-    max_weight: float,
-) -> None:
-    assert highs.release_set == scipy_result.release_set
-    assert highs.suppression_set == scipy_result.suppression_set
-    assert dict(highs.authorizing_rules) == dict(scipy_result.authorizing_rules)
-    assert highs.primary_objective_value == scipy_result.primary_objective_value
-    assert highs.later_objective_values == pytest.approx(
-        scipy_result.later_objective_values, rel=1e-9, abs=1e-9
-    )
-    assert highs.release_mask_digest == scipy_result.release_mask_digest
-    for peer in highs.global_weights:
-        assert highs.global_weights[peer] == pytest.approx(
-            scipy_result.global_weights[peer], rel=1e-9, abs=1e-9
-        )
-
-    highs_verify = verify_safe_coverage_result(
-        highs, min_weight=min_weight, max_weight=max_weight
-    )
-    scipy_verify = verify_safe_coverage_result(
-        scipy_result, min_weight=min_weight, max_weight=max_weight
-    )
-    assert highs_verify.passed
-    assert scipy_verify.passed
-    assert highs_verify.computed_release_mask_digest == highs.release_mask_digest
-    assert scipy_verify.computed_release_mask_digest == scipy_result.release_mask_digest
-
-    artifact_hashes = {"report": _DIGEST}
-    highs_cert = build_coverage_certificate(highs, artifact_hashes=artifact_hashes)
-    scipy_cert = build_coverage_certificate(
-        scipy_result, artifact_hashes=artifact_hashes
-    )
-    # Certificate digest embeds solver_name/solver_version; compare the rest.
-    assert highs_cert.solver_name != scipy_cert.solver_name
-    assert highs_cert.privacy_release_mode == scipy_cert.privacy_release_mode
-    assert highs_cert.candidate_unit_count == scipy_cert.candidate_unit_count
-    assert highs_cert.released_unit_count == scipy_cert.released_unit_count
-    assert highs_cert.suppressed_unit_count == scipy_cert.suppressed_unit_count
-    assert highs_cert.coverage_percentage == pytest.approx(
-        scipy_cert.coverage_percentage
-    )
-    assert highs_cert.visible_publication_unit_keys == (
-        scipy_cert.visible_publication_unit_keys
-    )
-    assert dict(highs_cert.authorizing_rules) == dict(scipy_cert.authorizing_rules)
-    assert highs_cert.global_weights is not None
-    assert scipy_cert.global_weights is not None
-    for peer in highs_cert.global_weights:
-        assert highs_cert.global_weights[peer] == pytest.approx(
-            scipy_cert.global_weights[peer], rel=1e-9, abs=1e-9
-        )
-    assert highs_cert.policy_version == scipy_cert.policy_version
-    assert highs_cert.policy_source == scipy_cert.policy_source
-    assert highs_cert.rule_set_digest == scipy_cert.rule_set_digest
-    assert highs_cert.primary_objective_value == scipy_cert.primary_objective_value
-    assert highs_cert.mip_dual_bound == pytest.approx(scipy_cert.mip_dual_bound)
-    assert highs_cert.mip_gap == pytest.approx(scipy_cert.mip_gap)
-    assert highs_cert.solver_state == scipy_cert.solver_state
-    assert highs_cert.artifact_hashes == scipy_cert.artifact_hashes
-
-
-def test_highs_scipy_parity_on_small_fixture() -> None:
-    universe = _fixture_universe()
-    highs_first = _run_highs_for_parity(universe)
-    highs_second = _run_highs_for_parity(universe)
-    scipy_result = _run_scipy_oracle(universe)
-
-    _assert_highs_stage1_proof(highs_first)
-    _assert_highs_stage1_proof(highs_second)
-    assert highs_first.release_mask_digest == highs_second.release_mask_digest
-    highs_cert_a = build_coverage_certificate(
-        highs_first, artifact_hashes={"report": _DIGEST}
-    )
-    highs_cert_b = build_coverage_certificate(
-        highs_second, artifact_hashes={"report": _DIGEST}
-    )
-    assert highs_cert_a.certificate_digest == highs_cert_b.certificate_digest
-
-    _assert_highs_scipy_parity(
-        highs_first, scipy_result, min_weight=0.5, max_weight=2.0
-    )
-    assert highs_first.verifier_result == "not_run"
-    assert scipy_result.verifier_result == "not_run"
-
-
-def test_highs_scipy_parity_on_all_safe_and_empty_release_fixtures() -> None:
-    df = build_safe_coverage_getnet_shaped_df()
-    safe_df = df[df["sector"] == "SectorY"].reset_index(drop=True)
-    safe_universe = build_candidate_universe(
-        safe_df,
-        entity_col="issuer_name",
-        metric="transaction_amount",
-        secondary_metrics=["transaction_count", "merchant_count"],
-        dimensions=["sector"],
-        time_col="quarter",
-    )
-    for min_w, max_w in ((1.0, 1.0), (0.5, 2.0)):
-        highs = _run_highs_for_parity(safe_universe, min_weight=min_w, max_weight=max_w)
-        scipy_result = _run_scipy_oracle(
-            safe_universe, min_weight=min_w, max_weight=max_w
-        )
-        _assert_highs_stage1_proof(highs)
-        _assert_highs_scipy_parity(
-            highs, scipy_result, min_weight=min_w, max_weight=max_w
-        )
-
-    universe = _fixture_universe()
-    unsafe = tuple(
-        unit
-        for unit in universe
-        if unit.category.startswith(("SectorX_", "SectorZ_", "South_"))
-    )
-    highs_empty = _run_highs_for_parity(unsafe, min_weight=1.0, max_weight=1.0)
-    scipy_empty = _run_scipy_oracle(unsafe, min_weight=1.0, max_weight=1.0)
-    _assert_highs_stage1_proof(highs_empty)
-    assert highs_empty.primary_objective_value == 0
-    _assert_highs_scipy_parity(
-        highs_empty, scipy_empty, min_weight=1.0, max_weight=1.0
-    )
-
-
-@pytest.mark.slow
-def test_highs_scipy_parity_on_production_scale_fixture() -> None:
-    """Sanitized 242x33x3 parity: HiGHS public path vs SciPy oracle (~12s/solve)."""
-    universe, peers, min_weight, max_weight = build_production_scale_universe()
-    highs_first = _run_highs_for_parity(
-        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
-    )
-    highs_second = _run_highs_for_parity(
-        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
-    )
-    scipy_result = _run_scipy_oracle(
-        universe, peers=peers, min_weight=min_weight, max_weight=max_weight
-    )
-
-    _assert_highs_stage1_proof(highs_first)
-    _assert_highs_stage1_proof(highs_second)
-    assert highs_first.release_mask_digest == highs_second.release_mask_digest
-    cert_a = build_coverage_certificate(
-        highs_first, artifact_hashes={"report": _DIGEST}
-    )
-    cert_b = build_coverage_certificate(
-        highs_second, artifact_hashes={"report": _DIGEST}
-    )
-    assert cert_a.certificate_digest == cert_b.certificate_digest
-
-    _assert_highs_scipy_parity(
-        highs_first,
-        scipy_result,
-        min_weight=min_weight,
-        max_weight=max_weight,
-    )
-    assert verify_safe_coverage_result(
-        highs_first, min_weight=min_weight, max_weight=max_weight
-    ).passed
+    with pytest.raises(SafeCoverageSolverError, match="unknown privacy rule"):
+        _run_search((bad,))

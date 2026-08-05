@@ -198,7 +198,7 @@ def test_csc_model_loading_consumes_arrays_without_dense_conversion() -> None:
     assert session.consumed_csc_indices is stage.constraints.indices
     assert session.consumed_csc_data is stage.constraints.data
     result = session.solve()
-    assert result.model_status in {"optimal", "unproven_maximum", "infeasible"}
+    assert result.model_status in {"optimal", "limit_reached", "infeasible"}
     assert result.column_values.shape == (stage.n_vars,)
 
 
@@ -337,7 +337,7 @@ def test_time_limit_status_with_tiny_limit() -> None:
     assert result.model_status != "optimal"
     assert result.model_status in {
         "time_limit",
-        "unproven_maximum",
+        "limit_reached",
         "iteration_limit",
         "solver_error",
     }
@@ -351,9 +351,9 @@ def test_time_limit_status_with_tiny_limit() -> None:
         ("kHighsInterrupt", "solver_error"),
         ("kUnknown", "solver_error"),
         ("kSolveError", "solver_error"),
-        ("kMemoryLimit", "unproven_maximum"),
-        ("kSolutionLimit", "unproven_maximum"),
-        ("kObjectiveBound", "unproven_maximum"),
+        ("kMemoryLimit", "limit_reached"),
+        ("kSolutionLimit", "limit_reached"),
+        ("kObjectiveBound", "limit_reached"),
         ("kUnbounded", "unbounded"),
         ("kUnboundedOrInfeasible", "solver_error"),
     ],
@@ -384,13 +384,13 @@ def test_missing_and_nonfinite_proof_fields_fail_closed() -> None:
 
     assert (
         apply_proof_contract(**{**base, "mip_dual_bound": float("nan")})
-        == "unproven_maximum"
+        == "limit_reached"
     )
     assert (
-        apply_proof_contract(**{**base, "mip_gap": float("inf")}) == "unproven_maximum"
+        apply_proof_contract(**{**base, "mip_gap": float("inf")}) == "limit_reached"
     )
-    assert apply_proof_contract(**{**base, "objective_value": None}) == "unproven_maximum"
-    assert apply_proof_contract(**{**base, "mip_primal_bound": None}) == "unproven_maximum"
+    assert apply_proof_contract(**{**base, "objective_value": None}) == "limit_reached"
+    assert apply_proof_contract(**{**base, "mip_primal_bound": None}) == "limit_reached"
 
 
 def test_nonzero_relative_gap_fails_closed() -> None:
@@ -407,7 +407,7 @@ def test_nonzero_relative_gap_fails_closed() -> None:
             max_primal_infeasibility=0.0,
             max_integrality_violation=0.0,
         )
-        == "unproven_maximum"
+        == "limit_reached"
     )
 
 
@@ -425,7 +425,7 @@ def test_nonzero_absolute_objective_difference_fails_closed() -> None:
             max_primal_infeasibility=0.0,
             max_integrality_violation=0.0,
         )
-        == "unproven_maximum"
+        == "limit_reached"
     )
 
 
@@ -443,7 +443,7 @@ def test_primal_and_integrality_violations_fail_closed() -> None:
             max_primal_infeasibility=_FEAS_TOL + 1e-9,
             max_integrality_violation=0.0,
         )
-        == "unproven_maximum"
+        == "limit_reached"
     )
     assert (
         apply_proof_contract(
@@ -456,7 +456,7 @@ def test_primal_and_integrality_violations_fail_closed() -> None:
             max_primal_infeasibility=0.0,
             max_integrality_violation=_FEAS_TOL + 1e-9,
         )
-        == "unproven_maximum"
+        == "limit_reached"
     )
 
 

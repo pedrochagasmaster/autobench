@@ -1,8 +1,8 @@
-"""Normalized sparse Maximum Safe Coverage MILP model compilation.
+"""Normalized sparse Verified Safe Coverage MILP model compilation.
 
 Internal Module. Builds Stage-1 through Stage-4 constraint sets for
-``PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE`` without solving. The public
-solver entry point remains ``core.privacy_coverage_solver.optimize_safe_coverage``.
+``PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE`` without solving. The public
+solver entry point remains ``core.privacy_coverage_solver.find_verified_safe_coverage``.
 
 Do not export this Module from ``core.__init__``.
 """

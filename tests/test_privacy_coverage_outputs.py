@@ -1,4 +1,4 @@
-"""Leak, denial, and complete-output parity tests for Maximum Safe Coverage outputs."""
+"""Leak, denial, and complete-output parity tests for Verified Safe Coverage outputs."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _msc_request(
     tmp_path: Path,
     df: pd.DataFrame,
     *,
-    privacy_release_mode: PrivacyReleaseMode = PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+    privacy_release_mode: PrivacyReleaseMode = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
     output_name: str = "out.xlsx",
     export_balanced_csv: bool = True,
     audit_package: bool = True,
@@ -171,7 +171,7 @@ def _result_categories(artifacts: Any) -> Set[str]:
     return categories
 
 
-def test_maximize_safe_coverage_fixture_publishes_suppressed_view(
+def test_verified_safe_coverage_fixture_publishes_suppressed_view(
     tmp_path: Path,
 ) -> None:
     df = _seed_suppressed_marker(build_safe_coverage_getnet_shaped_df())
@@ -187,9 +187,8 @@ def test_maximize_safe_coverage_fixture_publishes_suppressed_view(
     assert artifacts.safe_coverage_result is not None
     result = artifacts.safe_coverage_result
     assert result.verifier_result == VERIFIER_RESULT_PASSED
-    assert result.solver_state == "optimal"
-    assert result.mip_gap == 0.0
-    assert result.mip_dual_bound == float(len(result.release_set))
+    assert result.search_state == "search_complete"
+    assert result.candidate_vectors_evaluated > 0
     assert len(result.candidate_universe) == 9
     assert len(result.release_set) == 4
     assert len(result.suppression_set) == 5
@@ -229,9 +228,7 @@ def test_complete_output_regression_parity_when_all_units_pass(
     df = build_safe_coverage_getnet_shaped_df()
     df = df[df["sector"] == "SectorY"].reset_index(drop=True)
 
-    # Near-neutral bounds keep the tiny all-safe universe in the solver's
-    # proven-optimal regime (wider bounds can leave mip_gap=0 but state
-    # unproven_maximum on this degenerate instance).
+    # Near-neutral bounds keep the tiny all-safe universe stable.
     def _request(
         folder: Path,
         *,
@@ -275,7 +272,7 @@ def test_complete_output_regression_parity_when_all_units_pass(
     maximize = execute_share_run(
         _request(
             tmp_path / "maximize",
-            mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+            mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
             output_name="maximize.xlsx",
         ),
         logging.getLogger("test_msc_parity"),
@@ -369,7 +366,7 @@ def test_empty_release_set_writes_denial_only(tmp_path: Path) -> None:
         export_balanced_csv=True,
         audit_package=True,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         validate_input=False,
         compliance_posture="best_effort",
         config=str(config_path),
@@ -419,7 +416,7 @@ def test_python_interface_without_output_skips_certificate_disk_write(
         export_balanced_csv=False,
         audit_package=False,
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
         validate_input=False,
         compliance_posture="best_effort",
         config=str(config_path),

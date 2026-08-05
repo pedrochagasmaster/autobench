@@ -797,7 +797,7 @@ class GateTestRunner:
                 logger.error(f"Error processing {case_id}: {e}")
                 results["errors"] += 1
 
-        # 5. Owned Maximum Safe Coverage cases (temp dirs only; never committed).
+        # 5. Owned Verified Safe Coverage cases (temp dirs only; never committed).
         if run_owned:
             owned = run_owned_safe_coverage_cases(only_case_ids=self.only_case_ids)
             results["passed"] += owned["passed"]

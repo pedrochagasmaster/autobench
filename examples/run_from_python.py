@@ -27,11 +27,11 @@ from core.contracts import (
 )
 
 
-def example_maximize_safe_coverage_request(dataframe: Any) -> AnalysisRunRequest:
-    """Documented Maximum Safe Coverage request (enum form only).
+def example_verified_safe_coverage_request(dataframe: Any) -> AnalysisRunRequest:
+    """Documented Verified Safe Coverage request (enum form only).
 
     ``privacy_release_mode`` must be a ``PrivacyReleaseMode`` enum value.
-    Strings such as ``"maximize-safe-coverage"`` are rejected at construction.
+    Strings such as ``"verified-safe-coverage"`` are rejected at construction.
     Python callers must supply ``PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE``.
     """
     return AnalysisRunRequest(
@@ -41,7 +41,7 @@ def example_maximize_safe_coverage_request(dataframe: Any) -> AnalysisRunRequest
         secondary_metrics=["transaction_count", "merchant_count"],
         dimensions=["quarter", "region", "sector"],
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
     )
 
 

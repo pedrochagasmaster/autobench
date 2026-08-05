@@ -478,7 +478,7 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
 
 _PRIVACY_RELEASE_MODE_OPTIONS = (
     ("Complete output", PrivacyReleaseMode.COMPLETE_OUTPUT.value),
-    ("Maximum safe coverage", PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value),
+    ("Verified safe coverage", PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value),
 )
 _PRIVACY_RELEASE_MODE_VALUES = frozenset(
     value for _, value in _PRIVACY_RELEASE_MODE_OPTIONS
@@ -912,8 +912,9 @@ class BenchmarkApp(App):
                         allow_blank=False,
                     )
                     yield Static(
-                        "Maximum safe coverage publishes only verified safe units. "
-                        "Missing units are privacy-suppressed.",
+                        "Verified safe coverage publishes only verified safe units. "
+                        "Missing units are privacy-suppressed. "
+                        "Coverage is not a maximum claim.",
                         id="privacy_release_mode_hint",
                         classes="field-hint",
                     )
@@ -1109,7 +1110,7 @@ class BenchmarkApp(App):
         self._last_status_text: Optional[str] = None
         self._last_telemetry_surface: Optional[str] = None
         self._telemetry_session_started = False
-        # Prior privacy-rule-sweep checkbox value while Maximum Safe Coverage
+        # Prior privacy-rule-sweep checkbox value while Verified Safe Coverage
         # locks the control; restored when the operator returns to Complete output.
         self._privacy_sweep_before_lock: Optional[bool] = None
         self._restored_privacy_release_mode: Optional[str] = None
@@ -1490,7 +1491,7 @@ class BenchmarkApp(App):
 
     @staticmethod
     def _safe_coverage_summary_facts(artifacts: AnalysisArtifacts) -> Optional[Dict[str, Any]]:
-        """Return client-safe Maximum Safe Coverage facts, or None.
+        """Return client-safe Verified Safe Coverage facts, or None.
 
         Reads only ``CoverageCertificate`` and ``coverage_certificate_output``.
         Never surfaces suppressed keys, category names, or failure details.
@@ -1498,19 +1499,16 @@ class BenchmarkApp(App):
         certificate = artifacts.coverage_certificate
         if certificate is None:
             return None
-        if certificate.privacy_release_mode is not PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+        if certificate.privacy_release_mode is not PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
             return None
         return {
-            "mode": "Maximum safe coverage",
+            "mode": "Verified safe coverage",
             "candidate_unit_count": certificate.candidate_unit_count,
             "released_unit_count": certificate.released_unit_count,
             "suppressed_unit_count": certificate.suppressed_unit_count,
             "coverage_percentage": certificate.coverage_percentage,
             "coverage_certificate_output": artifacts.coverage_certificate_output,
-            "verified_optimal": (
-                certificate.solver_state == "optimal"
-                and certificate.mip_gap == 0.0
-            ),
+            "independent_verification_passed": True,
         }
 
     @classmethod
@@ -1533,8 +1531,8 @@ class BenchmarkApp(App):
         cert_path = facts["coverage_certificate_output"]
         if cert_path:
             lines.append(f"[dim]Certificate[/dim] {cert_path}")
-        if facts["verified_optimal"]:
-            lines.append("[dim]Status[/dim]  Verified optimal (zero-gap proof)")
+        if facts["independent_verification_passed"]:
+            lines.append("[dim]Status[/dim]  Independent privacy verification passed")
         return lines
 
     @classmethod
@@ -1555,8 +1553,9 @@ class BenchmarkApp(App):
         cert_path = facts["coverage_certificate_output"]
         if cert_path:
             lines.append(f"Coverage Certificate: {cert_path}")
-        if facts["verified_optimal"]:
-            lines.append("Verified optimal: maximum coverage has a zero-gap proof.")
+        if facts["independent_verification_passed"]:
+            lines.append("Independent privacy verification: passed")
+            lines.append("Coverage is not a maximum claim.")
         return lines
 
     # ──────────────────────────────────────────────────────────────────
@@ -1739,7 +1738,7 @@ class BenchmarkApp(App):
         self.advanced_config_path = None
         # Do not refresh privacy_release_mode here: load_presets runs before
         # session restore, and a deferred preset Select.Changed must not wipe
-        # a restored Maximum Safe Coverage selection. User-driven preset
+        # a restored Verified Safe Coverage selection. User-driven preset
         # changes refresh via on_select_changed.
 
     def _update_preset_blurb(self, preset_name: str) -> None:
@@ -2018,7 +2017,7 @@ class BenchmarkApp(App):
         if self._analysis_mode() == "share":
             values["privacy_release_mode"] = self._privacy_release_mode_from_widget()
         else:
-            # Do not let a hidden maximize-safe-coverage widget value reach a
+            # Do not let a hidden verified-safe-coverage widget value reach a
             # rate request. Leave None so configuration resolution stays clear.
             values["privacy_release_mode"] = None
         return values
@@ -2041,12 +2040,12 @@ class BenchmarkApp(App):
                 widget.remove_class("hidden")
 
     def _apply_privacy_release_mode_coupling(self, mode_value: str) -> None:
-        """Enable and lock rule sweep while Maximum Safe Coverage is selected."""
+        """Enable and lock rule sweep while Verified Safe Coverage is selected."""
         try:
             sweep = self.query_one("#privacy_rule_sweep_mode", Checkbox)
         except NoMatches:
             return
-        if mode_value == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value:
+        if mode_value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value:
             if getattr(self, "_privacy_sweep_before_lock", None) is None:
                 self._privacy_sweep_before_lock = bool(sweep.value)
             sweep.value = True
@@ -2538,10 +2537,10 @@ class BenchmarkApp(App):
             if hard_privacy_block:
                 if (
                     request.privacy_release_mode
-                    is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+                    is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
                 ):
                     summary_lines.append(
-                        "[dim]Release[/dim]  Maximum safe coverage"
+                        "[dim]Release[/dim]  Verified safe coverage"
                     )
                 summary_lines.append(
                     "[red]Publication withheld[/red] "

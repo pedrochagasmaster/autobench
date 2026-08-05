@@ -1,4 +1,4 @@
-"""Independent verification for Maximum Safe Coverage releases.
+"""Independent verification for Verified Safe Coverage releases.
 
 This Module owns the fail-closed check that a
 ``SafeCoverageResult`` is genuinely publishable and the client-safe
@@ -76,9 +76,8 @@ V_WEIGHT_OUT_OF_BOUNDS = "verifier_weight_out_of_bounds"
 V_WEIGHT_NONFINITE = "verifier_weight_nonfinite"
 V_CLIENT_KEYS_MISMATCH = "verifier_client_release_keys_mismatch"
 V_SUPPRESSED_UNIT_IN_CLIENT_SINK = "verifier_suppressed_unit_in_client_sink"
-V_SOLVER_NOT_OPTIMAL = "verifier_solver_not_optimal"
-V_NONZERO_GAP = "verifier_nonzero_mip_gap"
-V_DUAL_BOUND_MISMATCH = "verifier_dual_bound_does_not_prove_count"
+V_SEARCH_STATE = "verifier_search_state_invalid"
+V_WEIGHT_PARTITION_MISMATCH = "verifier_weight_partition_mismatch"
 V_CANDIDATE_UNIVERSE_DIGEST = "verifier_candidate_universe_digest_mismatch"
 V_RELEASE_MASK_DIGEST = "verifier_release_mask_digest_mismatch"
 V_RULE_SET_DIGEST = "verifier_rule_set_digest_mismatch"
@@ -420,34 +419,76 @@ def _check_visible_unit_rules(
                 )
 
 
-def _check_solver_proof(
+def _check_search_contract(
     result: SafeCoverageResult,
     failures: List[VerificationFailure],
 ) -> None:
-    if result.solver_state != "optimal":
+    if result.search_state != "search_complete":
         _fail(
             failures,
-            V_SOLVER_NOT_OPTIMAL,
-            f"solver_state must be 'optimal' to prove maximum coverage; got {result.solver_state!r}",
+            V_SEARCH_STATE,
+            "search_state must be 'search_complete'",
         )
-    if result.mip_gap != 0.0:
+    if not result.search_method or result.candidate_vectors_evaluated < 1:
         _fail(
             failures,
-            V_NONZERO_GAP,
-            "mip_gap must be exactly zero to claim a proven maximum",
+            V_SEARCH_STATE,
+            "search metadata is incomplete",
         )
-    if not math.isfinite(result.mip_dual_bound):
+
+
+def _check_exact_partition_for_weights(
+    result: SafeCoverageResult,
+    universe_by_key: Mapping[str, PublicationUnit],
+    citi_peer: Optional[str],
+    failures: List[VerificationFailure],
+) -> None:
+    expected_release: List[str] = []
+    expected_authorizing: Dict[str, str] = {}
+    for key in sorted(universe_by_key, key=canonical_key):
+        unit = universe_by_key[key]
+        overlay_passed = True
+        if CITIBANK_OVERLAY_NAME in unit.mandatory_overlays:
+            if citi_peer is None:
+                overlay_passed = False
+            else:
+                for record in unit.metric_records:
+                    shares, peers = _independent_weighted_shares(
+                        record.get("peer_volumes", {}),
+                        result.global_weights,
+                    )
+                    if citi_peer in peers:
+                        citi_share = shares[peers.index(citi_peer)]
+                        if (
+                            citi_share
+                            > _CITIBANK_MAXIMUM_SHARE + COMPARISON_EPSILON
+                        ):
+                            overlay_passed = False
+                            break
+        if not overlay_passed:
+            continue
+        for rule_name in sorted(unit.applicable_rules, key=canonical_key):
+            passed = True
+            for record in unit.metric_records:
+                shares, _peers = _independent_weighted_shares(
+                    record.get("peer_volumes", {}),
+                    result.global_weights,
+                )
+                if not evaluate_rule(rule_name, shares).strict_passed:
+                    passed = False
+                    break
+            if passed:
+                expected_release.append(key)
+                expected_authorizing[key] = rule_name
+                break
+    if (
+        tuple(expected_release) != tuple(result.release_set)
+        or expected_authorizing != dict(result.authorizing_rules)
+    ):
         _fail(
             failures,
-            V_DUAL_BOUND_MISMATCH,
-            "mip_dual_bound must be a finite proof value",
-        )
-        return
-    if round(result.mip_dual_bound) != len(result.release_set):
-        _fail(
-            failures,
-            V_DUAL_BOUND_MISMATCH,
-            "mip_dual_bound must round to the released Publication Unit count",
+            V_WEIGHT_PARTITION_MISMATCH,
+            "the selected weights do not produce the recorded release partition",
         )
 
 
@@ -466,7 +507,7 @@ def verify_safe_coverage_result(
 
     Recalculates every visible-unit release decision from the Candidate
     Universe stored on ``result`` and from ``result.global_weights`` using
-    ``evaluate_rule``. Checks solver proof fields, digest coherence, weight
+    ``evaluate_rule``. Checks the exact weight partition, digests, weight
     bounds, and client-sink invariants. When ``artifact_paths`` is provided,
     also recomputes SHA-256 hashes of every declared client artifact and, if
     ``expected_artifact_hashes`` is provided, compares them to detect a
@@ -493,11 +534,11 @@ def verify_safe_coverage_result(
 
     failures: List[VerificationFailure] = []
 
-    if result.release_mode != PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE:
+    if result.release_mode != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
         _fail(
             failures,
             V_INVALID_RELEASE_MODE,
-            f"release_mode must be MAXIMIZE_SAFE_COVERAGE; got {result.release_mode.value!r}",
+            f"release_mode must be VERIFIED_SAFE_COVERAGE; got {result.release_mode.value!r}",
         )
 
     universe_by_key: Dict[str, PublicationUnit] = {
@@ -524,7 +565,13 @@ def verify_safe_coverage_result(
         citibank_entity_name,
         failures,
     )
-    _check_solver_proof(result, failures)
+    _check_exact_partition_for_weights(
+        result,
+        universe_by_key,
+        citi_peer,
+        failures,
+    )
+    _check_search_contract(result, failures)
 
     computed_universe_digest = candidate_universe_digest(result.candidate_universe)
     if computed_universe_digest != result.candidate_universe_digest:
@@ -642,10 +689,9 @@ def compute_certificate_digest(
     rule_set_digest: str,
     solver_name: str,
     solver_version: str,
-    primary_objective_value: int,
-    mip_dual_bound: float,
-    mip_gap: float,
-    solver_state: str,
+    search_method: str,
+    search_state: str,
+    candidate_vectors_evaluated: int,
     artifact_hashes: Mapping[str, str],
 ) -> str:
     """Return the SHA-256 digest over canonical safe Coverage Certificate fields.
@@ -671,16 +717,10 @@ def compute_certificate_digest(
                 )
             weights_payload[str(peer)] = numeric
 
-    dual_bound = float(mip_dual_bound)
-    gap = float(mip_gap)
     coverage = float(coverage_percentage)
-    if not (
-        math.isfinite(dual_bound)
-        and math.isfinite(gap)
-        and math.isfinite(coverage)
-    ):
+    if not math.isfinite(coverage):
         raise SafeCoverageVerifierError(
-            "solver proof and coverage values must be finite for digest computation"
+            "coverage must be finite for digest computation"
         )
 
     canonical = {
@@ -707,10 +747,9 @@ def compute_certificate_digest(
         "rule_set_digest": str(rule_set_digest),
         "solver_name": str(solver_name),
         "solver_version": str(solver_version),
-        "primary_objective_value": int(primary_objective_value),
-        "mip_dual_bound": dual_bound,
-        "mip_gap": gap,
-        "solver_state": str(solver_state),
+        "search_method": str(search_method),
+        "search_state": str(search_state),
+        "candidate_vectors_evaluated": int(candidate_vectors_evaluated),
         "artifact_hashes": {
             str(key): str(value)
             for key, value in sorted(dict(artifact_hashes).items())
@@ -785,10 +824,9 @@ def build_coverage_certificate(
         rule_set_digest=result.rule_set_digest,
         solver_name=result.solver_name,
         solver_version=result.solver_version,
-        primary_objective_value=result.primary_objective_value,
-        mip_dual_bound=result.mip_dual_bound,
-        mip_gap=result.mip_gap,
-        solver_state=result.solver_state,
+        search_method=result.search_method,
+        search_state=result.search_state,
+        candidate_vectors_evaluated=result.candidate_vectors_evaluated,
         artifact_hashes=frozen_hashes,
     )
 
@@ -806,10 +844,9 @@ def build_coverage_certificate(
         rule_set_digest=result.rule_set_digest,
         solver_name=result.solver_name,
         solver_version=result.solver_version,
-        primary_objective_value=result.primary_objective_value,
-        mip_dual_bound=result.mip_dual_bound,
-        mip_gap=result.mip_gap,
-        solver_state=result.solver_state,
+        search_method=result.search_method,
+        search_state=result.search_state,
+        candidate_vectors_evaluated=result.candidate_vectors_evaluated,
         artifact_hashes=frozen_hashes,
         certificate_digest=digest,
     )
@@ -892,29 +929,26 @@ def verify_coverage_certificate(
             "certificate authorizing rules differ from the trusted result",
         )
 
-    if certificate.primary_objective_value != result.primary_objective_value:
+    if certificate.search_method != result.search_method:
         _fail(
             failures,
             V_CERTIFICATE_PROOF,
-            "certificate primary_objective_value differs from the trusted result",
+            "certificate search_method differs from the trusted result",
         )
-    if certificate.mip_dual_bound != result.mip_dual_bound:
+    if certificate.search_state != result.search_state:
         _fail(
             failures,
             V_CERTIFICATE_PROOF,
-            "certificate mip_dual_bound differs from the trusted result",
+            "certificate search_state differs from the trusted result",
         )
-    if certificate.mip_gap != result.mip_gap:
+    if (
+        certificate.candidate_vectors_evaluated
+        != result.candidate_vectors_evaluated
+    ):
         _fail(
             failures,
             V_CERTIFICATE_PROOF,
-            "certificate mip_gap differs from the trusted result",
-        )
-    if certificate.solver_state != result.solver_state:
-        _fail(
-            failures,
-            V_CERTIFICATE_PROOF,
-            "certificate solver_state differs from the trusted result",
+            "certificate candidate count differs from the trusted result",
         )
     if certificate.solver_name != result.solver_name:
         _fail(
@@ -959,10 +993,9 @@ def verify_coverage_certificate(
         rule_set_digest=certificate.rule_set_digest,
         solver_name=certificate.solver_name,
         solver_version=certificate.solver_version,
-        primary_objective_value=certificate.primary_objective_value,
-        mip_dual_bound=certificate.mip_dual_bound,
-        mip_gap=certificate.mip_gap,
-        solver_state=certificate.solver_state,
+        search_method=certificate.search_method,
+        search_state=certificate.search_state,
+        candidate_vectors_evaluated=certificate.candidate_vectors_evaluated,
         artifact_hashes=certificate.artifact_hashes,
     )
     if computed_digest != certificate.certificate_digest:

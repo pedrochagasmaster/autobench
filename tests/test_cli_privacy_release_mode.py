@@ -45,10 +45,10 @@ def test_help_text_and_exact_choices() -> None:
     assert action.type is PrivacyReleaseMode
     assert list(action.choices) == [
         PrivacyReleaseMode.COMPLETE_OUTPUT.value,
-        PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value,
+        PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value,
     ]
     help_text = share.format_help()
-    assert "--privacy-release-mode {complete-output,maximize-safe-coverage}" in help_text
+    assert "--privacy-release-mode {complete-output,verified-safe-coverage}" in help_text
     assert "effective default: complete-output" in help_text
     assert "complete authorized output" in help_text
     assert "incomplete safe view" in help_text
@@ -64,14 +64,14 @@ def test_omitted_flag_with_no_yaml_leaves_request_none() -> None:
     assert request.privacy_release_mode is None
 
 
-def test_omitted_flag_with_yaml_maximize_safe_coverage(tmp_path: Path) -> None:
+def test_omitted_flag_with_yaml_verified_safe_coverage(tmp_path: Path) -> None:
     path = tmp_path / "release.yaml"
     path.write_text(
         yaml.safe_dump(
             {
                 "version": "3.0",
                 "compliance_posture": "strict",
-                "privacy_release_mode": "maximize-safe-coverage",
+                "privacy_release_mode": "verified-safe-coverage",
             }
         ),
         encoding="utf-8",
@@ -84,10 +84,10 @@ def test_omitted_flag_with_yaml_maximize_safe_coverage(tmp_path: Path) -> None:
         config_file=str(path),
         cli_overrides={"privacy_release_mode": args.privacy_release_mode},
     )
-    assert config.get("privacy_release_mode") == "maximize-safe-coverage"
+    assert config.get("privacy_release_mode") == "verified-safe-coverage"
     assert (
         config.resolve().privacy_release_mode
-        is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+        is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     )
 
 
@@ -108,17 +108,17 @@ def test_explicit_cli_overrides_yaml(tmp_path: Path) -> None:
             "--config",
             str(path),
             "--privacy-release-mode",
-            "maximize-safe-coverage",
+            "verified-safe-coverage",
         )
     )
-    assert args.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert args.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     request = benchmark.build_run_request("share", args)
-    assert request.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert request.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     config = ConfigManager(
         config_file=str(path),
         cli_overrides={"privacy_release_mode": args.privacy_release_mode},
     )
-    assert config.get("privacy_release_mode") == "maximize-safe-coverage"
+    assert config.get("privacy_release_mode") == "verified-safe-coverage"
 
 
 def test_invalid_value_rejected() -> None:
@@ -140,7 +140,7 @@ def test_rate_parser_rejects_privacy_release_mode_flag() -> None:
                 "--total-col",
                 "txn_cnt",
                 "--privacy-release-mode",
-                "maximize-safe-coverage",
+                "verified-safe-coverage",
             ]
         )
     rate_parser = parser._subparsers._group_actions[0].choices["rate"]
@@ -153,7 +153,7 @@ def test_per_dimension_rejection() -> None:
     args = benchmark.create_parser().parse_args(
         _share_argv(
             "--privacy-release-mode",
-            "maximize-safe-coverage",
+            "verified-safe-coverage",
             "--per-dimension-weights",
         )
     )
@@ -163,11 +163,11 @@ def test_per_dimension_rejection() -> None:
 
 def test_compatible_rule_sweep_auto_selection() -> None:
     args = benchmark.create_parser().parse_args(
-        _share_argv("--privacy-release-mode", "maximize-safe-coverage")
+        _share_argv("--privacy-release-mode", "verified-safe-coverage")
     )
     assert not args.privacy_rule_sweep
     request = benchmark.build_run_request("share", args)
-    assert request.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert request.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     assert (
         request.privacy_rule_strategy
         is PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
@@ -177,15 +177,15 @@ def test_compatible_rule_sweep_auto_selection() -> None:
 
 def test_copyable_cli_example_parses() -> None:
     args = benchmark.create_parser().parse_args(
-        list(benchmark.MAXIMIZE_SAFE_COVERAGE_CLI_EXAMPLE)
+        list(benchmark.VERIFIED_SAFE_COVERAGE_CLI_EXAMPLE)
     )
-    assert args.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert args.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     assert args.privacy_rule_sweep is True
     assert args.metric == "transaction_amount"
     assert args.secondary_metrics == ["transaction_count", "merchant_count"]
     assert args.dimensions == ["quarter", "region", "sector"]
     request = benchmark.build_run_request("share", args)
-    assert request.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert request.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     assert (
         request.privacy_rule_strategy
         is PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
@@ -249,7 +249,7 @@ def _msc_cli_args(
         lean=False,
         privacy_basis=None,
         privacy_rule_sweep=True,
-        privacy_release_mode=PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
     )
 
 
@@ -265,12 +265,13 @@ def test_cli_safe_success_summary(
     captured = capsys.readouterr().out
 
     assert code == benchmark.EXIT_OK
-    assert "Privacy release mode: Maximum safe coverage" in captured
+    assert "Privacy release mode: Verified safe coverage" in captured
     assert "Candidate units: 9" in captured
     assert "Released units: 4" in captured
     assert "Suppressed units: 5" in captured
     assert "Coverage:" in captured
-    assert "Maximum coverage has a zero-gap proof." in captured
+    assert "Independent privacy verification: passed" in captured
+    assert "Coverage is not a maximum claim." in captured
     cert_files = list(tmp_path.glob("*_coverage_certificate.json"))
     assert len(cert_files) == 1
     assert f"Coverage Certificate: {cert_files[0]}" in captured
@@ -303,7 +304,7 @@ def test_cli_empty_release_set_denial(
     assert CONTROL3_SAFE_COVERAGE_EMPTY in captured
     assert "SHARE ANALYSIS BLOCKED" in captured
     assert "Candidate units:" not in captured
-    assert "zero-gap proof" not in captured
+    assert "maximum claim" not in captured
     assert not list(tmp_path.glob("*_coverage_certificate.json"))
 
 

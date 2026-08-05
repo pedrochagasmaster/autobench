@@ -1,4 +1,4 @@
-"""Sanitized Getnet-shaped fixture for Maximum Safe Coverage tests.
+"""Sanitized Getnet-shaped fixture for Verified Safe Coverage tests.
 
 Synthetic peers and categories only. No real merchant, issuer, or category
 names. No confidential Getnet values.

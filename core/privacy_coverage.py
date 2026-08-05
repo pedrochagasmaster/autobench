@@ -1,4 +1,4 @@
-"""Canonical Publication Unit construction for Maximum Safe Coverage.
+"""Canonical Publication Unit construction for Verified Safe Coverage.
 
 This Module owns Candidate Universe construction and filtering for share
 analysis. It does not optimize, authorize client sinks, or evaluate rules for

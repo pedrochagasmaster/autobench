@@ -1,4 +1,4 @@
-"""Direct highspy adapter and complete neutral MIP start for Maximum Safe Coverage.
+"""Direct highspy adapter and complete neutral MIP start for Verified Safe Coverage.
 
 Internal Module. Consumes ``StageConstraintSet`` / ``CoverageModel`` from
 ``core.privacy_coverage_model`` without changing public solver contracts.
@@ -63,7 +63,7 @@ _STATE_UNBOUNDED = "unbounded"
 _STATE_TIME_LIMIT = "time_limit"
 _STATE_ITERATION_LIMIT = "iteration_limit"
 _STATE_ERROR = "solver_error"
-_STATE_UNPROVEN = "unproven_maximum"
+_STATE_UNPROVEN = "limit_reached"
 
 # Match ``core.privacy_coverage_solver`` read-back / feasibility scale.
 _FEASIBILITY_TOLERANCE = 1e-6
@@ -382,6 +382,8 @@ class HighsCoverageSession:
         *,
         time_limit: Optional[float] = None,
         maximize: bool = False,
+        threads: int = 1,
+        mip_max_nodes: Optional[int] = None,
     ) -> None:
         self._stage = stage
         self._maximize = bool(maximize)
@@ -389,7 +391,11 @@ class HighsCoverageSession:
         self._progress_events: List[HighsProgressEvent] = []
         self._first_verified_incumbent_time: Optional[float] = None
         self._highs = Highs()
-        self._configure_options(time_limit=time_limit)
+        self._configure_options(
+            time_limit=time_limit,
+            threads=threads,
+            mip_max_nodes=mip_max_nodes,
+        )
         self._install_callbacks()
         self._load_model()
 
@@ -429,11 +435,30 @@ class HighsCoverageSession:
             kinds.append("integer" if int(flag) != 0 else "continuous")
         return tuple(kinds)
 
-    def _configure_options(self, *, time_limit: Optional[float]) -> None:
+    def _configure_options(
+        self,
+        *,
+        time_limit: Optional[float],
+        threads: int,
+        mip_max_nodes: Optional[int],
+    ) -> None:
+        if threads < 1:
+            raise ValueError("threads must be positive")
+        if mip_max_nodes is not None and mip_max_nodes < 0:
+            raise ValueError("mip_max_nodes must be non-negative")
         _require_ok(self._highs.setOptionValue("output_flag", False), "setOptionValue(output_flag)")
         _require_ok(self._highs.setOptionValue("mip_rel_gap", 0), "setOptionValue(mip_rel_gap)")
         _require_ok(self._highs.setOptionValue("mip_abs_gap", 0), "setOptionValue(mip_abs_gap)")
         _require_ok(self._highs.setOptionValue("random_seed", 0), "setOptionValue(random_seed)")
+        _require_ok(
+            self._highs.setOptionValue("threads", int(threads)),
+            "setOptionValue(threads)",
+        )
+        if mip_max_nodes is not None:
+            _require_ok(
+                self._highs.setOptionValue("mip_max_nodes", int(mip_max_nodes)),
+                "setOptionValue(mip_max_nodes)",
+            )
         if time_limit is not None:
             _require_ok(
                 self._highs.setOptionValue("time_limit", float(time_limit)),

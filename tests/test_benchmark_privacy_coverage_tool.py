@@ -39,13 +39,11 @@ _NUMERIC_KEYS = (
     "row_count",
     "nonzero_count",
     "compile_seconds",
-    "proof_seconds",
-    "total_solve_seconds",
+    "search_seconds",
     "peak_process_memory_bytes",
     "release_count",
     "suppression_count",
-    "mip_dual_bound",
-    "mip_gap",
+    "candidate_vectors_evaluated",
 )
 
 _FORBIDDEN_SUBSTRINGS = (
@@ -104,36 +102,10 @@ def test_benchmark_json_schema_and_types(capsys: Any) -> None:
         assert isinstance(payload[key], (int, float)), key
         assert math.isfinite(float(payload[key])), key
 
-    first_incumbent = payload["first_incumbent_seconds"]
-    assert first_incumbent is None or (
-        isinstance(first_incumbent, (int, float)) and math.isfinite(float(first_incumbent))
-    )
-
-    primal = payload["mip_primal_bound"]
-    assert primal is None or (isinstance(primal, (int, float)) and math.isfinite(float(primal)))
-
-    node_count = payload["node_count"]
-    assert node_count is None or (isinstance(node_count, int) and node_count >= 0)
-
-    assert payload["start_validation"] in ("accepted", "rejected")
-    assert isinstance(payload["solver_state"], str)
-    assert isinstance(payload["solver_states"], list)
-    assert payload["solver_states"] == [payload["solver_state"]]
+    assert payload["search_state"] == "search_complete"
+    assert isinstance(payload["search_method"], str)
     assert isinstance(payload["verifier_result"], str)
-    assert isinstance(payload["stage_durations"], dict)
-    assert set(payload["stage_durations"].keys()) == {
-        "stage1",
-        "stage2",
-        "stage3",
-        "stage4",
-    }
-    for stage_name, seconds in payload["stage_durations"].items():
-        assert isinstance(seconds, (int, float)), stage_name
-        assert math.isfinite(float(seconds)), stage_name
-
-    if payload["solver_state"] == "optimal":
-        assert payload["mip_gap"] == 0
-        assert payload["mip_gap"] == 0.0
+    assert len(payload["release_mask_digest"]) == 64
 
 
 def test_benchmark_json_omits_forbidden_content(capsys: Any) -> None:
@@ -142,10 +114,4 @@ def test_benchmark_json_omits_forbidden_content(capsys: Any) -> None:
     for fragment in _FORBIDDEN_SUBSTRINGS:
         assert fragment not in encoded, fragment
     for key, value in payload.items():
-        if key == "stage_durations":
-            assert isinstance(value, dict)
-            continue
-        if key == "solver_states":
-            assert isinstance(value, list)
-            continue
         assert not isinstance(value, (dict, list)), key

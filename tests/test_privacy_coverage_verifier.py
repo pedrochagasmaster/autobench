@@ -1,4 +1,4 @@
-"""Tests for independent verification of Maximum Safe Coverage releases.
+"""Tests for independent verification of Verified Safe Coverage releases.
 
 These tests exercise ``verify_safe_coverage_result``, the Coverage
 Certificate builder, ``verify_coverage_certificate``, tamper detection for
@@ -28,7 +28,7 @@ from core.privacy_coverage import (
     build_candidate_universe,
     candidate_universe_digest,
 )
-from core.privacy_coverage_solver import optimize_safe_coverage, weighted_shares
+from core.privacy_coverage_solver import find_verified_safe_coverage, weighted_shares
 from core.privacy_coverage_verifier import (
     SafeCoverageVerifierError,
     VerificationOutcome,
@@ -46,19 +46,18 @@ from core.privacy_coverage_verifier import (
     V_CERTIFICATE_KEYS,
     V_CITI_PEER_MISSING,
     V_CLIENT_KEYS_MISMATCH,
-    V_DUAL_BOUND_MISMATCH,
     V_INVALID_RELEASE_MODE,
-    V_NONZERO_GAP,
     V_RELEASE_MASK_DIGEST,
     V_RELEASE_PARTITION_MISMATCH,
     V_RULE_DID_NOT_PASS,
     V_RULE_NOT_APPLICABLE,
     V_RULE_SET_DIGEST,
-    V_SOLVER_NOT_OPTIMAL,
+    V_SEARCH_STATE,
     V_SUPPRESSED_MARKER_LEAK,
     V_SUPPRESSED_UNIT_IN_CLIENT_SINK,
     V_UNKNOWN_RELEASE_KEY,
     V_WEIGHT_OUT_OF_BOUNDS,
+    V_WEIGHT_PARTITION_MISMATCH,
 )
 from core.privacy_policy import PrivacyPolicy
 from core.privacy_rules import evaluate_rule
@@ -89,7 +88,7 @@ def _solve_fixture() -> Tuple[Tuple[PublicationUnit, ...], SafeCoverageResult]:
         dimensions=["region", "sector"],
         time_col="quarter",
     )
-    result = optimize_safe_coverage(
+    result = find_verified_safe_coverage(
         universe,
         _PEERS,
         min_weight=0.5,
@@ -109,7 +108,7 @@ def _solve_fixture() -> Tuple[Tuple[PublicationUnit, ...], SafeCoverageResult]:
 @pytest.fixture(scope="module")
 def fixture_result() -> SafeCoverageResult:
     _universe, result = _solve_fixture()
-    assert result.solver_state == "optimal"
+    assert result.search_state == "search_complete"
     assert 0 < len(result.release_set) < len(result.candidate_universe)
     return result
 
@@ -390,11 +389,10 @@ def test_tamper_authorizing_rule_to_wrong_approved_rule_is_blocked(
     assert V_RULE_DID_NOT_PASS in _codes(outcome)
 
 
-def test_tamper_release_count_vs_dual_bound_is_blocked(
+def test_tamper_hides_a_passing_unit_is_blocked(
     fixture_result: SafeCoverageResult,
 ) -> None:
-    # Shrink the Release Set while keeping the original dual bound so the
-    # proof count no longer matches len(release_set).
+    # Shrink the Release Set while keeping the selected weights.
     if len(fixture_result.release_set) < 1:
         pytest.skip("fixture must release at least one unit")
     dropped = fixture_result.release_set[0]
@@ -414,15 +412,13 @@ def test_tamper_release_count_vs_dual_bound_is_blocked(
         release_set=new_release,
         suppression_set=new_suppression,
         authorizing_rules=new_rules,
-        primary_objective_value=len(new_release),
         release_mask_digest=new_mask,
-        # mip_dual_bound intentionally left at the original proven count
     )
     outcome = verify_safe_coverage_result(
         tampered, min_weight=0.5, max_weight=2.0
     )
     assert not outcome.passed
-    assert V_DUAL_BOUND_MISMATCH in _codes(outcome)
+    assert V_WEIGHT_PARTITION_MISMATCH in _codes(outcome)
 
 
 def test_tamper_policy_digest_is_blocked(fixture_result: SafeCoverageResult) -> None:
@@ -460,40 +456,43 @@ def test_tamper_release_mask_digest_is_blocked(
     assert V_RELEASE_MASK_DIGEST in _codes(outcome)
 
 
-def test_tamper_solver_gap_is_blocked(fixture_result: SafeCoverageResult) -> None:
-    tampered = _bypass_result_replace(fixture_result, mip_gap=0.25)
+def test_tamper_search_count_is_blocked(fixture_result: SafeCoverageResult) -> None:
+    tampered = _bypass_result_replace(
+        fixture_result,
+        candidate_vectors_evaluated=0,
+    )
     outcome = verify_safe_coverage_result(
         tampered, min_weight=0.5, max_weight=2.0
     )
     assert not outcome.passed
-    assert V_NONZERO_GAP in _codes(outcome)
+    assert V_SEARCH_STATE in _codes(outcome)
 
 
-def test_tamper_solver_dual_bound_is_blocked(
+def test_tamper_search_method_is_blocked(
     fixture_result: SafeCoverageResult,
 ) -> None:
     tampered = _bypass_result_replace(
         fixture_result,
-        mip_dual_bound=float(fixture_result.primary_objective_value) + 3.0,
+        search_method="",
     )
     outcome = verify_safe_coverage_result(
         tampered, min_weight=0.5, max_weight=2.0
     )
     assert not outcome.passed
-    assert V_DUAL_BOUND_MISMATCH in _codes(outcome)
+    assert V_SEARCH_STATE in _codes(outcome)
 
 
-def test_tamper_solver_state_not_optimal_is_blocked(
+def test_tamper_search_state_is_blocked(
     fixture_result: SafeCoverageResult,
 ) -> None:
     tampered = _bypass_result_replace(
-        fixture_result, solver_state="unproven_maximum"
+        fixture_result, search_state="incomplete"
     )
     outcome = verify_safe_coverage_result(
         tampered, min_weight=0.5, max_weight=2.0
     )
     assert not outcome.passed
-    assert V_SOLVER_NOT_OPTIMAL in _codes(outcome)
+    assert V_SEARCH_STATE in _codes(outcome)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +507,7 @@ def test_certificate_builds_with_only_safe_evidence(
         fixture_result, artifact_hashes={"analysis.xlsx": "a" * 64}
     )
     assert certificate.artifact_type == COVERAGE_CERTIFICATE_ARTIFACT_TYPE
-    assert certificate.privacy_release_mode == PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    assert certificate.privacy_release_mode == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     assert tuple(certificate.visible_publication_unit_keys) == tuple(
         fixture_result.release_set
     )
@@ -770,7 +769,7 @@ def test_citi_overlay_missing_peer_kwarg_is_blocked() -> None:
         citibank_entity_name="PeerB",
         citi_competitor_receives_output=True,
     )
-    result = optimize_safe_coverage(
+    result = find_verified_safe_coverage(
         universe,
         _PEERS,
         min_weight=0.5,

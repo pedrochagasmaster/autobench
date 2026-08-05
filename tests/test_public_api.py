@@ -70,15 +70,15 @@ def test_privacy_release_mode_public_values() -> None:
     from core import PrivacyReleaseMode
 
     assert PrivacyReleaseMode.COMPLETE_OUTPUT.value == "complete-output"
-    assert PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE.value == "maximize-safe-coverage"
+    assert PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value == "verified-safe-coverage"
 
 
-def test_example_maximize_safe_coverage_request_uses_enum_form() -> None:
-    from examples.run_from_python import example_maximize_safe_coverage_request
+def test_example_verified_safe_coverage_request_uses_enum_form() -> None:
+    from examples.run_from_python import example_verified_safe_coverage_request
     from core import PrivacyReleaseMode, PrivacyRuleStrategy
 
-    request = example_maximize_safe_coverage_request(dataframe=None)
-    assert request.privacy_release_mode is PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE
+    request = example_verified_safe_coverage_request(dataframe=None)
+    assert request.privacy_release_mode is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
     assert (
         request.privacy_rule_strategy
         is PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE

@@ -1,4 +1,4 @@
-"""Test-first contract for the scalable Maximum Safe Coverage model module.
+"""Test-first contract for the scalable Verified Safe Coverage model module.
 
 Steps 1-3 of Plan 003: algebra parity, conservative presolve, and model-size
 ceilings. These tests must fail before ``core.privacy_coverage_model`` exists.

@@ -23,7 +23,7 @@ CONTROL3_NUMERIC_POLICY_SOURCE = (
 # Fixed versioned artifact_type for the client-safe CoverageCertificate. The
 # version suffix is part of the client contract; changing it is a breaking
 # change to downstream consumers of the certificate.
-COVERAGE_CERTIFICATE_ARTIFACT_TYPE = "coverage_certificate.v1"
+COVERAGE_CERTIFICATE_ARTIFACT_TYPE = "coverage_certificate.v2"
 
 
 class PrivacyMetricContext(str, Enum):
@@ -71,12 +71,12 @@ class PrivacyReleaseMode(str, Enum):
 
     The mode is orthogonal to ``PrivacyRuleStrategy`` and to
     ``compliance_posture``. ``COMPLETE_OUTPUT`` preserves current behavior
-    exactly. ``MAXIMIZE_SAFE_COVERAGE`` releases the maximum proven-safe
-    subset for share analysis without weakening any privacy rule.
+    exactly. ``VERIFIED_SAFE_COVERAGE`` releases a deterministic safe subset
+    for share analysis. It does not weaken any privacy rule.
     """
 
     COMPLETE_OUTPUT = "complete-output"
-    MAXIMIZE_SAFE_COVERAGE = "maximize-safe-coverage"
+    VERIFIED_SAFE_COVERAGE = "verified-safe-coverage"
 
 
 @dataclass(frozen=True)
@@ -352,7 +352,7 @@ class PublicationUnit:
 
     A Publication Unit groups every governed metric record that shares the
     same canonical output key. It is the atomic unit that
-    ``PrivacyReleaseMode.MAXIMIZE_SAFE_COVERAGE`` releases or suppresses.
+    ``PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE`` releases or suppresses.
     """
 
     internal_key: str
@@ -400,7 +400,7 @@ class PublicationUnit:
 
 @dataclass(frozen=True)
 class SafeCoverageResult:
-    """Trusted internal result of the Maximum Safe Coverage optimization.
+    """Trusted internal result of the Verified Safe Coverage search.
 
     This object can hold protected internal keys and must never reach a
     normal client sink. The client-safe view is ``CoverageCertificate``.
@@ -412,11 +412,9 @@ class SafeCoverageResult:
     release_set: Tuple[str, ...]
     suppression_set: Tuple[str, ...]
     authorizing_rules: Mapping[str, str]
-    primary_objective_value: int
-    later_objective_values: Tuple[float, ...]
-    solver_state: str
-    mip_dual_bound: float
-    mip_gap: float
+    search_method: str
+    search_state: str
+    candidate_vectors_evaluated: int
     solver_name: str
     solver_version: str
     input_digest: str
@@ -491,33 +489,19 @@ class SafeCoverageResult:
                 "authorizing rule for every released Publication Unit"
             )
         object.__setattr__(self, "authorizing_rules", frozen_authorizing)
-        if not isinstance(self.primary_objective_value, int) or isinstance(
-            self.primary_objective_value, bool
+        if not isinstance(self.search_method, str) or not self.search_method:
+            raise ValueError("SafeCoverageResult.search_method must not be empty")
+        if self.search_state != "search_complete":
+            raise ValueError(
+                "SafeCoverageResult.search_state must be 'search_complete'"
+            )
+        if (
+            not isinstance(self.candidate_vectors_evaluated, int)
+            or isinstance(self.candidate_vectors_evaluated, bool)
+            or self.candidate_vectors_evaluated < 1
         ):
-            raise TypeError(
-                "SafeCoverageResult.primary_objective_value must be an integer"
-            )
-        if self.primary_objective_value != len(self.release_set):
             raise ValueError(
-                "SafeCoverageResult.primary_objective_value must equal the "
-                "released Publication Unit count"
-            )
-        if not isinstance(self.later_objective_values, tuple):
-            raise TypeError(
-                "SafeCoverageResult.later_objective_values must be a tuple"
-            )
-        for value in self.later_objective_values:
-            if not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValueError(
-                    "SafeCoverageResult.later_objective_values must be finite numbers"
-                )
-        if not math.isfinite(self.mip_dual_bound):
-            raise ValueError(
-                "SafeCoverageResult.mip_dual_bound must be a finite number"
-            )
-        if not math.isfinite(self.mip_gap) or self.mip_gap < 0.0:
-            raise ValueError(
-                "SafeCoverageResult.mip_gap must be finite and non-negative"
+                "SafeCoverageResult.candidate_vectors_evaluated must be positive"
             )
 
 
@@ -542,10 +526,9 @@ class CoverageCertificate:
     rule_set_digest: str
     solver_name: str
     solver_version: str
-    primary_objective_value: int
-    mip_dual_bound: float
-    mip_gap: float
-    solver_state: str
+    search_method: str
+    search_state: str
+    candidate_vectors_evaluated: int
     artifact_hashes: Mapping[str, str]
     certificate_digest: str
     artifact_type: str = COVERAGE_CERTIFICATE_ARTIFACT_TYPE
@@ -628,23 +611,19 @@ class CoverageCertificate:
                         "CoverageCertificate.global_weights values must be finite"
                     )
             object.__setattr__(self, "global_weights", frozen_weights)
-        if not isinstance(self.primary_objective_value, int) or isinstance(
-            self.primary_objective_value, bool
+        if not isinstance(self.search_method, str) or not self.search_method:
+            raise ValueError("CoverageCertificate.search_method must not be empty")
+        if self.search_state != "search_complete":
+            raise ValueError(
+                "CoverageCertificate.search_state must be 'search_complete'"
+            )
+        if (
+            not isinstance(self.candidate_vectors_evaluated, int)
+            or isinstance(self.candidate_vectors_evaluated, bool)
+            or self.candidate_vectors_evaluated < 1
         ):
-            raise TypeError(
-                "CoverageCertificate.primary_objective_value must be an integer"
-            )
-        if self.primary_objective_value != self.released_unit_count:
             raise ValueError(
-                "CoverageCertificate.primary_objective_value must equal released_unit_count"
-            )
-        if not math.isfinite(self.mip_dual_bound):
-            raise ValueError(
-                "CoverageCertificate.mip_dual_bound must be a finite number"
-            )
-        if not math.isfinite(self.mip_gap) or self.mip_gap < 0.0:
-            raise ValueError(
-                "CoverageCertificate.mip_gap must be finite and non-negative"
+                "CoverageCertificate.candidate_vectors_evaluated must be positive"
             )
         frozen_hashes = _freeze_str_mapping(
             self.artifact_hashes,
@@ -774,7 +753,7 @@ class AnalysisRunRequest:
         if not self.preset:
             self.preset = DEFAULT_PRESET_NAME
         # The Python Interface accepts enum values or None only. Reject bare
-        # strings so a typo like "maximize-safe-coverage" cannot silently reach
+        # strings so a typo like "verified-safe-coverage" cannot silently reach
         # the orchestration seam and bypass configuration precedence.
         if self.privacy_release_mode is not None and not isinstance(
             self.privacy_release_mode, PrivacyReleaseMode
