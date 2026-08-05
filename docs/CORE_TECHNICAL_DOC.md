@@ -352,6 +352,10 @@ Included files:
 - core/category_builder.py
 - core/category_suppression.py
 - core/diagnostics_engine.py
+- core/privacy_coverage.py
+- core/privacy_coverage_model.py
+- core/privacy_coverage_solver.py
+- core/privacy_coverage_verifier.py
 - core/privacy_validator.py
 - core/report_generator.py
 - core/dimensional_analyzer.py
@@ -1170,6 +1174,75 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   accuracy_first consent, which is a per-run dialog rather than a checkbox).
   Only non-identifying form preferences such as modes, column selectors,
   toggles, and dimension selections are restored.
+
+### core/privacy_coverage.py
+
+Purpose: Construct the Candidate Universe of Publication Units for Maximum
+Safe Coverage share analysis.
+
+- Builds Publication Units from share categories and required governed metrics
+  after existing structural category suppression.
+- Filters ineligible units with safe aggregate reason codes only.
+- Does not optimize weights, authorize client sinks, or decide releases.
+- Solver and verifier Modules consume the units produced here.
+- The Candidate Universe stays fixed during optimization.
+
+### core/privacy_coverage_model.py
+
+Purpose: Internal sparse MILP model compiler for Maximum Safe Coverage stages.
+
+- `compile_coverage_model` builds Stage-1 variables and one CSC constraint
+  matrix per milp call path.
+- One normalized mean-weight variable `b[u,m]` per Publication Unit and metric
+  replaces repeated dense peer-denominator expressions
+  (`b = sum_p f[u,m,p] * w[p]` with normalized shares `f`).
+- Primary cap rows and secondary witness rows carry at most three variable
+  coefficients. Citi overlay rows reuse the same `b`.
+- Conservative presolve removes dominated applicable rules. For merchant spend,
+  `4/35` removes `5/25`, `6/30`, and `7/35`; `10/40` is retained because neither
+  `4/35` nor `10/40` dominates the other.
+- Structural witness classification uses exact interval analysis over the
+  weight box: always-true, uncertain, or impossible. Always-true and impossible
+  witnesses are not created as variables.
+- Stage matrices extend Stage 1 with distortion variables, then neutral-distance
+  variables. Stage 4 prepares release-mask binary blocks of at most 16 release
+  variables with coefficients `2^15` through `2^0`.
+- `CoverageModelStatistics` exposes safe aggregate counts only (variable, row,
+  and nonzero ceilings for the sanitized 242-unit / 33-peer / 3-metric fixture:
+  variables below 60,000; integer variables below 42,224; nonzeros below
+  1,350,000; cap and witness rows at most four nonzeros).
+- Internal Module. Do not export from `core/__init__.py`. SciPy `milp` remains
+  the only solver interface used by the public solver.
+
+### core/privacy_coverage_solver.py
+
+Purpose: Public seam for Maximum Safe Coverage optimization.
+
+- `optimize_safe_coverage` is the external entry point. Public request, result,
+  certificate, CLI, TUI, and YAML contracts stay unchanged by the scale work.
+- Stage 1 maximizes Publication Unit release count without distortion or
+  neutral-distance variables. Certifying mode requires solver status optimal,
+  zero MIP gap, and dual bound equal to the release count.
+- Stage 2 minimizes distortion only after Stage 1 proof. Stage 3 minimizes
+  neutral-weight distance after Stage 2. Stage 4 applies deterministic
+  tie-breaks: binary release blocks, sequential weight minimization, then
+  canonical authorizing-rule derivation by direct policy evaluation (no
+  per-rule solves).
+- Each `milp` call receives one CSC matrix and one `LinearConstraint`.
+- Timeout, nonzero gap, or malformed results fail closed and produce no
+  certificate. A result may be called maximum only after an exact proof.
+- The independent verifier remains the final release gate. The solver returns
+  trusted internal evidence with `verifier_result='not_run'` until verification
+  runs.
+
+### core/privacy_coverage_verifier.py
+
+Purpose: Independent fail-closed verification of Maximum Safe Coverage results.
+
+- Re-evaluates release partition, weight bounds, applicable rules, mandatory
+  overlays, and solver proof facts without trusting solver-internal helpers.
+- Final release gate for certificates and client evidence.
+- Tampered release counts, dual bounds, gaps, weights, or rule maps fail closed.
 
 ### core/validation_runner.py
 

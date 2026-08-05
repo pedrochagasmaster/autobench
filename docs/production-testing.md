@@ -159,6 +159,39 @@ autobench-cli share --csv tests/fixtures/gate_demo.csv --entity Target --metric 
 
 Never use arbitrary user files as a production smoke fixture.
 
+## Maximum Safe Coverage Solver Scale
+
+Validate production-scale `maximize-safe-coverage` with the sanitized
+benchmark tool. The tool accepts a generated sanitized fixture, prints one
+safe JSON object to stdout, and writes no report file by default. The JSON
+includes only safe aggregates (unit, peer, and metric counts; variable, row,
+and nonzero counts; stage durations; peak memory; solver states; release
+count; dual bound; gap; verifier result). It never prints unit keys,
+categories, peer identities, source values, or weights.
+
+```powershell
+uv run python -m tools.benchmark_privacy_coverage_solver
+```
+
+Acceptance limits on the approved Edge Node class:
+
+- Peak resident memory is at most 2 GiB.
+- Stage 1 completes within 10 minutes.
+- The complete solve finishes within 20 minutes.
+
+Local workstation times are diagnostic only. They do not substitute for Edge
+Node acceptance.
+
+Required proof facts for a certificate:
+
+- Solver state is optimal.
+- MIP gap is zero.
+- Dual bound equals the release count.
+- Independent verifier passes.
+
+Any timeout, malformed result, or nonzero gap fails closed and produces no
+certificate.
+
 ## Drift
 
 To compare deployable files in the local tree:
