@@ -1189,7 +1189,7 @@ Safe Coverage share analysis.
 
 ### core/privacy_coverage_model.py
 
-Purpose: Internal sparse MILP model compiler for Maximum Safe Coverage stages.
+Purpose: Internal sparse MILP model compiler for Verified Safe Coverage stages.
 
 - `compile_coverage_model` builds Stage-1 variables and one CSC constraint
   matrix per milp call path.
@@ -1216,33 +1216,27 @@ Purpose: Internal sparse MILP model compiler for Maximum Safe Coverage stages.
 
 ### core/privacy_coverage_solver.py
 
-Purpose: Public seam for Maximum Safe Coverage optimization.
+Purpose: Public seam for the Verified Safe Coverage search.
 
-- `optimize_safe_coverage` is the external entry point. Public request, result,
-  certificate, CLI, TUI, and YAML contracts stay unchanged by the scale work.
-- Stage 1 maximizes Publication Unit release count without distortion or
-  neutral-distance variables. Certifying mode requires solver status optimal,
-  zero MIP gap, and dual bound equal to the release count.
-- Stage 2 minimizes distortion only after Stage 1 proof. Stage 3 minimizes
-  neutral-weight distance after Stage 2. Stage 4 applies deterministic
-  tie-breaks: binary release blocks, sequential weight minimization, then
-  canonical authorizing-rule derivation by direct policy evaluation (no
-  per-rule solves).
-- Each `milp` call receives one CSC matrix and one `LinearConstraint`.
-- Timeout, nonzero gap, or malformed results fail closed and produce no
-  certificate. A result may be called maximum only after an exact proof.
-- The independent verifier remains the final release gate. The solver returns
-  trusted internal evidence with `verifier_result='not_run'` until verification
-  runs.
+- `find_verified_safe_coverage` is the external entry point.
+- A compact HiGHS anchor uses one thread and a fixed 20-node budget.
+- The anchor can return a feasible vector without an optimum proof.
+- A fixed Sobol and coordinate search refines the vector.
+- Direct policy evaluation selects the final release partition.
+- The result contains every unit that passes at the selected weights.
+- The result makes no maximum-coverage claim.
+- The independent verifier remains the final release gate.
+- The search returns `verifier_result='not_run'` until verification runs.
 
 ### core/privacy_coverage_verifier.py
 
-Purpose: Independent fail-closed verification of Maximum Safe Coverage results.
+Purpose: Independent fail-closed verification of Verified Safe Coverage results.
 
-- Re-evaluates release partition, weight bounds, applicable rules, mandatory
-  overlays, and solver proof facts without trusting solver-internal helpers.
+- Re-evaluates the full release partition, weight bounds, applicable rules, and
+  mandatory overlays without using search constraint helpers.
 - Final release gate for certificates and client evidence.
-- Tampered release counts, dual bounds, gaps, weights, or rule maps fail closed.
+- Hidden passing units, unsafe visible units, changed weights, or rule-map
+  changes fail closed.
 
 ### core/validation_runner.py
 
