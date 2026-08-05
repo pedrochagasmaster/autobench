@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import math
 import sys
 import time
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 # Repo root must be on sys.path so ``tests.fixtures`` imports work when this
 # file is executed as a script (``python tools/benchmark_privacy_coverage_solver.py``).
@@ -22,6 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import core.privacy_coverage_highs as coverage_highs  # noqa: E402
 import core.privacy_coverage_solver as coverage_solver  # noqa: E402
 from core.canonical_order import canonical_key  # noqa: E402
 from core.contracts import (  # noqa: E402
@@ -30,6 +32,11 @@ from core.contracts import (  # noqa: E402
     SafeCoverageResult,
 )
 from core.privacy_coverage import candidate_universe_digest  # noqa: E402
+from core.privacy_coverage_highs import (  # noqa: E402
+    HighsCoverageSession,
+    HighsCoverageSolveResult,
+    NeutralMipStartError,
+)
 from core.privacy_coverage_model import (  # noqa: E402
     CoverageModelStatistics,
     CoverageRuleView,
@@ -50,6 +57,35 @@ from tests.fixtures.production_scale_coverage import (  # noqa: E402
 _DIGEST_ZERO = "0" * 64
 _POLICY_VERSION = "v5"
 _POLICY_SOURCE = "docs/control-3-v5.md"
+
+UniverseFactory = Callable[[], Tuple[Tuple[PublicationUnit, ...], Tuple[str, ...], float, float]]
+
+# Fixed JSON key order for deterministic stdout (safe aggregates only).
+_PAYLOAD_KEY_ORDER: Tuple[str, ...] = (
+    "unit_count",
+    "peer_count",
+    "metric_count",
+    "variable_count",
+    "integer_variable_count",
+    "row_count",
+    "nonzero_count",
+    "compile_seconds",
+    "first_incumbent_seconds",
+    "proof_seconds",
+    "stage_durations",
+    "total_solve_seconds",
+    "peak_process_memory_bytes",
+    "solver_state",
+    "solver_states",
+    "release_count",
+    "suppression_count",
+    "mip_primal_bound",
+    "mip_dual_bound",
+    "mip_gap",
+    "node_count",
+    "start_validation",
+    "verifier_result",
+)
 
 
 class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
@@ -97,6 +133,19 @@ def _peak_process_memory_bytes() -> int:
 
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return int(usage.ru_maxrss * 1024)
+
+
+def _json_number(value: Optional[float]) -> Optional[float]:
+    """Return a finite float for JSON, else null."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 def _rule_views() -> Dict[str, CoverageRuleView]:
@@ -176,30 +225,75 @@ def _timed_optimize(
     *,
     min_weight: float,
     max_weight: float,
-) -> Tuple[SafeCoverageResult, Dict[str, float], float]:
-    """Run ``optimize_safe_coverage`` with milp call timing by stage."""
+) -> Tuple[SafeCoverageResult, Dict[str, float], float, Dict[str, Any]]:
+    """Run ``optimize_safe_coverage`` with HiGHS stage-call timing and Stage-1 proof telemetry.
+
+    Observes Stage-1 adapter results by wrapping the private ``_solve_highs_stage``
+    patch point and capturing ``HighsCoverageSession.solve`` / neutral-start build
+    outcomes. Does not change ``optimize_safe_coverage``'s public signature.
+    """
     stage_durations = {
         "stage1": 0.0,
         "stage2": 0.0,
         "stage3": 0.0,
         "stage4": 0.0,
     }
+    stage1_telemetry: Dict[str, Any] = {
+        "first_incumbent_seconds": None,
+        "proof_seconds": None,
+        "mip_primal_bound": None,
+        "node_count": None,
+        "start_validation": None,
+    }
     call_count = 0
-    # ``milp`` is imported into the solver module; patch that binding for timing.
-    original_milp = getattr(coverage_solver, "milp")
-    if not callable(original_milp):
-        raise TypeError("core.privacy_coverage_solver.milp is not callable")
+    # Public path uses ``_solve_highs_stage``; patch that binding for timing.
+    original_solve = getattr(coverage_solver, "_solve_highs_stage")
+    if not callable(original_solve):
+        raise TypeError(
+            "core.privacy_coverage_solver._solve_highs_stage is not callable"
+        )
+    original_session_solve = HighsCoverageSession.solve
+    original_build_start = coverage_highs.build_neutral_mip_start
 
-    def timed_milp(*args: Any, **kwargs: Any) -> Any:
+    def capturing_build_start(*args: Any, **kwargs: Any) -> Any:
+        try:
+            start = original_build_start(*args, **kwargs)
+        except NeutralMipStartError:
+            stage1_telemetry["start_validation"] = "rejected"
+            raise
+        stage1_telemetry["start_validation"] = "accepted"
+        return start
+
+    def timed_highs_stage(*args: Any, **kwargs: Any) -> Any:
         nonlocal call_count
         call_count += 1
         started = time.perf_counter()
+        captured: List[HighsCoverageSolveResult] = []
+
+        def capturing_session_solve(self: HighsCoverageSession) -> HighsCoverageSolveResult:
+            result = original_session_solve(self)
+            if call_count == 1:
+                captured.append(result)
+            return result
+
+        setattr(HighsCoverageSession, "solve", capturing_session_solve)
         try:
-            return original_milp(*args, **kwargs)
+            return original_solve(*args, **kwargs)
         finally:
+            setattr(HighsCoverageSession, "solve", original_session_solve)
             elapsed = time.perf_counter() - started
             if call_count == 1:
                 stage_durations["stage1"] += elapsed
+                stage1_telemetry["proof_seconds"] = elapsed
+                if captured:
+                    adapter = captured[0]
+                    stage1_telemetry["first_incumbent_seconds"] = (
+                        adapter.first_verified_incumbent_time
+                    )
+                    stage1_telemetry["mip_primal_bound"] = _json_number(
+                        adapter.mip_primal_bound
+                    )
+                    stage1_telemetry["node_count"] = int(adapter.node_count)
             elif call_count == 2:
                 stage_durations["stage2"] += elapsed
             elif call_count == 3:
@@ -207,7 +301,8 @@ def _timed_optimize(
             else:
                 stage_durations["stage4"] += elapsed
 
-    setattr(coverage_solver, "milp", timed_milp)
+    setattr(coverage_solver, "_solve_highs_stage", timed_highs_stage)
+    setattr(coverage_highs, "build_neutral_mip_start", capturing_build_start)
     solve_started = time.perf_counter()
     try:
         result = optimize_safe_coverage(
@@ -225,9 +320,11 @@ def _timed_optimize(
             candidate_universe_digest=candidate_universe_digest(universe),
         )
     finally:
-        setattr(coverage_solver, "milp", original_milp)
+        setattr(coverage_solver, "_solve_highs_stage", original_solve)
+        setattr(coverage_highs, "build_neutral_mip_start", original_build_start)
+        setattr(HighsCoverageSession, "solve", original_session_solve)
     total_solve_seconds = time.perf_counter() - solve_started
-    return result, stage_durations, total_solve_seconds
+    return result, stage_durations, total_solve_seconds, stage1_telemetry
 
 
 def _build_payload(
@@ -239,8 +336,9 @@ def _build_payload(
     peak_process_memory_bytes: int,
     result: SafeCoverageResult,
     verifier_result: str,
+    stage1_telemetry: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    return {
+    unordered = {
         "unit_count": stats.unit_count,
         "peer_count": stats.peer_count,
         "metric_count": stats.metric_count,
@@ -249,6 +347,10 @@ def _build_payload(
         "row_count": stats.row_count,
         "nonzero_count": stats.nonzero_count,
         "compile_seconds": compile_seconds,
+        "first_incumbent_seconds": _json_number(
+            stage1_telemetry.get("first_incumbent_seconds")
+        ),
+        "proof_seconds": _json_number(stage1_telemetry.get("proof_seconds")),
         "stage_durations": {
             "stage1": stage_durations["stage1"],
             "stage2": stage_durations["stage2"],
@@ -261,13 +363,21 @@ def _build_payload(
         "solver_states": [result.solver_state],
         "release_count": len(result.release_set),
         "suppression_count": len(result.suppression_set),
-        "mip_dual_bound": result.mip_dual_bound,
-        "mip_gap": result.mip_gap,
+        "mip_primal_bound": stage1_telemetry.get("mip_primal_bound"),
+        "mip_dual_bound": _json_number(result.mip_dual_bound),
+        "mip_gap": _json_number(result.mip_gap),
+        "node_count": stage1_telemetry.get("node_count"),
+        "start_validation": stage1_telemetry.get("start_validation"),
         "verifier_result": verifier_result,
     }
+    return {key: unordered[key] for key in _PAYLOAD_KEY_ORDER}
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    universe_factory: Optional[UniverseFactory] = None,
+) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark Maximum Safe Coverage on the sanitized production-scale fixture."
@@ -281,14 +391,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    universe, peers, min_weight, max_weight = build_production_scale_universe()
+    factory = universe_factory or build_production_scale_universe
+    universe, peers, min_weight, max_weight = factory()
     stats, compile_seconds = _compile_only(
         universe,
         peers,
         min_weight=min_weight,
         max_weight=max_weight,
     )
-    result, stage_durations, total_solve_seconds = _timed_optimize(
+    result, stage_durations, total_solve_seconds, stage1_telemetry = _timed_optimize(
         universe,
         peers,
         min_weight=min_weight,
@@ -310,6 +421,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         peak_process_memory_bytes=peak_memory,
         result=result,
         verifier_result=verifier_result,
+        stage1_telemetry=stage1_telemetry,
     )
     encoded = json.dumps(payload, indent=2)
     print(encoded)
