@@ -573,11 +573,12 @@ GROUP BY
           <li><strong>Dimensions</strong> — selected last. Every dimension you tick adds privacy constraints, so start with the cuts the client actually asked for. If balancing struggles, remove a dimension and rerun (see <a href="#troubleshooting">Troubleshooting</a>).</li>
         </ul>
         <p>
-          The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved
-          and/or fraud columns, with fraud reported in bps by default. For issuer fraud or
-          chargeback runs, <strong>Total must be the clearing-spend amount</strong>: Autobench uses
-          the selected <code>total_col</code> as the concentration basis and requires
-          <code>privacy_basis: clearing_spend</code>. It does not infer or substitute another column.
+          The <strong>Rate</strong> tab asks for a total (denominator) column and approved
+          and/or fraud columns. Fraud is in bps by default. When you select a fraud column,
+          Autobench uses <code>total_col</code> as the clearing-spend basis. The TUI asks you
+          to confirm this selection for each run attempt. A CLI or Python fraud selection
+          confirms the same contract. Autobench validates the numeric structure. It cannot
+          prove the business origin of the column. You must select the correct governed column.
         </p>
         <p>Press <strong>Run Analysis</strong> (<code>Ctrl+R</code>). The log should end with
           <strong>Analysis completed successfully</strong> and the saved report path.</p>

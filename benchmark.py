@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Optional, Dict
 
 # Import core modules
-from core.control3_policy import remediation_hint
 from core.contracts import AnalysisArtifacts, DEFAULT_PRESET_NAME
 from core.privacy_output_policy import is_privacy_publication_authorized
 from core.analysis_run import (
@@ -192,11 +191,6 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
     parser.add_argument('--subset-search-max-tests', type=int, help='Maximum attempts during subset search')
     parser.add_argument('--trigger-subset-on-slack', action='store_true', default=None, help='Trigger subset search if LP uses slack')
     parser.add_argument('--max-cap-slack', type=float, help='Slack sum threshold to trigger subset search')
-    parser.add_argument(
-        '--privacy-basis',
-        choices=['clearing_spend', 'transaction_count', 'transaction_amount'],
-        help='Basis used for Control 3 concentration checks; fraud/chargeback issuer benchmarking requires clearing_spend',
-    )
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     
@@ -728,10 +722,6 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         logger.error(f"Analysis blocked: {e}")
         _finalize_denied_run_logging(logger)
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
-        reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
-        hint = remediation_hint(reason)
-        if hint:
-            print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:
@@ -802,10 +792,6 @@ def run_rate_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         logger.error(f"Analysis blocked: {e}")
         _finalize_denied_run_logging(logger)
         print(f"Analysis blocked: {_format_analysis_failure_message(e)}")
-        reason = e.compliance_summary.get("reason") if isinstance(e.compliance_summary, dict) else None
-        hint = remediation_hint(reason)
-        if hint:
-            print(f"How to resolve: {hint}")
         print(json.dumps(e.compliance_summary, indent=2, default=str))
         return EXIT_FAILURE
     except Exception as e:

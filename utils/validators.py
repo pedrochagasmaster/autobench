@@ -39,13 +39,10 @@ class ConfigValidator:
         'output': dict,
         'optimization': dict,
         'analysis': dict,
-        'control3': dict,
         'runtime': dict,
         'column_mappings': dict,
         'advanced': dict,
     }
-    VALID_PRIVACY_BASES = ['clearing_spend', 'transaction_count', 'transaction_amount']
-    
     VALID_ALGORITHMS = ['linear_programming', 'bayesian', 'hybrid']
     VALID_STRATEGIES = ['greedy', 'random', 'exhaustive']
     VALID_CONSISTENCY_MODES = ['global', 'per_dimension', 'adaptive']
@@ -92,10 +89,6 @@ class ConfigValidator:
         'learning_rate',
         'violation_penalty_weight',
     }
-    VALID_CONTROL3_KEYS = {
-        'privacy_basis',
-    }
-    
     @classmethod
     def validate(cls, config: Dict[str, Any]) -> List[str]:
         """Validate configuration and return list of errors.
@@ -145,9 +138,6 @@ class ConfigValidator:
         if 'analysis' in config:
             errors.extend(cls._validate_analysis(config['analysis']))
 
-        if 'control3' in config:
-            errors.extend(cls._validate_control3(config['control3']))
-
         if 'runtime' in config:
             errors.extend(cls._validate_runtime(config['runtime']))
         
@@ -156,29 +146,6 @@ class ConfigValidator:
         
         return errors
 
-    @classmethod
-    def _validate_control3(cls, control3_config: Dict[str, Any]) -> List[str]:
-        """Validate Control 3 policy evidence settings."""
-        errors: List[str] = []
-        if not isinstance(control3_config, dict):
-            errors.append("control3 must be a dictionary")
-            return errors
-
-        unknown_fields = set(control3_config) - cls.VALID_CONTROL3_KEYS
-        if unknown_fields:
-            errors.append(f"Unknown control3 fields: {', '.join(sorted(unknown_fields))}")
-
-        if 'privacy_basis' in control3_config:
-            basis = control3_config['privacy_basis']
-            if basis is not None and basis not in cls.VALID_PRIVACY_BASES:
-                errors.append(
-                    "control3.privacy_basis must be one of: "
-                    + ", ".join(cls.VALID_PRIVACY_BASES)
-                    + ", or null"
-                )
-
-        return errors
-    
     @classmethod
     def _validate_input(cls, input_config: Dict[str, Any]) -> List[str]:
         """Validate input settings."""

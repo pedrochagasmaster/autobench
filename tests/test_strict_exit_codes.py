@@ -60,7 +60,6 @@ def _share_args(
         report_format=None,
         audit_package=False,
         lean=False,
-        privacy_basis=None,
     )
 
 

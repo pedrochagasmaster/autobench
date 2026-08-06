@@ -632,10 +632,11 @@ automaticamente pelo nome das colunas.
 
 ### 10.10 Política Control 3 e elegibilidade anterior ao Autobench
 
-O único campo aceito em `control3` é `privacy_basis`. Para fraude ou chargeback
-em benchmark de emissores, ele deve ser `clearing_spend`, e a coluna escolhida
-como `total_col` deve conter o valor de clearing spend: o motor usa essa própria
-coluna como base de concentração e não tenta descobrir outra.
+Quando o analista seleciona `fraud_col`, o Autobench usa `total_col` como a base
+de clearing spend. A seleção de fraude na CLI ou em Python confirma esse
+contrato. A TUI pede uma confirmação para cada tentativa de execução. O
+Autobench valida a estrutura numérica. Ele não pode provar a origem de negócio
+da coluna. O analista deve selecionar a coluna governada correta.
 
 As demais decisões de negócio pertencem ao processo de Privacidade/governança
 anterior ao Autobench. Antes de carregar os dados, o analista deve resolver:
@@ -649,13 +650,6 @@ anterior ao Autobench. Antes de carregar os dados, o analista deve resolver:
 Não existem flags, campos de TUI, chaves YAML nem campos Python para declarar
 essas decisões. O Autobench confia na elegibilidade aprovada pelo analista; ele
 não a infere dos dados e não substitui o processo upstream.
-
-Exemplo:
-
-```yaml
-control3:
-  privacy_basis: clearing_spend
-```
 
 ### 10.11 Entrada, memória e desempenho
 

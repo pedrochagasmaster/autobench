@@ -193,7 +193,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
                 compliance_posture='best_effort',
-                privacy_basis='clearing_spend',
             )
             logger = logging.getLogger("test_publication")
             result = run_share_analysis(args, logger)
@@ -242,7 +241,6 @@ class TestValidationAndOutputs(unittest.TestCase):
                 trigger_subset_on_slack=None,
                 max_cap_slack=None,
                 compliance_posture='best_effort',
-                privacy_basis='clearing_spend',
             )
             logger = logging.getLogger("test_publication_rate")
             result = run_rate_analysis(args, logger)
