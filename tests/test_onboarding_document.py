@@ -12,6 +12,8 @@ EXPECTED_PAGES = {
     "presets-config",
     "advanced-optimization",
     "privacy-outputs",
+    "tui-guide",
+    "cli-reference",
     "cli-cookbook",
     "large-data",
     "glossary",
