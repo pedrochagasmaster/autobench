@@ -202,3 +202,36 @@ Do not push a branch.
 
 Do not open a pull request.
 
+## Execution checkpoint
+
+The Plan 005 source and interface work is complete.
+
+Autobench passed 1,016 tests and skipped 38 tests.
+
+The lock and Ruff checks passed.
+
+The sanitized production-scale benchmark returned the same release mask twice.
+
+The exact Getnet benchmark passed all five local quarter gates.
+
+All five searches returned `search_complete`.
+
+All five independent verifiers passed the complete partition.
+
+Release counts were 204, 205, 207, 196, and 205.
+
+Peak working set stayed below 439 MB.
+
+Each quarter completed in less than three minutes.
+
+The accepted Getnet EY hashes stayed unchanged.
+
+The full Getnet candidate is still pending.
+
+The local attempt package has no merchant-level SoW stage result.
+
+The accepted files are filtered outputs and cannot replace that source.
+
+The active work scope is local only.
+
+Do not change this plan to `DONE` before the three isolated EY files exist.

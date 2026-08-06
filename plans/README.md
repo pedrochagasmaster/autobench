@@ -12,7 +12,7 @@ status row when finished.
 | 002 | Add the Maximum Safe Coverage privacy release mode | P0 | L | - | DONE |
 | 003 | Scale the Maximum Safe Coverage solver | P0 | L | 002 | BLOCKED: Getnet 2025Q1 Stage 1 exceeds the 15-minute STOP limit |
 | 004 | Prove Maximum Safe Coverage with direct HiGHS | P0 | L | 003 | BLOCKED: neither exact strategy proves 2025Q1 Stage 1 in 15 minutes |
-| 005 | Replace maximum proof with Verified Safe Coverage | P0 | L | 004 | IN PROGRESS |
+| 005 | Replace maximum proof with Verified Safe Coverage | P0 | L | 004 | IN PROGRESS: five local Getnet quarter gates passed; full feed needs the Edge SoW source stages |
 
 Status values: `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED: <reason>`, or
 `REJECTED: <reason>`.
