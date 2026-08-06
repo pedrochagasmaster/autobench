@@ -122,7 +122,7 @@
     .search-results .result-title { display: block; font-weight: 700; margin: 2px 0; }
     .search-results .result-snippet { display: block; color: var(--muted); font-size: .78rem; line-height: 1.35; }
     .search-empty { padding: 12px; color: var(--muted); font-size: .84rem; }
-    .search-hit { outline: 3px solid var(--accent-3); outline-offset: 4px; border-radius: 4px; transition: outline-color .8s ease-out; }
+    .search-hit { outline: 3px solid var(--accent-3); outline-offset: 4px; border-radius: 4px; background: color-mix(in srgb, var(--accent-3) 18%, transparent); }
     .site-nav { display: grid; gap: 4px; }
     .site-nav a { padding: 9px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem; transition: background-color .12s ease-out, color .12s ease-out; }
     .site-nav a:hover { background: var(--soft); color: var(--ink); }
