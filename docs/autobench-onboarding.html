@@ -1234,13 +1234,13 @@ STORED AS PARQUET;</code></pre>
         <h2>Share analysis in depth</h2>
         <p>Per dimension category, share analysis computes within-entity composition. Peers always exclude the target, and the peer set is iterated in full for every category so denominators stay consistent across the dimension.</p>
         <pre><button class="copy" type="button">Copy</button><code>Target Share (%)       = 100 × (target metric in the category) ÷ (target metric across the whole dimension)
-      Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
-        m_p    privacy multiplier of peer p (from the single weight solve)
-        v_p,c  peer p's metric in this category
-        V_p    peer p's metric across the whole dimension
-      Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
-      BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
-                               (each peer weighted by its governed volume × m_p)</code></pre>
+Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
+  m_p    privacy multiplier of peer p (from the single weight solve)
+  v_p,c  peer p's metric in this category
+  V_p    peer p's metric across the whole dimension
+Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
+BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
+                         (each peer weighted by its governed volume × m_p)</code></pre>
         <p>Read <code>Distance to Peer (pp)</code> in percentage points: positive means the target leans into that category more than the balanced peers do. <code>BIC (%)</code> is a percentile of individual peer shares, not the balanced aggregate: it marks what the strongest peers achieve, so a target can beat the balanced average and still trail BIC.</p>
         <h3>Worked example on the demo CSV</h3>
         <p>Using the demo file from the sidebar (entity column <code>issuer_name</code>, target <code>Target</code>, peers <code>P1</code>–<code>P6</code>), period <code>2024-01</code>, dimension <code>card_type</code>, metric <code>txn_cnt</code>:</p>
@@ -1250,12 +1250,12 @@ STORED AS PARQUET;</code></pre>
           <li><code>Distance to Peer</code> = <strong>+6.41 pp</strong>: the target's book leans toward CREDIT more than the balanced peers' books.</li>
         </ul>
         <pre><button class="copy" type="button">Copy</button><code>autobench-cli share \
-        --csv autobench_demo.csv \
-        --entity Target \
-        --metric txn_cnt \
-        --dimensions card_type \
-        --time-col year_month \
-        --preset compliance_strict</code></pre>
+  --csv autobench_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type \
+  --time-col year_month \
+  --preset compliance_strict</code></pre>
         <div class="callout warn"><strong>Target Share is not market share.</strong> <code>Target Share (%)</code> is within-entity composition: the target's category volume over the target's own total, so its values sum to 100% across a dimension. It says nothing about the target's slice of the market. The Impact sheets use a different statistic — the target's market share within the category, target ÷ (target + re-weighted peers) — to measure what balancing cost. Do not reconcile the two; they answer different questions.</div>
         <h3>Peer-only variant</h3>
         <p>Omit <code>--entity</code> and the share sheets drop <code>Target Share (%)</code> and <code>Distance to Peer (pp)</code>: with no target there is nothing to subtract, and share impact is undefined, so it is skipped. Output filenames use <code>PEER_ONLY</code>, as in <code>benchmark_share_PEER_ONLY_…xlsx</code>. What remains is the balanced market composition itself — Balanced Peer Average and BIC per category. Use this variant for a market-level view when no single client should be separated from the governed peer group.</p>
@@ -1264,14 +1264,14 @@ STORED AS PARQUET;</code></pre>
         <h2>Rate analysis in depth</h2>
         <p>Per category, rate analysis divides sums of a numerator by sums of a denominator. The denominator is always <code>--total-col</code>; the numerator is <code>--approved-col</code> for the approval rate, <code>--fraud-col</code> for the fraud rate.</p>
         <pre><button class="copy" type="button">Copy</button><code>Target Rate (%)        = 100 × N_target,c ÷ D_target,c
-      Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
-                             = a volume-weighted mean of the per-peer rates,
-                               with weights m_p · D_p,c — NOT an equal average
-        N, D   numerator and denominator sums in the category
-      Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
-      BIC (%)                = volume-weighted percentile of the per-peer rates:
-                               0.85 for approval (higher is better),
-                               0.15 for fraud (lower is better)</code></pre>
+Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
+                       = a volume-weighted mean of the per-peer rates,
+                         with weights m_p · D_p,c — NOT an equal average
+  N, D   numerator and denominator sums in the category
+Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
+BIC (%)                = volume-weighted percentile of the per-peer rates:
+                         0.85 for approval (higher is better),
+                         0.15 for fraud (lower is better)</code></pre>
         <p>Give both <code>--approved-col</code> and <code>--fraud-col</code> and you get one <strong>multi-rate run</strong>: a single weight solve on <code>--total-col</code>, then per-type result sheets named <code>{rate_type}_{dimension}</code> — <code>approval_card_type</code>, <code>fraud_card_type</code> — with metadata <code>analysis_type: multi_rate</code> and a default filename of <code>benchmark_multi_rate_…xlsx</code>. The two rate types never get separate weights.</p>
         <h3>Why the balanced rate is not an average of rates</h3>
         <p>Because the balanced rate pools weighted numerators and denominators, big peers dominate it — which is the correct market answer. The demo's approval rates are uniform (92% everywhere), so the point needs a small <strong>illustrative</strong> example that is not from the demo file:</p>
@@ -1289,15 +1289,15 @@ STORED AS PARQUET;</code></pre>
         <h3>Worked example on the demo CSV (fraud, in bps)</h3>
         <p>Period <code>2024-01</code>, category CREDIT, denominator <code>total</code>, numerator <code>fraud</code>: Target 13 ÷ 2,200 = 0.59% ≈ <strong>59 bps</strong>; peers pooled 68 ÷ 12,000 = 0.57% ≈ <strong>57 bps</strong>. The analysis workbook keeps percent; the publication workbook shows the same values ×100 with labels switched from <code>(%)</code> to <code>(bps)</code> — see Reading the outputs below.</p>
         <pre><button class="copy" type="button">Copy</button><code>autobench-cli rate \
-        --csv autobench_demo.csv \
-        --entity Target \
-        --total-col total \
-        --approved-col approved \
-        --fraud-col fraud \
-        --privacy-basis clearing_spend \
-        --dimensions card_type \
-        --time-col year_month \
-        --preset compliance_strict</code></pre>
+  --csv autobench_demo.csv \
+  --entity Target \
+  --total-col total \
+  --approved-col approved \
+  --fraud-col fraud \
+  --privacy-basis clearing_spend \
+  --dimensions card_type \
+  --time-col year_month \
+  --preset compliance_strict</code></pre>
         <div class="callout warn"><strong>Fraud runs carry a basis requirement.</strong> Issuer fraud or chargeback runs are blocked unless <code>--privacy-basis clearing_spend</code> is declared <em>and</em> <code>--total-col</code> actually is the clearing-spend amount. The engine checks the declaration; the analyst must supply the right column — Autobench does not infer or substitute one. On real issuer data, the demo's <code>total</code> column is only a stand-in for the clearing-spend amount. Approval-only runs have no basis requirement.</div>
         <p>In peer-only rate runs the target columns disappear the same way, filenames use <code>PEER_ONLY</code>, and the impact sheets stay meaningful: rate impact compares raw vs balanced peer-group rates, which is defined without a target.</p>
 
@@ -1384,13 +1384,13 @@ STORED AS PARQUET;</code></pre>
         <h2>Análise de share em profundidade</h2>
         <p>Por categoria de dimensão, a análise de share calcula a composição dentro de cada entidade. Os peers sempre excluem o alvo, e o conjunto de peers é percorrido por completo em cada categoria para manter os denominadores consistentes ao longo da dimensão.</p>
         <pre><button class="copy" type="button">Copiar</button><code>Target Share (%)       = 100 × (target metric in the category) ÷ (target metric across the whole dimension)
-      Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
-        m_p    privacy multiplier of peer p (from the single weight solve)
-        v_p,c  peer p's metric in this category
-        V_p    peer p's metric across the whole dimension
-      Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
-      BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
-                               (each peer weighted by its governed volume × m_p)</code></pre>
+Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
+  m_p    privacy multiplier of peer p (from the single weight solve)
+  v_p,c  peer p's metric in this category
+  V_p    peer p's metric across the whole dimension
+Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
+BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
+                         (each peer weighted by its governed volume × m_p)</code></pre>
         <p>Leia <code>Distance to Peer (pp)</code> em pontos percentuais: positivo significa que o alvo pende para aquela categoria mais do que os peers balanceados. <code>BIC (%)</code> é um percentil dos shares individuais dos peers, não o agregado balanceado: ele marca o que os peers mais fortes alcançam, então um alvo pode superar a média balanceada e ainda ficar atrás do BIC.</p>
         <h3>Exemplo resolvido no CSV de demonstração</h3>
         <p>Usando o arquivo de demonstração da barra lateral (coluna de entidade <code>issuer_name</code>, alvo <code>Target</code>, peers <code>P1</code>–<code>P6</code>), período <code>2024-01</code>, dimensão <code>card_type</code>, métrica <code>txn_cnt</code>:</p>
@@ -1400,12 +1400,12 @@ STORED AS PARQUET;</code></pre>
           <li><code>Distance to Peer</code> = <strong>+6,41 pp</strong>: a carteira do alvo pende para CREDIT mais do que as carteiras balanceadas dos peers.</li>
         </ul>
         <pre><button class="copy" type="button">Copiar</button><code>autobench-cli share \
-        --csv autobench_demo.csv \
-        --entity Target \
-        --metric txn_cnt \
-        --dimensions card_type \
-        --time-col year_month \
-        --preset compliance_strict</code></pre>
+  --csv autobench_demo.csv \
+  --entity Target \
+  --metric txn_cnt \
+  --dimensions card_type \
+  --time-col year_month \
+  --preset compliance_strict</code></pre>
         <div class="callout warn"><strong>Target Share não é market share.</strong> <code>Target Share (%)</code> é composição dentro da entidade: o volume da categoria do alvo sobre o total do próprio alvo, então seus valores somam 100% ao longo de uma dimensão. Ele nada diz sobre a fatia de mercado do alvo. As abas de Impact usam uma estatística diferente — o market share do alvo dentro da categoria, alvo ÷ (alvo + peers reponderados) — para medir o que o balanceamento custou. Não reconcilie as duas; elas respondem a perguntas diferentes.</div>
         <h3>Variante peer-only</h3>
         <p>Omita <code>--entity</code> e as abas de share perdem <code>Target Share (%)</code> e <code>Distance to Peer (pp)</code>: sem alvo não há o que subtrair, e o impacto de share é indefinido, então é pulado. Os nomes de arquivo usam <code>PEER_ONLY</code>, como em <code>benchmark_share_PEER_ONLY_…xlsx</code>. O que resta é a própria composição balanceada de mercado — Balanced Peer Average e BIC por categoria. Use essa variante para uma visão de mercado quando nenhum cliente deve ser separado do grupo governado de peers.</p>
@@ -1414,14 +1414,14 @@ STORED AS PARQUET;</code></pre>
         <h2>Análise de rate em profundidade</h2>
         <p>Por categoria, a análise de rate divide somas de um numerador por somas de um denominador. O denominador é sempre <code>--total-col</code>; o numerador é <code>--approved-col</code> para a taxa de aprovação e <code>--fraud-col</code> para a taxa de fraude.</p>
         <pre><button class="copy" type="button">Copiar</button><code>Target Rate (%)        = 100 × N_target,c ÷ D_target,c
-      Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
-                             = a volume-weighted mean of the per-peer rates,
-                               with weights m_p · D_p,c — NOT an equal average
-        N, D   numerator and denominator sums in the category
-      Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
-      BIC (%)                = volume-weighted percentile of the per-peer rates:
-                               0.85 for approval (higher is better),
-                               0.15 for fraud (lower is better)</code></pre>
+Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
+                       = a volume-weighted mean of the per-peer rates,
+                         with weights m_p · D_p,c — NOT an equal average
+  N, D   numerator and denominator sums in the category
+Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
+BIC (%)                = volume-weighted percentile of the per-peer rates:
+                         0.85 for approval (higher is better),
+                         0.15 for fraud (lower is better)</code></pre>
         <p>Informe <code>--approved-col</code> e <code>--fraud-col</code> juntos e você obtém uma <strong>execução multi-rate</strong>: uma única resolução de pesos sobre <code>--total-col</code> e depois abas de resultado por tipo nomeadas <code>{rate_type}_{dimension}</code> — <code>approval_card_type</code>, <code>fraud_card_type</code> — com metadado <code>analysis_type: multi_rate</code> e nome de arquivo padrão <code>benchmark_multi_rate_…xlsx</code>. Os dois tipos de rate nunca recebem pesos separados.</p>
         <h3>Por que o rate balanceado não é uma média de taxas</h3>
         <p>Como o rate balanceado agrega numeradores e denominadores ponderados, os peers grandes o dominam — e essa é a resposta correta de mercado. As taxas de aprovação da demo são uniformes (92% em toda parte), então o ponto pede um pequeno exemplo <strong>ilustrativo</strong>, que não vem do arquivo de demonstração:</p>
@@ -1439,15 +1439,15 @@ STORED AS PARQUET;</code></pre>
         <h3>Exemplo resolvido no CSV de demonstração (fraude, em bps)</h3>
         <p>Período <code>2024-01</code>, categoria CREDIT, denominador <code>total</code>, numerador <code>fraud</code>: Target 13 ÷ 2.200 = 0,59% ≈ <strong>59 bps</strong>; peers agregados 68 ÷ 12.000 = 0,57% ≈ <strong>57 bps</strong>. O workbook de analysis mantém porcentagem; o workbook de publication mostra os mesmos valores ×100 com os rótulos trocados de <code>(%)</code> para <code>(bps)</code> — veja Lendo as saídas abaixo.</p>
         <pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate \
-        --csv autobench_demo.csv \
-        --entity Target \
-        --total-col total \
-        --approved-col approved \
-        --fraud-col fraud \
-        --privacy-basis clearing_spend \
-        --dimensions card_type \
-        --time-col year_month \
-        --preset compliance_strict</code></pre>
+  --csv autobench_demo.csv \
+  --entity Target \
+  --total-col total \
+  --approved-col approved \
+  --fraud-col fraud \
+  --privacy-basis clearing_spend \
+  --dimensions card_type \
+  --time-col year_month \
+  --preset compliance_strict</code></pre>
         <div class="callout warn"><strong>Execuções de fraude exigem uma base.</strong> Execuções de fraude ou chargeback de emissor são bloqueadas, a menos que <code>--privacy-basis clearing_spend</code> seja declarado <em>e</em> <code>--total-col</code> seja de fato o valor de clearing spend. O engine verifica a declaração; o analista deve fornecer a coluna certa — o Autobench não infere nem substitui outra coluna. Em dados reais de emissor, a coluna <code>total</code> da demo é apenas um substituto didático do valor de clearing spend. Execuções somente de aprovação não exigem base.</div>
         <p>Em execuções de rate peer-only, as colunas do alvo desaparecem da mesma forma, os nomes de arquivo usam <code>PEER_ONLY</code> e as abas de impacto continuam significativas: o impacto de rate compara taxas brutas vs balanceadas do grupo de peers, o que é definido sem um alvo.</p>
 
@@ -2954,8 +2954,8 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <h2>How to read this page</h2>
         <p>One run resolves configuration as <strong>internal defaults → preset (<code>--preset</code>) → custom YAML (<code>--config</code>) → CLI flags</strong>. A CLI flag always overrides the preset and the YAML file; it never overrides privacy enforcement. Boolean pairs such as <code>--validate-input</code>/<code>--no-validate-input</code> share one row, default form first. The last column names the TUI equivalent; “CLI only” means no TUI widget exists. The engine behavior behind the optimization flags is documented in <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a>; the policy boundary behind the declaration flags is in <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacy &amp; Outputs</a>.</p>
         <pre><button class="copy" type="button">Copy</button><code>autobench-cli --version      # tool version, Python, platform
-      autobench-cli                # no command: full help, exit 0
-      autobench-cli share --help   # flags of one subcommand</code></pre>
+autobench-cli                # no command: full help, exit 0
+autobench-cli share --help   # flags of one subcommand</code></pre>
 
         <h2>Subcommands at a glance</h2>
         <div class="table-wrap"><table>
@@ -3128,8 +3128,8 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <h2>Como ler esta página</h2>
         <p>Cada execução resolve a configuração como <strong>defaults internos → preset (<code>--preset</code>) → YAML customizado (<code>--config</code>) → flags da CLI</strong>. Uma flag da CLI sempre sobrescreve o preset e o YAML; ela nunca sobrescreve a aplicação de privacidade. Pares booleanos como <code>--validate-input</code>/<code>--no-validate-input</code> dividem uma linha, com a forma padrão primeiro. A última coluna nomeia o equivalente no TUI; “somente CLI” significa que não existe widget no TUI. O comportamento do engine por trás das flags de otimização está documentado em <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a>; a fronteira de política por trás das declarações está em <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacidade e saídas</a>.</p>
         <pre><button class="copy" type="button">Copiar</button><code>autobench-cli --version      # versão da ferramenta, Python, plataforma
-      autobench-cli                # sem comando: ajuda completa, saída 0
-      autobench-cli share --help   # flags de um subcomando</code></pre>
+autobench-cli                # sem comando: ajuda completa, saída 0
+autobench-cli share --help   # flags de um subcomando</code></pre>
 
         <h2>Visão geral dos subcomandos</h2>
         <div class="table-wrap"><table>
