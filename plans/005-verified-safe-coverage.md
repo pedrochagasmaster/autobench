@@ -212,23 +212,33 @@ The lock and Ruff checks passed.
 
 The sanitized production-scale benchmark returned the same release mask twice.
 
-The exact Getnet benchmark passed all five local quarter gates.
+The Getnet adapter now fits amount only.
+
+Transactions and establishments use the amount-selected weights.
+
+They do not control the Getnet release decision.
+
+The exact Getnet benchmark passed all five revised local quarter gates.
 
 All five searches returned `search_complete`.
 
 All five independent verifiers passed the complete partition.
 
-Release counts were 204, 205, 207, 196, and 205.
+Release counts were 224, 235, 233, 238, and 229.
 
-Peak working set stayed below 439 MB.
+Peak working set stayed below 255 MB.
 
-Each quarter completed in less than three minutes.
+Each quarter completed in less than one minute.
 
 The accepted Getnet EY hashes stayed unchanged.
 
 The full Getnet candidate is still pending.
 
-The local attempt package has no merchant-level SoW stage result.
+The local attempt-02 package stops after the benchmark input.
+
+The local retry09 package has aggregate SoW output and Edge table lineage.
+
+It has no peer-level merchant-stage row export.
 
 The accepted files are filtered outputs and cannot replace that source.
 
