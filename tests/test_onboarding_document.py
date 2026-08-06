@@ -9,6 +9,7 @@ EXPECTED_PAGES = {
     "onboarding",
     "setup-support",
     "faq",
+    "share-vs-rate",
     "presets-config",
     "advanced-optimization",
     "privacy-outputs",

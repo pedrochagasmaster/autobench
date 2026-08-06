@@ -289,6 +289,7 @@
         <a href="#onboarding" data-page-link="onboarding" data-label-en="Onboarding" data-label-pt="Onboarding">Onboarding</a>
         <a href="#setup-support" data-page-link="setup-support" data-label-en="Setup & Support" data-label-pt="Acesso e suporte">Setup & Support</a>
         <a href="#faq" data-page-link="faq" data-label-en="FAQ" data-label-pt="Perguntas frequentes">FAQ</a>
+        <a href="#share-vs-rate" data-page-link="share-vs-rate" data-label-en="Share vs Rate" data-label-pt="Share vs Rate">Share vs Rate</a>
         <a href="#presets-config" data-page-link="presets-config" data-label-en="Presets & Config" data-label-pt="Presets e config.">Presets & Config</a>
         <a href="#advanced-optimization" data-page-link="advanced-optimization" data-label-en="Advanced Parameters" data-label-pt="Parâmetros avançados">Advanced Parameters</a>
         <a href="#privacy-outputs" data-page-link="privacy-outputs" data-label-en="Privacy & Outputs" data-label-pt="Privacidade e saídas">Privacy & Outputs</a>
@@ -1205,6 +1206,307 @@ STORED AS PARQUET;</code></pre>
           <p>Não recupere um valor suprimido nos dados de origem, diagnósticos ou outra saída.</p>
           <p>A saída <code>accuracy_first</code> serve para diagnóstico interno. Ela não pode ser publicada.</p>
         </details>
+      </article>
+
+      <article class="doc-page" data-page="share-vs-rate" data-lang="en" hidden>
+        <p class="eyebrow">Context page · analysis concepts</p>
+        <h1>Share vs Rate</h1>
+        <p class="lede">Autobench has two analysis modes, and they are not two tools: they are two questions asked of the same privacy-balanced engine. Share analysis measures <strong>composition</strong> — how a volume metric is distributed across the categories of a dimension. Rate analysis measures <strong>quality</strong> — a numerator per unit of denominator, such as approvals or fraud per transaction. This page is the deep dive behind the two teaser cards in <a href="#onboarding" data-page-link="onboarding">Onboarding</a>: what each mode computes, the exact math, what they share, where they differ, and the traps analysts fall into.</p>
+
+        <h2>One engine, two questions</h2>
+        <p>Both modes run the same orchestration: validate the input, solve <strong>one set of privacy-constrained peer weights</strong> on a single volume column, apply the resulting per-peer multipliers <code>m_p</code> everywhere, then write governed outputs. There is exactly one weight solve per run — never one per secondary metric, and never one per rate numerator. What the mode chooses is the question the numbers answer and which column carries the privacy weight: share solves weights on <code>--metric</code>, rate solves them on <code>--total-col</code>.</p>
+        <div class="card-grid">
+          <div class="card"><h3>Share asks</h3><p>“How is my book distributed across the categories of this dimension, compared with the balanced peers’ books?” A mix question: CREDIT vs DEBIT, CNP vs CP.</p></div>
+          <div class="card"><h3>Rate asks</h3><p>“How good or how risky is each unit of volume in this category, compared with the balanced peers?” A performance question: approval rate, fraud rate.</p></div>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Aspect</th><th>Share</th><th>Rate</th></tr></thead>
+          <tbody>
+            <tr><td>Question answered</td><td>Composition of each book across categories.</td><td>Performance per unit of volume inside a category.</td></tr>
+            <tr><td>Required columns</td><td><code>--metric</code> (volume); optional secondary metrics.</td><td><code>--total-col</code> (denominator) plus <code>--approved-col</code> and/or <code>--fraud-col</code> (numerators).</td></tr>
+            <tr><td>Weight metric</td><td><code>--metric</code>.</td><td><code>--total-col</code> — the weight solve never looks at numerators.</td></tr>
+            <tr><td>Result columns per category</td><td><code>Target Share (%)</code>, <code>Balanced Peer Average (%)</code>, <code>BIC (%)</code>, <code>Distance to Peer (pp)</code>.</td><td><code>Target Rate (%)</code>, <code>Balanced Peer Average (%)</code>, <code>BIC (%)</code>, <code>Distance to Peer (pp)</code>.</td></tr>
+            <tr><td>Best-in-class direction</td><td>Percentile 0.85 of peer shares — higher is better.</td><td>Approval: 0.85, higher is better. Fraud: 0.15, lower is better — the engine inverts automatically.</td></tr>
+            <tr><td>Publication units</td><td>Percent.</td><td>Percent for approval; fraud is converted to basis points (bps) by default.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Share analysis in depth</h2>
+        <p>Per dimension category, share analysis computes within-entity composition. Peers always exclude the target, and the peer set is iterated in full for every category so denominators stay consistent across the dimension.</p>
+        <pre><button class="copy" type="button">Copy</button><code>Target Share (%)       = 100 × (target metric in the category) ÷ (target metric across the whole dimension)
+      Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
+        m_p    privacy multiplier of peer p (from the single weight solve)
+        v_p,c  peer p's metric in this category
+        V_p    peer p's metric across the whole dimension
+      Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
+      BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
+                               (each peer weighted by its governed volume × m_p)</code></pre>
+        <p>Read <code>Distance to Peer (pp)</code> in percentage points: positive means the target leans into that category more than the balanced peers do. <code>BIC (%)</code> is a percentile of individual peer shares, not the balanced aggregate: it marks what the strongest peers achieve, so a target can beat the balanced average and still trail BIC.</p>
+        <h3>Worked example on the demo CSV</h3>
+        <p>Using the demo file from the sidebar (entity column <code>issuer_name</code>, target <code>Target</code>, peers <code>P1</code>–<code>P6</code>), period <code>2024-01</code>, dimension <code>card_type</code>, metric <code>txn_cnt</code>:</p>
+        <ul>
+          <li>Target has <code>txn_cnt</code> CREDIT = 220, DEBIT = 170, total 390 → <code>Target Share (CREDIT)</code> = 220 ÷ 390 = <strong>56.41%</strong>.</li>
+          <li>Peers pooled: CREDIT 1,200 of 2,400 total → <code>Balanced Peer Average</code> = <strong>50.00%</strong>. The demo is deliberately even, so the multipliers stay at 1.0 and the weighted result equals the unweighted one.</li>
+          <li><code>Distance to Peer</code> = <strong>+6.41 pp</strong>: the target's book leans toward CREDIT more than the balanced peers' books.</li>
+        </ul>
+        <pre><button class="copy" type="button">Copy</button><code>autobench-cli share \
+        --csv autobench_demo.csv \
+        --entity Target \
+        --metric txn_cnt \
+        --dimensions card_type \
+        --time-col year_month \
+        --preset compliance_strict</code></pre>
+        <div class="callout warn"><strong>Target Share is not market share.</strong> <code>Target Share (%)</code> is within-entity composition: the target's category volume over the target's own total, so its values sum to 100% across a dimension. It says nothing about the target's slice of the market. The Impact sheets use a different statistic — the target's market share within the category, target ÷ (target + re-weighted peers) — to measure what balancing cost. Do not reconcile the two; they answer different questions.</div>
+        <h3>Peer-only variant</h3>
+        <p>Omit <code>--entity</code> and the share sheets drop <code>Target Share (%)</code> and <code>Distance to Peer (pp)</code>: with no target there is nothing to subtract, and share impact is undefined, so it is skipped. Output filenames use <code>PEER_ONLY</code>, as in <code>benchmark_share_PEER_ONLY_…xlsx</code>. What remains is the balanced market composition itself — Balanced Peer Average and BIC per category. Use this variant for a market-level view when no single client should be separated from the governed peer group.</p>
+        <p>With a time column, every result row is computed per period key and once more over all periods (the <code>General</code> rows): the same formulas apply, scoped to each period's sums.</p>
+
+        <h2>Rate analysis in depth</h2>
+        <p>Per category, rate analysis divides sums of a numerator by sums of a denominator. The denominator is always <code>--total-col</code>; the numerator is <code>--approved-col</code> for the approval rate, <code>--fraud-col</code> for the fraud rate.</p>
+        <pre><button class="copy" type="button">Copy</button><code>Target Rate (%)        = 100 × N_target,c ÷ D_target,c
+      Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
+                             = a volume-weighted mean of the per-peer rates,
+                               with weights m_p · D_p,c — NOT an equal average
+        N, D   numerator and denominator sums in the category
+      Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
+      BIC (%)                = volume-weighted percentile of the per-peer rates:
+                               0.85 for approval (higher is better),
+                               0.15 for fraud (lower is better)</code></pre>
+        <p>Give both <code>--approved-col</code> and <code>--fraud-col</code> and you get one <strong>multi-rate run</strong>: a single weight solve on <code>--total-col</code>, then per-type result sheets named <code>{rate_type}_{dimension}</code> — <code>approval_card_type</code>, <code>fraud_card_type</code> — with metadata <code>analysis_type: multi_rate</code> and a default filename of <code>benchmark_multi_rate_…xlsx</code>. The two rate types never get separate weights.</p>
+        <h3>Why the balanced rate is not an average of rates</h3>
+        <p>Because the balanced rate pools weighted numerators and denominators, big peers dominate it — which is the correct market answer. The demo's approval rates are uniform (92% everywhere), so the point needs a small <strong>illustrative</strong> example that is not from the demo file:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Illustrative peer</th><th>Total</th><th>Approved</th><th>Per-peer rate</th></tr></thead>
+          <tbody>
+            <tr><td>A</td><td>9,000</td><td>8,730</td><td>97.0%</td></tr>
+            <tr><td>B</td><td>800</td><td>560</td><td>70.0%</td></tr>
+            <tr><td>C</td><td>200</td><td>100</td><td>50.0%</td></tr>
+            <tr><td>Naive average of rates</td><td>—</td><td>—</td><td>72.3%</td></tr>
+            <tr><td>Pooled / weighted rate</td><td>10,000</td><td>9,390</td><td>93.9%</td></tr>
+          </tbody>
+        </table></div>
+        <p>The naive average lets two tiny peers drag the benchmark to 72.3%; the pooled rate of 93.9% reflects where the volume actually is. Autobench always pools — with multipliers applied to both numerator and denominator — so a balanced rate moves only when the weighted volume mix moves.</p>
+        <h3>Worked example on the demo CSV (fraud, in bps)</h3>
+        <p>Period <code>2024-01</code>, category CREDIT, denominator <code>total</code>, numerator <code>fraud</code>: Target 13 ÷ 2,200 = 0.59% ≈ <strong>59 bps</strong>; peers pooled 68 ÷ 12,000 = 0.57% ≈ <strong>57 bps</strong>. The analysis workbook keeps percent; the publication workbook shows the same values ×100 with labels switched from <code>(%)</code> to <code>(bps)</code> — see Reading the outputs below.</p>
+        <pre><button class="copy" type="button">Copy</button><code>autobench-cli rate \
+        --csv autobench_demo.csv \
+        --entity Target \
+        --total-col total \
+        --approved-col approved \
+        --fraud-col fraud \
+        --privacy-basis clearing_spend \
+        --dimensions card_type \
+        --time-col year_month \
+        --preset compliance_strict</code></pre>
+        <div class="callout warn"><strong>Fraud runs carry a basis requirement.</strong> Issuer fraud or chargeback runs are blocked unless <code>--privacy-basis clearing_spend</code> is declared <em>and</em> <code>--total-col</code> actually is the clearing-spend amount. The engine checks the declaration; the analyst must supply the right column — Autobench does not infer or substitute one. On real issuer data, the demo's <code>total</code> column is only a stand-in for the clearing-spend amount. Approval-only runs have no basis requirement.</div>
+        <p>In peer-only rate runs the target columns disappear the same way, filenames use <code>PEER_ONLY</code>, and the impact sheets stay meaningful: rate impact compares raw vs balanced peer-group rates, which is defined without a target.</p>
+
+        <h2>What both modes share</h2>
+        <ul>
+          <li><strong>One weight solve.</strong> A single privacy-weight solve per run, computed on one volume column (<code>--metric</code> or <code>--total-col</code>). The multipliers are then applied to secondary metrics and to rate numerators <em>and</em> denominators alike.</li>
+          <li><strong>One fallback chain.</strong> Both modes attempt one global weight vector first and walk the same fallback chain when it struggles — see <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a> for the full chain. When a run is configured for per-dimension weights instead of one consistent vector, the <code>Balanced Peer Average</code> for those cuts is the pooled unweighted peer ratio; the <code>Weight Methods</code> sheet records which method each cut actually used.</li>
+          <li><strong>One suppression vocabulary.</strong> Categories, periods, or metrics that fail the minimum-participant boundary are omitted from every saved artifact. An omitted value means <strong>unavailable</strong>, never zero — see <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacy &amp; Outputs</a>.</li>
+          <li><strong>One preset system and one output contract.</strong> Presets, the <code>analysis</code>/<code>publication</code>/<code>both</code> formats, the balanced CSV, and the audit artifacts behave identically in both modes.</li>
+        </ul>
+
+        <h2>Where they differ in privacy</h2>
+        <p>Concentration caps are always evaluated on the weight metric — never on a numerator. That single choice is what the mode changes about privacy:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Privacy aspect</th><th>Share</th><th>Rate</th></tr></thead>
+          <tbody>
+            <tr><td>Concentration basis</td><td><code>--metric</code> volumes.</td><td><code>--total-col</code> volumes. Approval and fraud numerators play no role in the caps.</td></tr>
+            <tr><td>Extra basis rule</td><td>None.</td><td>Issuer fraud/chargeback: <code>--privacy-basis clearing_spend</code> required, with the denominator on the clearing-spend amount. Approval-only runs need no basis.</td></tr>
+            <tr><td>Independent suppression</td><td>An unsafe secondary-metric cell is omitted while the safe primary row stays.</td><td>Approval and fraud outputs can omit a category independently; fraud suppression follows the governed <code>--total-col</code>, so a sparse fraud numerator alone never suppresses a category.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout warn"><strong>No mode or column choice relaxes enforcement.</strong> The numeric privacy rules, the minimum-participant boundary, the verdict, and the publication gate are evaluated the same way regardless of mode. Pick the mode that answers the business question — never as a route around a suppression.</div>
+
+        <h2>Reading the outputs</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Artifact</th><th>Share mode</th><th>Rate mode</th></tr></thead>
+          <tbody>
+            <tr><td>Result sheets (analysis workbook)</td><td>One sheet per dimension, e.g. <code>card_type</code>.</td><td>One sheet per rate type × dimension, e.g. <code>approval_card_type</code>, <code>fraud_card_type</code>.</td></tr>
+            <tr><td>Standard sheets</td><td colspan="2"><code>Summary</code>, <code>Peer Weights</code>, <code>Weight Methods</code>, <code>Privacy Validation</code>, <code>Data Quality</code>, <code>Metadata</code> — identical in both modes.</td></tr>
+            <tr><td>Optional sheets</td><td colspan="2"><code>Impact Detail</code> / <code>Impact Summary</code>, <code>Secondary Metrics</code>, <code>Rank Changes</code>, <code>Subset Search</code>.</td></tr>
+            <tr><td>Publication workbook</td><td>Executive Summary plus result sheets and the diagnostic allow-list (<code>Impact Summary</code>, <code>Peer Weights</code>, <code>Privacy Validation</code>, <code>Rank Changes</code>, <code>Preset Comparison</code>).</td><td>Same shape, plus the bps conversion on fraud sheets. Publication never carries <code>Weight Methods</code>, <code>Subset Search</code>, <code>Metadata</code>, or <code>Secondary Metrics</code>.</td></tr>
+            <tr><td>Balanced CSV</td><td><code>Balanced_{metric}</code> columns for the primary and each secondary metric (weighted sums).</td><td>Weighted sums for the total and each numerator column; <code>--include-calculated</code> adds <code>Raw_</code>/<code>Balanced_</code> rate columns derived as balanced numerator ÷ balanced total × 100, plus impact columns.</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Fraud in bps</strong> (default on, rate mode only) is a display conversion applied in the <em>publication</em> workbook only: eligible rate columns are multiplied by 100 and labels switch from <code>(%)</code> to <code>(bps)</code>. In a fraud-only run every rate column converts; in a multi-rate run only columns whose names contain <code>fraud</code>. The analysis workbook and all internal math stay in percent, so the two artifacts never disagree about the underlying number — only about the unit on the label.</p>
+        <p>Whichever mode you run, open <code>Summary</code> first — validation result, posture, preset, and compliance verdict — then the result sheets, then <code>Weight Methods</code> for which solver path each cut used. The full sheet-by-sheet tour is in <a href="#onboarding" data-page-link="onboarding">Onboarding</a> and <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacy &amp; Outputs</a>.</p>
+
+        <h2>Choosing between them</h2>
+        <ul>
+          <li><strong>Composition or mix question</strong> (“are we over-indexed on CNP?”) → share analysis.</li>
+          <li><strong>Performance-quality question</strong> (“is our approval rate behind the market on credit?”) → rate analysis.</li>
+          <li><strong>Both</strong> when the deliverable needs mix <em>and</em> quality: two runs over the same CSV, each with its own weight solve on its own volume column.</li>
+        </ul>
+        <p>Inside rate analysis, the denominator is a business choice with privacy consequences, because weights are solved on it: <code>txn_cnt</code> measures quality per transaction, an amount column measures quality per unit of spend. State which one the deliverable assumes before running.</p>
+        <div class="callout good"><strong>Practical rule.</strong> Name the business question in one sentence first. If it contains “mix”, “distribution”, or “composition”, run share; if it contains “rate”, “quality”, or “risk per unit”, run rate. If it contains both, plan two runs — the modes share an engine, not an answer.</div>
+
+        <h2>Traps</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Trap</th><th>Why it misleads</th><th>What to do instead</th></tr></thead>
+          <tbody>
+            <tr><td>Averaging per-peer rates equally</td><td>An equal average lets thin peers dominate the benchmark (72.3% vs the pooled 93.9% in the illustrative table).</td><td>Trust the <code>Balanced Peer Average</code>: it pools weighted numerators and denominators, which is the volume-weighted mean of peer rates.</td></tr>
+            <tr><td>Reading <code>Target Share (%)</code> as market share</td><td>It is within-entity composition and sums to 100% across a dimension; it cannot measure market position.</td><td>For market-share-within-category, read the Impact sheets — a different statistic (target ÷ (target + re-weighted peers)) that exists to measure balancing distortion.</td></tr>
+            <tr><td>Choosing the denominator casually</td><td><code>txn_cnt</code> and an amount column answer different questions, and the weights are solved on whichever you pick.</td><td>Decide per-transaction vs per-spend up front; for issuer fraud/chargeback the denominator must be the clearing-spend amount with <code>--privacy-basis clearing_spend</code>.</td></tr>
+            <tr><td>Looking for bps in the analysis workbook</td><td>The bps conversion runs only in the publication workbook; analysis sheets stay in percent.</td><td>Compare like with like: percent in analysis, bps in publication — the same number ×100, never a different result.</td></tr>
+            <tr><td>Reading an omitted category as zero</td><td>Suppression is fail-closed omission: the value was unsafe to publish, not measured as nothing.</td><td>Treat gaps as <strong>unavailable</strong> and check <code>Privacy Validation</code>; never fill them with zeros in downstream work.</td></tr>
+            <tr><td>Typing the target entity loosely</td><td>Entity values are case-sensitive: <code>Target</code> and <code>target</code> would be two different entities. An ambiguous typed name aborts the run; an unknown name fails validation.</td><td>Pick the entity from the TUI dropdown, or copy the exact value from the CSV data.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Flag-level detail lives in the <a href="#cli-reference" data-page-link="cli-reference">CLI Reference</a>; the weighting machinery is in <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a>; shared terms are in the <a href="#glossary" data-page-link="glossary">Glossary</a>.</p>
+      </article>
+      <article class="doc-page" data-page="share-vs-rate" data-lang="pt" hidden>
+        <p class="eyebrow">Página de contexto · conceitos de análise</p>
+        <h1>Share vs Rate</h1>
+        <p class="lede">O Autobench tem dois modos de análise, e eles não são duas ferramentas: são duas perguntas feitas ao mesmo engine balanceado por privacidade. A análise de share mede <strong>composição</strong> — como uma métrica de volume se distribui pelas categorias de uma dimensão. A análise de rate mede <strong>qualidade</strong> — um numerador por unidade de denominador, como aprovadas ou fraude por transação. Esta página é o aprofundamento dos dois cartões introdutórios do <a href="#onboarding" data-page-link="onboarding">Onboarding</a>: o que cada modo calcula, a matemática exata, o que eles compartilham, onde diferem e as armadilhas em que os analistas caem.</p>
+
+        <h2>Um engine, duas perguntas</h2>
+        <p>Os dois modos executam a mesma orquestração: validar a entrada, resolver <strong>um único conjunto de pesos de peers com restrições de privacidade</strong> sobre uma única coluna de volume, aplicar os multiplicadores resultantes <code>m_p</code> em tudo e gravar as saídas governadas. Há exatamente uma resolução de pesos por execução — nunca uma por métrica secundária e nunca uma por numerador de rate. O que o modo escolhe é a pergunta que os números respondem e qual coluna carrega o peso de privacidade: share resolve os pesos sobre <code>--metric</code>; rate, sobre <code>--total-col</code>.</p>
+        <div class="card-grid">
+          <div class="card"><h3>Share pergunta</h3><p>“Como a minha carteira se distribui pelas categorias desta dimensão, em comparação com as carteiras balanceadas dos peers?” Uma pergunta de mix: CREDIT vs DEBIT, CNP vs CP.</p></div>
+          <div class="card"><h3>Rate pergunta</h3><p>“Quão boa ou quão arriscada é cada unidade de volume nesta categoria, em comparação com os peers balanceados?” Uma pergunta de desempenho: taxa de aprovação, taxa de fraude.</p></div>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Aspecto</th><th>Share</th><th>Rate</th></tr></thead>
+          <tbody>
+            <tr><td>Pergunta respondida</td><td>Composição de cada carteira pelas categorias.</td><td>Desempenho por unidade de volume dentro de uma categoria.</td></tr>
+            <tr><td>Colunas obrigatórias</td><td><code>--metric</code> (volume); métricas secundárias opcionais.</td><td><code>--total-col</code> (denominador) mais <code>--approved-col</code> e/ou <code>--fraud-col</code> (numeradores).</td></tr>
+            <tr><td>Métrica de peso</td><td><code>--metric</code>.</td><td><code>--total-col</code> — a resolução de pesos nunca olha os numeradores.</td></tr>
+            <tr><td>Colunas de resultado por categoria</td><td><code>Target Share (%)</code>, <code>Balanced Peer Average (%)</code>, <code>BIC (%)</code>, <code>Distance to Peer (pp)</code>.</td><td><code>Target Rate (%)</code>, <code>Balanced Peer Average (%)</code>, <code>BIC (%)</code>, <code>Distance to Peer (pp)</code>.</td></tr>
+            <tr><td>Direção do best-in-class</td><td>Percentil 0,85 dos shares dos peers — quanto maior, melhor.</td><td>Aprovação: 0,85, quanto maior, melhor. Fraude: 0,15, quanto menor, melhor — o engine inverte automaticamente.</td></tr>
+            <tr><td>Unidades em publication</td><td>Porcentagem.</td><td>Porcentagem para aprovação; fraude é convertida para basis points (bps) por padrão.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Análise de share em profundidade</h2>
+        <p>Por categoria de dimensão, a análise de share calcula a composição dentro de cada entidade. Os peers sempre excluem o alvo, e o conjunto de peers é percorrido por completo em cada categoria para manter os denominadores consistentes ao longo da dimensão.</p>
+        <pre><button class="copy" type="button">Copiar</button><code>Target Share (%)       = 100 × (target metric in the category) ÷ (target metric across the whole dimension)
+      Balanced Peer Avg (%)  = 100 × Σ m_p · v_p,c  ÷  Σ m_p · V_p
+        m_p    privacy multiplier of peer p (from the single weight solve)
+        v_p,c  peer p's metric in this category
+        V_p    peer p's metric across the whole dimension
+      Distance to Peer (pp)  = Target Share (%) − Balanced Peer Avg (%)
+      BIC (%)                = volume-weighted 0.85 percentile of the per-peer shares
+                               (each peer weighted by its governed volume × m_p)</code></pre>
+        <p>Leia <code>Distance to Peer (pp)</code> em pontos percentuais: positivo significa que o alvo pende para aquela categoria mais do que os peers balanceados. <code>BIC (%)</code> é um percentil dos shares individuais dos peers, não o agregado balanceado: ele marca o que os peers mais fortes alcançam, então um alvo pode superar a média balanceada e ainda ficar atrás do BIC.</p>
+        <h3>Exemplo resolvido no CSV de demonstração</h3>
+        <p>Usando o arquivo de demonstração da barra lateral (coluna de entidade <code>issuer_name</code>, alvo <code>Target</code>, peers <code>P1</code>–<code>P6</code>), período <code>2024-01</code>, dimensão <code>card_type</code>, métrica <code>txn_cnt</code>:</p>
+        <ul>
+          <li>O Target tem <code>txn_cnt</code> CREDIT = 220, DEBIT = 170, total 390 → <code>Target Share (CREDIT)</code> = 220 ÷ 390 = <strong>56,41%</strong>.</li>
+          <li>Peers agregados: CREDIT 1.200 de 2.400 no total → <code>Balanced Peer Average</code> = <strong>50,00%</strong>. A demo é deliberadamente uniforme, então os multiplicadores ficam em 1,0 e o resultado ponderado é igual ao não ponderado.</li>
+          <li><code>Distance to Peer</code> = <strong>+6,41 pp</strong>: a carteira do alvo pende para CREDIT mais do que as carteiras balanceadas dos peers.</li>
+        </ul>
+        <pre><button class="copy" type="button">Copiar</button><code>autobench-cli share \
+        --csv autobench_demo.csv \
+        --entity Target \
+        --metric txn_cnt \
+        --dimensions card_type \
+        --time-col year_month \
+        --preset compliance_strict</code></pre>
+        <div class="callout warn"><strong>Target Share não é market share.</strong> <code>Target Share (%)</code> é composição dentro da entidade: o volume da categoria do alvo sobre o total do próprio alvo, então seus valores somam 100% ao longo de uma dimensão. Ele nada diz sobre a fatia de mercado do alvo. As abas de Impact usam uma estatística diferente — o market share do alvo dentro da categoria, alvo ÷ (alvo + peers reponderados) — para medir o que o balanceamento custou. Não reconcilie as duas; elas respondem a perguntas diferentes.</div>
+        <h3>Variante peer-only</h3>
+        <p>Omita <code>--entity</code> e as abas de share perdem <code>Target Share (%)</code> e <code>Distance to Peer (pp)</code>: sem alvo não há o que subtrair, e o impacto de share é indefinido, então é pulado. Os nomes de arquivo usam <code>PEER_ONLY</code>, como em <code>benchmark_share_PEER_ONLY_…xlsx</code>. O que resta é a própria composição balanceada de mercado — Balanced Peer Average e BIC por categoria. Use essa variante para uma visão de mercado quando nenhum cliente deve ser separado do grupo governado de peers.</p>
+        <p>Com uma coluna de tempo, cada linha de resultado é calculada por chave de período e mais uma vez sobre todos os períodos (as linhas <code>General</code>): as mesmas fórmulas valem, aplicadas às somas de cada período.</p>
+
+        <h2>Análise de rate em profundidade</h2>
+        <p>Por categoria, a análise de rate divide somas de um numerador por somas de um denominador. O denominador é sempre <code>--total-col</code>; o numerador é <code>--approved-col</code> para a taxa de aprovação e <code>--fraud-col</code> para a taxa de fraude.</p>
+        <pre><button class="copy" type="button">Copiar</button><code>Target Rate (%)        = 100 × N_target,c ÷ D_target,c
+      Balanced Peer Avg (%)  = 100 × Σ m_p · N_p,c  ÷  Σ m_p · D_p,c
+                             = a volume-weighted mean of the per-peer rates,
+                               with weights m_p · D_p,c — NOT an equal average
+        N, D   numerator and denominator sums in the category
+      Distance to Peer (pp)  = Target Rate (%) − Balanced Peer Avg (%)
+      BIC (%)                = volume-weighted percentile of the per-peer rates:
+                               0.85 for approval (higher is better),
+                               0.15 for fraud (lower is better)</code></pre>
+        <p>Informe <code>--approved-col</code> e <code>--fraud-col</code> juntos e você obtém uma <strong>execução multi-rate</strong>: uma única resolução de pesos sobre <code>--total-col</code> e depois abas de resultado por tipo nomeadas <code>{rate_type}_{dimension}</code> — <code>approval_card_type</code>, <code>fraud_card_type</code> — com metadado <code>analysis_type: multi_rate</code> e nome de arquivo padrão <code>benchmark_multi_rate_…xlsx</code>. Os dois tipos de rate nunca recebem pesos separados.</p>
+        <h3>Por que o rate balanceado não é uma média de taxas</h3>
+        <p>Como o rate balanceado agrega numeradores e denominadores ponderados, os peers grandes o dominam — e essa é a resposta correta de mercado. As taxas de aprovação da demo são uniformes (92% em toda parte), então o ponto pede um pequeno exemplo <strong>ilustrativo</strong>, que não vem do arquivo de demonstração:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Peer ilustrativo</th><th>Total</th><th>Aprovadas</th><th>Taxa do peer</th></tr></thead>
+          <tbody>
+            <tr><td>A</td><td>9.000</td><td>8.730</td><td>97,0%</td></tr>
+            <tr><td>B</td><td>800</td><td>560</td><td>70,0%</td></tr>
+            <tr><td>C</td><td>200</td><td>100</td><td>50,0%</td></tr>
+            <tr><td>Média ingênua das taxas</td><td>—</td><td>—</td><td>72,3%</td></tr>
+            <tr><td>Taxa agregada / ponderada</td><td>10.000</td><td>9.390</td><td>93,9%</td></tr>
+          </tbody>
+        </table></div>
+        <p>A média ingênua deixa dois peers minúsculos arrastarem o benchmark para 72,3%; a taxa agregada de 93,9% reflete onde o volume realmente está. O Autobench sempre agrega — com multiplicadores aplicados ao numerador e ao denominador — então um rate balanceado só se move quando o mix ponderado de volume se move.</p>
+        <h3>Exemplo resolvido no CSV de demonstração (fraude, em bps)</h3>
+        <p>Período <code>2024-01</code>, categoria CREDIT, denominador <code>total</code>, numerador <code>fraud</code>: Target 13 ÷ 2.200 = 0,59% ≈ <strong>59 bps</strong>; peers agregados 68 ÷ 12.000 = 0,57% ≈ <strong>57 bps</strong>. O workbook de analysis mantém porcentagem; o workbook de publication mostra os mesmos valores ×100 com os rótulos trocados de <code>(%)</code> para <code>(bps)</code> — veja Lendo as saídas abaixo.</p>
+        <pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate \
+        --csv autobench_demo.csv \
+        --entity Target \
+        --total-col total \
+        --approved-col approved \
+        --fraud-col fraud \
+        --privacy-basis clearing_spend \
+        --dimensions card_type \
+        --time-col year_month \
+        --preset compliance_strict</code></pre>
+        <div class="callout warn"><strong>Execuções de fraude exigem uma base.</strong> Execuções de fraude ou chargeback de emissor são bloqueadas, a menos que <code>--privacy-basis clearing_spend</code> seja declarado <em>e</em> <code>--total-col</code> seja de fato o valor de clearing spend. O engine verifica a declaração; o analista deve fornecer a coluna certa — o Autobench não infere nem substitui outra coluna. Em dados reais de emissor, a coluna <code>total</code> da demo é apenas um substituto didático do valor de clearing spend. Execuções somente de aprovação não exigem base.</div>
+        <p>Em execuções de rate peer-only, as colunas do alvo desaparecem da mesma forma, os nomes de arquivo usam <code>PEER_ONLY</code> e as abas de impacto continuam significativas: o impacto de rate compara taxas brutas vs balanceadas do grupo de peers, o que é definido sem um alvo.</p>
+
+        <h2>O que os dois modos compartilham</h2>
+        <ul>
+          <li><strong>Uma resolução de pesos.</strong> Uma única resolução de pesos de privacidade por execução, calculada sobre uma coluna de volume (<code>--metric</code> ou <code>--total-col</code>). Os multiplicadores são então aplicados às métricas secundárias e aos numeradores <em>e</em> denominadores de rate da mesma forma.</li>
+          <li><strong>Uma cadeia de fallback.</strong> Os dois modos tentam primeiro um único vetor global de pesos e percorrem a mesma cadeia de fallback quando ele encontra dificuldade — veja <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a> para a cadeia completa. Quando uma execução é configurada com pesos por dimensão em vez de um vetor consistente, o <code>Balanced Peer Average</code> desses cortes é a razão agregada não ponderada dos peers; a aba <code>Weight Methods</code> registra qual método cada corte realmente usou.</li>
+          <li><strong>Um vocabulário de supressão.</strong> Categorias, períodos ou métricas que falham no limite mínimo de participantes são omitidos de todos os artefatos gravados. Um valor omitido significa <strong>indisponível</strong>, nunca zero — veja <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacidade e saídas</a>.</li>
+          <li><strong>Um sistema de presets e um contrato de saída.</strong> Presets, os formatos <code>analysis</code>/<code>publication</code>/<code>both</code>, o CSV balanceado e os artefatos de auditoria se comportam identicamente nos dois modos.</li>
+        </ul>
+
+        <h2>Onde eles diferem em privacidade</h2>
+        <p>Os tetos de concentração são sempre avaliados sobre a métrica de peso — nunca sobre um numerador. Essa escolha única é o que o modo muda na privacidade:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Aspecto de privacidade</th><th>Share</th><th>Rate</th></tr></thead>
+          <tbody>
+            <tr><td>Base de concentração</td><td>Volumes de <code>--metric</code>.</td><td>Volumes de <code>--total-col</code>. Os numeradores de aprovação e fraude não participam dos tetos.</td></tr>
+            <tr><td>Regra extra de base</td><td>Nenhuma.</td><td>Fraude/chargeback de emissor: <code>--privacy-basis clearing_spend</code> obrigatório, com o denominador no valor de clearing spend. Execuções somente de aprovação não exigem base.</td></tr>
+            <tr><td>Supressão independente</td><td>Uma célula insegura de métrica secundária é omitida enquanto a linha primária segura permanece.</td><td>Aprovação e fraude podem omitir uma categoria independentemente; a supressão de fraude segue o <code>--total-col</code> governado, então um numerador de fraude escasso, por si só, nunca suprime uma categoria.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout warn"><strong>Nenhuma escolha de modo ou coluna afrouxa a fiscalização.</strong> As regras numéricas de privacidade, o limite mínimo de participantes, o veredito e o portão de publicação são avaliados da mesma forma em qualquer modo. Escolha o modo que responde à pergunta de negócio — nunca como rota para contornar uma supressão.</div>
+
+        <h2>Lendo as saídas</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Artefato</th><th>Modo share</th><th>Modo rate</th></tr></thead>
+          <tbody>
+            <tr><td>Abas de resultado (workbook de analysis)</td><td>Uma aba por dimensão, ex.: <code>card_type</code>.</td><td>Uma aba por tipo de rate × dimensão, ex.: <code>approval_card_type</code>, <code>fraud_card_type</code>.</td></tr>
+            <tr><td>Abas padrão</td><td colspan="2"><code>Summary</code>, <code>Peer Weights</code>, <code>Weight Methods</code>, <code>Privacy Validation</code>, <code>Data Quality</code>, <code>Metadata</code> — idênticas nos dois modos.</td></tr>
+            <tr><td>Abas opcionais</td><td colspan="2"><code>Impact Detail</code> / <code>Impact Summary</code>, <code>Secondary Metrics</code>, <code>Rank Changes</code>, <code>Subset Search</code>.</td></tr>
+            <tr><td>Workbook de publication</td><td>Executive Summary mais as abas de resultado e a allow-list de diagnósticos (<code>Impact Summary</code>, <code>Peer Weights</code>, <code>Privacy Validation</code>, <code>Rank Changes</code>, <code>Preset Comparison</code>).</td><td>Mesmo formato, mais a conversão para bps nas abas de fraude. Publication nunca carrega <code>Weight Methods</code>, <code>Subset Search</code>, <code>Metadata</code> ou <code>Secondary Metrics</code>.</td></tr>
+            <tr><td>CSV balanceado</td><td>Colunas <code>Balanced_{metric}</code> para a métrica primária e cada secundária (somas ponderadas).</td><td>Somas ponderadas para o total e cada coluna de numerador; <code>--include-calculated</code> adiciona colunas de taxa <code>Raw_</code>/<code>Balanced_</code> derivadas como numerador balanceado ÷ total balanceado × 100, mais colunas de impacto.</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Fraude em bps</strong> (ligado por padrão, somente no modo rate) é uma conversão de exibição aplicada apenas no workbook de <em>publication</em>: colunas de taxa elegíveis são multiplicadas por 100 e os rótulos trocam de <code>(%)</code> para <code>(bps)</code>. Em uma execução somente de fraude, todas as colunas de taxa convertem; em uma execução multi-rate, apenas colunas cujos nomes contêm <code>fraud</code>. O workbook de analysis e toda a matemática interna permanecem em porcentagem, então os dois artefatos nunca divergem sobre o número subjacente — apenas sobre a unidade no rótulo.</p>
+        <p>Qualquer que seja o modo, abra primeiro o <code>Summary</code> — resultado da validação, postura de conformidade, preset e veredito — depois as abas de resultado e então <code>Weight Methods</code> para ver qual caminho de solver cada corte usou. O tour completo pelas abas está em <a href="#onboarding" data-page-link="onboarding">Onboarding</a> e em <a href="#privacy-outputs" data-page-link="privacy-outputs">Privacidade e saídas</a>.</p>
+
+        <h2>Escolhendo entre eles</h2>
+        <ul>
+          <li><strong>Pergunta de composição ou mix</strong> (“estamos super-indexados em CNP?”) → análise de share.</li>
+          <li><strong>Pergunta de qualidade de desempenho</strong> (“nossa taxa de aprovação está atrás do mercado no crédito?”) → análise de rate.</li>
+          <li><strong>Ambos</strong> quando a entrega precisa de mix <em>e</em> qualidade: duas execuções sobre o mesmo CSV, cada uma com sua própria resolução de pesos sobre sua própria coluna de volume.</li>
+        </ul>
+        <p>Dentro da análise de rate, o denominador é uma escolha de negócio com consequências de privacidade, porque os pesos são resolvidos sobre ele: <code>txn_cnt</code> mede qualidade por transação; uma coluna de valor mede qualidade por unidade de spend. Declare qual das duas a entrega pressupõe antes de executar.</p>
+        <div class="callout good"><strong>Regra prática.</strong> Escreva a pergunta de negócio em uma frase primeiro. Se ela contém “mix”, “distribuição” ou “composição”, execute share; se contém “taxa”, “qualidade” ou “risco por unidade”, execute rate. Se contém ambos, planeje duas execuções — os modos compartilham um engine, não uma resposta.</div>
+
+        <h2>Armadilhas</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Armadilha</th><th>Por que engana</th><th>O que fazer em vez disso</th></tr></thead>
+          <tbody>
+            <tr><td>Tirar média igual das taxas dos peers</td><td>Uma média igual deixa peers pequenos dominarem o benchmark (72,3% vs os 93,9% agregados na tabela ilustrativa).</td><td>Confie no <code>Balanced Peer Average</code>: ele agrega numeradores e denominadores ponderados, o que é a média ponderada por volume das taxas dos peers.</td></tr>
+            <tr><td>Ler <code>Target Share (%)</code> como market share</td><td>É composição dentro da entidade e soma 100% ao longo de uma dimensão; não mede posição de mercado.</td><td>Para market share dentro da categoria, leia as abas de Impact — uma estatística diferente (alvo ÷ (alvo + peers reponderados)) que existe para medir a distorção do balanceamento.</td></tr>
+            <tr><td>Escolher o denominador no automático</td><td><code>txn_cnt</code> e uma coluna de valor respondem a perguntas diferentes, e os pesos são resolvidos sobre a que você escolher.</td><td>Decida por transação vs por spend antecipadamente; para fraude/chargeback de emissor, o denominador deve ser o valor de clearing spend com <code>--privacy-basis clearing_spend</code>.</td></tr>
+            <tr><td>Procurar bps no workbook de analysis</td><td>A conversão para bps roda somente no workbook de publication; as abas de analysis ficam em porcentagem.</td><td>Compare igual com igual: porcentagem em analysis, bps em publication — o mesmo número ×100, nunca um resultado diferente.</td></tr>
+            <tr><td>Ler uma categoria omitida como zero</td><td>A supressão é omissão fail-closed: o valor era inseguro para publicar, não medido como nada.</td><td>Trate lacunas como <strong>indisponível</strong> e verifique <code>Privacy Validation</code>; nunca preencha com zeros no trabalho posterior.</td></tr>
+            <tr><td>Digitar a entidade-alvo de qualquer jeito</td><td>Valores de entidade diferenciam maiúsculas: <code>Target</code> e <code>target</code> seriam duas entidades diferentes. Um nome digitado ambíguo aborta a execução; um nome desconhecido falha na validação.</td><td>Escolha a entidade no dropdown do TUI ou copie o valor exato dos dados do CSV.</td></tr>
+          </tbody>
+        </table></div>
+        <p>O detalhe flag a flag está na <a href="#cli-reference" data-page-link="cli-reference">Referência da CLI</a>; a maquinaria de ponderação está em <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a>; os termos compartilhados estão no <a href="#glossary" data-page-link="glossary">Glossário</a>.</p>
       </article>
 
       <article class="doc-page" data-page="presets-config" data-lang="en" hidden>
