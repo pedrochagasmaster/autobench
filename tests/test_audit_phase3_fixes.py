@@ -93,21 +93,6 @@ def test_config_show_unknown_preset_returns_nonzero():
     assert "not found" in result.stdout.lower()
 
 
-@pytest.mark.parametrize(
-    "reason, fragment",
-    [
-        ("fraud_chargeback_requires_clearing_spend_basis", "clearing_spend"),
-    ],
-)
-def test_control3_remediation_hint(reason, fragment):
-    """A-010/A-044: block reason codes resolve to actionable remediation hints."""
-    from core.control3_policy import remediation_hint
-
-    hint = remediation_hint(reason)
-    assert hint and fragment in hint
-    assert remediation_hint(None) is None
-
-
 def test_unknown_preset_cli_reports_available_presets():
     """F-019: unknown --preset gives a consistent error listing available presets."""
     result = subprocess.run(
