@@ -259,9 +259,10 @@ def test_clearing_spend_confirmation_modal_uses_selected_total(
             worker.start()
             for _ in range(50):
                 await pilot.pause(0.1)
-                if app.query(ClearingSpendConfirmScreen):
+                if isinstance(app.screen, ClearingSpendConfirmScreen):
                     break
-            message = str(app.query_one("#confirm_message", Static).content)
+            assert isinstance(app.screen, ClearingSpendConfirmScreen)
+            message = str(app.screen.query_one("#confirm_message", Static).content)
             assert "Confirm clearing-spend basis" in message
             assert "`governed_total`" in message
             await pilot.click(f"#{button_id}")
@@ -298,8 +299,9 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
             pilot.app.run_analysis()
             for _ in range(50):
                 await pilot.pause(0.1)
-                if pilot.app.query(ClearingSpendConfirmScreen):
+                if isinstance(pilot.app.screen, ClearingSpendConfirmScreen):
                     break
+            assert isinstance(pilot.app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_no")
             for _ in range(50):
                 await pilot.pause(0.1)
@@ -334,8 +336,9 @@ def test_fraud_confirmation_continues_run_and_marks_tui_source(
             app.run_analysis()
             for _ in range(50):
                 await pilot.pause(0.1)
-                if app.query(ClearingSpendConfirmScreen):
+                if isinstance(app.screen, ClearingSpendConfirmScreen):
                     break
+            assert isinstance(app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_yes")
             for _ in range(50):
                 await pilot.pause(0.1)
@@ -401,9 +404,15 @@ def test_new_fraud_run_attempt_shows_confirmation_again(
                 pilot.app.run_analysis()
                 for _ in range(50):
                     await pilot.pause(0.1)
-                    if pilot.app.query(ClearingSpendConfirmScreen):
+                    if isinstance(
+                        pilot.app.screen,
+                        ClearingSpendConfirmScreen,
+                    ):
                         break
-                assert pilot.app.query(ClearingSpendConfirmScreen)
+                assert isinstance(
+                    pilot.app.screen,
+                    ClearingSpendConfirmScreen,
+                )
                 await pilot.click("#btn_confirm_no")
                 for _ in range(50):
                     await pilot.pause(0.1)
