@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - validators already handle this path
     yaml = None
 
 from core.compliance import VALID_COMPLIANCE_POSTURES
-from core.contracts import DEFAULT_PRESET_NAME
+from core.contracts import DEFAULT_PRESET_NAME, PrivacyReleaseMode
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,30 @@ class OutputConfig:
     distortion_thresholds: Dict[str, Any] = field(default_factory=dict)
 
 
+def _parse_privacy_release_mode(value: Any) -> PrivacyReleaseMode:
+    """Parse a merged-config value into a ``PrivacyReleaseMode``.
+
+    ``ConfigManager`` writes the enum's string value into the merged config
+    (see ``_apply_cli_overrides`` and the YAML template). Accept both the
+    string and the enum directly so preset authors and Python callers can
+    round-trip a value without re-parsing. Any other value is rejected.
+    """
+    if isinstance(value, PrivacyReleaseMode):
+        return value
+    if isinstance(value, str):
+        try:
+            return PrivacyReleaseMode(value)
+        except ValueError:
+            allowed = ", ".join(mode.value for mode in PrivacyReleaseMode)
+            raise ValueError(
+                f"Invalid privacy_release_mode: {value!r}. Expected one of: {allowed}"
+            )
+    raise TypeError(
+        "privacy_release_mode must be a string or PrivacyReleaseMode; "
+        f"got {type(value).__name__}"
+    )
+
+
 @dataclass
 class ResolvedConfig:
     """Typed view of merged configuration for analysis orchestration."""
@@ -101,6 +125,7 @@ class ResolvedConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     compliance_posture: str = "strict"
+    privacy_release_mode: PrivacyReleaseMode = PrivacyReleaseMode.COMPLETE_OUTPUT
 
     @classmethod
     def from_merged_config(cls, config: Dict[str, Any]) -> "ResolvedConfig":
@@ -174,6 +199,9 @@ class ResolvedConfig:
                 distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
             ),
             compliance_posture=str(config.get("compliance_posture", "strict")),
+            privacy_release_mode=_parse_privacy_release_mode(
+                config.get("privacy_release_mode", PrivacyReleaseMode.COMPLETE_OUTPUT.value)
+            ),
         )
 
 
@@ -417,6 +445,7 @@ class ConfigManager:
         return {
             'version': '3.0',
             'compliance_posture': 'strict',
+            'privacy_release_mode': PrivacyReleaseMode.COMPLETE_OUTPUT.value,
             'input': {
                 'entity_col': 'issuer_name',
                 'time_col': None,
@@ -636,6 +665,7 @@ class ConfigManager:
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
+            'privacy_release_mode': ('privacy_release_mode',),
         }
         material_cli_keys = {
             'per_dimension_weights',
@@ -654,6 +684,14 @@ class ConfigManager:
             if cli_key in overrides and overrides[cli_key] is not None:
                 if cli_key == 'per_dimension_weights':
                     value = 'per_dimension' if overrides[cli_key] else 'global'
+                elif cli_key == 'privacy_release_mode':
+                    raw = overrides[cli_key]
+                    if isinstance(raw, PrivacyReleaseMode):
+                        value = raw.value
+                    else:
+                        # Validate the string early so a bad CLI value fails
+                        # here instead of later at ResolvedConfig time.
+                        value = _parse_privacy_release_mode(raw).value
                 else:
                     value = overrides[cli_key]
                 current: Any = self.config
@@ -719,6 +757,16 @@ class ConfigManager:
         if posture not in VALID_COMPLIANCE_POSTURES:
             allowed = ', '.join(VALID_COMPLIANCE_POSTURES)
             raise ValueError(f"Invalid or missing compliance_posture: {posture!r}. Expected one of: {allowed}")
+        release_mode_value = self.config.get('privacy_release_mode')
+        if release_mode_value is None:
+            release_mode_value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
+            self.config['privacy_release_mode'] = release_mode_value
+        # ``_parse_privacy_release_mode`` raises ValueError/TypeError on
+        # unknown or wrongly typed values, matching the compliance_posture
+        # validation style. Persist the canonical string form back into the
+        # merged config so downstream ResolvedConfig parsing is trivial.
+        canonical = _parse_privacy_release_mode(release_mode_value).value
+        self.config['privacy_release_mode'] = canonical
         if (
             self._preset_name
             and self._material_overrides

@@ -18,8 +18,12 @@ successful post-merge GitHub CI for that SHA, the configured `bitbucket`
 remote, available centralized audit storage, and interactive Edge
 authentication. It publishes and deploys one tool only.
 
-When `requirements.txt` or `constraints.txt` changes, edge-deploy-core v1.5.2
-builds, transfers, verifies, and installs a content-addressed offline bundle before
+Native node03 releases require published edge-deploy-core `>= v1.6.1` so the
+engine understands `compatible_platform_tags` and dependency-bundle schema `/2`.
+Pin the Autobench `release` extra to that tag before cutting the release.
+
+When `requirements.txt` or `constraints.txt` changes, edge-deploy-core builds,
+transfers, verifies, and installs a content-addressed offline bundle before
 updating the checkout. `deploy_and_install.ps1` is bootstrap/recovery only.
 
 The bundle digest names the immutable runtime under
@@ -42,9 +46,15 @@ After deployment, verify:
 
 ```bash
 readlink -f /ads_storage/autobench/.venv/current
+/ads_storage/autobench/.venv/current/bin/python -m scripts.release_smoke
 /ads_storage/autobench/bin/autobench-cli config list
 /ads_storage/autobench/bin/autobench-cli share --help
 ```
+
+The release smoke must import highspy/numpy/scipy, run
+`find_verified_safe_coverage` on the sanitized fixture universe, pass
+`verify_safe_coverage_result`, and pass certificate verification with a
+non-empty proper release/suppression partition.
 
 Runtime deletion and personal-environment cleanup are separate operator
 decisions and never part of release installation.

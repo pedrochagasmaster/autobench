@@ -42,7 +42,7 @@ import os
 import sys
 
 marker, digest, runtime_python = sys.argv[1:]
-required_imports = ["pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"]
+required_imports = ["pandas", "numpy", "openpyxl", "yaml", "scipy", "highspy", "textual"]
 try:
     with open(marker, encoding="utf-8") as marker_file:
         metadata = json.load(marker_file)

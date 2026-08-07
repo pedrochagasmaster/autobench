@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import math
 import subprocess
@@ -10,7 +12,7 @@ import sys
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, NoReturn, Optional, Tuple
 
 import pandas as pd
 
@@ -33,21 +35,27 @@ from core.category_suppression import (
     is_metric_category_suppressed,
 )
 from core.contracts import (
+    CONTROL3_NUMERIC_POLICY_SOURCE,
+    CONTROL3_NUMERIC_POLICY_VERSION,
     AnalysisArtifacts,
     AnalysisPlan,
     AnalysisResult,
     AnalysisRunRequest,
+    CoverageCertificate,
     DataQualityResult,
     OutputSettings,
     PrivacyEvaluationStatus,
     PrivacyFailureReason,
     PrivacyMandatoryOverlayEvaluation,
     PrivacyOutputDecision,
+    PrivacyReleaseMode,
     PrivacyRuleStrategy,
     PrivacyRuleStrategyEvaluation,
     PrivacyRuleStrategyResult,
     PrivacySweepStatus,
+    PublicationUnit,
     RunSummary,
+    SafeCoverageResult,
     WeightLookup,
     WeightingResult,
     weighting_result_from_analyzer,
@@ -56,8 +64,27 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import (
+    SUPPRESSED_PUBLICATION_VIEW_NOTICE,
+    apply_release_set_filter,
+    filter_results_to_release_set,
     write_accuracy_first_diagnostic_report,
     write_outputs,
+)
+from core.privacy_coverage import (
+    CandidateUniverseError,
+    build_candidate_universe,
+    candidate_universe_digest,
+    filter_units_by_keys,
+)
+from core.privacy_coverage_solver import (
+    SafeCoverageSolverError,
+    find_verified_safe_coverage,
+)
+from core.privacy_coverage_verifier import (
+    VERIFIER_RESULT_FAILED,
+    VERIFIER_RESULT_PASSED,
+    build_coverage_certificate,
+    verify_safe_coverage_result,
 )
 from core.privacy_validator import PrivacyValidator
 from core.privacy_policy import PrivacyPolicy
@@ -65,10 +92,15 @@ from core.privacy_rules import evaluate_rule
 from core.privacy_output_policy import (
     CONTROL3_INVALID_EVIDENCE,
     CONTROL3_NUMERIC_POLICY_BLOCKED,
+    CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
+    _SafeCoverageOutputAttestation,
     _attest_privacy_output,
+    _attest_safe_coverage_output,
     decide_privacy_output,
+    decide_safe_coverage_output,
     is_privacy_publication_authorized,
     is_verified_privacy_publication_authorized,
+    is_verified_safe_coverage_publication_authorized,
     write_non_publishable_privacy_audit,
 )
 from core.preset_comparison import run_preset_comparison as execute_preset_comparison
@@ -106,6 +138,7 @@ COMMON_CLI_OVERRIDES = (
     'validate_export',
     'lean',
     'compliance_posture',
+    'privacy_release_mode',
 )
 
 
@@ -1253,6 +1286,396 @@ def build_run_request(mode: str, args: argparse.Namespace) -> AnalysisRunRequest
     return AnalysisRunRequest.from_namespace(mode, args)
 
 
+def resolve_privacy_release_mode(
+    request: AnalysisRunRequest,
+    resolved_config: ResolvedConfig,
+) -> AnalysisRunRequest:
+    """Resolve the effective ``PrivacyReleaseMode`` for this run.
+
+    Precedence, applied here so every Interface (CLI, TUI, Python) uses the
+    same seam:
+
+    1. An explicit ``request.privacy_release_mode`` (must be a
+       ``PrivacyReleaseMode`` value; strings were rejected at request
+       construction time).
+    2. The resolved YAML / preset value on ``resolved_config``.
+    3. ``PrivacyReleaseMode.COMPLETE_OUTPUT`` as the ultimate default.
+
+    The caller's request is not mutated. A new request with a non-null
+    ``privacy_release_mode`` is returned via ``dataclasses.replace``.
+    """
+    if request.privacy_release_mode is not None:
+        if not isinstance(request.privacy_release_mode, PrivacyReleaseMode):
+            raise RunAborted(
+                "privacy_release_mode on AnalysisRunRequest must be a "
+                "PrivacyReleaseMode value"
+            )
+        effective = request.privacy_release_mode
+    elif isinstance(resolved_config.privacy_release_mode, PrivacyReleaseMode):
+        effective = resolved_config.privacy_release_mode
+    else:
+        effective = PrivacyReleaseMode.COMPLETE_OUTPUT
+    if request.privacy_release_mode is effective:
+        return request
+    return replace(request, privacy_release_mode=effective)
+
+
+def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> None:
+    """Reject unsupported combinations after mode resolution.
+
+    Called after ``resolve_privacy_release_mode`` produces a request with a
+    non-null enum value. This runs before data loading or solver work so a
+    bad combination fails fast with a clear message.
+
+    Rejects:
+
+    - ``VERIFIED_SAFE_COVERAGE`` with rate analysis.
+    - ``VERIFIED_SAFE_COVERAGE`` with ``per_dimension_weights=True``.
+    - ``VERIFIED_SAFE_COVERAGE`` with an incompatible explicit rule strategy
+      (Python callers must supply ``SWEEP_ANY_APPLICABLE``; the CLI and TUI
+      set that strategy automatically when the mode is selected).
+    - Any unknown or untyped release-mode value.
+    """
+    mode = request.privacy_release_mode
+    if not isinstance(mode, PrivacyReleaseMode):
+        raise RunAborted(
+            "privacy_release_mode must be resolved to a PrivacyReleaseMode "
+            "value before compatibility checks"
+        )
+    if mode == PrivacyReleaseMode.COMPLETE_OUTPUT:
+        return
+    if mode != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
+        raise RunAborted(
+            f"Unsupported privacy_release_mode: {mode!r}"
+        )
+    if request.is_rate:
+        raise RunAborted(
+            "privacy_release_mode=verified-safe-coverage is not supported for "
+            "rate analysis; use complete-output"
+        )
+    if request.per_dimension_weights:
+        raise RunAborted(
+            "privacy_release_mode=verified-safe-coverage requires one global "
+            "weight vector; --per-dimension-weights is not supported"
+        )
+    if request.privacy_rule_strategy != PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE:
+        raise RunAborted(
+            "privacy_release_mode=verified-safe-coverage requires "
+            "privacy_rule_strategy=SWEEP_ANY_APPLICABLE; got "
+            f"{request.privacy_rule_strategy.value!s}"
+        )
+
+
+def _stable_digest(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _apply_coverage_weights_to_analyzer(
+    analyzer: DimensionalAnalyzer,
+    weights: Mapping[str, float],
+    *,
+    df: pd.DataFrame,
+    entity_col: str,
+    metric_col: str,
+) -> None:
+    """Install the coverage solver's global multipliers without rescaling them."""
+    peer_volumes = (
+        pd.to_numeric(df.groupby(entity_col)[metric_col].sum(), errors="coerce")
+        .fillna(0.0)
+        .to_dict()
+    )
+    analyzer.consistent_weights = True
+    analyzer.per_dimension_weights = {}
+    analyzer.global_weights = {}
+    for peer, multiplier in weights.items():
+        volume = float(peer_volumes.get(peer, 0.0) or 0.0)
+        analyzer.global_weights[str(peer)] = {
+            "unbalanced_volume": volume,
+            "unbalanced_share": 0.0,
+            "balanced_volume": volume * float(multiplier),
+            "balanced_share": 0.0,
+            "multiplier": float(multiplier),
+            "volume": volume,
+            "weight": 0.0,
+        }
+
+
+def _structural_min_entities_for_coverage(
+    peer_count: int,
+    *,
+    merchant_spend_scope: bool,
+) -> int:
+    applicable = PrivacyPolicy.applicable_sweep_rules(
+        peer_count,
+        is_anonymized_aggregated_merchant_spend=merchant_spend_scope,
+    )
+    if not applicable:
+        return 5
+    return min(
+        int(PrivacyValidator.get_rule_config(rule_name).get("min_entities", 5) or 5)
+        for rule_name in applicable
+    )
+
+
+def _coverage_placeholder_strategy_result(
+    *,
+    merchant_spend_scope: bool,
+) -> PrivacyRuleStrategyResult:
+    """Build a non-authorizing complete-output strategy result for MSC runs.
+
+    Verified Safe Coverage authorizes sinks through the Release-Set attestation
+    path. The complete-output strategy result remains non-authorizing so the
+    two authorization seams cannot silently substitute for each other.
+    """
+    evaluations = tuple(
+        PrivacyRuleStrategyEvaluation(
+            rule_name=rule_name,
+            status=PrivacyEvaluationStatus.FAILED,
+            failure_reasons=(
+                PrivacyFailureReason(
+                    code="strict_optimization_not_compliant",
+                    message=(
+                        "Complete-output authorization is not used for "
+                        "verified-safe-coverage; Release-Set attestation decides publication"
+                    ),
+                ),
+            ),
+        )
+        for rule_name in PrivacyPolicy.sweep_rule_order()
+    )
+    return PrivacyRuleStrategyResult(
+        strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+        is_anonymized_aggregated_merchant_spend=merchant_spend_scope,
+        status=PrivacySweepStatus.NUMERICALLY_NONCOMPLIANT,
+        numeric_rules_passed=False,
+        mandatory_overlays_passed=True,
+        publication_authorized_by_numeric_policy=False,
+        display_rule=PrivacyPolicy.sweep_rule_order()[0],
+        feasible_candidate_rules=(),
+        authorizing_rules=(),
+        candidate_attempt_evaluations=evaluations,
+        emitted_output_evaluations=evaluations,
+        mandatory_overlay_evaluations=(
+            PrivacyMandatoryOverlayEvaluation(
+                overlay_name="citibank_maximum_25_percent",
+                status=PrivacyEvaluationStatus.NOT_APPLICABLE,
+                maximum_share_percentage=25.0,
+                failure_reasons=(),
+            ),
+        ),
+        rule_set_digest=PrivacyPolicy.rule_set_digest(),
+    )
+
+
+def _run_verified_safe_coverage(
+    *,
+    request: AnalysisRunRequest,
+    analyzer: DimensionalAnalyzer,
+    df: pd.DataFrame,
+    entity_col: str,
+    metric_col: str,
+    secondary_metrics: Optional[List[str]],
+    dimensions: List[str],
+    time_col: Optional[str],
+    resolved_entity: Optional[str],
+    merchant_spend_scope: bool,
+    min_weight: float,
+    max_weight: float,
+    logger: logging.Logger,
+) -> Tuple[SafeCoverageResult, Tuple[PublicationUnit, ...], List[Dict[str, Any]]]:
+    """Build the Candidate Universe, search coverage, and return trusted evidence.
+
+    The returned ``SafeCoverageResult`` still has ``verifier_result='not_run'``.
+    The caller must verify before authorizing any client sink.
+    """
+    _, _, governed_peers = analyzer.build_categories(df, metric_col, dimensions)
+    peers = tuple(str(peer) for peer in governed_peers)
+    if not peers:
+        raise RunAborted(
+            "verified-safe-coverage requires a non-empty governed peer population"
+        )
+    min_entities = _structural_min_entities_for_coverage(
+        len(peers),
+        merchant_spend_scope=merchant_spend_scope,
+    )
+    structural_suppressions = compute_suppressed_categories(
+        df,
+        entity_col=entity_col,
+        target_entity=resolved_entity,
+        dimensions=dimensions,
+        metric_col=metric_col,
+        min_entities=min_entities,
+        time_col=time_col,
+        structural_infeasible=None,
+    )
+    try:
+        universe = build_candidate_universe(
+            df,
+            entity_col=entity_col,
+            metric=metric_col,
+            secondary_metrics=secondary_metrics,
+            dimensions=dimensions,
+            time_col=time_col,
+            target_entity=resolved_entity,
+            suppressed_categories=structural_suppressions,
+            merchant_spend_scope=merchant_spend_scope,
+            citibank_entity_name=request.citibank_entity_name,
+            citi_competitor_receives_output=request.citi_competitor_receives_output,
+            consistent_weights=True,
+        )
+    except CandidateUniverseError as exc:
+        raise RunAborted(str(exc)) from exc
+
+    input_digest = _stable_digest(
+        {
+            "entity_col": entity_col,
+            "metric": metric_col,
+            "secondary_metrics": list(secondary_metrics or []),
+            "dimensions": list(dimensions),
+            "time_col": time_col,
+            "rows": int(len(df)),
+            "columns": list(df.columns),
+        }
+    )
+    configuration_digest = _stable_digest(
+        {
+            "privacy_release_mode": PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value,
+            "privacy_rule_strategy": request.privacy_rule_strategy.value,
+            "min_weight": float(min_weight),
+            "max_weight": float(max_weight),
+            "merchant_spend_scope": bool(merchant_spend_scope),
+            "citibank_entity_name": request.citibank_entity_name,
+            "citi_competitor_receives_output": bool(
+                request.citi_competitor_receives_output
+            ),
+        }
+    )
+    try:
+        coverage_result = find_verified_safe_coverage(
+            universe,
+            peers,
+            min_weight=float(min_weight),
+            max_weight=float(max_weight),
+            rule_configs={},
+            citibank_entity_name=request.citibank_entity_name,
+            input_digest=input_digest,
+            configuration_digest=configuration_digest,
+            policy_version=CONTROL3_NUMERIC_POLICY_VERSION,
+            policy_source=CONTROL3_NUMERIC_POLICY_SOURCE,
+            rule_set_digest=PrivacyPolicy.rule_set_digest(),
+            candidate_universe_digest=candidate_universe_digest(universe),
+        )
+    except SafeCoverageSolverError as exc:
+        raise RunAborted(str(exc)) from exc
+
+    logger.info(
+        "Verified safe coverage: %d candidate units, %d released, "
+        "%d suppressed (search_state=%s, candidates=%d)",
+        len(coverage_result.candidate_universe),
+        len(coverage_result.release_set),
+        len(coverage_result.suppression_set),
+        coverage_result.search_state,
+        coverage_result.candidate_vectors_evaluated,
+    )
+    _apply_coverage_weights_to_analyzer(
+        analyzer,
+        coverage_result.global_weights,
+        df=df,
+        entity_col=entity_col,
+        metric_col=metric_col,
+    )
+    released_units = filter_units_by_keys(
+        coverage_result.candidate_universe,
+        coverage_result.release_set,
+    )
+    return coverage_result, released_units, structural_suppressions
+
+
+def _verify_and_stamp_coverage_result(
+    coverage_result: SafeCoverageResult,
+    *,
+    min_weight: float,
+    max_weight: float,
+    citibank_entity_name: Optional[str],
+) -> SafeCoverageResult:
+    """Run the independent verifier and stamp the trusted result."""
+    outcome = verify_safe_coverage_result(
+        coverage_result,
+        min_weight=float(min_weight),
+        max_weight=float(max_weight),
+        citibank_entity_name=citibank_entity_name,
+        client_release_keys=coverage_result.release_set,
+    )
+    stamped = replace(
+        coverage_result,
+        verifier_result=(
+            VERIFIER_RESULT_PASSED if outcome.passed else VERIFIER_RESULT_FAILED
+        ),
+    )
+    return stamped
+
+
+def _coverage_certificate_payload(certificate: CoverageCertificate) -> Dict[str, Any]:
+    return {
+        "artifact_type": certificate.artifact_type,
+        "privacy_release_mode": certificate.privacy_release_mode.value,
+        "candidate_unit_count": certificate.candidate_unit_count,
+        "released_unit_count": certificate.released_unit_count,
+        "suppressed_unit_count": certificate.suppressed_unit_count,
+        "coverage_percentage": certificate.coverage_percentage,
+        "visible_publication_unit_keys": list(certificate.visible_publication_unit_keys),
+        "authorizing_rules": dict(certificate.authorizing_rules),
+        "global_weights": (
+            dict(certificate.global_weights)
+            if certificate.global_weights is not None
+            else None
+        ),
+        "policy_version": certificate.policy_version,
+        "policy_source": certificate.policy_source,
+        "rule_set_digest": certificate.rule_set_digest,
+        "solver_name": certificate.solver_name,
+        "solver_version": certificate.solver_version,
+        "search_method": certificate.search_method,
+        "search_state": certificate.search_state,
+        "candidate_vectors_evaluated": certificate.candidate_vectors_evaluated,
+        "artifact_hashes": dict(certificate.artifact_hashes),
+        "certificate_digest": certificate.certificate_digest,
+    }
+
+
+def _write_coverage_certificate_file(
+    analysis_output_file: str,
+    certificate: CoverageCertificate,
+) -> str:
+    requested = Path(analysis_output_file)
+    certificate_path = requested.with_name(
+        f"{requested.stem}_coverage_certificate.json"
+    )
+    certificate_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = certificate_path.with_suffix(f"{certificate_path.suffix}.tmp")
+    temporary_path.write_text(
+        json.dumps(
+            _coverage_certificate_payload(certificate),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(certificate_path)
+    return str(certificate_path)
+
+
+def _sha256_file(path: str) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def execute_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
     if request.is_share:
         return execute_share_run(request, logger)
@@ -1990,6 +2413,12 @@ def _execute_run_impl(
     if extra_config_overrides:
         config_overrides.update(extra_config_overrides)
     config = build_run_config(args, extra_overrides=config_overrides or None)
+    # Resolve the privacy release mode before data loading or solver work so
+    # every Interface shares one effective request and unsupported combinations
+    # fail closed immediately.
+    request = resolve_privacy_release_mode(request, config.resolve())
+    check_privacy_release_mode_compatibility(request)
+    args = request.to_namespace()
     compliance_context = enforce_compliance_preconditions(config, request)
     output_settings = resolve_output_settings(config)
     observability = RunObservability()
@@ -2088,6 +2517,11 @@ def _execute_run_impl(
             if metric != weight_metric_col
         ],
     ]
+    safe_coverage_result: Optional[SafeCoverageResult] = None
+    coverage_release_units: Tuple[PublicationUnit, ...] = ()
+    coverage_structural_suppressions: List[Dict[str, Any]] = []
+    weighting_result: Optional[WeightingResult] = None
+    privacy_strategy_result: Optional[PrivacyRuleStrategyResult] = None
     try:
         # For rate runs the weight metric is total_col, so fraud/chargeback
         # concentration is evaluated on the clearing-spend amount column by
@@ -2125,17 +2559,46 @@ def _execute_run_impl(
                 if metric != weight_metric_col
             ],
         ]
-        analyzer, analyzer_settings, weighting_result, privacy_strategy_result = _fit_privacy_strategy(
-            request=request,
-            analyzer=analyzer,
-            analyzer_settings=analyzer_settings,
-            analyzer_factory=analyzer_factory,
-            df=df,
-            metric_col=privacy_metric_col,
-            governed_metric_cols=governed_metric_cols,
-            dimensions=dimensions,
-            merchant_spend_scope=merchant_spend_scope,
-        )
+        if (
+            request.privacy_release_mode
+            == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        ):
+            (
+                safe_coverage_result,
+                coverage_release_units,
+                coverage_structural_suppressions,
+            ) = _run_verified_safe_coverage(
+                request=request,
+                analyzer=analyzer,
+                df=df,
+                entity_col=entity_col,
+                metric_col=privacy_metric_col,
+                secondary_metrics=request.secondary_metrics,
+                dimensions=dimensions,
+                time_col=time_col,
+                resolved_entity=resolved_entity,
+                merchant_spend_scope=merchant_spend_scope,
+                min_weight=float(resolved.bounds.min_weight),
+                max_weight=float(resolved.bounds.max_weight),
+                logger=logger,
+            )
+            weighting_result = weighting_result_from_analyzer(analyzer)
+            privacy_strategy_result = _coverage_placeholder_strategy_result(
+                merchant_spend_scope=merchant_spend_scope,
+            )
+            analyzer.privacy_rule_strategy_result = privacy_strategy_result
+        else:
+            analyzer, analyzer_settings, weighting_result, privacy_strategy_result = _fit_privacy_strategy(
+                request=request,
+                analyzer=analyzer,
+                analyzer_settings=analyzer_settings,
+                analyzer_factory=analyzer_factory,
+                df=df,
+                metric_col=privacy_metric_col,
+                governed_metric_cols=governed_metric_cols,
+                dimensions=dimensions,
+                merchant_spend_scope=merchant_spend_scope,
+            )
     except ValueError as exc:
         _handle_optimization_failure(
             exc,
@@ -2146,26 +2609,41 @@ def _execute_run_impl(
     if weighting_result is None:
         # Defensive snapshot from analyzer side-effect state.
         weighting_result = weighting_result_from_analyzer(analyzer)
+    if privacy_strategy_result is None:
+        raise RunAborted(
+            "privacy rule strategy result was not produced for this analysis run"
+        )
 
     results = mode_spec.run_analysis(request, analyzer, df, dimensions, config)
 
     privacy_rule_name = getattr(analyzer, 'privacy_rule_name', None)
     rule_cfg = PrivacyValidator.get_rule_config(privacy_rule_name or '')
-    min_entities = int(rule_cfg.get('min_entities', 0) or 0)
-    structural_infeasible_pairs = extract_structural_infeasible_pairs(
-        getattr(analyzer, 'structural_detail_df', None),
-        dimensions=dimensions,
-    )
-    weight_suppressions = compute_suppressed_categories(
-        df,
-        entity_col=entity_col,
-        target_entity=resolved_entity,
-        dimensions=dimensions,
-        metric_col=weight_metric_col,
-        min_entities=min_entities,
-        time_col=time_col,
-        structural_infeasible=structural_infeasible_pairs,
-    )
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+    ):
+        min_entities = _structural_min_entities_for_coverage(
+            len(getattr(analyzer, "global_weights", {}) or {}),
+            merchant_spend_scope=merchant_spend_scope,
+        )
+        structural_infeasible_pairs = []
+        weight_suppressions = list(coverage_structural_suppressions)
+    else:
+        min_entities = int(rule_cfg.get('min_entities', 0) or 0)
+        structural_infeasible_pairs = extract_structural_infeasible_pairs(
+            getattr(analyzer, 'structural_detail_df', None),
+            dimensions=dimensions,
+        )
+        weight_suppressions = compute_suppressed_categories(
+            df,
+            entity_col=entity_col,
+            target_entity=resolved_entity,
+            dimensions=dimensions,
+            metric_col=weight_metric_col,
+            min_entities=min_entities,
+            time_col=time_col,
+            structural_infeasible=structural_infeasible_pairs,
+        )
     suppressed_metric_categories: List[Dict[str, Any]] = []
     for governed_metric_col in governed_metric_cols:
         if (
@@ -2253,6 +2731,19 @@ def _execute_run_impl(
             time_col=time_col,
         )
 
+    # Verified Safe Coverage: filter client-bound analytical results through the
+    # exact Release Set once, before secondary metrics / metadata / formatting.
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and safe_coverage_result is not None
+    ):
+        results = filter_results_to_release_set(
+            results,
+            coverage_release_units,
+            time_col=time_col,
+        )
+
     secondary_results_df = None
     if request.secondary_metrics:
         secondary_results_df = get_balanced_metrics_df(
@@ -2265,6 +2756,35 @@ def _execute_run_impl(
             suppressed_output_categories=suppressed_output_categories,
             **mode_spec.secondary_metrics_kwargs(request, dimensions),
         )
+
+    coverage_export_suppressions: List[Dict[str, Any]] = []
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and safe_coverage_result is not None
+    ):
+        for unit in safe_coverage_result.candidate_universe:
+            if unit.internal_key in set(safe_coverage_result.release_set):
+                continue
+            original_dimension = unit.dimension
+            if time_col and original_dimension.endswith(f"_{time_col}"):
+                original_dimension = original_dimension[: -(len(time_col) + 1)]
+            original_category = unit.category
+            if unit.time_period and original_category.endswith(
+                f"_{unit.time_period}"
+            ):
+                original_category = original_category[
+                    : -(len(str(unit.time_period)) + 1)
+                ]
+            coverage_export_suppressions.append(
+                {
+                    "dimension": original_dimension,
+                    "category": original_category,
+                    "time_period": unit.time_period,
+                    "reason": "privacy_release_suppressed",
+                    "participants": 0,
+                }
+            )
 
     dimensions_analyzed = len(results) if request.is_share else len(dimensions)
     dimension_names = list(results.keys()) if request.is_share else dimensions
@@ -2505,26 +3025,63 @@ def _execute_run_impl(
         filter_safe_entities(privacy_frame)
     )
     metadata.update(diagnostics['metadata_updates'])
-    privacy_output_decision = decide_privacy_output(privacy_strategy_result)
-    privacy_output_attestation = _attest_privacy_output(
-        privacy_strategy_result,
-        privacy_output_decision,
-    )
-    privacy_sink_authorized = is_verified_privacy_publication_authorized(
-        privacy_strategy_result,
-        privacy_output_decision,
-        privacy_output_decision,
-        privacy_output_attestation,
-    )
+    safe_coverage_attestation: Optional[_SafeCoverageOutputAttestation] = None
     if (
-        is_privacy_publication_authorized(privacy_output_decision)
-        and not privacy_sink_authorized
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and safe_coverage_result is not None
     ):
-        privacy_output_decision = PrivacyOutputDecision(
-            privacy_publication_authorized=False,
-            hard_privacy_block=True,
-            withholding_reason=CONTROL3_INVALID_EVIDENCE,
+        # Fail closed: verifier must run before any client sink authorization.
+        safe_coverage_result = _verify_and_stamp_coverage_result(
+            safe_coverage_result,
+            min_weight=float(resolved.bounds.min_weight),
+            max_weight=float(resolved.bounds.max_weight),
+            citibank_entity_name=request.citibank_entity_name,
         )
+        privacy_output_decision = decide_safe_coverage_output(safe_coverage_result)
+        privacy_output_attestation = None
+        safe_coverage_attestation = _attest_safe_coverage_output(
+            safe_coverage_result,
+            privacy_output_decision,
+        )
+        privacy_sink_authorized = is_verified_safe_coverage_publication_authorized(
+            safe_coverage_result,
+            privacy_output_decision,
+            privacy_output_decision,
+            safe_coverage_attestation,
+        )
+        if (
+            is_privacy_publication_authorized(privacy_output_decision)
+            and not privacy_sink_authorized
+        ):
+            privacy_output_decision = PrivacyOutputDecision(
+                privacy_publication_authorized=False,
+                hard_privacy_block=True,
+                withholding_reason=CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
+            )
+            privacy_sink_authorized = False
+            safe_coverage_attestation = None
+    else:
+        privacy_output_decision = decide_privacy_output(privacy_strategy_result)
+        privacy_output_attestation = _attest_privacy_output(
+            privacy_strategy_result,
+            privacy_output_decision,
+        )
+        privacy_sink_authorized = is_verified_privacy_publication_authorized(
+            privacy_strategy_result,
+            privacy_output_decision,
+            privacy_output_decision,
+            privacy_output_attestation,
+        )
+        if (
+            is_privacy_publication_authorized(privacy_output_decision)
+            and not privacy_sink_authorized
+        ):
+            privacy_output_decision = PrivacyOutputDecision(
+                privacy_publication_authorized=False,
+                hard_privacy_block=True,
+                withholding_reason=CONTROL3_INVALID_EVIDENCE,
+            )
     privacy_strategy_blocks = not privacy_sink_authorized
     compliance_summary = build_compliance_summary(
         posture=compliance_context['compliance_posture'],
@@ -2681,6 +3238,20 @@ def _execute_run_impl(
         )
 
     analysis_output_file = mode_spec.resolve_output_filename(request, resolved_entity, results)
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and privacy_sink_authorized
+    ):
+        metadata.setdefault("run_warnings", [])
+        if SUPPRESSED_PUBLICATION_VIEW_NOTICE not in metadata["run_warnings"]:
+            metadata["run_warnings"].append(SUPPRESSED_PUBLICATION_VIEW_NOTICE)
+        metadata["artifact_name"] = "Suppressed Publication View"
+        metadata["privacy_suppressed_missing_units"] = True
+        # Client metadata must never carry suppressed category identities.
+        metadata["suppressed_categories"] = []
+        metadata["suppressed_metric_categories"] = []
+        metadata["suppressed_output_categories"] = {}
     artifacts = build_analysis_artifacts(
         analysis_result=analysis_result,
         metadata=metadata,
@@ -2700,6 +3271,19 @@ def _execute_run_impl(
     artifacts.privacy_output_decision = privacy_output_decision
     artifacts.privacy_sink_authorized = privacy_sink_authorized
     artifacts.privacy_log_authorized = privacy_sink_authorized
+    artifacts.safe_coverage_result = safe_coverage_result
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and privacy_sink_authorized
+        and safe_coverage_result is not None
+    ):
+        # Deep seam: filter every client-bound payload once before formatting.
+        artifacts = apply_release_set_filter(
+            artifacts,
+            release_units=coverage_release_units,
+            time_col=time_col,
+        )
     artifacts = write_outputs(
         request,
         artifacts,
@@ -2707,11 +3291,15 @@ def _execute_run_impl(
         logger=logger,
         privacy_output_decision=privacy_output_decision,
         privacy_output_attestation=privacy_output_attestation,
+        safe_coverage_attestation=safe_coverage_attestation,
     )
     if (
         request.export_balanced_csv
         and privacy_sink_authorized
     ):
+        export_suppressions = list(suppressed_categories) + list(
+            coverage_export_suppressions
+        )
         mode_spec.export_balanced_csv_fn(
             request=request,
             results=results,
@@ -2722,7 +3310,7 @@ def _execute_run_impl(
             output_settings=output_settings,
             logger=logger,
             weighting_result=weighting_result,
-            suppressed_categories=suppressed_categories,
+            suppressed_categories=export_suppressions,
             suppressed_metric_categories=suppressed_metric_categories,
             suppressed_output_categories=suppressed_output_categories,
         )
@@ -2784,14 +3372,67 @@ def _execute_run_impl(
             config_snapshot=config.config,
             metadata=metadata,
         )
+    if (
+        request.privacy_release_mode
+        == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
+        and privacy_sink_authorized
+        and safe_coverage_result is not None
+        and safe_coverage_result.verifier_result == VERIFIER_RESULT_PASSED
+    ):
+        artifact_hashes: Dict[str, str] = {}
+        for label, path in (
+            ("analysis_workbook", artifacts.analysis_output_file),
+            ("publication_workbook", artifacts.publication_output),
+            ("balanced_csv", artifacts.csv_output),
+            ("json_output", artifacts.json_output),
+            ("audit_package", artifacts.audit_package_output),
+        ):
+            if path and Path(path).is_file():
+                artifact_hashes[label] = _sha256_file(path)
+        certificate = build_coverage_certificate(
+            safe_coverage_result,
+            artifact_hashes=artifact_hashes,
+            publish_weights=True,
+        )
+        artifacts.coverage_certificate = certificate
+        if artifacts.metadata is not None:
+            artifacts.metadata["safe_coverage_summary"] = {
+                "privacy_release_mode": (
+                    PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
+                ),
+                "candidate_unit_count": certificate.candidate_unit_count,
+                "released_unit_count": certificate.released_unit_count,
+                "suppressed_unit_count": certificate.suppressed_unit_count,
+                "coverage_percentage": certificate.coverage_percentage,
+                "independent_verification_passed": True,
+                "maximum_claim": False,
+            }
+        # Disk write only when the request asked for file output.
+        if request.output:
+            artifacts.coverage_certificate_output = _write_coverage_certificate_file(
+                analysis_output_file,
+                certificate,
+            )
+            if artifacts.metadata is not None:
+                artifacts.metadata["coverage_certificate_output"] = (
+                    artifacts.coverage_certificate_output
+                )
+                artifacts.metadata["safe_coverage_summary"][
+                    "coverage_certificate_output"
+                ] = artifacts.coverage_certificate_output
+        else:
+            artifacts.coverage_certificate_output = None
     # Consented accuracy_first exception: with the operator's explicit
     # acknowledgement and a numeric-only denial, the analysis workbook is
     # still written for internal diagnosis, under a non-publishable filename
     # prefix and metadata marking. Invalid evidence and mandatory-overlay
     # failures are never exempted, and every
     # other sink (publication, CSV, JSON, audit package) stays withheld.
+    # Verified Safe Coverage denials never use this exception path.
     accuracy_first_diagnostic = bool(
         not privacy_sink_authorized
+        and request.privacy_release_mode
+        != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
         and compliance_context['compliance_posture'] == 'accuracy_first'
         and compliance_context['acknowledgement_given']
         and privacy_output_decision.withholding_reason
@@ -2810,7 +3451,12 @@ def _execute_run_impl(
             logger=logger,
         )
     if not privacy_sink_authorized and not accuracy_first_diagnostic:
+        trusted_coverage = artifacts.safe_coverage_result
         _limit_public_artifacts_to_privacy_safe_payload(artifacts)
+        # Trusted in-memory coverage evidence may remain for diagnosis.
+        artifacts.safe_coverage_result = trusted_coverage
+        artifacts.coverage_certificate = None
+        artifacts.coverage_certificate_output = None
     return artifacts
 
 

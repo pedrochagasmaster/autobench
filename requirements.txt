@@ -10,6 +10,7 @@ PyYAML>=6.0,<7
 
 # Optimization (required for strict privacy-cap LP solver)
 scipy>=1.10,<2
+highspy>=1.15.1,<1.16
 
 # SQL ingestion is optional: install an ODBC driver package (e.g. pypyodbc) manually if using load_from_sql_*
 

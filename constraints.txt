@@ -9,6 +9,7 @@
 #      dependency tree itself changes.
 colorama==0.4.6
 et_xmlfile==2.0.0
+highspy==1.15.1
 iniconfig==2.3.0
 librt==0.10.0
 linkify-it-py==2.0.3

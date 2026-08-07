@@ -144,7 +144,7 @@ root = Path(sys.argv[3]).resolve(strict=True)
 metadata = json.loads((runtime / ".complete.json").read_text(encoding="utf-8"))
 bundle = json.loads(manifest_path.read_text(encoding="utf-8"))
 import_errors = {{}}
-for name in {list(("pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"))!r}:
+for name in {list(("pandas", "numpy", "openpyxl", "yaml", "scipy", "highspy", "textual"))!r}:
     try:
         importlib.import_module(name)
     except Exception as exc:
@@ -346,7 +346,7 @@ def smoke(args: argparse.Namespace) -> int:
         and runtime_evidence.get("digest_match") is True
         and runtime_evidence.get("pip_check") == "passed"
         and runtime_evidence.get("required_imports")
-        == ["pandas", "numpy", "openpyxl", "yaml", "scipy", "textual"]
+        == ["pandas", "numpy", "openpyxl", "yaml", "scipy", "highspy", "textual"]
         and runtime_evidence.get("import_errors") == {}
         and runtime_evidence.get("publicly_writable") == []
         and runtime_evidence.get("missing_runtime_files") == []

@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - Windows never installs the runtime
 
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 REQUIREMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9._,-]+\])?")
-REQUIRED_IMPORTS = ("pandas", "numpy", "openpyxl", "yaml", "scipy", "textual")
+REQUIRED_IMPORTS = ("pandas", "numpy", "openpyxl", "yaml", "scipy", "highspy", "textual")
 COMPLETE_MARKER = ".complete.json"
 
 
@@ -87,7 +87,7 @@ def _load_manifest(bundle_dir: Path) -> tuple[dict[str, object], str]:
         raise RuntimeInstallError(f"Invalid dependency bundle manifest: {exc}") from exc
     if not isinstance(manifest, dict):
         raise RuntimeInstallError("Dependency bundle manifest must be a JSON object")
-    if manifest.get("schema") != "edge-deploy/dependency-bundle/1":
+    if manifest.get("schema") != "edge-deploy/dependency-bundle/2":
         raise RuntimeInstallError("Dependency bundle manifest has an unsupported schema")
     if manifest.get("tool") != "autobench":
         raise RuntimeInstallError("Dependency bundle manifest is for a different tool")

@@ -92,7 +92,7 @@ def test_tui_sweep_request_executes_through_shared_executor(
                     "preset": "balanced_default",
                     "compliance_posture": "strict",
                     "output": str(tmp_path / "tui_sweep.xlsx"),
-                    **app._privacy_strategy_values_from_widgets(),
+                    **app._privacy_values_from_widgets(),
                 },
             )
             log = MagicMock()

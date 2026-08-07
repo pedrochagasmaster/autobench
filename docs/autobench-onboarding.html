@@ -2019,6 +2019,48 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <p class="lede">Autobench enforces machine-verifiable numeric and output contracts. The analyst brings an upstream-approved business request.</p>
         <h2>Numeric rule set</h2><p>Rules are 5/25, 6/30, 7/35, 10/40, and merchant 4/35. In privacy-rule sweep mode, every applicable rule is evaluated and any applicable passing rule can authorize the numeric result. The exact emitted candidate is re-evaluated and the report records all authorizing rules.</p>
         <div class="callout good"><strong>4/35 applicability:</strong> explicit anonymized aggregated merchant-spend scope, at least four participants, and no participant above 35%. It has normal output parity with every other authorizing rule.</div>
+        <h2>Verified Safe Coverage</h2>
+        <p>Share analysis has two privacy release modes. <code>complete-output</code> is the default. <code>verified-safe-coverage</code> releases a deterministic safe subset under one global weight vector. It does not claim maximum coverage. It does not weaken privacy limits. It can produce an incomplete view. Missing cells are privacy-suppressed. Consumers must not restore them. This mode does not prove reconstruction safety. Recurring releases need a joint disclosure review.</p>
+        <h3>Terminology</h3>
+        <ul>
+          <li><strong>Publication Unit</strong> — one all-or-nothing client output cell. All governed metrics for that key must pass together.</li>
+          <li><strong>Candidate Universe</strong> — fixed privacy-eligible units after structural category suppression, before coverage optimization.</li>
+          <li><strong>Release Set</strong> — units authorized for client output.</li>
+          <li><strong>Suppression Set</strong> — Candidate Universe minus Release Set.</li>
+          <li><strong>Coverage Certificate</strong> — client-safe evidence for the exact released artifact (no suppressed keys or category names).</li>
+          <li><strong>Suppressed Publication View</strong> — filtered client artifact containing only the Release Set.</li>
+        </ul>
+        <h3>Applicability</h3>
+        <p>Share analysis only. One global weight vector. Rejected for rate analysis and for per-dimension weights. Not applicable when a complete table is mandatory, when missing output reveals protected information, when a consumer can restore a suppressed unit, or when published totals can reconstruct a suppressed unit.</p>
+        <h3>Three independent controls</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Control</th><th>Question</th></tr></thead>
+          <tbody>
+            <tr><td><code>privacy_release_mode</code></td><td>Which safe units can reach client output?</td></tr>
+            <tr><td><code>privacy_rule_strategy</code></td><td>Which approved rules can authorize a unit?</td></tr>
+            <tr><td><code>compliance_posture</code></td><td>How does the run handle non-compliant analysis?</td></tr>
+          </tbody>
+        </table></div>
+        <p><code>verified-safe-coverage</code> requires <code>SWEEP_ANY_APPLICABLE</code>. CLI and TUI auto-select it; Python callers must supply it. A fixed open-source search selects one safe vector. The independent verifier recalculates the exact release partition. Empty or verifier-failed results produce only a safe denial audit.</p>
+        <div class="callout warn"><strong>Consumer rule (monotone):</strong> <code>final_release_set must be a subset of autobench_release_set</code>. Consumers may suppress more units, never restore one.</div>
+        <h3>How to select it</h3>
+        <p>Share CLI: <code>--privacy-release-mode {complete-output,verified-safe-coverage}</code>. TUI labels: <code>Complete output</code> / <code>Verified safe coverage</code> (share only). YAML: <code>privacy_release_mode: "complete-output"</code>.</p>
+        <pre><button class="copy" type="button">Copy</button><code>uv run --locked --no-sync python benchmark.py share `
+  --csv data.csv `
+  --metric transaction_amount `
+  --secondary-metrics transaction_count merchant_count `
+  --dimensions quarter region sector `
+  --privacy-rule-sweep `
+  --privacy-release-mode verified-safe-coverage</code></pre>
+        <pre><button class="copy" type="button">Copy</button><code>request = AnalysisRunRequest(
+    mode="share",
+    df=dataframe,
+    metric="transaction_amount",
+    secondary_metrics=["transaction_count", "merchant_count"],
+    dimensions=["quarter", "region", "sector"],
+    privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
+)</code></pre>
         <h2>Category and metric suppression</h2>
         <p>Autobench can omit an unsafe category or metric while keeping safe results. Suppression changes saved outputs only. It never changes the source file.</p>
         <div class="callout warn"><strong>A missing category can be intentional.</strong> Do not replace it with zero or restore it from debug data. The omission is part of the Control 3 output boundary.</div>
@@ -2072,6 +2114,48 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <p class="lede">O Autobench aplica contratos numéricos e de saída verificáveis. O analista traz uma solicitação de negócio aprovada upstream.</p>
         <h2>Regras numéricas</h2><p>As regras são 5/25, 6/30, 7/35, 10/40 e merchant 4/35. No modo privacy-rule sweep, todas as regras aplicáveis são avaliadas e qualquer uma que passe pode autorizar o resultado. O candidato emitido é reavaliado e o relatório registra todas as regras autorizadoras.</p>
         <div class="callout good"><strong>Aplicabilidade de 4/35:</strong> escopo explícito de gasto agregado e anonimizado de merchants, pelo menos quatro participantes e nenhum acima de 35%. As permissões de saída são iguais às demais regras.</div>
+        <h2>Verified Safe Coverage</h2>
+        <p>A análise share tem dois modos de liberação de privacidade. <code>complete-output</code> é o padrão. <code>verified-safe-coverage</code> libera um subconjunto seguro e determinístico sob um único vetor global de pesos. O modo não afirma cobertura máxima. Não enfraquece limites de privacidade. Pode produzir uma visão incompleta. Células ausentes são suprimidas por privacidade. Consumidores não devem restaurá-las. Este modo não prova segurança contra reconstrução. Liberações recorrentes exigem revisão conjunta de disclosure.</p>
+        <h3>Terminologia</h3>
+        <ul>
+          <li><strong>Publication Unit</strong> — uma célula de saída cliente tudo-ou-nada. Todas as métricas governadas daquela chave precisam passar juntas.</li>
+          <li><strong>Candidate Universe</strong> — conjunto fixo de unidades elegíveis após supressão estrutural de categorias e antes da otimização de cobertura.</li>
+          <li><strong>Release Set</strong> — unidades autorizadas para saída cliente.</li>
+          <li><strong>Suppression Set</strong> — Candidate Universe menos Release Set.</li>
+          <li><strong>Coverage Certificate</strong> — evidência segura para o artefato liberado (sem chaves ou nomes de categorias suprimidas).</li>
+          <li><strong>Suppressed Publication View</strong> — artefato cliente filtrado contendo somente o Release Set.</li>
+        </ul>
+        <h3>Aplicabilidade</h3>
+        <p>Somente share. Um único vetor global de pesos. Rejeitado para análise de taxa e para pesos por dimensão. Não aplicável quando uma tabela completa é obrigatória, quando ausência revela informação protegida, quando um consumidor pode restaurar uma unidade suprimida, ou quando totais publicados podem reconstruir uma unidade suprimida.</p>
+        <h3>Três controles independentes</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Controle</th><th>Pergunta</th></tr></thead>
+          <tbody>
+            <tr><td><code>privacy_release_mode</code></td><td>Quais unidades seguras podem chegar à saída cliente?</td></tr>
+            <tr><td><code>privacy_rule_strategy</code></td><td>Quais regras aprovadas podem autorizar uma unidade?</td></tr>
+            <tr><td><code>compliance_posture</code></td><td>Como a execução trata análise não conforme?</td></tr>
+          </tbody>
+        </table></div>
+        <p><code>verified-safe-coverage</code> exige <code>SWEEP_ANY_APPLICABLE</code>. CLI e TUI selecionam automaticamente; chamadas Python devem fornecer. Uma busca open source fixa seleciona um vetor seguro. O verificador independente recalcula a divisão exata. Resultados vazios ou com falha do verificador geram somente auditoria segura de negativa.</p>
+        <div class="callout warn"><strong>Regra do consumidor (monótona):</strong> <code>final_release_set must be a subset of autobench_release_set</code>. O consumidor pode suprimir mais unidades, nunca restaurar uma.</div>
+        <h3>Como selecionar</h3>
+        <p>CLI share: <code>--privacy-release-mode {complete-output,verified-safe-coverage}</code>. Rótulos TUI: <code>Complete output</code> / <code>Verified safe coverage</code> (somente share). YAML: <code>privacy_release_mode: "complete-output"</code>.</p>
+        <pre><button class="copy" type="button">Copiar</button><code>uv run --locked --no-sync python benchmark.py share `
+  --csv data.csv `
+  --metric transaction_amount `
+  --secondary-metrics transaction_count merchant_count `
+  --dimensions quarter region sector `
+  --privacy-rule-sweep `
+  --privacy-release-mode verified-safe-coverage</code></pre>
+        <pre><button class="copy" type="button">Copiar</button><code>request = AnalysisRunRequest(
+    mode="share",
+    df=dataframe,
+    metric="transaction_amount",
+    secondary_metrics=["transaction_count", "merchant_count"],
+    dimensions=["quarter", "region", "sector"],
+    privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
+)</code></pre>
         <h2>Supressão de categorias e métricas</h2>
         <p>O Autobench pode omitir uma categoria ou métrica insegura e manter resultados seguros. A supressão muda somente as saídas gravadas. Ela nunca muda o arquivo de origem.</p>
         <div class="callout warn"><strong>Uma categoria ausente pode ser intencional.</strong> Não substitua por zero. Não restaure com dados de diagnóstico. A omissão faz parte da fronteira de saída do Control 3.</div>
@@ -3459,6 +3543,14 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
           <dt>Preset</dt><dd>A reviewed bundle of optimizer and compliance-posture settings.</dd>
           <dt>Analysis output</dt><dd>Internal diagnostic material that may contain sensitive detail.</dd>
           <dt>Publication output</dt><dd>A separately sanitized and validated client-facing candidate.</dd>
+          <dt>Publication Unit</dt><dd>One all-or-nothing client output cell. All governed metrics for that key pass or fail together.</dd>
+          <dt>Candidate Universe</dt><dd>Fixed privacy-eligible Publication Units after structural category suppression and before coverage optimization.</dd>
+          <dt>Release Set</dt><dd>Publication Units authorized for client output under the selected privacy release mode.</dd>
+          <dt>Suppression Set</dt><dd>Candidate Universe minus Release Set.</dd>
+          <dt>Coverage Certificate</dt><dd>Client-safe evidence for the exact released Verified Safe Coverage artifact.</dd>
+          <dt>Suppressed Publication View</dt><dd>Filtered client artifact that contains only the Release Set; missing cells are privacy-suppressed.</dd>
+          <dt>Complete output</dt><dd>Default privacy release mode: authorize the complete governed output, or withhold every benchmark-bearing artifact.</dd>
+          <dt>Verified safe coverage</dt><dd>Share-only privacy release mode that publishes a deterministic verified-safe Release Set under one global weight vector.</dd>
         </dl>
       </article>
       <article class="doc-page" data-page="glossary" data-lang="pt" hidden>
@@ -3479,6 +3571,14 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
           <dt>Preset</dt><dd>Pacote revisado de otimizador e postura de conformidade.</dd>
           <dt>Saída de analysis</dt><dd>Material diagnóstico interno que pode conter detalhe sensível.</dd>
           <dt>Saída de publication</dt><dd>Candidato para cliente, sanitizado e validado separadamente.</dd>
+          <dt>Publication Unit</dt><dd>Uma célula de saída cliente tudo-ou-nada. Todas as métricas governadas daquela chave passam ou falham juntas.</dd>
+          <dt>Candidate Universe</dt><dd>Publication Units elegíveis fixas após supressão estrutural de categorias e antes da otimização de cobertura.</dd>
+          <dt>Release Set</dt><dd>Publication Units autorizadas para saída cliente no modo de liberação selecionado.</dd>
+          <dt>Suppression Set</dt><dd>Candidate Universe menos Release Set.</dd>
+          <dt>Coverage Certificate</dt><dd>Evidência segura para o artefato exato liberado em Verified Safe Coverage.</dd>
+          <dt>Suppressed Publication View</dt><dd>Artefato cliente filtrado que contém somente o Release Set; células ausentes são suprimidas por privacidade.</dd>
+          <dt>Complete output</dt><dd>Modo padrão de liberação: autoriza a saída governada completa, ou retém todo artefato com conteúdo de benchmark.</dd>
+          <dt>Verified safe coverage</dt><dd>Modo de liberação somente share que publica um Release Set seguro e determinístico sob um único vetor global de pesos.</dd>
         </dl>
       </article>
 

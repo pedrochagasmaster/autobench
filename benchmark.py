@@ -24,10 +24,15 @@ from pathlib import Path
 from typing import Optional, Dict
 
 # Import core modules
-from core.contracts import AnalysisArtifacts, DEFAULT_PRESET_NAME
+from core.contracts import (
+    AnalysisArtifacts,
+    AnalysisRunRequest,
+    DEFAULT_PRESET_NAME,
+    PrivacyReleaseMode,
+)
 from core.privacy_output_policy import is_privacy_publication_authorized
 from core.analysis_run import (
-    build_run_request,
+    build_run_request as _core_build_run_request,
     execute_rate_run,
     execute_share_run,
     RunBlocked,
@@ -213,6 +218,9 @@ EXAMPLES:
   # Normal share analysis using the any-applicable-rule strategy
   python benchmark.py share --csv data.csv --metric txn_cnt --auto --privacy-rule-sweep
 
+  # Verified safe coverage (share only; auto-selects rule sweep)
+  python benchmark.py share --csv data.csv --metric transaction_amount --secondary-metrics transaction_count merchant_count --dimensions quarter region sector --privacy-rule-sweep --privacy-release-mode verified-safe-coverage
+
   # List available presets
   python benchmark.py config list
 
@@ -258,6 +266,21 @@ EXAMPLES:
                              help='Metric column name to analyze (e.g., txn_cnt, tpv, transaction_count, transaction_amount)')
     share_parser.add_argument('--secondary-metrics', nargs='+',
                              help='Secondary metric columns to analyze using weights derived from the primary metric (space-separated list)')
+    share_parser.add_argument(
+        '--privacy-release-mode',
+        type=PrivacyReleaseMode,
+        choices=[mode.value for mode in PrivacyReleaseMode],
+        default=None,
+        help=(
+            'Which safe Publication Units can reach client output '
+            '(effective default: complete-output). '
+            'complete-output requires a complete authorized output. '
+            'verified-safe-coverage can publish an incomplete safe view; '
+            'requires global weights and rule sweep semantics; '
+            'missing units are privacy-suppressed. '
+            'Share analysis only.'
+        ),
+    )
 
     # ========================================================================
     # RATE ANALYSIS COMMAND
@@ -588,6 +611,31 @@ def _print_privacy_output_status(artifacts: AnalysisArtifacts) -> bool:
     return True
 
 
+def _print_safe_coverage_summary(artifacts: AnalysisArtifacts) -> None:
+    """Print client-safe Verified Safe Coverage facts only.
+
+    Sources counts, coverage percentage, and verification status from
+    ``CoverageCertificate`` (and the certificate disk path from
+    ``coverage_certificate_output``). Never reads suppressed keys, category
+    names, or failure details from ``SafeCoverageResult``.
+    """
+    certificate = artifacts.coverage_certificate
+    if certificate is None:
+        return
+    if certificate.privacy_release_mode is not PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
+        return
+    print("Privacy release mode: Verified safe coverage")
+    print(f"Candidate units: {certificate.candidate_unit_count}")
+    print(f"Released units: {certificate.released_unit_count}")
+    print(f"Suppressed units: {certificate.suppressed_unit_count}")
+    print(f"Coverage: {certificate.coverage_percentage:.4g}%")
+    cert_path = artifacts.coverage_certificate_output
+    if cert_path:
+        print(f"Coverage Certificate: {cert_path}")
+    print("Independent privacy verification: passed")
+    print("Coverage is not a maximum claim.")
+
+
 def _format_analysis_failure_message(exc: Exception) -> str:
     """Prefer actionable detail from the exception chain when available."""
     primary = str(exc).strip()
@@ -662,6 +710,64 @@ def _finalize_denied_run_logging(logger: logging.Logger) -> None:
         print(f"Non-publishable run log (do not share): {quarantine_path}")
 
 
+# Copyable share CLI example from plans/005-verified-safe-coverage.md.
+# Validated against create_parser() in tests/test_cli_privacy_release_mode.py.
+VERIFIED_SAFE_COVERAGE_CLI_EXAMPLE = (
+    "share",
+    "--csv",
+    "data.csv",
+    "--metric",
+    "transaction_amount",
+    "--secondary-metrics",
+    "transaction_count",
+    "merchant_count",
+    "--dimensions",
+    "quarter",
+    "region",
+    "sector",
+    "--privacy-rule-sweep",
+    "--privacy-release-mode",
+    "verified-safe-coverage",
+)
+
+
+def apply_share_privacy_release_mode_cli_coupling(
+    args: argparse.Namespace,
+) -> None:
+    """Apply share CLI coupling for Verified Safe Coverage.
+
+    Interfaces stay thin: shared resolution and hard compatibility checks live
+    in ``core.analysis_run``. This only:
+
+    - rejects ``verified-safe-coverage`` with ``--per-dimension-weights``
+    - auto-selects rule-sweep semantics (``SWEEP_ANY_APPLICABLE``) when the
+      mode is selected on the CLI
+    """
+    mode = getattr(args, "privacy_release_mode", None)
+    if mode is not PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
+        return
+    if getattr(args, "per_dimension_weights", None):
+        raise ValueError(
+            "privacy_release_mode=verified-safe-coverage requires one global "
+            "weight vector; --per-dimension-weights is not supported"
+        )
+    # Prefer the existing privacy_rule_sweep seam so from_namespace maps to
+    # SWEEP_ANY_APPLICABLE. Do not invent a second strategy path in the CLI.
+    args.privacy_rule_sweep = True
+
+
+def build_run_request(mode: str, args: argparse.Namespace) -> AnalysisRunRequest:
+    """CLI-facing request builder.
+
+    Preserves an explicit CLI ``PrivacyReleaseMode`` enum on the request and
+    applies share-only Verified Safe Coverage coupling before the shared core
+    builder runs.
+    """
+    if mode == "share":
+        apply_share_privacy_release_mode_cli_coupling(args)
+    return _core_build_run_request(mode, args)
+
+
 def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
     """Thin CLI adapter over the shared analysis-run executor."""
     logger.info("Starting share-based dimensional analysis")
@@ -704,6 +810,7 @@ def run_share_analysis(args: argparse.Namespace, logger: logging.Logger) -> int:
         if artifacts.metadata.get('compliance_posture') == 'accuracy_first':
             print("WARNING: accuracy_first posture prioritizes analytical fidelity over strict compliance.")
         print(f"Dimensions Analyzed: {len(artifacts.results)}")
+        _print_safe_coverage_summary(artifacts)
         finalize_deferred_logging(
             logger,
             privacy_authorized=artifacts.privacy_log_authorized,

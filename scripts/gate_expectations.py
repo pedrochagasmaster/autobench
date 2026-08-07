@@ -40,6 +40,13 @@ STATIC_TOKENS: Dict[str, ExpectationSpec] = {
     "validate_template_ok": ExpectationSpec("validate_template_ok", "enforced"),
     "template_created": ExpectationSpec("template_created", "enforced"),
     "output_filename_auto_generated": ExpectationSpec("output_filename_auto_generated", "enforced"),
+    # Owned Verified Safe Coverage cases (scripts/gate_safe_coverage.py).
+    "safe_coverage_verified_partition": ExpectationSpec(
+        "safe_coverage_verified_partition", "enforced"
+    ),
+    "safe_coverage_cross_interface_parity": ExpectationSpec(
+        "safe_coverage_cross_interface_parity", "enforced"
+    ),
 }
 
 PREFIX_TOKENS: Dict[str, ExpectationSpec] = {

@@ -13,25 +13,53 @@ Run from the repository root: ``py examples/run_from_python.py``
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from core.analysis_run import execute_share_run
-from core.contracts import AnalysisRunRequest
-
-logging.basicConfig(level=logging.INFO)
-
-request = AnalysisRunRequest(
-    csv="tests/fixtures/gate_demo.csv",
-    entity="Target",
-    metric="txn_cnt",
-    dimensions=["card_type", "channel"],
-    time_col="year_month",
-    preset="compliance_strict",
-    compliance_posture="strict",
-    output="example_share.xlsx",
+from core.contracts import (
+    AnalysisRunRequest,
+    PrivacyReleaseMode,
+    PrivacyRuleStrategy,
 )
-artifacts = execute_share_run(request, logging.getLogger("example"))
-print("Report:", artifacts.analysis_output_file)
+
+
+def example_verified_safe_coverage_request(dataframe: Any) -> AnalysisRunRequest:
+    """Documented Verified Safe Coverage request (enum form only).
+
+    ``privacy_release_mode`` must be a ``PrivacyReleaseMode`` enum value.
+    Strings such as ``"verified-safe-coverage"`` are rejected at construction.
+    Python callers must supply ``PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE``.
+    """
+    return AnalysisRunRequest(
+        mode="share",
+        df=dataframe,
+        metric="transaction_amount",
+        secondary_metrics=["transaction_count", "merchant_count"],
+        dimensions=["quarter", "region", "sector"],
+        privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
+    )
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    request = AnalysisRunRequest(
+        csv="tests/fixtures/gate_demo.csv",
+        entity="Target",
+        metric="txn_cnt",
+        dimensions=["card_type", "channel"],
+        time_col="year_month",
+        preset="compliance_strict",
+        compliance_posture="strict",
+        output="example_share.xlsx",
+    )
+    artifacts = execute_share_run(request, logging.getLogger("example"))
+    print("Report:", artifacts.analysis_output_file)
+
+
+if __name__ == "__main__":
+    main()

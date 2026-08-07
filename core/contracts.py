@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 DEFAULT_PRESET_NAME = "compliance_strict"
@@ -15,6 +17,10 @@ CONTROL3_NUMERIC_POLICY_VERSION = "v5 (2026-06-03)"
 CONTROL3_NUMERIC_POLICY_SOURCE = (
     "docs/control-3-customer-merchant-performance-v5-20260603.md"
 )
+# Fixed versioned artifact_type for the client-safe CoverageCertificate. The
+# version suffix is part of the client contract; changing it is a breaking
+# change to downstream consumers of the certificate.
+COVERAGE_CERTIFICATE_ARTIFACT_TYPE = "coverage_certificate.v2"
 
 
 class PrivacyMetricContext(str, Enum):
@@ -55,6 +61,19 @@ class PrivacyRuleStrategy(str, Enum):
 
     SELECT_BY_PEER_COUNT = "select_by_peer_count"
     SWEEP_ANY_APPLICABLE = "sweep_any_applicable"
+
+
+class PrivacyReleaseMode(str, Enum):
+    """Which safe Publication Units can reach client output.
+
+    The mode is orthogonal to ``PrivacyRuleStrategy`` and to
+    ``compliance_posture``. ``COMPLETE_OUTPUT`` preserves current behavior
+    exactly. ``VERIFIED_SAFE_COVERAGE`` releases a deterministic safe subset
+    for share analysis. It does not weaken any privacy rule.
+    """
+
+    COMPLETE_OUTPUT = "complete-output"
+    VERIFIED_SAFE_COVERAGE = "verified-safe-coverage"
 
 
 @dataclass(frozen=True)
@@ -298,6 +317,319 @@ class PrivacySweepResult:
     audit: PrivacySweepAuditMetadata
 
 
+def _freeze_str_mapping(
+    mapping: Mapping[str, Any],
+    *,
+    field_name: str,
+    value_cast: Optional[Any] = None,
+) -> Mapping[str, Any]:
+    """Return a read-only Mapping copy with normalized string keys.
+
+    ``field_name`` is the outer contract field name and is only used to
+    produce clear error messages when validation fails.
+    """
+    if not isinstance(mapping, Mapping):
+        raise TypeError(f"{field_name} must be a Mapping[str, ...] value")
+    frozen: Dict[str, Any] = {}
+    for key, value in mapping.items():
+        if not isinstance(key, str):
+            raise TypeError(
+                f"{field_name} keys must be strings; got {type(key).__name__}"
+            )
+        if value_cast is not None:
+            frozen[key] = value_cast(value)
+        else:
+            frozen[key] = value
+    return MappingProxyType(frozen)
+
+
+@dataclass(frozen=True)
+class PublicationUnit:
+    """One all-or-nothing client output cell for share analysis.
+
+    A Publication Unit groups every governed metric record that shares the
+    same canonical output key. It is the atomic unit that
+    ``PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE`` releases or suppresses.
+    """
+
+    internal_key: str
+    dimension: str
+    category: str
+    time_period: Optional[str]
+    output_scope: Optional[str]
+    metric_records: Tuple[Mapping[str, Any], ...]
+    applicable_rules: Tuple[str, ...]
+    mandatory_overlays: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.internal_key, str) or not self.internal_key:
+            raise ValueError("PublicationUnit.internal_key must be a non-empty string")
+        if not isinstance(self.dimension, str) or not self.dimension:
+            raise ValueError("PublicationUnit.dimension must be a non-empty string")
+        if not isinstance(self.category, str) or not self.category:
+            raise ValueError("PublicationUnit.category must be a non-empty string")
+        if self.time_period is not None and not isinstance(self.time_period, str):
+            raise TypeError("PublicationUnit.time_period must be a string or None")
+        if self.output_scope is not None and not isinstance(self.output_scope, str):
+            raise TypeError("PublicationUnit.output_scope must be a string or None")
+        if not isinstance(self.metric_records, tuple):
+            raise TypeError("PublicationUnit.metric_records must be a tuple")
+        if not self.metric_records:
+            raise ValueError("PublicationUnit.metric_records must not be empty")
+        frozen_records: Tuple[Mapping[str, Any], ...] = tuple(
+            _freeze_str_mapping(record, field_name="PublicationUnit.metric_records")
+            for record in self.metric_records
+        )
+        object.__setattr__(self, "metric_records", frozen_records)
+        if not isinstance(self.applicable_rules, tuple):
+            raise TypeError("PublicationUnit.applicable_rules must be a tuple")
+        if len(set(self.applicable_rules)) != len(self.applicable_rules):
+            raise ValueError(
+                "PublicationUnit.applicable_rules must not contain duplicates"
+            )
+        if not isinstance(self.mandatory_overlays, tuple):
+            raise TypeError("PublicationUnit.mandatory_overlays must be a tuple")
+        if len(set(self.mandatory_overlays)) != len(self.mandatory_overlays):
+            raise ValueError(
+                "PublicationUnit.mandatory_overlays must not contain duplicates"
+            )
+
+
+@dataclass(frozen=True)
+class SafeCoverageResult:
+    """Trusted internal result of the Verified Safe Coverage search.
+
+    This object can hold protected internal keys and must never reach a
+    normal client sink. The client-safe view is ``CoverageCertificate``.
+    """
+
+    release_mode: PrivacyReleaseMode
+    global_weights: Mapping[str, float]
+    candidate_universe: Tuple[PublicationUnit, ...]
+    release_set: Tuple[str, ...]
+    suppression_set: Tuple[str, ...]
+    authorizing_rules: Mapping[str, str]
+    search_method: str
+    search_state: str
+    candidate_vectors_evaluated: int
+    solver_name: str
+    solver_version: str
+    input_digest: str
+    configuration_digest: str
+    policy_version: str
+    policy_source: str
+    rule_set_digest: str
+    candidate_universe_digest: str
+    release_mask_digest: str
+    verifier_result: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.release_mode, PrivacyReleaseMode):
+            raise TypeError(
+                "SafeCoverageResult.release_mode must be a PrivacyReleaseMode value"
+            )
+        if not isinstance(self.candidate_universe, tuple):
+            raise TypeError("SafeCoverageResult.candidate_universe must be a tuple")
+        for unit in self.candidate_universe:
+            if not isinstance(unit, PublicationUnit):
+                raise TypeError(
+                    "SafeCoverageResult.candidate_universe must contain PublicationUnit values"
+                )
+        candidate_keys = tuple(unit.internal_key for unit in self.candidate_universe)
+        candidate_key_set = set(candidate_keys)
+        if len(candidate_key_set) != len(candidate_keys):
+            raise ValueError(
+                "SafeCoverageResult.candidate_universe must not contain duplicate keys"
+            )
+        if not isinstance(self.release_set, tuple):
+            raise TypeError("SafeCoverageResult.release_set must be a tuple")
+        if not isinstance(self.suppression_set, tuple):
+            raise TypeError("SafeCoverageResult.suppression_set must be a tuple")
+        release_key_set = set(self.release_set)
+        suppression_key_set = set(self.suppression_set)
+        if len(release_key_set) != len(self.release_set):
+            raise ValueError(
+                "SafeCoverageResult.release_set must not contain duplicates"
+            )
+        if len(suppression_key_set) != len(self.suppression_set):
+            raise ValueError(
+                "SafeCoverageResult.suppression_set must not contain duplicates"
+            )
+        if release_key_set & suppression_key_set:
+            raise ValueError(
+                "SafeCoverageResult release and suppression sets must not overlap"
+            )
+        if release_key_set | suppression_key_set != candidate_key_set:
+            raise ValueError(
+                "SafeCoverageResult release and suppression sets must partition "
+                "the Candidate Universe"
+            )
+        frozen_weights = _freeze_str_mapping(
+            self.global_weights,
+            field_name="SafeCoverageResult.global_weights",
+            value_cast=float,
+        )
+        for value in frozen_weights.values():
+            if not math.isfinite(value):
+                raise ValueError(
+                    "SafeCoverageResult.global_weights values must be finite"
+                )
+        object.__setattr__(self, "global_weights", frozen_weights)
+        frozen_authorizing = _freeze_str_mapping(
+            self.authorizing_rules,
+            field_name="SafeCoverageResult.authorizing_rules",
+            value_cast=str,
+        )
+        if set(frozen_authorizing) != release_key_set:
+            raise ValueError(
+                "SafeCoverageResult.authorizing_rules must record exactly one "
+                "authorizing rule for every released Publication Unit"
+            )
+        object.__setattr__(self, "authorizing_rules", frozen_authorizing)
+        if not isinstance(self.search_method, str) or not self.search_method:
+            raise ValueError("SafeCoverageResult.search_method must not be empty")
+        if self.search_state != "search_complete":
+            raise ValueError(
+                "SafeCoverageResult.search_state must be 'search_complete'"
+            )
+        if (
+            not isinstance(self.candidate_vectors_evaluated, int)
+            or isinstance(self.candidate_vectors_evaluated, bool)
+            or self.candidate_vectors_evaluated < 1
+        ):
+            raise ValueError(
+                "SafeCoverageResult.candidate_vectors_evaluated must be positive"
+            )
+
+
+@dataclass(frozen=True)
+class CoverageCertificate:
+    """Client-safe evidence for the exact released artifact.
+
+    This contract must never contain a suppressed key, a per-suppressed-key
+    digest, a suppressed category name, or protected source values.
+    """
+
+    privacy_release_mode: PrivacyReleaseMode
+    candidate_unit_count: int
+    released_unit_count: int
+    suppressed_unit_count: int
+    coverage_percentage: float
+    visible_publication_unit_keys: Tuple[str, ...]
+    authorizing_rules: Mapping[str, str]
+    global_weights: Optional[Mapping[str, float]]
+    policy_version: str
+    policy_source: str
+    rule_set_digest: str
+    solver_name: str
+    solver_version: str
+    search_method: str
+    search_state: str
+    candidate_vectors_evaluated: int
+    artifact_hashes: Mapping[str, str]
+    certificate_digest: str
+    artifact_type: str = COVERAGE_CERTIFICATE_ARTIFACT_TYPE
+
+    def __post_init__(self) -> None:
+        if self.artifact_type != COVERAGE_CERTIFICATE_ARTIFACT_TYPE:
+            raise ValueError(
+                "CoverageCertificate.artifact_type must be "
+                f"{COVERAGE_CERTIFICATE_ARTIFACT_TYPE!r}"
+            )
+        if not isinstance(self.privacy_release_mode, PrivacyReleaseMode):
+            raise TypeError(
+                "CoverageCertificate.privacy_release_mode must be a PrivacyReleaseMode value"
+            )
+        counts = (
+            self.candidate_unit_count,
+            self.released_unit_count,
+            self.suppressed_unit_count,
+        )
+        for count in counts:
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise ValueError(
+                    "CoverageCertificate unit counts must be non-negative integers"
+                )
+        if self.released_unit_count + self.suppressed_unit_count != self.candidate_unit_count:
+            raise ValueError(
+                "CoverageCertificate released and suppressed counts must sum to "
+                "the candidate count"
+            )
+        if not isinstance(self.visible_publication_unit_keys, tuple):
+            raise TypeError(
+                "CoverageCertificate.visible_publication_unit_keys must be a tuple"
+            )
+        if len(set(self.visible_publication_unit_keys)) != len(
+            self.visible_publication_unit_keys
+        ):
+            raise ValueError(
+                "CoverageCertificate.visible_publication_unit_keys must not contain duplicates"
+            )
+        if len(self.visible_publication_unit_keys) != self.released_unit_count:
+            raise ValueError(
+                "CoverageCertificate.visible_publication_unit_keys length must "
+                "equal released_unit_count"
+            )
+        if not math.isfinite(self.coverage_percentage) or not 0.0 <= self.coverage_percentage <= 100.0:
+            raise ValueError(
+                "CoverageCertificate.coverage_percentage must be between 0.0 and 100.0"
+            )
+        if self.candidate_unit_count == 0:
+            expected_pct = 0.0
+        else:
+            expected_pct = 100.0 * self.released_unit_count / self.candidate_unit_count
+        if not math.isclose(
+            self.coverage_percentage, expected_pct, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ValueError(
+                "CoverageCertificate.coverage_percentage must match "
+                "released_unit_count / candidate_unit_count"
+            )
+        frozen_authorizing = _freeze_str_mapping(
+            self.authorizing_rules,
+            field_name="CoverageCertificate.authorizing_rules",
+            value_cast=str,
+        )
+        if set(frozen_authorizing) != set(self.visible_publication_unit_keys):
+            raise ValueError(
+                "CoverageCertificate.authorizing_rules keys must equal the "
+                "visible Publication Unit keys"
+            )
+        object.__setattr__(self, "authorizing_rules", frozen_authorizing)
+        if self.global_weights is not None:
+            frozen_weights = _freeze_str_mapping(
+                self.global_weights,
+                field_name="CoverageCertificate.global_weights",
+                value_cast=float,
+            )
+            for value in frozen_weights.values():
+                if not math.isfinite(value):
+                    raise ValueError(
+                        "CoverageCertificate.global_weights values must be finite"
+                    )
+            object.__setattr__(self, "global_weights", frozen_weights)
+        if not isinstance(self.search_method, str) or not self.search_method:
+            raise ValueError("CoverageCertificate.search_method must not be empty")
+        if self.search_state != "search_complete":
+            raise ValueError(
+                "CoverageCertificate.search_state must be 'search_complete'"
+            )
+        if (
+            not isinstance(self.candidate_vectors_evaluated, int)
+            or isinstance(self.candidate_vectors_evaluated, bool)
+            or self.candidate_vectors_evaluated < 1
+        ):
+            raise ValueError(
+                "CoverageCertificate.candidate_vectors_evaluated must be positive"
+            )
+        frozen_hashes = _freeze_str_mapping(
+            self.artifact_hashes,
+            field_name="CoverageCertificate.artifact_hashes",
+            value_cast=str,
+        )
+        object.__setattr__(self, "artifact_hashes", frozen_hashes)
+
+
 @dataclass
 class SolverRequest:
     """Request payload for privacy weight solvers."""
@@ -407,6 +739,7 @@ class AnalysisRunRequest:
     compliance_posture: Optional[str] = None
     acknowledge_accuracy_first: bool = False
     privacy_rule_strategy: PrivacyRuleStrategy = PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+    privacy_release_mode: Optional[PrivacyReleaseMode] = None
     is_anonymized_aggregated_merchant_spend: bool = False
     citibank_entity_name: Optional[str] = None
     citi_competitor_receives_output: bool = False
@@ -415,6 +748,17 @@ class AnalysisRunRequest:
     def __post_init__(self) -> None:
         if not self.preset:
             self.preset = DEFAULT_PRESET_NAME
+        # The Python Interface accepts enum values or None only. Reject bare
+        # strings so a typo like "verified-safe-coverage" cannot silently reach
+        # the orchestration seam and bypass configuration precedence.
+        if self.privacy_release_mode is not None and not isinstance(
+            self.privacy_release_mode, PrivacyReleaseMode
+        ):
+            raise TypeError(
+                "AnalysisRunRequest.privacy_release_mode must be a "
+                "PrivacyReleaseMode value or None; got "
+                f"{type(self.privacy_release_mode).__name__}"
+            )
 
     @property
     def is_share(self) -> bool:
@@ -499,6 +843,9 @@ class AnalysisArtifacts:
     privacy_output_decision: Optional[PrivacyOutputDecision] = None
     privacy_sink_authorized: bool = False
     privacy_log_authorized: bool = False
+    safe_coverage_result: Optional[SafeCoverageResult] = None
+    coverage_certificate: Optional[CoverageCertificate] = None
+    coverage_certificate_output: Optional[str] = None
 
 
 @dataclass

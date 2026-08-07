@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 from uuid import uuid4
 
 from core.contracts import (
@@ -15,10 +15,15 @@ from core.contracts import (
     CONTROL3_NUMERIC_POLICY_VERSION,
     PrivacyEvaluationStatus,
     PrivacyOutputDecision,
+    PrivacyReleaseMode,
     PrivacyRuleStrategy,
     PrivacyRuleStrategyEvaluation,
     PrivacyRuleStrategyResult,
     PrivacySweepStatus,
+    SafeCoverageResult,
+)
+from core.privacy_coverage_verifier import (
+    VERIFIER_RESULT_PASSED,
 )
 from core.privacy_policy import PrivacyPolicy
 
@@ -26,6 +31,11 @@ from core.privacy_policy import PrivacyPolicy
 CONTROL3_INVALID_EVIDENCE = "control3_invalid_privacy_evidence"
 CONTROL3_MANDATORY_OVERLAY_BLOCKED = "control3_mandatory_overlay_blocked"
 CONTROL3_NUMERIC_POLICY_BLOCKED = "control3_numeric_policy_blocked"
+CONTROL3_SAFE_COVERAGE_EMPTY = "control3_safe_coverage_empty_release"
+CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE = (
+    "control3_safe_coverage_search_incomplete"
+)
+CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED = "control3_safe_coverage_verifier_failed"
 CONTROL3_POLICY_VERSION = CONTROL3_NUMERIC_POLICY_VERSION
 CONTROL3_POLICY_SOURCE = CONTROL3_NUMERIC_POLICY_SOURCE
 _CANONICAL_RULES = frozenset(APPROVED_PRIVACY_RULE_NAMES)
@@ -54,7 +64,18 @@ _CANONICAL_FAILURE_CODES = frozenset(
         "threshold_count_not_met",
     }
 )
+_CANONICAL_WITHHOLDING_REASONS = frozenset(
+    {
+        CONTROL3_INVALID_EVIDENCE,
+        CONTROL3_MANDATORY_OVERLAY_BLOCKED,
+        CONTROL3_NUMERIC_POLICY_BLOCKED,
+        CONTROL3_SAFE_COVERAGE_EMPTY,
+        CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE,
+        CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
+    }
+)
 _ATTESTATION_NONCE = object()
+_SAFE_COVERAGE_ATTESTATION_NONCE = object()
 
 
 @dataclass(frozen=True)
@@ -62,6 +83,16 @@ class _PrivacyOutputAttestation:
     nonce: object
     result: PrivacyRuleStrategyResult
     decision: PrivacyOutputDecision
+
+
+@dataclass(frozen=True)
+class _SafeCoverageOutputAttestation:
+    """Sink capability for a verified Verified Safe Coverage Release Set."""
+
+    nonce: object
+    result: SafeCoverageResult
+    decision: PrivacyOutputDecision
+    release_set: Tuple[str, ...]
 
 
 def _strategy_result_is_coherent(result: PrivacyRuleStrategyResult) -> bool:
@@ -274,6 +305,108 @@ def decide_privacy_output(result: PrivacyRuleStrategyResult) -> PrivacyOutputDec
     )
 
 
+def _safe_coverage_search_is_complete(result: SafeCoverageResult) -> bool:
+    """Return true only for a complete deterministic search result."""
+    return bool(
+        result.search_state == "search_complete"
+        and result.search_method
+        and result.candidate_vectors_evaluated > 0
+    )
+
+
+def decide_safe_coverage_output(
+    result: SafeCoverageResult,
+) -> PrivacyOutputDecision:
+    """Authorize Verified Safe Coverage output after independent verification.
+
+    Fail closed for verifier failure, an incomplete search, or an empty set.
+    """
+    if not isinstance(result, SafeCoverageResult):
+        return PrivacyOutputDecision(
+            privacy_publication_authorized=False,
+            hard_privacy_block=True,
+            withholding_reason=CONTROL3_INVALID_EVIDENCE,
+        )
+    if result.release_mode != PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE:
+        return PrivacyOutputDecision(
+            privacy_publication_authorized=False,
+            hard_privacy_block=True,
+            withholding_reason=CONTROL3_INVALID_EVIDENCE,
+        )
+    if result.verifier_result != VERIFIER_RESULT_PASSED:
+        return PrivacyOutputDecision(
+            privacy_publication_authorized=False,
+            hard_privacy_block=True,
+            withholding_reason=CONTROL3_SAFE_COVERAGE_VERIFIER_FAILED,
+        )
+    if not _safe_coverage_search_is_complete(result):
+        return PrivacyOutputDecision(
+            privacy_publication_authorized=False,
+            hard_privacy_block=True,
+            withholding_reason=CONTROL3_SAFE_COVERAGE_SEARCH_INCOMPLETE,
+        )
+    if not result.release_set:
+        return PrivacyOutputDecision(
+            privacy_publication_authorized=False,
+            hard_privacy_block=True,
+            withholding_reason=CONTROL3_SAFE_COVERAGE_EMPTY,
+        )
+    return PrivacyOutputDecision(
+        privacy_publication_authorized=True,
+        hard_privacy_block=False,
+    )
+
+
+def _attest_safe_coverage_output(
+    result: SafeCoverageResult,
+    decision: PrivacyOutputDecision,
+) -> _SafeCoverageOutputAttestation | None:
+    """Issue a Release-Set sink capability only for verified safe coverage."""
+    if not isinstance(result, SafeCoverageResult):
+        return None
+    expected = decide_safe_coverage_output(result)
+    if decision != expected:
+        return None
+    if not is_privacy_publication_authorized(decision):
+        return None
+    if result.verifier_result != VERIFIER_RESULT_PASSED:
+        return None
+    if not _safe_coverage_search_is_complete(result):
+        return None
+    if not result.release_set:
+        return None
+    return _SafeCoverageOutputAttestation(
+        _SAFE_COVERAGE_ATTESTATION_NONCE,
+        result,
+        decision,
+        tuple(result.release_set),
+    )
+
+
+def is_verified_safe_coverage_publication_authorized(
+    result: SafeCoverageResult | None,
+    artifact_decision: PrivacyOutputDecision | None,
+    supplied_decision: PrivacyOutputDecision | None,
+    attestation: _SafeCoverageOutputAttestation | None = None,
+) -> bool:
+    """Verify Release-Set sink authorization against trusted coverage evidence."""
+    if result is None:
+        return False
+    if not isinstance(result, SafeCoverageResult):
+        return False
+    expected = decide_safe_coverage_output(result)
+    return bool(
+        is_privacy_publication_authorized(expected)
+        and artifact_decision == expected
+        and supplied_decision == expected
+        and isinstance(attestation, _SafeCoverageOutputAttestation)
+        and attestation.nonce is _SAFE_COVERAGE_ATTESTATION_NONCE
+        and attestation.result is result
+        and attestation.decision == expected
+        and attestation.release_set == tuple(result.release_set)
+    )
+
+
 def is_verified_privacy_publication_authorized(
     result: PrivacyRuleStrategyResult | None,
     artifact_decision: PrivacyOutputDecision | None,
@@ -338,12 +471,7 @@ def build_non_publishable_privacy_audit(
         trusted_digest = "unknown"
     withholding_reason = (
         decision.withholding_reason
-        if decision.withholding_reason
-        in {
-            CONTROL3_INVALID_EVIDENCE,
-            CONTROL3_MANDATORY_OVERLAY_BLOCKED,
-            CONTROL3_NUMERIC_POLICY_BLOCKED,
-        }
+        if decision.withholding_reason in _CANONICAL_WITHHOLDING_REASONS
         else CONTROL3_INVALID_EVIDENCE
     )
     return {

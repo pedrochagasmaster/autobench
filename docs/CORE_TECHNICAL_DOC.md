@@ -355,6 +355,10 @@ Included files:
 - core/category_builder.py
 - core/category_suppression.py
 - core/diagnostics_engine.py
+- core/privacy_coverage.py
+- core/privacy_coverage_model.py
+- core/privacy_coverage_solver.py
+- core/privacy_coverage_verifier.py
 - core/privacy_validator.py
 - core/report_generator.py
 - core/dimensional_analyzer.py
@@ -1173,6 +1177,69 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   accuracy_first consent, which is a per-run dialog rather than a checkbox).
   Only non-identifying form preferences such as modes, column selectors,
   toggles, and dimension selections are restored.
+
+### core/privacy_coverage.py
+
+Purpose: Construct the Candidate Universe of Publication Units for Maximum
+Safe Coverage share analysis.
+
+- Builds Publication Units from share categories and required governed metrics
+  after existing structural category suppression.
+- Filters ineligible units with safe aggregate reason codes only.
+- Does not optimize weights, authorize client sinks, or decide releases.
+- Solver and verifier Modules consume the units produced here.
+- The Candidate Universe stays fixed during optimization.
+
+### core/privacy_coverage_model.py
+
+Purpose: Internal sparse MILP model compiler for Verified Safe Coverage stages.
+
+- `compile_coverage_model` builds Stage-1 variables and one CSC constraint
+  matrix per milp call path.
+- One normalized mean-weight variable `b[u,m]` per Publication Unit and metric
+  replaces repeated dense peer-denominator expressions
+  (`b = sum_p f[u,m,p] * w[p]` with normalized shares `f`).
+- Primary cap rows and secondary witness rows carry at most three variable
+  coefficients. Citi overlay rows reuse the same `b`.
+- Conservative presolve removes dominated applicable rules. For merchant spend,
+  `4/35` removes `5/25`, `6/30`, and `7/35`; `10/40` is retained because neither
+  `4/35` nor `10/40` dominates the other.
+- Structural witness classification uses exact interval analysis over the
+  weight box: always-true, uncertain, or impossible. Always-true and impossible
+  witnesses are not created as variables.
+- Stage matrices extend Stage 1 with distortion variables, then neutral-distance
+  variables. Stage 4 prepares release-mask binary blocks of at most 16 release
+  variables with coefficients `2^15` through `2^0`.
+- `CoverageModelStatistics` exposes safe aggregate counts only (variable, row,
+  and nonzero ceilings for the sanitized 242-unit / 33-peer / 3-metric fixture:
+  variables below 60,000; integer variables below 42,224; nonzeros below
+  1,350,000; cap and witness rows at most four nonzeros).
+- Internal Module. Do not export from `core/__init__.py`. SciPy `milp` remains
+  the only solver interface used by the public solver.
+
+### core/privacy_coverage_solver.py
+
+Purpose: Public seam for the Verified Safe Coverage search.
+
+- `find_verified_safe_coverage` is the external entry point.
+- A compact HiGHS anchor uses one thread and a fixed 20-node budget.
+- The anchor can return a feasible vector without an optimum proof.
+- A fixed Sobol and coordinate search refines the vector.
+- Direct policy evaluation selects the final release partition.
+- The result contains every unit that passes at the selected weights.
+- The result makes no maximum-coverage claim.
+- The independent verifier remains the final release gate.
+- The search returns `verifier_result='not_run'` until verification runs.
+
+### core/privacy_coverage_verifier.py
+
+Purpose: Independent fail-closed verification of Verified Safe Coverage results.
+
+- Re-evaluates the full release partition, weight bounds, applicable rules, and
+  mandatory overlays without using search constraint helpers.
+- Final release gate for certificates and client evidence.
+- Hidden passing units, unsafe visible units, changed weights, or rule-map
+  changes fail closed.
 
 ### core/validation_runner.py
 
