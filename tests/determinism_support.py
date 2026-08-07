@@ -239,7 +239,6 @@ def build_request(case: str, preset: str, output: Path) -> AnalysisRunRequest:
         kwargs["total_col"] = "total"
         kwargs["approved_col"] = "approved"
         kwargs["fraud_col"] = "fraud"
-        kwargs["control3_overrides"] = {"privacy_basis": "clearing_spend"}
     return AnalysisRunRequest(**kwargs)
 
 

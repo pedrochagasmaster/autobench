@@ -401,7 +401,7 @@ GROUP BY issuer_name, year_month, card_type, input_mode,
         <p>Keep <strong>Output format</strong> on <code>analysis</code> while working. An analysis workbook is internal and is not client-safe merely because its automated checks pass; anything that leaves the analysis environment must be generated as <code>publication</code> or <code>both</code>.</p>
         <h3>Metrics and dimensions</h3>
         <p>On the <strong>Share</strong> tab, pick the primary metric first (usually the approved amount: it is the metric the weights are optimized on), then optional secondary metrics (they receive the same weights), and dimensions last. Every dimension you tick adds privacy constraints, so start with the cuts the request actually needs; if balancing struggles, remove a dimension and rerun.</p>
-        <p>The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved and/or fraud columns, with fraud reported in bps by default. For issuer fraud or chargeback runs, <code>total_col</code> must be the clearing-spend amount and <code>privacy_basis</code> must be <code>clearing_spend</code>: Autobench does not infer or substitute another column.</p>
+        <p>The <strong>Rate</strong> tab asks for a total (denominator) column and approved and/or fraud columns. Fraud is in bps by default. When you select a fraud column, Autobench uses <code>total_col</code> as the clearing-spend basis. The TUI asks you to confirm this selection for each run attempt. A CLI or Python fraud selection confirms the same contract. Autobench validates the numeric structure. It cannot prove the business origin of the column. You must select the correct governed column.</p>
         <div class="callout warn"><strong>Business eligibility happens first.</strong> Digital-wallet review, dual protected axes, recurring-deliverable rechecks, peer-group changes, reverse-engineering review, Control 3.3, and top-merchant eligibility are resolved with Privacy/governance before data enters Autobench. The tool does not add self-attestation switches for those decisions.</div>
 
         <h2>5 · Your first run</h2>
@@ -635,7 +635,7 @@ GROUP BY issuer_name, year_month, card_type, input_mode,
         <p>Mantenha o <strong>formato de saída</strong> em <code>analysis</code> durante o trabalho. Um workbook de analysis é interno e não se torna seguro para cliente só porque as checagens automáticas passaram; o que sai do ambiente de análise deve ser gerado como <code>publication</code> ou <code>both</code>.</p>
         <h3>Métricas e dimensões</h3>
         <p>Na aba <strong>Share</strong>, escolha primeiro a métrica primária (normalmente o valor aprovado: é a métrica sobre a qual os pesos são otimizados), depois métricas secundárias opcionais (recebem os mesmos pesos) e as dimensões por último. Cada dimensão marcada adiciona restrições de privacidade, então comece pelos cortes que a solicitação realmente pede; se o balanceamento sofrer, remova uma dimensão e execute de novo.</p>
-        <p>A aba <strong>Rate</strong> pede uma coluna de total (denominador) e colunas de aprovadas e/ou fraude, com fraude reportada em bps por padrão. Para fraude ou chargeback de emissor, <code>total_col</code> deve ser o valor de clearing spend e <code>privacy_basis</code> deve ser <code>clearing_spend</code>: o Autobench não infere nem substitui outra coluna.</p>
+        <p>A aba <strong>Rate</strong> pede uma coluna de total (denominador) e colunas de aprovadas e/ou fraude. Fraude é reportada em bps por padrão. Quando você seleciona uma coluna de fraude, o Autobench usa <code>total_col</code> como a base de clearing spend. A TUI pede a confirmação dessa seleção para cada tentativa. A seleção de fraude na CLI ou em Python confirma o mesmo contrato. O Autobench valida a estrutura numérica. Ele não pode provar a origem de negócio da coluna. Você deve selecionar a coluna governada correta.</p>
         <div class="callout warn"><strong>Elegibilidade vem antes.</strong> Carteira digital, dois eixos protegidos, recorrência, mudanças no peer group, engenharia reversa, Control 3.3 e top merchants são resolvidos com Privacidade/governança antes dos dados entrarem no Autobench. A ferramenta não cria autodeclarações para essas decisões.</div>
 
         <h2>5 · Sua primeira execução</h2>
@@ -1762,7 +1762,7 @@ autobench-cli config validate project-autobench.yaml</code></pre>
   --output-format both --output /ads_storage/$USER/project/rate.xlsx</code></pre>
         <h2>Fraud</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli rate --csv data.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
-  --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+  --preset compliance_strict</code></pre>
         <h2>Merchant share with the 4/35 declaration</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli share --csv merchant_data.csv \
   --entity-col merchant_name --entity "Client Merchant" \
   --metric amount --dimensions region channel \
@@ -1789,7 +1789,7 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
   --output-format both --output /ads_storage/$USER/projeto/rate.xlsx</code></pre>
         <h2>Fraude</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate --csv dados.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
-  --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+  --preset compliance_strict</code></pre>
         <h2>Share de merchant com a declaração 4/35</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli share --csv merchant_data.csv \
   --entity-col merchant_name --entity "Client Merchant" \
   --metric amount --dimensions region channel \

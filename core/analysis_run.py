@@ -15,7 +15,11 @@ from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
 import pandas as pd
 
 from core.compliance import build_blocked_compliance_summary, build_compliance_summary
-from core.control3_policy import CONTROL3_POLICY_KEYS, Control3PolicyInput, evaluate_control3_policy
+from core.control3_policy import (
+    CLEARING_SPEND_BASIS,
+    Control3PolicyInput,
+    evaluate_control3_policy,
+)
 from core.audit_log import build_audit_log_model
 from core.audit_package import write_audit_package
 from core.balanced_export import export_balanced_csv, get_balanced_metrics_df
@@ -613,17 +617,6 @@ def build_run_config(
     )
     if extra_overrides:
         cli_overrides.update(extra_overrides)
-    control3_overrides = getattr(args, 'control3_overrides', None)
-    if isinstance(control3_overrides, dict):
-        cli_overrides.update(control3_overrides)
-    else:
-        cli_overrides.update(
-            {
-                key: getattr(args, key)
-                for key in CONTROL3_POLICY_KEYS
-                if getattr(args, key, None) is not None
-            }
-        )
     cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
 
     return ConfigManager(
@@ -808,7 +801,6 @@ def build_common_run_metadata(
             'high_pp': high_impact_pp,
             'low_pp': low_impact_pp,
         },
-        'control3_policy_declarations': resolved.control3.to_metadata_dict(),
     }
 
 
@@ -1227,8 +1219,7 @@ def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRun
             "Configuration could not be resolved for Control 3 policy evaluation",
             build_blocked_compliance_summary(posture, acknowledgement_given).to_dict(),
         )
-    policy_input = Control3PolicyInput.from_evidence(
-        resolved.control3,
+    policy_input = Control3PolicyInput(
         analysis_mode=request.mode,
         rate_types=request.rate_types,
     )
@@ -1640,7 +1631,7 @@ def _build_rate_mode_metadata(
         bic_percentiles['approval'] = default_bic
     if request.fraud_col:
         bic_percentiles['fraud'] = fraud_bic
-    return {
+    metadata = {
         'analysis_type': 'multi_rate' if len(results) > 1 else f"{request.rate_types[0]}_rate",
         'rate_types': request.rate_types,
         'approved_col': request.approved_col,
@@ -1650,6 +1641,16 @@ def _build_rate_mode_metadata(
         'fraud_in_bps': output_settings.fraud_in_bps,
         'observability': observability.as_metadata(),
     }
+    if request.fraud_col:
+        metadata['fraud_privacy_evidence'] = {
+            'basis': CLEARING_SPEND_BASIS,
+            'confirmation_source': getattr(
+                request,
+                '_fraud_confirmation_source',
+                'fraud_input_contract',
+            ),
+        }
+    return metadata
 
 
 def _share_output_filename(request: AnalysisRunRequest, resolved_entity: Optional[str], _results: Dict[str, Any]) -> str:

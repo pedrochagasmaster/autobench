@@ -7,14 +7,16 @@ import asyncio
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
 from textual.pilot import Pilot
-from textual.widgets import Checkbox, Select, SelectionList, Static
+from textual.widgets import Checkbox, Select, SelectionList, Static, TabbedContent
 
 import tui_app
-from tui_app import SELECT_BLANK, BenchmarkApp
+from core.contracts import AnalysisRunRequest
+from tui_app import SELECT_BLANK, BenchmarkApp, ClearingSpendConfirmScreen
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
 
@@ -34,6 +36,29 @@ async def _await_run_completion(pilot: Pilot, timeout: float = 60.0) -> str:
             break
         await pilot.pause(0.1)
     return "\n".join(pilot.app.query_one("#log_output").lines)
+
+
+async def _configure_rate_form(
+    pilot: Pilot,
+    tmp_path: Path,
+    *,
+    fraud: bool,
+    approval: bool,
+    validate_input: bool = False,
+) -> None:
+    app = pilot.app
+    app.query_one("#csv_path").value = str(FIXTURE)
+    app.load_csv_headers(str(FIXTURE))
+    app.query_one(TabbedContent).active = "rate_tab"
+    await pilot.pause()
+    app.query_one("#rate_total", Select).value = "total"
+    app.query_one("#rate_fraud", Select).value = "fraud" if fraud else SELECT_BLANK
+    app.query_one("#rate_approved", Select).value = (
+        "approved" if approval else SELECT_BLANK
+    )
+    app.query_one("#rate_dims", SelectionList).select("card_type")
+    app.query_one("#output_file").value = str(tmp_path / "rate.xlsx")
+    app.query_one("#validate_input", Checkbox).value = validate_input
 
 
 def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkeypatch) -> None:
@@ -206,6 +231,222 @@ def test_accuracy_first_consent_modal_round_trip(
             assert outcome["value"] is expected
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("button_id", "expected"),
+    [("btn_confirm_yes", True), ("btn_confirm_no", False)],
+)
+def test_clearing_spend_confirmation_modal_uses_selected_total(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    button_id: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            outcome: dict[str, bool] = {}
+            worker = threading.Thread(
+                target=lambda: outcome.setdefault(
+                    "value",
+                    app._confirm_clearing_spend_basis("governed_total"),
+                )
+            )
+            worker.start()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if isinstance(app.screen, ClearingSpendConfirmScreen):
+                    break
+            assert isinstance(app.screen, ClearingSpendConfirmScreen)
+            message = str(app.screen.query_one("#confirm_message", Static).content)
+            assert "Confirm clearing-spend basis" in message
+            assert "`governed_total`" in message
+            await pilot.click(f"#{button_id}")
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+            assert outcome["value"] is expected
+
+    asyncio.run(scenario())
+
+
+def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "logs"))
+    prepare = MagicMock(side_effect=AssertionError("CSV loading must not start"))
+    setup_logging = MagicMock()
+    cancelled: list[str] = []
+    monkeypatch.setattr(tui_app, "prepare_run_data", prepare)
+    monkeypatch.setattr(tui_app, "setup_deferred_logging", setup_logging)
+    monkeypatch.setattr(tui_app, "action_cancelled", cancelled.append)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            await _configure_rate_form(
+                pilot,
+                tmp_path,
+                fraud=True,
+                approval=False,
+                validate_input=True,
+            )
+            pilot.app.run_analysis()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if isinstance(pilot.app.screen, ClearingSpendConfirmScreen):
+                    break
+            assert isinstance(pilot.app.screen, ClearingSpendConfirmScreen)
+            await pilot.click("#btn_confirm_no")
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if pilot.app._run_state == "idle":
+                    break
+
+    asyncio.run(scenario())
+    prepare.assert_not_called()
+    setup_logging.assert_not_called()
+    assert not (tmp_path / "logs").exists()
+    assert cancelled == ["rate_analysis"]
+
+
+def test_fraud_confirmation_continues_run_and_marks_tui_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> AnalysisRunRequest:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _configure_rate_form(
+                pilot,
+                tmp_path,
+                fraud=True,
+                approval=True,
+            )
+            executed = MagicMock()
+            app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
+            app.run_analysis()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if isinstance(app.screen, ClearingSpendConfirmScreen):
+                    break
+            assert isinstance(app.screen, ClearingSpendConfirmScreen)
+            await pilot.click("#btn_confirm_yes")
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if executed.called:
+                    break
+            assert executed.called
+            return executed.call_args.args[0]
+
+    request = asyncio.run(scenario())
+    assert request.approved_col == "approved"
+    assert request.fraud_col == "fraud"
+    assert request._fraud_confirmation_source == "tui_modal"
+
+
+def test_approval_only_tui_run_skips_clearing_spend_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _configure_rate_form(
+                pilot,
+                tmp_path,
+                fraud=False,
+                approval=True,
+            )
+            confirm = MagicMock(side_effect=AssertionError("Approval runs must not ask"))
+            executed = MagicMock()
+            app._confirm_clearing_spend_basis = confirm  # type: ignore[method-assign]
+            app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
+            app.run_analysis()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                if executed.called:
+                    break
+            confirm.assert_not_called()
+            assert executed.called
+
+    asyncio.run(scenario())
+
+
+def test_new_fraud_run_attempt_shows_confirmation_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setattr(tui_app, "action_cancelled", lambda _action: None)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            await _configure_rate_form(
+                pilot,
+                tmp_path,
+                fraud=True,
+                approval=False,
+            )
+            for _attempt in range(2):
+                pilot.app.run_analysis()
+                for _ in range(50):
+                    await pilot.pause(0.1)
+                    if isinstance(
+                        pilot.app.screen,
+                        ClearingSpendConfirmScreen,
+                    ):
+                        break
+                assert isinstance(
+                    pilot.app.screen,
+                    ClearingSpendConfirmScreen,
+                )
+                await pilot.click("#btn_confirm_no")
+                for _ in range(50):
+                    await pilot.pause(0.1)
+                    if pilot.app._run_state == "idle":
+                        break
+
+    asyncio.run(scenario())
+
+
+def test_validation_retry_reuses_confirmed_fraud_request() -> None:
+    app = BenchmarkApp()
+    request = AnalysisRunRequest(
+        mode="rate",
+        total_col="total",
+        fraud_col="fraud",
+    )
+    request._fraud_confirmation_source = "tui_modal"
+    app.run_analysis = MagicMock()  # type: ignore[method-assign]
+    saved_df = MagicMock()
+
+    app._handle_validation_modal_result(
+        True,
+        has_errors=False,
+        should_abort=False,
+        request=request,
+        saved_df=saved_df,
+        log_widget=MagicMock(),
+    )
+
+    app.run_analysis.assert_called_once_with(
+        confirmed=True,
+        saved_request=request,
+        saved_df=saved_df,
+    )
 
 
 def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> None:

@@ -168,6 +168,7 @@ def write_outputs(
             # separate `artifacts.*_df` attributes for the analysis path; the
             # publication helper expects them inside `metadata`.
             publication_metadata = dict(artifacts.metadata or {})
+            publication_metadata.pop("fraud_privacy_evidence", None)
             for key, value in {
                 "weights_df": artifacts.weights_df,
                 "method_breakdown_df": artifacts.method_breakdown_df,

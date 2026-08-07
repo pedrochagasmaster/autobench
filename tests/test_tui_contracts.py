@@ -7,12 +7,14 @@ import pandas as pd
 import pytest
 
 from core.analysis_run import (
+    _build_rate_mode_metadata,
     apply_prepared_dataset,
     build_data_quality_from_validation_issues,
     build_run_config,
     should_reuse_prepared_validation,
 )
-from core.contracts import AnalysisRunRequest, PreparedDataset
+from core.contracts import AnalysisRunRequest, OutputSettings, PreparedDataset
+from core.observability import RunObservability
 from tui_app import BenchmarkApp, LogHandler, TUI_REQUEST_FIELDS, TUI_UNSUPPORTED_FIELDS, write_log_message
 from utils.config_manager import ConfigManager, ResolvedConfig
 from utils.config_overrides import ADVANCED_FIELD_SPECS, ConfigOverrideBuilder
@@ -38,6 +40,28 @@ def test_from_widget_values_matches_direct_construction() -> None:
 def test_from_widget_values_rejects_unknown_keys() -> None:
     with pytest.raises(ValueError, match="Unknown request fields from TUI"):
         AnalysisRunRequest.from_widget_values("share", {"csv": "data.csv", "bogus_flag": True})
+
+
+def test_tui_fraud_confirmation_source_reaches_internal_metadata() -> None:
+    request = AnalysisRunRequest(
+        mode="rate",
+        total_col="total",
+        fraud_col="fraud",
+    )
+    request._fraud_confirmation_source = "tui_modal"
+
+    metadata = _build_rate_mode_metadata(
+        request=request,
+        config=ConfigManager(),
+        results={"fraud": {}},
+        output_settings=OutputSettings(),
+        observability=RunObservability(),
+    )
+
+    assert metadata["fraud_privacy_evidence"] == {
+        "basis": "clearing_spend",
+        "confirmation_source": "tui_modal",
+    }
 
 
 def test_tui_request_fields_cover_all_analysis_run_request_fields() -> None:
