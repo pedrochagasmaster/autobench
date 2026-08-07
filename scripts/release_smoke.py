@@ -70,6 +70,8 @@ def _solve_fixture() -> Tuple[Tuple[PublicationUnit, ...], SafeCoverageResult]:
 def run() -> str:
     """Return a success line after a real solve and independent verification."""
     highspy_version = version("highspy")
+    if not callable(getattr(highspy, "Highs", None)):
+        raise RuntimeError("highspy.Highs is unavailable after import")
     _universe, result = _solve_fixture()
 
     if result.search_state != "search_complete":
