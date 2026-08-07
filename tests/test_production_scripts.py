@@ -546,6 +546,14 @@ def test_offline_bundle_profile_targets_python_310_cp310() -> None:
 
     assert 'python_version: "3.10"' in profile
     assert "abi: cp310" in profile
+    assert "compatible_platform_tags:" in profile
+    assert "manylinux_2_24_x86_64" in profile
+    assert "manylinux2014_x86_64" in profile
+    assert "\n  platform:" not in profile
+    assert (
+        "/ads_storage/autobench/.venv/current/bin/python -m scripts.release_smoke"
+        in profile
+    )
     assert "legacy checksum-only" in deploy
 
 

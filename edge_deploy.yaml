@@ -21,6 +21,7 @@ dependency_bundle:
     - manylinux2014_x86_64
 smoke:
   standard:
+    - "/ads_storage/autobench/.venv/current/bin/python -m scripts.release_smoke"
     - "/ads_storage/autobench/bin/autobench-cli config list"
     - "/ads_storage/autobench/bin/autobench-cli share --help"
   deep: []                       # autobench's fixture run is offline; no Kerberos

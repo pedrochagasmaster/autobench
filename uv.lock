@@ -39,7 +39,7 @@ release = [
 
 [package.metadata]
 requires-dist = [
-    { name = "edge-deploy-core", marker = "extra == 'release'", git = "https://github.com/pedrochagasmaster/edge-deploy-core.git?rev=v1.6.0" },
+    { name = "edge-deploy-core", marker = "extra == 'release'", git = "https://github.com/pedrochagasmaster/edge-deploy-core.git?rev=v1.6.1" },
     { name = "highspy", specifier = ">=1.15.1,<1.16" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8,<2" },
     { name = "numpy", specifier = ">=1.24,<3" },
@@ -302,8 +302,8 @@ wheels = [
 
 [[package]]
 name = "edge-deploy-core"
-version = "1.6.0"
-source = { git = "https://github.com/pedrochagasmaster/edge-deploy-core.git?rev=v1.6.0#67ba097c9f056814846a068c3bf1925e719288f7" }
+version = "1.6.1"
+source = { git = "https://github.com/pedrochagasmaster/edge-deploy-core.git?rev=v1.6.1#d2221b37b7572c3603872cf26e6186b23e58e1e6" }
 dependencies = [
     { name = "paramiko" },
     { name = "pyyaml" },
