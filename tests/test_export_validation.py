@@ -27,7 +27,6 @@ def _rate_request(tmp_path: Path, **overrides: object) -> AnalysisRunRequest:
         "time_col": "year_month",
         "preset": "balanced_default",
         "compliance_posture": "strict",
-        "control3_overrides": {"privacy_basis": "clearing_spend"},
         "output": str(out),
         "export_balanced_csv": True,
     }

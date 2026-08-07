@@ -299,6 +299,17 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ClearingSpendConfirmScreen(ConfirmScreen):
+    """Confirm that the selected Total column contains clearing spend."""
+
+    def __init__(self, total_col: str) -> None:
+        super().__init__(
+            "Confirm clearing-spend basis\n\n"
+            f"Fraud analysis requires Total column `{total_col}` to contain "
+            "clearing-spend amounts. Continue?",
+        )
+
+
 class PresetHelpScreen(ModalScreen):
     """Screen to show preset help."""
 
@@ -473,7 +484,6 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
     "audit_package",
     "validate_export",
     "report_format",
-    "control3_overrides",
 })
 
 _PRIVACY_RELEASE_MODE_OPTIONS = (
@@ -1471,6 +1481,23 @@ class BenchmarkApp(App):
         answered.wait()
         return decision.get("value", False)
 
+    def _confirm_clearing_spend_basis(self, total_col: str) -> bool:
+        """Ask for the fraud clearing-spend attestation for this run attempt."""
+        decision: Dict[str, bool] = {}
+        answered = threading.Event()
+
+        def _on_dismiss(result: Optional[bool]) -> None:
+            decision["value"] = bool(result)
+            answered.set()
+
+        self.call_from_thread(
+            self.push_screen,
+            ClearingSpendConfirmScreen(total_col),
+            _on_dismiss,
+        )
+        answered.wait()
+        return decision.get("value", False)
+
     def _execute_run_for_tui(self, request: AnalysisRunRequest, logger: logging.Logger, log_widget: Log):
         """Run analysis while keeping library print output inside the TUI log.
 
@@ -2241,24 +2268,6 @@ class BenchmarkApp(App):
             self.call_from_thread(self._begin_validation_ui)
 
             try:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                log_dir = _resolve_log_dir()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_file = str(
-                    log_dir / f"benchmark_log_{timestamp}.txt"
-                )
-                setup_deferred_logging(
-                    log_level="INFO",
-                    log_file=log_file,
-                    console_output=False,
-                )
-
-                logging.getLogger("benchmark").handlers.clear()
-                logging.getLogger("core").handlers.clear()
-                handler = LogHandler(log_widget)
-                handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-                logging.getLogger().addHandler(handler)
-
                 csv_path = self.query_one("#csv_path").value
                 if not csv_path:
                     self._fail_launch("CSV path is required.", focus_id="csv_path")
@@ -2364,6 +2373,32 @@ class BenchmarkApp(App):
                     values["fraud_in_bps"] = getattr(self.query_one("#fraud_in_bps"), 'value', True)
 
                 request = AnalysisRunRequest.from_widget_values(mode, values)
+                if request.fraud_col:
+                    assert request.total_col is not None
+                    if not self._confirm_clearing_spend_basis(request.total_col):
+                        action_cancelled("rate_analysis")
+                        write_log_message(log_widget, "Analysis cancelled by user.")
+                        self.call_from_thread(self._reset_run_ui)
+                        return
+                    request._fraud_confirmation_source = "tui_modal"
+
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                log_dir = _resolve_log_dir()
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file = str(
+                    log_dir / f"benchmark_log_{timestamp}.txt"
+                )
+                setup_deferred_logging(
+                    log_level="INFO",
+                    log_file=log_file,
+                    console_output=False,
+                )
+
+                logging.getLogger("benchmark").handlers.clear()
+                logging.getLogger("core").handlers.clear()
+                handler = LogHandler(log_widget)
+                handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                logging.getLogger().addHandler(handler)
 
                 df = None
                 if request.validate_input and request.csv and os.path.exists(request.csv):

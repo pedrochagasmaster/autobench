@@ -73,6 +73,56 @@
     .brand-mark { width: 42px; height: 26px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 30'%3E%3Ccircle cx='15' cy='15' r='15' fill='%23EB001B'/%3E%3Ccircle cx='33' cy='15' r='15' fill='%23F79E1B'/%3E%3Cpath d='M24 3 A15 15 0 0 1 24 27 A15 15 0 0 1 24 3 Z' fill='%23FF5F00'/%3E%3C/svg%3E") center / contain no-repeat; margin-right: 12px; flex: 0 0 auto; }
     .brand strong { font-size: 1.15rem; letter-spacing: -.02em; }
     .brand-sub { margin: 0 0 24px; color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .search-box { position: relative; margin: 0 0 16px; }
+    .search-box input {
+      width: 100%;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--soft);
+      color: var(--ink);
+      font: inherit;
+      font-size: .88rem;
+    }
+    .search-box input::placeholder { color: var(--muted); }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-results {
+      position: absolute;
+      z-index: 15;
+      left: 0;
+      right: 0;
+      top: calc(100% + 4px);
+      max-height: min(360px, 50vh);
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .search-results[hidden] { display: none; }
+    .search-results button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 10px 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: .84rem;
+    }
+    .search-results button:last-child { border-bottom: 0; }
+    .search-results button:hover,
+    .search-results button[aria-selected="true"] { background: var(--accent-soft); }
+    .search-results .result-page { display: block; color: var(--accent); font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .search-results .result-title { display: block; font-weight: 700; margin: 2px 0; }
+    .search-results .result-snippet { display: block; color: var(--muted); font-size: .78rem; line-height: 1.35; }
+    .search-empty { padding: 12px; color: var(--muted); font-size: .84rem; }
+    .search-hit { outline: 3px solid var(--accent-3); outline-offset: 4px; border-radius: 4px; background: color-mix(in srgb, var(--accent-3) 18%, transparent); }
     .site-nav { display: grid; gap: 4px; }
     .site-nav a { padding: 9px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .92rem; transition: background-color .12s ease-out, color .12s ease-out; }
     .site-nav a:hover { background: var(--soft); color: var(--ink); }
@@ -158,6 +208,9 @@
       .brand { display: inline-flex; margin-bottom: 3px; }
       .brand-mark { width: 32px; height: 20px; margin-right: 9px; }
       .brand-sub { display: none; }
+      .search-box { margin: 8px 0 6px; }
+      .search-box input { min-height: 34px; font-size: .82rem; }
+      .search-results { max-height: min(280px, 40vh); }
       .site-nav { display: flex; gap: 4px; margin-top: 8px; overflow-x: auto; padding-bottom: 5px; scrollbar-width: none; }
       .site-nav::-webkit-scrollbar { display: none; }
       .site-nav a { flex: 0 0 auto; padding: 7px 8px; font-size: .78rem; }
@@ -179,7 +232,7 @@
       .run-path { grid-template-columns: 1fr; }
     }
     @media print {
-      .sidebar, .copy, .skip-link, .tabs { display: none !important; }
+      .sidebar, .copy, .skip-link, .tabs, .search-box { display: none !important; }
       .site-shell { display: block; }
       .content { padding: 0; }
       .doc-page[hidden] { display: none !important; }
@@ -213,6 +266,23 @@
     <aside class="sidebar">
       <a class="brand" href="#onboarding" data-page-link="onboarding"><span class="brand-mark" aria-hidden="true"></span><strong>Autobench</strong></a>
       <p class="brand-sub" data-copy-en="Analyst handbook" data-copy-pt="Manual do analista">Analyst handbook</p>
+      <div class="search-box" role="search">
+        <label class="visually-hidden" for="doc-search" data-copy-en="Search handbook" data-copy-pt="Buscar no manual">Search handbook</label>
+        <input
+          id="doc-search"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+          enterkeyhint="search"
+          data-placeholder-en="Search handbook…"
+          data-placeholder-pt="Buscar no manual…"
+          placeholder="Search handbook…"
+          aria-controls="doc-search-results"
+          aria-expanded="false"
+          aria-autocomplete="list"
+        >
+        <div id="doc-search-results" class="search-results" role="listbox" hidden></div>
+      </div>
       <nav class="site-nav" id="documentation-navigation" aria-label="Documentation pages">
         <a href="#onboarding" data-page-link="onboarding" data-label-en="Onboarding" data-label-pt="Onboarding">Onboarding</a>
         <a href="#setup-support" data-page-link="setup-support" data-label-en="Setup & Support" data-label-pt="Acesso e suporte">Setup & Support</a>
@@ -331,7 +401,7 @@ GROUP BY issuer_name, year_month, card_type, input_mode,
         <p>Keep <strong>Output format</strong> on <code>analysis</code> while working. An analysis workbook is internal and is not client-safe merely because its automated checks pass; anything that leaves the analysis environment must be generated as <code>publication</code> or <code>both</code>.</p>
         <h3>Metrics and dimensions</h3>
         <p>On the <strong>Share</strong> tab, pick the primary metric first (usually the approved amount: it is the metric the weights are optimized on), then optional secondary metrics (they receive the same weights), and dimensions last. Every dimension you tick adds privacy constraints, so start with the cuts the request actually needs; if balancing struggles, remove a dimension and rerun.</p>
-        <p>The <strong>Rate</strong> tab asks instead for a total (denominator) column plus approved and/or fraud columns, with fraud reported in bps by default. For issuer fraud or chargeback runs, <code>total_col</code> must be the clearing-spend amount and <code>privacy_basis</code> must be <code>clearing_spend</code>: Autobench does not infer or substitute another column.</p>
+        <p>The <strong>Rate</strong> tab asks for a total (denominator) column and approved and/or fraud columns. Fraud is in bps by default. When you select a fraud column, Autobench uses <code>total_col</code> as the clearing-spend basis. The TUI asks you to confirm this selection for each run attempt. A CLI or Python fraud selection confirms the same contract. Autobench validates the numeric structure. It cannot prove the business origin of the column. You must select the correct governed column.</p>
         <div class="callout warn"><strong>Business eligibility happens first.</strong> Digital-wallet review, dual protected axes, recurring-deliverable rechecks, peer-group changes, reverse-engineering review, Control 3.3, and top-merchant eligibility are resolved with Privacy/governance before data enters Autobench. The tool does not add self-attestation switches for those decisions.</div>
 
         <h2>5 · Your first run</h2>
@@ -565,7 +635,7 @@ GROUP BY issuer_name, year_month, card_type, input_mode,
         <p>Mantenha o <strong>formato de saída</strong> em <code>analysis</code> durante o trabalho. Um workbook de analysis é interno e não se torna seguro para cliente só porque as checagens automáticas passaram; o que sai do ambiente de análise deve ser gerado como <code>publication</code> ou <code>both</code>.</p>
         <h3>Métricas e dimensões</h3>
         <p>Na aba <strong>Share</strong>, escolha primeiro a métrica primária (normalmente o valor aprovado: é a métrica sobre a qual os pesos são otimizados), depois métricas secundárias opcionais (recebem os mesmos pesos) e as dimensões por último. Cada dimensão marcada adiciona restrições de privacidade, então comece pelos cortes que a solicitação realmente pede; se o balanceamento sofrer, remova uma dimensão e execute de novo.</p>
-        <p>A aba <strong>Rate</strong> pede uma coluna de total (denominador) e colunas de aprovadas e/ou fraude, com fraude reportada em bps por padrão. Para fraude ou chargeback de emissor, <code>total_col</code> deve ser o valor de clearing spend e <code>privacy_basis</code> deve ser <code>clearing_spend</code>: o Autobench não infere nem substitui outra coluna.</p>
+        <p>A aba <strong>Rate</strong> pede uma coluna de total (denominador) e colunas de aprovadas e/ou fraude. Fraude é reportada em bps por padrão. Quando você seleciona uma coluna de fraude, o Autobench usa <code>total_col</code> como a base de clearing spend. A TUI pede a confirmação dessa seleção para cada tentativa. A seleção de fraude na CLI ou em Python confirma o mesmo contrato. O Autobench valida a estrutura numérica. Ele não pode provar a origem de negócio da coluna. Você deve selecionar a coluna governada correta.</p>
         <div class="callout warn"><strong>Elegibilidade vem antes.</strong> Carteira digital, dois eixos protegidos, recorrência, mudanças no peer group, engenharia reversa, Control 3.3 e top merchants são resolvidos com Privacidade/governança antes dos dados entrarem no Autobench. A ferramenta não cria autodeclarações para essas decisões.</div>
 
         <h2>5 · Sua primeira execução</h2>
@@ -1692,7 +1762,7 @@ autobench-cli config validate project-autobench.yaml</code></pre>
   --output-format both --output /ads_storage/$USER/project/rate.xlsx</code></pre>
         <h2>Fraud</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli rate --csv data.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
-  --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+  --preset compliance_strict</code></pre>
         <h2>Merchant share with the 4/35 declaration</h2><pre><button class="copy" type="button">Copy</button><code>autobench-cli share --csv merchant_data.csv \
   --entity-col merchant_name --entity "Client Merchant" \
   --metric amount --dimensions region channel \
@@ -1719,7 +1789,7 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
   --output-format both --output /ads_storage/$USER/projeto/rate.xlsx</code></pre>
         <h2>Fraude</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli rate --csv dados.csv --entity Target \
   --total-col clearing_spend_amount --fraud-col fraud_amount \
-  --privacy-basis clearing_spend --preset compliance_strict</code></pre>
+  --preset compliance_strict</code></pre>
         <h2>Share de merchant com a declaração 4/35</h2><pre><button class="copy" type="button">Copiar</button><code>autobench-cli share --csv merchant_data.csv \
   --entity-col merchant_name --entity "Client Merchant" \
   --metric amount --dimensions region channel \
@@ -1814,6 +1884,159 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
       const save = (key, value) => { try { localStorage.setItem(key, value); } catch { /* storage may be blocked; toggles still work for this session */ } };
       const languageButton = document.getElementById('language-toggle');
       const themeButton = document.getElementById('theme-toggle');
+      const searchInput = document.getElementById('doc-search');
+      const searchResults = document.getElementById('doc-search-results');
+      let searchActive = -1;
+      let searchMatches = [];
+      let hitClearTimer = 0;
+
+      const pageLabels = {
+        onboarding: { en: 'Onboarding', pt: 'Onboarding' },
+        'setup-support': { en: 'Setup & Support', pt: 'Acesso e suporte' },
+        faq: { en: 'FAQ', pt: 'Perguntas frequentes' },
+        'presets-config': { en: 'Presets & Config', pt: 'Presets e config.' },
+        'advanced-optimization': { en: 'Advanced Parameters', pt: 'Parâmetros avançados' },
+        'privacy-outputs': { en: 'Privacy & Outputs', pt: 'Privacidade e saídas' },
+        'cli-cookbook': { en: 'CLI Cookbook', pt: 'Receitas CLI' },
+        'large-data': { en: 'Large Datasets', pt: 'Bases grandes' },
+        glossary: { en: 'Glossary', pt: 'Glossário' },
+      };
+
+      function normalize(text) {
+        return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      }
+
+      function buildSearchIndex() {
+        const entries = [];
+        document.querySelectorAll('.doc-page').forEach(article => {
+          const pageName = article.dataset.page;
+          const lang = article.dataset.lang;
+          const headings = [...article.querySelectorAll('h1, h2, h3')];
+          if (!headings.length) {
+            entries.push({
+              page: pageName,
+              lang,
+              title: pageLabels[pageName]?.[lang] || pageName,
+              body: normalize(article.textContent),
+              element: article,
+            });
+            return;
+          }
+          headings.forEach((heading, index) => {
+            const chunks = [];
+            let node = heading.nextElementSibling;
+            const stop = headings[index + 1] || null;
+            while (node && node !== stop) {
+              chunks.push(node.textContent || '');
+              node = node.nextElementSibling;
+            }
+            entries.push({
+              page: pageName,
+              lang,
+              title: (heading.textContent || '').replace(/\s+/g, ' ').trim(),
+              body: normalize(chunks.join(' ')),
+              element: heading,
+            });
+          });
+        });
+        return entries;
+      }
+
+      const searchIndex = buildSearchIndex();
+
+      function closeSearch() {
+        searchResults.hidden = true;
+        searchResults.innerHTML = '';
+        searchInput.setAttribute('aria-expanded', 'false');
+        searchActive = -1;
+        searchMatches = [];
+      }
+
+      function renderSearchResults(query) {
+        const needle = normalize(query);
+        if (!needle) {
+          closeSearch();
+          return;
+        }
+        const ranked = [];
+        searchIndex.forEach(entry => {
+          if (entry.lang !== language) return;
+          const titleNorm = normalize(entry.title);
+          const titleHit = titleNorm.includes(needle);
+          const bodyHit = entry.body.includes(needle);
+          if (!titleHit && !bodyHit) return;
+          ranked.push({
+            entry,
+            score: titleHit ? (titleNorm.startsWith(needle) ? 0 : 1) : 2,
+          });
+        });
+        ranked.sort((a, b) => a.score - b.score || a.entry.title.localeCompare(b.entry.title));
+        searchMatches = ranked.slice(0, 12).map(item => item.entry);
+        searchResults.innerHTML = '';
+        if (!searchMatches.length) {
+          const empty = document.createElement('div');
+          empty.className = 'search-empty';
+          empty.textContent = language === 'pt' ? 'Nenhum resultado.' : 'No results.';
+          searchResults.append(empty);
+        } else {
+          searchMatches.forEach((entry, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.id = `doc-search-option-${index}`;
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-selected', 'false');
+            const pageLabel = pageLabels[entry.page]?.[language] || entry.page;
+            const snippetSource = entry.body;
+            const at = snippetSource.indexOf(needle);
+            let snippet = '';
+            if (at >= 0) {
+              const start = Math.max(0, at - 28);
+              snippet = (start > 0 ? '…' : '') + snippetSource.slice(start, start + 90).trim() + '…';
+            }
+            button.innerHTML = `<span class="result-page"></span><span class="result-title"></span><span class="result-snippet"></span>`;
+            button.querySelector('.result-page').textContent = pageLabel;
+            button.querySelector('.result-title').textContent = entry.title;
+            button.querySelector('.result-snippet').textContent = snippet;
+            button.addEventListener('click', () => openSearchResult(index));
+            searchResults.append(button);
+          });
+        }
+        searchResults.hidden = false;
+        searchInput.setAttribute('aria-expanded', 'true');
+        searchActive = searchMatches.length ? 0 : -1;
+        syncSearchSelection();
+      }
+
+      function syncSearchSelection() {
+        [...searchResults.querySelectorAll('[role="option"]')].forEach((option, index) => {
+          option.setAttribute('aria-selected', String(index === searchActive));
+        });
+        if (searchActive >= 0) {
+          searchInput.setAttribute('aria-activedescendant', `doc-search-option-${searchActive}`);
+        } else {
+          searchInput.removeAttribute('aria-activedescendant');
+        }
+      }
+
+      function flashSearchHit(element) {
+        clearTimeout(hitClearTimer);
+        document.querySelectorAll('.search-hit').forEach(node => node.classList.remove('search-hit'));
+        element.classList.add('search-hit');
+        hitClearTimer = setTimeout(() => element.classList.remove('search-hit'), 1600);
+      }
+
+      function openSearchResult(index) {
+        const entry = searchMatches[index];
+        if (!entry) return;
+        page = entry.page;
+        closeSearch();
+        searchInput.value = '';
+        applyState({ focus: false });
+        const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        entry.element.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+        flashSearchHit(entry.element);
+        searchInput.blur();
+      }
 
       function applyState({ focus = false } = {}) {
         root.lang = language === 'pt' ? 'pt-BR' : 'en';
@@ -1830,6 +2053,9 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
         document.querySelectorAll('[data-copy-en]').forEach(node => {
           node.textContent = language === 'pt' ? node.dataset.copyPt : node.dataset.copyEn;
         });
+        searchInput.placeholder = language === 'pt'
+          ? searchInput.dataset.placeholderPt
+          : searchInput.dataset.placeholderEn;
         languageButton.textContent = language === 'pt' ? 'EN' : 'PT';
         languageButton.setAttribute('aria-label', language === 'pt' ? 'Switch to English' : 'Mudar para português');
         const dark = theme === 'dark';
@@ -1844,6 +2070,8 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
           'aria-label', language === 'pt' ? 'Páginas da documentação' : 'Documentation pages'
         );
         document.title = `Autobench · ${language === 'pt' ? 'Manual do analista' : 'Analyst handbook'}`;
+        if (searchInput.value.trim()) renderSearchResults(searchInput.value);
+        else closeSearch();
         if (focus) {
           const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
           window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
@@ -1873,6 +2101,40 @@ autobench-cli config validate projeto-autobench.yaml</code></pre>
       document.querySelector('.skip-link').addEventListener('click', event => {
         event.preventDefault();
         document.getElementById('main-content').focus({ preventScroll: false });
+      });
+
+      searchInput.addEventListener('input', () => renderSearchResults(searchInput.value));
+      searchInput.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          closeSearch();
+          searchInput.blur();
+          return;
+        }
+        if (searchResults.hidden || !searchMatches.length) return;
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          searchActive = (searchActive + 1) % searchMatches.length;
+          syncSearchSelection();
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          searchActive = (searchActive - 1 + searchMatches.length) % searchMatches.length;
+          syncSearchSelection();
+        } else if (event.key === 'Enter' && searchActive >= 0) {
+          event.preventDefault();
+          openSearchResult(searchActive);
+        }
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+          const tag = (event.target && event.target.tagName) || '';
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target.isContentEditable) return;
+          event.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+        }
+      });
+      document.addEventListener('click', event => {
+        if (!event.target.closest('.search-box')) closeSearch();
       });
 
       function copyToClipboard(text) {

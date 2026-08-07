@@ -10,9 +10,6 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from core.control3_policy import CONTROL3_POLICY_KEYS
-
-
 DEFAULT_PRESET_NAME = "compliance_strict"
 
 APPROVED_PRIVACY_RULE_NAMES = ("5/25", "6/30", "7/35", "10/40", "4/35")
@@ -746,7 +743,6 @@ class AnalysisRunRequest:
     is_anonymized_aggregated_merchant_spend: bool = False
     citibank_entity_name: Optional[str] = None
     citi_competitor_receives_output: bool = False
-    control3_overrides: Dict[str, Any] = field(default_factory=dict)
     prepared_dataset: Optional["PreparedDataset"] = None
 
     def __post_init__(self) -> None:
@@ -801,11 +797,6 @@ class AnalysisRunRequest:
         for key in valid_keys:
             if hasattr(ns, key) and key != "mode":
                 kwargs[key] = getattr(ns, key)
-        kwargs["control3_overrides"] = {
-            key: getattr(ns, key)
-            for key in CONTROL3_POLICY_KEYS
-            if getattr(ns, key, None) is not None
-        }
         if getattr(ns, "privacy_rule_sweep", False):
             kwargs["privacy_rule_strategy"] = PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
         return cls(**kwargs)

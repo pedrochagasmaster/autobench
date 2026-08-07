@@ -9,9 +9,12 @@ EXPECTED_PAGES = {
     "onboarding",
     "setup-support",
     "faq",
+    "share-vs-rate",
     "presets-config",
     "advanced-optimization",
     "privacy-outputs",
+    "tui-guide",
+    "cli-reference",
     "cli-cookbook",
     "large-data",
     "glossary",
@@ -99,3 +102,18 @@ def test_standalone_onboarding_records_locked_policy_boundaries() -> None:
     assert "O Autobench confia nessa decisão" in source
     assert "Passing numeric rules does not turn an analysis workbook" in source
     assert "Passar nas regras numéricas não transforma analysis" in source
+
+
+def test_standalone_onboarding_includes_search_bar() -> None:
+    source, parser = _parse_document()
+
+    assert 'id="doc-search"' in source
+    assert 'id="doc-search-results"' in source
+    assert 'role="search"' in source
+    assert 'data-placeholder-en="Search handbook…"' in source
+    assert 'data-placeholder-pt="Buscar no manual…"' in source
+    assert "buildSearchIndex" in source
+    assert "renderSearchResults" in source
+    assert "doc-search" in parser.ids
+    assert "doc-search-results" in parser.ids
+    assert len(parser.ids) == len(set(parser.ids))

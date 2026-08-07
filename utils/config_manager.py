@@ -17,7 +17,6 @@ except ImportError:  # pragma: no cover - validators already handle this path
 
 from core.compliance import VALID_COMPLIANCE_POSTURES
 from core.contracts import DEFAULT_PRESET_NAME, PrivacyReleaseMode
-from core.control3_policy import Control3PolicyEvidence
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +124,6 @@ class ResolvedConfig:
     bayesian: BayesianConfig = field(default_factory=BayesianConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
-    control3: Control3PolicyEvidence = field(default_factory=Control3PolicyEvidence)
     compliance_posture: str = "strict"
     privacy_release_mode: PrivacyReleaseMode = PrivacyReleaseMode.COMPLETE_OUTPUT
 
@@ -140,8 +138,6 @@ class ResolvedConfig:
         bayesian = opt.get("bayesian", {}) or {}
         analysis = config.get("analysis", {}) or {}
         output = config.get("output", {}) or {}
-        control3 = config.get("control3", {}) or {}
-
         max_attempts = subset.get("max_attempts", subset.get("max_tests", 200))
         include_impact_summary = output.get("include_impact_summary")
         if include_impact_summary is None:
@@ -202,7 +198,6 @@ class ResolvedConfig:
                 impact_thresholds=dict(output.get("impact_thresholds", {}) or {}),
                 distortion_thresholds=dict(output.get("distortion_thresholds", {}) or {}),
             ),
-            control3=Control3PolicyEvidence.from_mapping(control3),
             compliance_posture=str(config.get("compliance_posture", "strict")),
             privacy_release_mode=_parse_privacy_release_mode(
                 config.get("privacy_release_mode", PrivacyReleaseMode.COMPLETE_OUTPUT.value)
@@ -548,9 +543,6 @@ class ConfigManager:
                 'auto_detect_dimensions': False,
                 'merchant_mode': False,
             },
-            'control3': {
-                'privacy_basis': None,
-            },
             'runtime': {
                 'lean_mode': False,
             },
@@ -673,7 +665,6 @@ class ConfigManager:
             'fraud_in_bps': ('output', 'fraud_in_bps'),
             'lean': ('runtime', 'lean_mode'),
             'compliance_posture': ('compliance_posture',),
-            'privacy_basis': ('control3', 'privacy_basis'),
             'privacy_release_mode': ('privacy_release_mode',),
         }
         material_cli_keys = {

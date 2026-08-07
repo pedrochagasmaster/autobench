@@ -121,15 +121,13 @@ output:
 # - 7 peers: max 35% concentration
 # - 10+ peers: max 40% concentration
 #
-# No configuration needed - the tool automatically applies the correct rule.
-
-# Machine-verifiable Control 3 inputs that affect the calculation. Business
-# eligibility and review decisions happen upstream before Autobench is used.
-control3:
-  # For fraud/chargeback issuer benchmarking concentration checks, use
-  # clearing_spend. Other values are only valid for non-fraud/non-chargeback
-  # runs where the canonical document does not require clearing spend.
-  privacy_basis: null
+# No configuration is needed. The tool applies the correct rule.
+#
+# For fraud analysis, the selected Total column is the clearing-spend basis.
+# The CLI and Python fraud selections confirm this contract. The TUI asks the
+# operator to confirm it for each run attempt. Autobench validates the numeric
+# structure. It cannot prove the business origin of the selected column. The
+# operator must select the correct governed clearing-spend column.
 
 # ============================================================================
 # OPTIMIZATION SETTINGS

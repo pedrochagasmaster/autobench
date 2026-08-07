@@ -17,7 +17,6 @@ Rate run (mode defaults to "share"; must set mode="rate"):
   - dimensions
   - output
   - export_balanced_csv=True when asserting balanced CSV output
-  - control3_overrides privacy_basis=clearing_spend when fraud_col is set
 
 When preset is set, also pass compliance_posture explicitly (matches TUI; avoids
 ConfigManager material-override guard on per_dimension_weights default).
@@ -613,7 +612,6 @@ def test_rate_run_end_to_end(tmp_path: Path) -> None:
         time_col="year_month",
         preset="balanced_default",
         compliance_posture="strict",
-        control3_overrides={"privacy_basis": "clearing_spend"},
         output=str(out),
         export_balanced_csv=True,
     )
@@ -623,6 +621,14 @@ def test_rate_run_end_to_end(tmp_path: Path) -> None:
     csv_path = tmp_path / f"{out.stem}_balanced.csv"
     assert csv_path.exists()
     assert artifacts.csv_output == str(csv_path)
+    assert artifacts.metadata is not None
+    assert artifacts.metadata["fraud_privacy_evidence"] == {
+        "basis": "clearing_spend",
+        "confirmation_source": "fraud_input_contract",
+    }
+    audit_text = (tmp_path / f"{out.stem}_audit.log").read_text(encoding="utf-8")
+    assert "clearing_spend" in audit_text
+    assert "fraud_input_contract" in audit_text
 
     df = pd.read_csv(csv_path)
     assert "Dimension" in df.columns
@@ -669,8 +675,8 @@ def test_fraud_rate_sweep_runs_on_total_col_basis(tmp_path: Path) -> None:
         time_col="year_month",
         preset="balanced_default",
         compliance_posture="strict",
-        control3_overrides={"privacy_basis": "clearing_spend"},
         output=str(tmp_path / "fraud_sweep.xlsx"),
+        output_format="both",
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
 
@@ -678,6 +684,20 @@ def test_fraud_rate_sweep_runs_on_total_col_basis(tmp_path: Path) -> None:
 
     assert artifacts.privacy_rule_strategy_result is not None
     assert artifacts.privacy_rule_strategy_result.authorizing_rules
+    assert artifacts.publication_output is not None
+    publication = load_workbook(artifacts.publication_output, read_only=True)
+    try:
+        publication_text = " ".join(
+            str(cell.value)
+            for sheet in publication.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        )
+    finally:
+        publication.close()
+    assert "fraud_privacy_evidence" not in publication_text
+    assert "fraud_input_contract" not in publication_text
 
 
 def test_fraud_only_sweep_concentration_follows_total_col(
@@ -709,7 +729,6 @@ def test_fraud_only_sweep_concentration_follows_total_col(
             output=str(tmp_path / f"fraud_basis_{name}.xlsx"),
             compliance_posture="strict",
             validate_input=False,
-            control3_overrides={"privacy_basis": "clearing_spend"},
             privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
         )
         return execute_rate_run(request, logging.getLogger("test"))
@@ -767,7 +786,6 @@ def test_approval_and_fraud_sweep_blocks_underpopulated_total_basis(
         audit_package=True,
         compliance_posture="best_effort",
         validate_input=False,
-        control3_overrides={"privacy_basis": "clearing_spend"},
         privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
     )
 
@@ -824,7 +842,6 @@ def test_fraud_output_omits_category_with_underpopulated_total_basis(
             export_balanced_csv=True,
             compliance_posture="best_effort",
             validate_input=False,
-            control3_overrides={"privacy_basis": "clearing_spend"},
             privacy_rule_strategy=strategy,
         ),
         logging.getLogger("test"),
@@ -904,7 +921,6 @@ def test_suppressed_rate_group_disjoint_peers_are_absent_from_every_sink(
             analyze_distortion=True,
             compliance_posture="best_effort",
             validate_input=False,
-            control3_overrides={"privacy_basis": "clearing_spend"},
             privacy_rule_strategy=(
                 PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
             ),
@@ -964,7 +980,7 @@ def test_suppressed_rate_group_disjoint_peers_are_absent_from_every_sink(
 
 
 @pytest.mark.parametrize("invalid_value", [-1.0, float("nan")])
-def test_invalid_privacy_basis_blocks_even_without_input_validation(
+def test_invalid_fraud_total_blocks_even_without_input_validation(
     tmp_path: Path,
     invalid_value: float,
 ) -> None:
@@ -986,7 +1002,6 @@ def test_invalid_privacy_basis_blocks_even_without_input_validation(
                 output=str(tmp_path / "invalid_basis.xlsx"),
                 compliance_posture="best_effort",
                 validate_input=False,
-                control3_overrides={"privacy_basis": "clearing_spend"},
             ),
             logging.getLogger("test"),
         )

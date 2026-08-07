@@ -244,9 +244,12 @@ absent.
 
 ### Rate behavior
 
-Rate weights use `total_col`. The same column is the governed privacy basis in
-the current rate pipeline. For issuer fraud and chargeback analysis, Control 3
-requires clearing spend in this field.
+Rate weights use `total_col`. When `fraud_col` is present, Autobench uses
+`total_col` as the clearing-spend basis. A CLI or Python fraud selection
+confirms this contract. The TUI asks the operator to confirm it for each run
+attempt. Autobench validates the numeric structure. It cannot prove the
+business origin of the column. The operator must select the correct governed
+column.
 
 - Approval output receives the complete `weight_suppressions` set. This set can
   include both minimum-participant and structural-infeasibility records.
@@ -1098,7 +1101,7 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   instead of silently treating the overlay as not applicable. Supplying a
   name declares Citi present and requires one exact, unambiguous governed
   identity even when the overlay is not applicable.
-- Issuer fraud and chargeback evidence must declare clearing spend as its
+- Issuer fraud and chargeback evidence uses `total_col` as its clearing-spend
   concentration basis.
 - Results distinguish not-subject, numerically compliant, numerically
   noncompliant, invalid evidence, and mandatory-overlay blocks. A numeric pass

@@ -579,11 +579,14 @@ python benchmark.py rate --csv data.csv --total-col txn_cnt \
 ```
 
 For merchant 4/35 eligibility, also add
-`--anonymized-aggregated-merchant-spend`. Fraud runs continue to require the
-normal `--privacy-basis clearing_spend` Control 3 declaration. Concentration
-for fraud and chargeback runs is always computed on the `--total-col`
-denominator, which must therefore be the clearing-spend amount column (not a
-transaction count). This applies to the default strategy and sweep mode.
+`--anonymized-aggregated-merchant-spend`. When you select a fraud column,
+Autobench uses `--total-col` as the clearing-spend basis. The CLI fraud
+selection confirms this contract. The Python `fraud_col` input confirms the
+same contract. The TUI asks you to confirm the selected Total column for each
+run attempt. Autobench validates the numeric structure. It cannot prove the
+business origin of the column. You must select the correct governed
+clearing-spend column. This contract applies to the default strategy and sweep
+mode.
 
 When Citibank is in the governed peer population and a Citi competitor will
 receive the output, also pass `--citi-competitor-receives-output` and the exact

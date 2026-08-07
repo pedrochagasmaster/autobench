@@ -9,7 +9,7 @@ import pytest
 from openpyxl import load_workbook
 
 from benchmark import create_parser, run_share_analysis
-from core.analysis_run import RunBlocked, build_run_request, enforce_compliance_preconditions
+from core.analysis_run import build_run_request, enforce_compliance_preconditions
 from core.contracts import AnalysisRunRequest
 from core.control3_policy import Control3PolicyInput, evaluate_control3_policy
 from utils.config_manager import ConfigManager
@@ -25,6 +25,7 @@ REMOVED_BUSINESS_FLAGS = {
     "--recurring-deliverable",
     "--last-privacy-recheck-date",
     "--peer-group-altered",
+    "--privacy-basis",
 }
 
 
@@ -57,30 +58,30 @@ def test_cli_does_not_expose_upstream_business_decisions() -> None:
     assert REMOVED_BUSINESS_FLAGS.isdisjoint(exposed)
 
 
-def test_fraud_and_chargeback_metrics_require_clearing_spend_privacy_basis() -> None:
+def test_fraud_metrics_derive_clearing_spend_basis() -> None:
     policy = evaluate_control3_policy(
         Control3PolicyInput(
             analysis_mode="rate",
             rate_types=["fraud"],
-            privacy_basis=None,
-        )
-    )
-
-    assert not policy.allowed
-    assert policy.blocked_reason == "fraud_chargeback_requires_clearing_spend_basis"
-
-
-def test_fraud_metrics_allow_explicit_clearing_spend_privacy_basis() -> None:
-    policy = evaluate_control3_policy(
-        Control3PolicyInput(
-            analysis_mode="rate",
-            rate_types=["fraud"],
-            privacy_basis="clearing_spend",
         )
     )
 
     assert policy.allowed
-    assert policy.requirements["fraud_chargeback_privacy_basis"] == "enforced"
+    assert policy.requirements["fraud_concentration_basis"] == "derived_from_total_col"
+    assert policy.details["fraud_concentration_basis"] == "clearing_spend"
+
+
+def test_approval_metrics_do_not_derive_clearing_spend_basis() -> None:
+    policy = evaluate_control3_policy(
+        Control3PolicyInput(
+            analysis_mode="rate",
+            rate_types=["approval"],
+        )
+    )
+
+    assert policy.allowed
+    assert "fraud_concentration_basis" not in policy.requirements
+    assert "fraud_concentration_basis" not in policy.details
 
 
 @pytest.mark.parametrize(
@@ -96,7 +97,7 @@ def test_fraud_metrics_allow_explicit_clearing_spend_privacy_basis() -> None:
         "peer_group_altered",
     ],
 )
-def test_control3_config_rejects_upstream_business_decisions(removed_key: str) -> None:
+def test_removed_control3_section_is_not_valid_configuration(removed_key: str) -> None:
     errors = ConfigValidator.validate(
         {
             "version": "3.0",
@@ -105,7 +106,7 @@ def test_control3_config_rejects_upstream_business_decisions(removed_key: str) -
         }
     )
 
-    assert f"Unknown control3 fields: {removed_key}" in errors
+    assert "Unknown configuration fields: control3" in errors
 
 
 def test_control3_config_rejects_overloaded_privacy_review_approval() -> None:
@@ -117,25 +118,34 @@ def test_control3_config_rejects_overloaded_privacy_review_approval() -> None:
         }
     )
 
-    assert "Unknown control3 fields: privacy_review_approved" in errors
+    assert "Unknown configuration fields: control3" in errors
 
 
-def test_compliance_preconditions_block_declared_sensitive_run() -> None:
+def test_configuration_template_has_no_privacy_basis_setting() -> None:
+    template = Path("config/template.yaml").read_text(encoding="utf-8")
+
+    assert "privacy_basis" not in template
+    assert "control3:" not in template
+
+
+def test_compliance_preconditions_allow_fraud_without_public_basis_input() -> None:
     request = build_run_request(
         "rate",
         SimpleNamespace(
             acknowledge_accuracy_first=False,
             approved_col=None,
             fraud_col="fraud",
-            privacy_basis=None,
         ),
     )
     config = ConfigManager()
 
-    with pytest.raises(RunBlocked) as exc_info:
-        enforce_compliance_preconditions(config, request)
+    result = enforce_compliance_preconditions(config, request)
 
-    assert exc_info.value.compliance_summary["reason"] == "fraud_chargeback_requires_clearing_spend_basis"
+    assert result["control3_policy"]["allowed"] is True
+    assert (
+        result["control3_policy"]["details"]["fraud_concentration_basis"]
+        == "clearing_spend"
+    )
 
 
 def test_publication_peer_evidence_redacts_peer_composition(tmp_path: Path) -> None:
@@ -175,7 +185,6 @@ def test_publication_peer_evidence_redacts_peer_composition(tmp_path: Path) -> N
         max_cap_slack=None,
         compliance_posture="best_effort",
         acknowledge_accuracy_first=False,
-        privacy_basis=None,
     )
 
     assert run_share_analysis(args, __import__("logging").getLogger("test_control3_publication")) == 0
