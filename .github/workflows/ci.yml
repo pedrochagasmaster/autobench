@@ -10,14 +10,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Report every interpreter's real result. With fail-fast on, one failing
+      # version cancels the others, so a job that had already passed gets
+      # reported as failed and a version-specific failure can stay hidden.
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -40,7 +44,7 @@ jobs:
 
       - name: Upload gate outputs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: gate-outputs-py${{ matrix.python-version }}
           path: test_gate/
