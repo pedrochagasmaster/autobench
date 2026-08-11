@@ -962,6 +962,10 @@ class DimensionalAnalyzer:
         dimensions = canonical_order(dimensions)
         _, _, peers = self.build_categories(df, metric_col, dimensions)
         rule_name, max_concentration = self._get_privacy_rule(len(peers))
+        # Record the selected rule exactly like the global path does, so the
+        # emitted-output privacy gate evaluates per-dimension runs against the
+        # real peer-count rule instead of failing closed as "insufficient".
+        self.privacy_rule_name = rule_name
         self._solve_per_dimension_weights(
             df,
             metric_col,
