@@ -807,7 +807,11 @@ compliance is governed by the primary metric basis only, matching the Control
 use clearing spend. Secondary metric values are then not independently gated.
 The declaration is recorded in run metadata, applies to complete-output runs
 only (verified-safe-coverage rejects it), and never relaxes the primary gate,
-mandatory overlays, or small-peer-group suppression of secondary metrics.
+mandatory overlays, or small-peer-group suppression of secondary metrics. The
+same declaration is available in the Python API
+(`AnalysisRunRequest.secondary_metrics_concentration_basis`) and in the TUI
+under Compliance Declarations; like other per-run declarations it is never
+restored from a previous TUI session.
 
 ### Category and metric suppression
 

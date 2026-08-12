@@ -125,7 +125,7 @@ SESSION_SELECT_IDS = (
 # Compliance attestations and consent acknowledgements are deliberately
 # excluded: they are per-run declarations and must not be restored from a
 # previous session (acknowledge_accuracy_first, privacy_merchant_spend_scope,
-# citi_competitor_receives_output).
+# citi_competitor_receives_output, secondary_concentration_basis).
 SESSION_CHECKBOX_IDS = (
     "analyze_distortion",
     "compare_presets",
@@ -474,6 +474,7 @@ TUI_REQUEST_FIELDS = frozenset({
     "is_anonymized_aggregated_merchant_spend",
     "citibank_entity_name",
     "citi_competitor_receives_output",
+    "secondary_metrics_concentration_basis",
 })
 
 # CLI fields with no TUI widget yet; post-assembly fields are set after validation modal.
@@ -484,10 +485,12 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
     "audit_package",
     "validate_export",
     "report_format",
-    # TUI runs keep the strict default: every secondary metric is gated on
-    # its own concentration ("own" basis).
-    "secondary_metrics_concentration_basis",
 })
+
+_SECONDARY_CONCENTRATION_BASIS_OPTIONS = (
+    ("Own shares (default)", "own"),
+    ("Primary basis (Control 3.2 fraud metric rule)", "primary"),
+)
 
 _PRIVACY_RELEASE_MODE_OPTIONS = (
     ("Complete output", PrivacyReleaseMode.COMPLETE_OUTPUT.value),
@@ -954,6 +957,26 @@ class BenchmarkApp(App):
                         yield Input(
                             placeholder="Exact Citibank entity name (required for Citi overlay)",
                             id="citibank_entity_name",
+                        )
+                        yield Label(
+                            "Secondary Metrics Concentration Basis",
+                            classes="adv-group-title",
+                        )
+                        yield Select(
+                            list(_SECONDARY_CONCENTRATION_BASIS_OPTIONS),
+                            id="secondary_concentration_basis",
+                            value="own",
+                            allow_blank=False,
+                        )
+                        yield Static(
+                            "Own shares also gates each secondary metric's own "
+                            "weighted concentration. Primary basis declares that "
+                            "concentration compliance is governed by the primary "
+                            "metric basis only (e.g., clearing spend for issuer "
+                            "fraud/chargeback metrics); the declaration is "
+                            "recorded in run metadata.",
+                            id="secondary_concentration_basis_hint",
+                            classes="field-hint",
                         )
 
                 # ───────────────────────────────────────────────────────
@@ -2000,6 +2023,20 @@ class BenchmarkApp(App):
         except NoMatches:
             return False
 
+    def _secondary_concentration_basis_from_widget(self) -> str:
+        """Return the declared secondary-metrics concentration basis.
+
+        Defaults to the strict "own" basis when the widget is unavailable or
+        holds an unexpected value.
+        """
+        try:
+            value = self.query_one("#secondary_concentration_basis", Select).value
+        except NoMatches:
+            return "own"
+        if value in ("own", "primary"):
+            return str(value)
+        return "own"
+
     def _privacy_release_mode_value_from_widget(self) -> str:
         """Return the stored Select value, defaulting to complete-output."""
         try:
@@ -2043,6 +2080,9 @@ class BenchmarkApp(App):
                 "#citi_competitor_receives_output",
                 Checkbox,
             ).value,
+            "secondary_metrics_concentration_basis": (
+                self._secondary_concentration_basis_from_widget()
+            ),
         }
         if self._analysis_mode() == "share":
             values["privacy_release_mode"] = self._privacy_release_mode_from_widget()

@@ -150,6 +150,7 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
     assert "citi_competitor_receives_output" not in saved
     assert "privacy_merchant_spend_scope" not in saved
     assert "acknowledge_accuracy_first" not in saved
+    assert "secondary_concentration_basis" not in saved
     assert saved["share_dims"] == ["card_type"]
 
     async def restore_scenario() -> None:
@@ -176,6 +177,7 @@ def test_restore_session_never_restores_compliance_attestations(
                 "citi_competitor_receives_output": True,
                 "privacy_merchant_spend_scope": True,
                 "acknowledge_accuracy_first": True,
+                "secondary_concentration_basis": "primary",
             }
         )
     )
@@ -193,6 +195,38 @@ def test_restore_session_never_restores_compliance_attestations(
             # The acknowledgement checkbox no longer exists; consent is a
             # per-run modal and cannot be restored from a session file.
             assert not app.query("#acknowledge_accuracy_first")
+            assert (
+                app.query_one("#secondary_concentration_basis", Select).value
+                == "own"
+            )
+
+    asyncio.run(scenario())
+
+
+def test_secondary_concentration_basis_flows_into_request() -> None:
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+
+            defaults = app._privacy_values_from_widgets()
+            assert defaults["secondary_metrics_concentration_basis"] == "own"
+
+            app.query_one("#secondary_concentration_basis", Select).value = (
+                "primary"
+            )
+            await pilot.pause()
+
+            request = AnalysisRunRequest.from_widget_values(
+                "rate",
+                {
+                    "csv": "data.csv",
+                    "total_col": "total",
+                    "approved_col": "approved",
+                    **app._privacy_values_from_widgets(),
+                },
+            )
+            assert request.secondary_metrics_concentration_basis == "primary"
 
     asyncio.run(scenario())
 
