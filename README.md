@@ -797,6 +797,18 @@ supplemental weighted context using the final peer weights. Each secondary
 metric receives its own minimum-participant check. Autobench can omit an unsafe
 secondary metric while keeping the primary metric.
 
+By default (`--secondary-metrics-concentration-basis own`) every secondary
+metric's weighted shares must also independently satisfy the Control 3 numeric
+concentration rules in every published group; one non-compliant secondary
+group withholds the complete output. Passing
+`--secondary-metrics-concentration-basis primary` declares that concentration
+compliance is governed by the primary metric basis only, matching the Control
+3.2 fraud metric rule that issuer fraud and chargeback concentration checks
+use clearing spend. Secondary metric values are then not independently gated.
+The declaration is recorded in run metadata, applies to complete-output runs
+only (verified-safe-coverage rejects it), and never relaxes the primary gate,
+mandatory overlays, or small-peer-group suppression of secondary metrics.
+
 ### Category and metric suppression
 
 Autobench can omit unsafe output groups while keeping safe groups. This process

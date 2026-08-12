@@ -639,6 +639,110 @@ def test_rate_run_end_to_end(tmp_path: Path) -> None:
     assert {p.name for p in tmp_path.iterdir()} == expected
 
 
+def _concentrated_secondary_csv(tmp_path: Path) -> Path:
+    """Six balanced peers on the total column; one dominates the secondary."""
+    df = pd.DataFrame(
+        [
+            {
+                "issuer_name": f"P{index}",
+                "segment": "all",
+                "clearing_amount": 100.0,
+                "approved_amount": 90.0,
+                "cbk_count": 990.0 if index == 1 else 2.0,
+            }
+            for index in range(1, 7)
+        ]
+    )
+    path = tmp_path / "concentrated_secondary.csv"
+    df.to_csv(path, index=False)
+    return path
+
+
+def _concentrated_secondary_request(tmp_path: Path, **overrides) -> AnalysisRunRequest:
+    return AnalysisRunRequest(
+        mode="rate",
+        csv=str(_concentrated_secondary_csv(tmp_path)),
+        total_col="clearing_amount",
+        approved_col="approved_amount",
+        secondary_metrics=["cbk_count"],
+        dimensions=["segment"],
+        preset="balanced_default",
+        compliance_posture="strict",
+        output=str(tmp_path / "rate_secondary_basis.xlsx"),
+        **overrides,
+    )
+
+
+def test_rate_run_concentrated_secondary_metric_blocked_by_default(
+    tmp_path: Path,
+) -> None:
+    """Under the default 'own' basis every secondary metric is gated."""
+    request = _concentrated_secondary_request(tmp_path)
+    artifacts = execute_rate_run(request, logging.getLogger("test"))
+
+    assert artifacts.privacy_sink_authorized is not True
+    assert artifacts.privacy_output_decision is not None
+    assert artifacts.privacy_output_decision.withholding_reason == (
+        "control3_numeric_policy_blocked"
+    )
+    assert not (tmp_path / "rate_secondary_basis.xlsx").exists()
+
+
+def test_rate_run_primary_basis_declaration_exempts_secondary_metrics(
+    tmp_path: Path,
+) -> None:
+    """The declared primary basis gates concentration on the total column only."""
+    request = _concentrated_secondary_request(
+        tmp_path,
+        secondary_metrics_concentration_basis="primary",
+    )
+    artifacts = execute_rate_run(request, logging.getLogger("test"))
+
+    assert artifacts.privacy_sink_authorized is True
+    assert artifacts.metadata is not None
+    assert artifacts.metadata["secondary_metrics_concentration_basis"] == "primary"
+    strategy_result = artifacts.privacy_rule_strategy_result
+    assert strategy_result is not None
+    assert strategy_result.authorizing_rules == ("6/30",)
+    assert (tmp_path / "rate_secondary_basis.xlsx").exists()
+
+
+def test_secondary_metrics_concentration_basis_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="secondary_metrics_concentration_basis"):
+        AnalysisRunRequest(
+            mode="rate",
+            total_col="total",
+            secondary_metrics_concentration_basis="both",
+        )
+
+
+def test_cli_maps_secondary_metrics_concentration_basis() -> None:
+    parser = benchmark.create_parser()
+    args = parser.parse_args(
+        [
+            "rate",
+            "--csv",
+            "data.csv",
+            "--total-col",
+            "clearing_amount",
+            "--approved-col",
+            "approved_amount",
+            "--secondary-metrics",
+            "cbk_count",
+            "--secondary-metrics-concentration-basis",
+            "primary",
+        ]
+    )
+    request = benchmark.build_run_request("rate", args)
+    assert request.secondary_metrics_concentration_basis == "primary"
+
+    default_args = parser.parse_args(
+        ["rate", "--csv", "data.csv", "--total-col", "clearing_amount"]
+    )
+    default_request = benchmark.build_run_request("rate", default_args)
+    assert default_request.secondary_metrics_concentration_basis == "own"
+
+
 def test_python_rate_sweep_runs_through_shared_executor(tmp_path: Path) -> None:
     request = AnalysisRunRequest(
         mode="rate",

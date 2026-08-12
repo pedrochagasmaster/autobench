@@ -484,6 +484,9 @@ TUI_UNSUPPORTED_FIELDS = frozenset({
     "audit_package",
     "validate_export",
     "report_format",
+    # TUI runs keep the strict default: every secondary metric is gated on
+    # its own concentration ("own" basis).
+    "secondary_metrics_concentration_basis",
 })
 
 _PRIVACY_RELEASE_MODE_OPTIONS = (

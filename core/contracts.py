@@ -726,6 +726,14 @@ class AnalysisRunRequest:
     report_format: Optional[str] = None
     metric: Optional[str] = None
     secondary_metrics: Optional[List[str]] = None
+    # "own" (default): every secondary metric's weighted shares must
+    # independently satisfy the Control 3 numeric rules. "primary": the
+    # operator declares that concentration compliance for secondary metrics is
+    # governed by the primary metric basis only (e.g., clearing spend for
+    # issuer fraud/chargeback metrics per Control 3.2), so secondary metric
+    # values are not independently gated. Small-peer-group suppression still
+    # applies to secondary metrics under either basis.
+    secondary_metrics_concentration_basis: str = "own"
     auto: bool = False
     dimensions: Optional[List[str]] = None
     debug: bool = False
@@ -758,6 +766,12 @@ class AnalysisRunRequest:
                 "AnalysisRunRequest.privacy_release_mode must be a "
                 "PrivacyReleaseMode value or None; got "
                 f"{type(self.privacy_release_mode).__name__}"
+            )
+        if self.secondary_metrics_concentration_basis not in ("own", "primary"):
+            raise ValueError(
+                "AnalysisRunRequest.secondary_metrics_concentration_basis "
+                "must be 'own' or 'primary'; got "
+                f"{self.secondary_metrics_concentration_basis!r}"
             )
 
     @property
