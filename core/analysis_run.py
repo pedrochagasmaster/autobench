@@ -774,6 +774,9 @@ def build_common_run_metadata(
     return {
         'entity': resolved_entity or 'PEER-ONLY',
         'secondary_metrics': secondary_metrics,
+        'secondary_metrics_concentration_basis': getattr(
+            args, 'secondary_metrics_concentration_basis', 'own'
+        ),
         'entity_column': entity_col,
         'total_records': total_records,
         'unique_entities': unique_entities,
@@ -1334,6 +1337,10 @@ def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> Non
     - ``VERIFIED_SAFE_COVERAGE`` with an incompatible explicit rule strategy
       (Python callers must supply ``SWEEP_ANY_APPLICABLE``; the CLI and TUI
       set that strategy automatically when the mode is selected).
+    - ``VERIFIED_SAFE_COVERAGE`` with
+      ``secondary_metrics_concentration_basis="primary"`` (the coverage
+      solver and verifier govern secondary metric units directly and do not
+      support the declared primary basis).
     - Any unknown or untyped release-mode value.
     """
     mode = request.privacy_release_mode
@@ -1363,6 +1370,12 @@ def check_privacy_release_mode_compatibility(request: AnalysisRunRequest) -> Non
             "privacy_release_mode=verified-safe-coverage requires "
             "privacy_rule_strategy=SWEEP_ANY_APPLICABLE; got "
             f"{request.privacy_rule_strategy.value!s}"
+        )
+    if request.secondary_metrics_concentration_basis != "own":
+        raise RunAborted(
+            "privacy_release_mode=verified-safe-coverage governs secondary "
+            "metric units directly; "
+            "secondary_metrics_concentration_basis='primary' is not supported"
         )
 
 
@@ -2559,6 +2572,21 @@ def _execute_run_impl(
                 if metric != weight_metric_col
             ],
         ]
+        # With the declared "primary" basis, secondary metric values are not
+        # independently subjected to the numeric concentration gate: the
+        # primary metric basis governs concentration compliance (Control 3.2
+        # mandates clearing spend as the basis for issuer fraud/chargeback
+        # metrics). governed_metric_cols keeps the secondary metrics so
+        # small-peer-group suppression still applies to them.
+        if request.secondary_metrics_concentration_basis == "primary":
+            declared_secondary_metrics = set(request.secondary_metrics or [])
+            concentration_gate_cols = [
+                metric_col
+                for metric_col in governed_metric_cols
+                if metric_col not in declared_secondary_metrics
+            ]
+        else:
+            concentration_gate_cols = governed_metric_cols
         if (
             request.privacy_release_mode
             == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
@@ -2595,7 +2623,7 @@ def _execute_run_impl(
                 analyzer_factory=analyzer_factory,
                 df=df,
                 metric_col=privacy_metric_col,
-                governed_metric_cols=governed_metric_cols,
+                governed_metric_cols=concentration_gate_cols,
                 dimensions=dimensions,
                 merchant_spend_scope=merchant_spend_scope,
             )

@@ -255,6 +255,19 @@ def test_verified_rejects_incompatible_rule_strategy() -> None:
         check_privacy_release_mode_compatibility(request)
 
 
+def test_verified_rejects_primary_secondary_concentration_basis() -> None:
+    request = AnalysisRunRequest(
+        mode="share",
+        metric="amount",
+        secondary_metrics=["count"],
+        secondary_metrics_concentration_basis="primary",
+        privacy_release_mode=PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE,
+        privacy_rule_strategy=PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE,
+    )
+    with pytest.raises(RunAborted, match="secondary_metrics_concentration_basis"):
+        check_privacy_release_mode_compatibility(request)
+
+
 def test_verified_accepts_compatible_share_request() -> None:
     request = AnalysisRunRequest(
         mode="share",
