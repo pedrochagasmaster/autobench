@@ -639,6 +639,41 @@ def test_rate_run_end_to_end(tmp_path: Path) -> None:
     assert {p.name for p in tmp_path.iterdir()} == expected
 
 
+def test_rate_run_per_dimension_weights_records_selected_rule(
+    tmp_path: Path,
+) -> None:
+    """Per-dimension optimization must register the peer-count-selected rule.
+
+    Regression: the per-dimension path never set ``privacy_rule_name``, so
+    ``SELECT_BY_PEER_COUNT`` treated every per-dimension run as
+    ``insufficient`` and withheld compliant output.
+    """
+    out = tmp_path / "rate_pdw.xlsx"
+    request = AnalysisRunRequest(
+        mode="rate",
+        csv=str(FIXTURE),
+        entity="Target",
+        total_col="total",
+        approved_col="approved",
+        dimensions=SHARE_DIMENSIONS,
+        time_col="year_month",
+        preset="balanced_default",
+        compliance_posture="strict",
+        per_dimension_weights=True,
+        output=str(out),
+    )
+    artifacts = execute_rate_run(request, logging.getLogger("test"))
+
+    strategy_result = artifacts.privacy_rule_strategy_result
+    assert strategy_result is not None
+    assert strategy_result.strategy == PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
+    assert strategy_result.display_rule == "6/30"
+    assert strategy_result.authorizing_rules == ("6/30",)
+    assert artifacts.privacy_sink_authorized is True
+    assert artifacts.analyzer.privacy_rule_name == "6/30"
+    assert out.exists()
+
+
 def test_python_rate_sweep_runs_through_shared_executor(tmp_path: Path) -> None:
     request = AnalysisRunRequest(
         mode="rate",
