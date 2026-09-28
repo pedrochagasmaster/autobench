@@ -90,6 +90,20 @@ def add_common_run_flags(parser: argparse.ArgumentParser, *, preset_choices: lis
         help='Declare this normal analysis to be anonymized aggregated merchant spend (enables 4/35)',
     )
     parser.add_argument(
+        '--secondary-metrics-concentration-basis',
+        choices=['own', 'primary'],
+        default='own',
+        help=(
+            "Concentration basis for secondary metrics. 'own' (default) also "
+            "enforces the Control 3 numeric rules on each secondary metric's "
+            "own weighted shares. 'primary' declares that concentration "
+            'compliance is governed by the primary metric basis only (e.g., '
+            'clearing spend for issuer fraud/chargeback metrics per Control '
+            '3.2); secondary metric values are then not independently gated. '
+            'Small-peer-group suppression still applies to secondary metrics.'
+        ),
+    )
+    parser.add_argument(
         '--citibank-entity-name',
         help='Exact entity value for Citibank when the Citi mandatory overlay applies',
     )
