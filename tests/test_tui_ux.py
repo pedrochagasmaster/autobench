@@ -38,6 +38,26 @@ async def _await_run_completion(pilot: Pilot, timeout: float = 60.0) -> str:
     return "\n".join(pilot.app.query_one("#log_output").lines)
 
 
+async def _await_refused_launch(pilot: Pilot, timeout: float = 30.0) -> str:
+    """Wait for a refused launch to restore the idle run controls, then return the log.
+
+    ``_fail_launch`` posts its ``ERROR:`` line to the log one
+    ``call_from_thread`` hop before it re-enables the run button, so waiting on
+    the log text alone can read the run controls while they are still
+    ``validating``.
+    """
+    deadline = time.monotonic() + timeout
+    log_text = ""
+    while True:
+        log_text = "\n".join(pilot.app.query_one("#log_output").lines)
+        if "ERROR:" in log_text and pilot.app._run_state == "idle":
+            break
+        if time.monotonic() >= deadline:
+            break
+        await pilot.pause(0.05)
+    return log_text
+
+
 async def _configure_rate_form(
     pilot: Pilot,
     tmp_path: Path,
@@ -531,12 +551,7 @@ def test_preflight_blocks_invalid_launches(tmp_path: Path, monkeypatch, missing:
                 # auto-detect off and nothing selected in #share_dims
 
             app.run_analysis()
-            log_text = ""
-            for _ in range(40):
-                await pilot.pause(0.25)
-                log_text = "\n".join(app.query_one("#log_output").lines)
-                if "ERROR:" in log_text:
-                    break
+            log_text = await _await_refused_launch(pilot)
             # Run button must be re-enabled after a refused launch
             assert app.query_one("#btn_run").disabled is False
             assert app._run_state == "idle"
