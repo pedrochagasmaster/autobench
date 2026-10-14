@@ -53,6 +53,7 @@ from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.worker import get_current_worker
 
 # Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
@@ -141,6 +142,22 @@ SESSION_CHECKBOX_IDS = (
     "privacy_rule_sweep_mode",
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
+
+ENTITY_SELECT_PROMPT = "Select entity…"
+ENTITY_LOADING_PROMPT = "Loading entities…"
+
+
+def read_unique_entity_values(csv_path: str, column_name: str) -> List[str]:
+    """Return the sorted distinct non-null values of one CSV column as strings.
+
+    Runs on a worker thread (see ``BenchmarkApp._load_unique_entities_worker``)
+    so it must not touch widgets. The column is read with pandas' default type
+    inference on purpose: ``dtype=str`` was measured slower on 1M rows and would
+    change the rendered value of numeric IDs (``5.0`` vs ``5`` when the column
+    has nulls), which must keep matching what the analysis run filters on.
+    """
+    df = pd.read_csv(csv_path, usecols=[column_name])
+    return sorted(df[column_name].dropna().unique().astype(str).tolist())
 
 
 def write_log_message(log_widget: Log, message: str) -> None:
@@ -877,7 +894,7 @@ class BenchmarkApp(App):
                             yield Select([], prompt="Select column…", id="entity_col")
                         with Vertical(classes="field-pair"):
                             yield Label("Target entity (blank = peer-only)", classes="field-label")
-                            yield Select([], prompt="Select entity…", id="entity_name", allow_blank=True)
+                            yield Select([], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True)
 
                 with Container(id="section_analysis", classes="form-section") as section:
                     section.border_title = "3 · Analysis Options"
@@ -1668,6 +1685,13 @@ class BenchmarkApp(App):
                         select.value = column
 
                 self._update_csv_meta(file_path, cols)
+
+            # A new file with an unchanged entity column posts no
+            # Select.Changed, so refresh the entity values explicitly. Requests
+            # for values already loaded or in flight are no-ops.
+            entity_col_value = self.query_one("#entity_col", Select).value
+            if entity_col_value != SELECT_BLANK:
+                self.load_unique_entities(entity_col_value)
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -2144,30 +2168,140 @@ class BenchmarkApp(App):
                 self.query_one("#rate_dims").remove_class("hidden")
                 self.query_one("#rate_dims_label").remove_class("hidden")
 
-    def load_unique_entities(self, column_name):
-        """Load unique values from the specified column."""
+    # Entity value loading runs in a background worker. These track, on the UI
+    # thread only, which (csv_path, column) is in flight, which one the current
+    # #entity_name options were built from, and the entity the operator had
+    # chosen so it can be re-selected once the matching load completes.
+    _entity_load_key: Optional[tuple] = None
+    _entity_options_key: Optional[tuple] = None
+    _pending_entity_value: Any = SELECT_BLANK
+
+    def _entity_source_key(self) -> Optional[tuple]:
+        """The (csv_path, entity column) the form currently points at."""
         try:
-            csv_path = self.query_one("#csv_path").value
+            csv_path = self.query_one("#csv_path", Input).value
+            column = self.query_one("#entity_col", Select).value
+        except NoMatches:
+            return None
+        if not csv_path or column == SELECT_BLANK:
+            return None
+        return (csv_path, column)
+
+    def load_unique_entities(self, column_name) -> None:
+        """Populate ``#entity_name`` with the column's values, off the UI thread.
+
+        The CSV read happens in ``_load_unique_entities_worker``; this method
+        only flips the Select into its loading state and starts the worker. A
+        request for the (path, column) that is already loading or already shown
+        is a no-op, so the explicit call and the ``Select.Changed`` it causes
+        do not read the file twice.
+        """
+        try:
+            csv_path = self.query_one("#csv_path", Input).value
+            entity_select = self.query_one("#entity_name", Select)
         except NoMatches:
             # Deferred Select.Changed arriving while the app tears down.
             return
         if not csv_path or not os.path.exists(csv_path):
             return
+        key = (csv_path, column_name)
+        if key == self._entity_load_key:
+            return
+        if self._entity_load_key is None and key == self._entity_options_key:
+            return
 
+        # Remember the operator's choice before the options are replaced; it is
+        # re-applied when this load lands if the value exists in the new column.
+        if entity_select.value != SELECT_BLANK:
+            self._pending_entity_value = entity_select.value
+        if key != self._entity_options_key:
+            # Options from another file/column are meaningless for this one.
+            entity_select.set_options([])
+            self._entity_options_key = None
+        entity_select.prompt = ENTITY_LOADING_PROMPT
+        entity_select.disabled = True
+        self._entity_load_key = key
+        self._load_unique_entities_worker(csv_path, column_name)
+
+    @work(thread=True, exclusive=True, group="entity_values", exit_on_error=False)
+    def _load_unique_entities_worker(self, csv_path: str, column_name: str) -> None:
+        """Read the entity column on a worker thread and hand results back."""
+        worker = get_current_worker()
+        values: Optional[List[str]] = None
+        error: Optional[Exception] = None
         try:
-            # Read unique values from the column
-            df = pd.read_csv(csv_path, usecols=[column_name])
-            unique_vals = sorted(df[column_name].dropna().unique().astype(str).tolist())
+            values = read_unique_entity_values(csv_path, column_name)
+        except Exception as exc:  # reported on the UI thread like before
+            error = exc
+        if worker.is_cancelled:
+            return  # superseded by a newer request (exclusive group) or exit
+        try:
+            self.call_from_thread(
+                self._apply_unique_entities, (csv_path, column_name), values, error
+            )
+        except RuntimeError:
+            pass  # App loop already gone (shutdown); nothing to update.
 
-            options = [(val, val) for val in unique_vals]
+    def _apply_unique_entities(
+        self,
+        key: tuple,
+        values: Optional[List[str]],
+        error: Optional[Exception],
+    ) -> None:
+        """Apply a finished entity load on the UI thread, unless it is stale."""
+        if getattr(self, "_exit", False):
+            return
+        if key != self._entity_load_key:
+            return  # A newer request owns the loading state.
+        self._entity_load_key = None
+        try:
             entity_select = self.query_one("#entity_name", Select)
-            previous = entity_select.value
-            entity_select.set_options(options)
-            if previous != SELECT_BLANK and previous in unique_vals:
-                entity_select.value = previous
+            log_output = self.query_one("#log_output", Log)
+        except NoMatches:
+            return
+        try:
+            if key != self._entity_source_key():
+                # CSV path or entity column changed while reading without a
+                # replacement load (e.g. column cleared): drop the old values.
+                return
+            if error is not None:
+                log_output.write(f"Error loading entities: {error}\n")
+                return
+            values = values or []
+            desired = self._pending_entity_value
+            self._pending_entity_value = SELECT_BLANK
+            with self.batch_update():
+                entity_select.set_options([(val, val) for val in values])
+                if desired != SELECT_BLANK and desired in set(values):
+                    entity_select.value = desired
+            self._entity_options_key = key
+        finally:
+            # Loaded, failed or dropped: the Select must be usable again.
+            entity_select.prompt = ENTITY_SELECT_PROMPT
+            entity_select.disabled = False
 
-        except Exception as e:
-            self.query_one("#log_output").write(f"Error loading entities: {e}\n")
+    def _cancel_entity_load(self) -> None:
+        """Abandon an in-flight entity load and leave the Select usable."""
+        if self._entity_load_key is None:
+            return
+        self._entity_load_key = None
+        self.workers.cancel_group(self, "entity_values")
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+        except NoMatches:
+            return
+        entity_select.prompt = ENTITY_SELECT_PROMPT
+        entity_select.disabled = False
+
+    @property
+    def entity_values_loading(self) -> bool:
+        """True while a background entity load has not been applied yet."""
+        return self._entity_load_key is not None
+
+    @property
+    def entity_selection_pending(self) -> bool:
+        """True while a chosen entity waits for its reload to be re-applied."""
+        return self.entity_values_loading and self._pending_entity_value != SELECT_BLANK
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle select widget changes."""
@@ -2176,8 +2310,14 @@ class BenchmarkApp(App):
             # being unmounted; reacting to it would query dead widgets.
             return
         if event.select.id == "entity_col":
-            if event.value != SELECT_BLANK:
-                self.load_unique_entities(event.value)
+            # Act on the widget's current value, not the message's: repopulating
+            # the column options posts a transient BLANK Changed that is already
+            # stale when handled, and must not cancel the load for the real value.
+            current = event.select.value
+            if current != SELECT_BLANK:
+                self.load_unique_entities(current)
+            else:
+                self._cancel_entity_load()
 
         elif event.select.id == "share_metric":
             self.update_secondary_options("#share_secondary", exclude=[event.value])
@@ -2271,6 +2411,15 @@ class BenchmarkApp(App):
                 csv_path = self.query_one("#csv_path").value
                 if not csv_path:
                     self._fail_launch("CSV path is required.", focus_id="csv_path")
+                    return
+                if self.entity_selection_pending:
+                    # The operator's target entity is cleared while the values
+                    # reload and is re-applied when they land; launching now
+                    # would silently run peer-only instead.
+                    self._fail_launch(
+                        "Target entity values are still loading; wait for the list to finish.",
+                        focus_id="entity_name",
+                    )
                     return
 
                 entity_val = self.query_one("#entity_name").value

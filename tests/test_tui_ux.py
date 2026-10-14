@@ -38,6 +38,15 @@ async def _await_run_completion(pilot: Pilot, timeout: float = 60.0) -> str:
     return "\n".join(pilot.app.query_one("#log_output").lines)
 
 
+async def _wait_for_entity_values(pilot: Pilot, timeout: float = 10.0) -> None:
+    """Wait for the background entity-value load to be applied to the form."""
+    deadline = time.monotonic() + timeout
+    await pilot.pause()
+    while pilot.app.entity_values_loading and time.monotonic() < deadline:
+        await pilot.pause(0.02)
+    await pilot.pause()
+
+
 async def _configure_rate_form(
     pilot: Pilot,
     tmp_path: Path,
@@ -134,6 +143,8 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
             await pilot.pause()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_dims", SelectionList).select("card_type")
@@ -559,6 +570,8 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
             await pilot.pause()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
@@ -604,6 +617,8 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             await pilot.pause()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
@@ -632,3 +647,309 @@ def test_tui_log_directory_honors_runtime_isolation(
     monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(isolated))
 
     assert tui_app._resolve_log_dir() == isolated
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Background entity value loading
+# ──────────────────────────────────────────────────────────────────────
+
+FIXTURE_ISSUERS = ["P1", "P2", "P3", "P4", "P5", "P6", "Target"]
+
+
+class _GatedEntityReader:
+    """Stand-in for ``read_unique_entity_values`` that blocks chosen columns.
+
+    Blocked reads wait on ``release`` (with a timeout so a regression that
+    reads on the UI thread fails the test instead of hanging it) and then
+    delegate to the real reader.
+    """
+
+    def __init__(self, blocked_columns: set[str]) -> None:
+        self.blocked_columns = blocked_columns
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[str] = []
+        self.timed_out = False
+        self._real = tui_app.read_unique_entity_values
+
+    def __call__(self, csv_path: str, column_name: str) -> list[str]:
+        self.calls.append(column_name)
+        if column_name in self.blocked_columns:
+            self.started.set()
+            if not self.release.wait(timeout=10):
+                self.timed_out = True
+        return self._real(csv_path, column_name)
+
+
+async def _wait_until(pilot: Pilot, predicate, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        await pilot.pause(0.02)
+    return True
+
+
+def _entity_option_values(app: BenchmarkApp) -> list[str]:
+    select = app.query_one("#entity_name", Select)
+    return [value for _, value in select._options if value != SELECT_BLANK]
+
+
+def test_entity_values_populate_after_worker_finishes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.query_one("#csv_path").value = str(FIXTURE)
+            # Header load defaults entity_col to issuer_name and starts the load.
+            app.load_csv_headers(str(FIXTURE))
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+
+            entity = app.query_one("#entity_name", Select)
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+            entity.value = "Target"
+            assert entity.value == "Target"
+
+    asyncio.run(scenario())
+
+
+def test_entity_load_keeps_ui_responsive(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                assert await _wait_until(pilot, reader.started.is_set)
+
+                entity = app.query_one("#entity_name", Select)
+                assert app.entity_values_loading is True
+                assert entity.disabled is True
+                assert entity.prompt == tui_app.ENTITY_LOADING_PROMPT
+
+                # The event loop keeps serving input while the read is blocked.
+                output = app.query_one("#output_file")
+                output.value = ""
+                output.focus()
+                await pilot.press("o", "u", "t")
+                assert output.value == "out"
+                app.query_one("#share_metric", Select).value = "total"
+                await pilot.pause()
+                assert app.query_one("#share_metric", Select).value == "total"
+                assert app.entity_values_loading is True
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert reader.timed_out is False
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_stale_entity_result_discarded_when_column_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                assert await _wait_until(pilot, reader.started.is_set)
+
+                # Switch column while the issuer_name read is still blocked.
+                app.query_one("#entity_col", Select).value = "channel"
+                assert await _wait_until(
+                    pilot, lambda: _entity_option_values(app) == ["Online", "Store"]
+                )
+                assert app.entity_values_loading is False
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            # The late issuer_name result must not overwrite the channel values.
+            assert reader.calls == ["issuer_name", "channel"]
+            assert _entity_option_values(app) == ["Online", "Store"]
+            assert app.query_one("#entity_name", Select).disabled is False
+
+    asyncio.run(scenario())
+
+
+def test_stale_entity_result_discarded_when_csv_path_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                assert await _wait_until(pilot, reader.started.is_set)
+                # Operator starts typing another path; no new load yet.
+                app.query_one("#csv_path").value = str(tmp_path / "other.csv")
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            entity = app.query_one("#entity_name", Select)
+            assert _entity_option_values(app) == []
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_entity_selection_survives_reload_of_matching_column(tmp_path: Path, monkeypatch) -> None:
+    """The chosen entity is kept as a pending value across an async reload."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    copy = tmp_path / "copy.csv"
+    copy.write_bytes(FIXTURE.read_bytes())
+    reader = _GatedEntityReader(set())
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await _wait_for_entity_values(pilot)
+                entity = app.query_one("#entity_name", Select)
+                entity.value = "Target"
+
+                # Same column, different file: the reload is blocked mid-flight.
+                reader.blocked_columns.add("issuer_name")
+                app.query_one("#csv_path").value = str(copy)
+                app.load_csv_headers(str(copy), announce=False)
+                assert await _wait_until(pilot, reader.started.is_set)
+                assert entity.value == SELECT_BLANK  # options cleared while loading
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert entity.value == "Target"
+
+            # A column without that value drops the selection, as before.
+            app.query_one("#entity_col", Select).value = "channel"
+            assert await _wait_until(
+                pilot, lambda: _entity_option_values(app) == ["Online", "Store"]
+            )
+            assert entity.value == SELECT_BLANK
+
+    asyncio.run(scenario())
+
+
+def test_session_restore_with_async_entity_load_never_restores_entity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """entity_name is deliberately never persisted or restored; the async load
+    must not resurrect a legacy saved entity once the column's values land."""
+    session_file = tmp_path / "session.yaml"
+    session_file.write_text(
+        yaml.safe_dump(
+            {"entity_col": "issuer_name", "entity_name": "Target", "time_col": "year_month"}
+        )
+    )
+    monkeypatch.setattr(tui_app, "SESSION_FILE", session_file)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause(0.3)
+            app.query_one("#csv_path").value = str(FIXTURE)
+            app.load_csv_headers(str(FIXTURE))
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert app.query_one("#entity_col", Select).value == "issuer_name"
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert app.query_one("#entity_name", Select).value == SELECT_BLANK
+
+    asyncio.run(scenario())
+
+
+def test_entity_load_error_is_logged_and_select_stays_usable(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    def failing_reader(csv_path: str, column_name: str) -> list[str]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", failing_reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.query_one("#csv_path").value = str(FIXTURE)
+            app.load_csv_headers(str(FIXTURE))
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            entity = app.query_one("#entity_name", Select)
+            log_text = "\n".join(app.query_one("#log_output").lines)
+            assert "Error loading entities: boom" in log_text
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_run_is_refused_while_chosen_entity_reloads(tmp_path: Path, monkeypatch) -> None:
+    """A chosen target entity is blank mid-reload; running then would silently
+    go peer-only, so the launch is refused until the values land."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    copy = tmp_path / "copy.csv"
+    copy.write_bytes(FIXTURE.read_bytes())
+    reader = _GatedEntityReader(set())
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> str:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await _wait_for_entity_values(pilot)
+                app.query_one("#entity_name", Select).value = "Target"
+
+                reader.blocked_columns.add("issuer_name")
+                app.query_one("#csv_path").value = str(copy)
+                app.load_csv_headers(str(copy), announce=False)
+                assert await _wait_until(pilot, reader.started.is_set)
+                assert app.entity_selection_pending is True
+                app.run_analysis()
+                assert await _wait_until(
+                    pilot,
+                    lambda: "still loading" in "\n".join(app.query_one("#log_output").lines),
+                )
+                assert await _wait_until(pilot, lambda: app._run_state == "idle")
+                assert app.query_one("#btn_run").disabled is False
+                return "\n".join(app.query_one("#log_output").lines)
+            finally:
+                reader.release.set()
+
+    log_text = asyncio.run(scenario())
+    assert "Target entity values are still loading" in log_text
