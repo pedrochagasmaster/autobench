@@ -12,11 +12,28 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 from textual.pilot import Pilot
-from textual.widgets import Checkbox, Select, SelectionList, Static, TabbedContent
+from textual.geometry import Region
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Label,
+    ListItem,
+    ListView,
+    Select,
+    SelectionList,
+    Static,
+    TabbedContent,
+)
 
 import tui_app
 from core.contracts import AnalysisRunRequest
-from tui_app import SELECT_BLANK, BenchmarkApp, ClearingSpendConfirmScreen
+from core.data_loader import ValidationIssue, ValidationSeverity
+from tui_app import (
+    SELECT_BLANK,
+    BenchmarkApp,
+    ClearingSpendConfirmScreen,
+    ValidationModal,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
 
@@ -462,6 +479,232 @@ def test_validation_retry_reuses_confirmed_fraud_request() -> None:
         saved_request=request,
         saved_df=saved_df,
     )
+
+
+def _mixed_validation_issues() -> list[ValidationIssue]:
+    """1 error + 2 warnings whose user-derived text looks like Rich markup."""
+    return [
+        ValidationIssue(
+            ValidationSeverity.ERROR,
+            "missing_values",
+            "Column 'amt[usd]' has 12 missing values",
+            row_indices=[4, 17, 31],
+        ),
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "outliers",
+            "Column '[bold]x' outliers [/red]",
+            row_indices=[2, 9],
+        ),
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "duplicates",
+            "5 duplicate rows detected",
+        ),
+    ]
+
+
+def _rendered_text(app: BenchmarkApp, region: Region) -> str:
+    """Return the characters actually composited on screen inside ``region``."""
+    lines = [strip.text for strip in app.screen._compositor.render_strips()]
+    return "\n".join(
+        line[region.x : region.right] for line in lines[region.y : region.bottom]
+    )
+
+
+async def _open_validation_modal(
+    pilot: Pilot, issues: list[ValidationIssue]
+) -> list[bool]:
+    results: list[bool] = []
+    pilot.app.push_screen(ValidationModal(issues), results.append)
+    for _ in range(50):
+        await pilot.pause(0.05)
+        if isinstance(pilot.app.screen, ValidationModal):
+            break
+    assert isinstance(pilot.app.screen, ValidationModal)
+    await pilot.pause()
+    return results
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24)])
+def test_validation_modal_lists_every_issue_with_text_severity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: tuple[int, int],
+) -> None:
+    """Every issue gets its own visible row with a text severity badge (F29)."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    issues = _mixed_validation_issues()
+    expected = [
+        ("ERROR", "Column 'amt[usd]' has 12 missing values"),
+        ("WARNING", "Column '[bold]x' outliers [/red]"),
+        ("WARNING", "5 duplicate rows detected"),
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=size) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            modal = app.screen
+            screen_region = Region(0, 0, *size)
+
+            header = [str(label.content) for label in modal.query(".field-pair Label")]
+            assert header == ["Errors: 1", "  Warnings: 2"]
+
+            # The modal and both buttons fit on screen.
+            container = modal.query_one("#validation_container")
+            assert screen_region.contains_region(container.region)
+            for button_id in ("btn_proceed", "btn_cancel"):
+                button = modal.query_one(f"#{button_id}", Button)
+                assert button.region.area > 0
+                assert container.region.contains_region(button.region)
+
+            list_view = modal.query_one("#issue_list", ListView)
+            items = list(list_view.query(ListItem))
+            assert len(items) == len(issues)
+            for item, (severity, message) in zip(items, expected):
+                list_view.scroll_to_widget(item, animate=False)
+                await pilot.pause()
+                assert item.region.area > 0
+                assert list_view.content_region.contains_region(item.region)
+                rendered = _rendered_text(app, item.region)
+                assert severity in rendered
+                assert message in rendered
+
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert hint.startswith("3 issues")
+            assert ("scroll to review" in hint) == (list_view.max_scroll_y > 0)
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_overflow_says_scroll_and_rows_stay_reachable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 80x24 a long list scrolls, the header says so, and End reaches the last row."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    issues = [
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "outliers",
+            f"Column 'col_{index}' has outliers",
+            row_indices=[index],
+        )
+        for index in range(12)
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(80, 24)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            modal = app.screen
+            list_view = modal.query_one("#issue_list", ListView)
+            assert list_view.max_scroll_y > 0
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert "12 issues, scroll to review" in hint
+            for button_id in ("btn_proceed", "btn_cancel"):
+                assert modal.query_one(f"#{button_id}", Button).region.area > 0
+
+            assert modal.focused is list_view
+            await pilot.press("end")
+            await pilot.pause()
+            last = list(list_view.query(ListItem))[-1]
+            assert list_view.content_region.contains_region(last.region)
+            rendered = _rendered_text(app, last.region)
+            assert "WARNING" in rendered
+            assert "Column 'col_11' has outliers" in rendered
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_renders_markup_like_text_literally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Column names with ``[``/``]`` are shown verbatim, even under NO_COLOR."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("NO_COLOR", "1")
+    issues = [
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "bad_column",
+            "Column 'amt[usd]' and '[bold]x[/bold]' and '[/]' contain [link=x]junk",
+            row_indices=[1, 2],
+        )
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            item = app.screen.query_one("#issue_list", ListView).query_one(ListItem)
+            rendered = _rendered_text(app, item.region)
+            assert "WARNING" in rendered
+            assert (
+                "Column 'amt[usd]' and '[bold]x[/bold]' and '[/]' contain [link=x]junk"
+                in rendered
+            )
+            assert "Rows: 1, 2" in rendered
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_with_errors_focuses_cancel_and_escape_cancels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> list[bool]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            results = await _open_validation_modal(pilot, _mixed_validation_issues())
+            modal = pilot.app.screen
+            assert modal.query_one("#btn_proceed", Button).disabled
+            assert modal.focused is not None
+            assert modal.focused.id == "btn_cancel"
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert "Proceed is disabled until errors are fixed" in hint
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(pilot.app.screen, ValidationModal)
+            return results
+
+    assert asyncio.run(scenario()) == [False]
+
+
+def test_validation_modal_warnings_only_needs_explicit_proceed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stray Enter cannot proceed past warnings; clicking Proceed returns True."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    warnings_only = [
+        issue
+        for issue in _mixed_validation_issues()
+        if issue.severity == ValidationSeverity.WARNING
+    ]
+
+    async def scenario() -> list[bool]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            results = await _open_validation_modal(pilot, warnings_only)
+            modal = pilot.app.screen
+            assert not modal.query_one("#btn_proceed", Button).disabled
+            assert modal.focused is not None
+            assert modal.focused.id == "issue_list"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, ValidationModal)
+            assert results == []
+            await pilot.click("#btn_proceed")
+            await pilot.pause()
+            assert not isinstance(pilot.app.screen, ValidationModal)
+            return results
+
+    assert asyncio.run(scenario()) == [True]
 
 
 def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> None:

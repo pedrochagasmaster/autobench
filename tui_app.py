@@ -54,6 +54,7 @@ from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.worker import get_current_worker
+from rich.text import Text
 
 # Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
@@ -408,9 +409,17 @@ class PresetHelpScreen(ModalScreen):
 
 
 class ValidationModal(ModalScreen):
-    """Modal to display validation issues and allow proceed/cancel."""
+    """Modal to display validation issues and allow proceed/cancel.
+
+    Every issue gets its own content-sized row with a text severity badge
+    (``ERROR`` / ``WARNING``) so the outcome stays legible without colour.
+    Issue text comes from user data (CSV column names and values), so it is
+    rendered as literal ``rich.text.Text`` and never parsed as markup.
+    """
 
     BINDINGS = [("escape", "cancel_validation", "Cancel")]
+
+    _BADGE_WIDTH = max(len(s.value) for s in ValidationSeverity)
 
     def __init__(self, issues: List[ValidationIssue]) -> None:
         super().__init__()
@@ -428,25 +437,65 @@ class ValidationModal(ModalScreen):
                 yield Label(f"Errors: {error_count}", classes="issue-error" if error_count > 0 else "")
                 yield Label(f"  Warnings: {warning_count}", classes="issue-warning" if warning_count > 0 else "")
 
+            yield Label("", id="validation_hint")
+
             yield ListView(id="issue_list")
 
-            with Horizontal(classes="input-group"):
+            with Horizontal(classes="input-group", id="validation_buttons"):
                 yield Button("Proceed", id="btn_proceed", variant="success", disabled=self.has_errors)
                 yield Button("Cancel", id="btn_cancel", variant="error")
 
+    @classmethod
+    def _issue_text(cls, issue: ValidationIssue) -> Text:
+        """Build a literal (markup-free) row: severity badge, message, rows."""
+        badge = f" {issue.severity.value.upper():<{cls._BADGE_WIDTH}} "
+        text = Text.assemble((badge, "bold reverse"), " ", str(issue.message))
+        if issue.row_indices:
+            row_preview = ", ".join(str(i) for i in issue.row_indices[:10])
+            if len(issue.row_indices) > 10:
+                row_preview += f", ... ({len(issue.row_indices)} rows)"
+            text.append(f"\n{' ' * (len(badge) + 1)}Rows: {row_preview}", style="italic")
+        return text
+
     def on_mount(self) -> None:
-        """Populate the list view."""
-        list_view = self.query_one("#issue_list")
+        """Populate the list view and move focus off Proceed."""
+        list_view = self.query_one("#issue_list", ListView)
         for issue in self.issues:
-            severity_cls = "issue-error" if issue.severity == ValidationSeverity.ERROR else "issue-warning"
-            label = Label(f"[{issue.severity.value}] {issue.message}", classes=severity_cls)
-            if issue.row_indices:
-                row_preview = ", ".join(str(i) for i in issue.row_indices[:10])
-                sub_label = Label(f"  Rows: {row_preview}", classes="subsection-title")
-                item = ListItem(Vertical(label, sub_label), classes="issue-item")
+            if issue.severity == ValidationSeverity.ERROR:
+                severity_cls = "issue-error"
+            elif issue.severity == ValidationSeverity.WARNING:
+                severity_cls = "issue-warning"
             else:
-                item = ListItem(label, classes="issue-item")
-            list_view.append(item)
+                severity_cls = "issue-info"
+            row = Static(self._issue_text(issue), classes=f"issue-text {severity_cls}")
+            list_view.append(ListItem(row, classes="issue-item"))
+        # One stray Enter must never proceed past issues the operator has not seen.
+        if self.has_errors:
+            self.query_one("#btn_cancel", Button).focus()
+        else:
+            list_view.focus()
+        self.call_after_refresh(self._update_hint)
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self._update_hint)
+
+    def _update_hint(self) -> None:
+        """Say when the list overflows and why Proceed is unavailable."""
+        try:
+            list_view = self.query_one("#issue_list", ListView)
+            hint = self.query_one("#validation_hint", Label)
+        except NoMatches:
+            return
+        parts: List[str] = []
+        count = len(self.issues)
+        noun = "issue" if count == 1 else "issues"
+        if list_view.max_scroll_y > 0:
+            parts.append(f"{count} {noun}, scroll to review")
+        else:
+            parts.append(f"{count} {noun}")
+        if self.has_errors:
+            parts.append("Proceed is disabled until errors are fixed")
+        hint.update(Text(". ".join(parts) + "."))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_proceed":
@@ -742,10 +791,12 @@ class BenchmarkApp(App):
     #validation_container {
         width: 80%;
         max-width: 110;
-        height: 70%;
+        /* Sized so the list keeps several rows and both buttons stay visible at 80x24. */
+        height: 90%;
+        max-height: 36;
         background: $surface;
         border: round $primary;
-        padding: 1 2;
+        padding: 0 2;
     }
 
     #validation_title {
@@ -755,17 +806,33 @@ class BenchmarkApp(App):
         width: 100%;
     }
 
+    #validation_hint {
+        width: 100%;
+        color: $text-muted;
+    }
+
     #issue_list {
         height: 1fr;
+        min-height: 3;
         border: round $secondary;
-        margin-bottom: 1;
         background: $boost;
     }
 
-    .issue-item {
+    /* Rows size to their content; a 1fr child would swallow the whole list. */
+    #issue_list > .issue-item {
         height: auto;
-        padding: 1;
+        padding: 0 1;
         border-bottom: solid $primary 50%;
+    }
+
+    #issue_list .issue-text {
+        height: auto;
+        width: 1fr;
+    }
+
+    #validation_buttons {
+        height: auto;
+        margin-bottom: 0;
     }
 
     .issue-error {
