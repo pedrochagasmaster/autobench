@@ -47,6 +47,25 @@ async def _wait_for_entity_values(pilot: Pilot, timeout: float = 10.0) -> None:
     await pilot.pause()
 
 
+async def _wait_for_confirm_screen(pilot: Pilot, timeout: float = 5.0) -> None:
+    """Wait until the clearing-spend modal is pushed *and* laid out.
+
+    ``app.screen`` switches to the modal before its buttons are composed and
+    given a region, so clicking as soon as the screen type matches races the
+    layout pass (NoMatches / OutOfBounds under parallel load).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause(0.1)
+        screen = pilot.app.screen
+        if not isinstance(screen, ClearingSpendConfirmScreen):
+            continue
+        buttons = list(screen.query("#btn_confirm_yes, #btn_confirm_no"))
+        if len(buttons) == 2 and all(b.region.width and b.region.height for b in buttons):
+            break
+    await pilot.pause()
+
+
 async def _configure_rate_form(
     pilot: Pilot,
     tmp_path: Path,
@@ -268,10 +287,7 @@ def test_clearing_spend_confirmation_modal_uses_selected_total(
                 )
             )
             worker.start()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(app.screen, ClearingSpendConfirmScreen)
             message = str(app.screen.query_one("#confirm_message", Static).content)
             assert "Confirm clearing-spend basis" in message
@@ -308,10 +324,7 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
                 validate_input=True,
             )
             pilot.app.run_analysis()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(pilot.app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(pilot.app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_no")
             for _ in range(50):
@@ -345,10 +358,7 @@ def test_fraud_confirmation_continues_run_and_marks_tui_source(
             executed = MagicMock()
             app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
             app.run_analysis()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_yes")
             for _ in range(50):
@@ -413,13 +423,7 @@ def test_new_fraud_run_attempt_shows_confirmation_again(
             )
             for _attempt in range(2):
                 pilot.app.run_analysis()
-                for _ in range(50):
-                    await pilot.pause(0.1)
-                    if isinstance(
-                        pilot.app.screen,
-                        ClearingSpendConfirmScreen,
-                    ):
-                        break
+                await _wait_for_confirm_screen(pilot)
                 assert isinstance(
                     pilot.app.screen,
                     ClearingSpendConfirmScreen,
