@@ -32,6 +32,7 @@ from tui_app import (
     SELECT_BLANK,
     BenchmarkApp,
     ClearingSpendConfirmScreen,
+    ConfirmScreen,
     ValidationModal,
 )
 
@@ -391,6 +392,60 @@ def test_fraud_confirmation_continues_run_and_marks_tui_source(
     assert request.approved_col == "approved"
     assert request.fraud_col == "fraud"
     assert request._fraud_confirmation_source == "tui_modal"
+
+
+def test_quit_while_clearing_spend_confirmation_open_exits_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D10: quitting while the worker waits on a confirmation must not hang.
+
+    The worker used to block on an Event nobody would ever set, keeping the
+    process alive after the UI exited. The scenario runs in a thread so a
+    regression fails the test instead of hanging the suite.
+    """
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "logs"))
+    prepare = MagicMock(side_effect=AssertionError("CSV loading must not start"))
+    monkeypatch.setattr(tui_app, "prepare_run_data", prepare)
+    cancelled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui_app, "action_cancelled", lambda action, prompt: cancelled.append((action, prompt))
+    )
+    workers: list[threading.Thread] = []
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            await _configure_rate_form(pilot, tmp_path, fraud=True, approval=False)
+            before = set(threading.enumerate())
+            pilot.app.run_analysis()
+            await _wait_for_confirm_screen(pilot)
+            workers.extend(t for t in threading.enumerate() if t not in before)
+            pilot.app.action_quit()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                screen = pilot.app.screen
+                if isinstance(screen, ConfirmScreen) and not isinstance(
+                    screen, ClearingSpendConfirmScreen
+                ):
+                    break
+            assert "Quit anyway" in str(
+                pilot.app.screen.query_one("#confirm_message", Static).content
+            )
+            pilot.app.screen.query_one("#btn_confirm_yes", Button).press()
+            await pilot.pause(0.2)
+
+    runner = threading.Thread(target=lambda: asyncio.run(scenario()), daemon=True)
+    runner.start()
+    runner.join(timeout=30)
+    assert not runner.is_alive(), "app did not exit: worker still blocked on a confirmation"
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "analysis worker still blocked after quit"
+    prepare.assert_not_called()
+    # The quit is the only cancel recorded; the abandoned dialog adds nothing.
+    assert cancelled == [("rate_analysis", "quit_before_run")]
 
 
 def test_approval_only_tui_run_skips_clearing_spend_confirmation(

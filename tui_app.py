@@ -579,6 +579,13 @@ class BenchmarkApp(App):
 
     ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = ADVANCED_FIELD_SPECS
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Confirmations the analysis worker is blocked on (see _await_confirmation).
+        self._confirmation_lock = threading.Lock()
+        self._pending_confirmations: set[threading.Event] = set()
+        self._confirmations_abandoned = False
+
     CSS = """
     #app_body {
         height: 1fr;
@@ -1239,6 +1246,7 @@ class BenchmarkApp(App):
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
+        self._abandon_pending_confirmations()
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1584,29 +1592,27 @@ class BenchmarkApp(App):
         Runs on the analysis worker thread; blocks until the operator answers
         the modal on the app thread. Consent is never persisted or restored.
         """
-        decision: Dict[str, bool] = {}
-        answered = threading.Event()
-
-        def _on_dismiss(result: Optional[bool]) -> None:
-            decision["value"] = bool(result)
-            answered.set()
-
-        self.call_from_thread(
-            self.push_screen,
+        return self._await_confirmation(
             ConfirmScreen(
                 "This preset uses the accuracy_first compliance posture: it "
                 "prioritizes analytical fidelity over strict compliance and "
                 "may produce a NON-PUBLISHABLE diagnostic report.\n\n"
                 "Proceed with this run?",
                 confirm_label="I understand — proceed",
-            ),
-            _on_dismiss,
+            )
         )
-        answered.wait()
-        return decision.get("value", False)
 
     def _confirm_clearing_spend_basis(self, total_col: str) -> bool:
         """Ask for the fraud clearing-spend attestation for this run attempt."""
+        return self._await_confirmation(ClearingSpendConfirmScreen(total_col))
+
+    def _await_confirmation(self, screen: ModalScreen) -> bool:
+        """Show ``screen`` from the worker thread and block until it is answered.
+
+        A quit or unmount abandons every pending confirmation as declined (see
+        ``_abandon_pending_confirmations``); without that, the worker would
+        wait forever and keep the process alive after the UI has gone.
+        """
         decision: Dict[str, bool] = {}
         answered = threading.Event()
 
@@ -1614,13 +1620,28 @@ class BenchmarkApp(App):
             decision["value"] = bool(result)
             answered.set()
 
-        self.call_from_thread(
-            self.push_screen,
-            ClearingSpendConfirmScreen(total_col),
-            _on_dismiss,
-        )
-        answered.wait()
+        with self._confirmation_lock:
+            if self._confirmations_abandoned:
+                return False
+            self._pending_confirmations.add(answered)
+        try:
+            self.call_from_thread(self.push_screen, screen, _on_dismiss)
+            answered.wait()
+        finally:
+            with self._confirmation_lock:
+                self._pending_confirmations.discard(answered)
+        if self._confirmations_abandoned:
+            return False
         return decision.get("value", False)
+
+    def _abandon_pending_confirmations(self) -> None:
+        """Release worker threads blocked on a confirmation, as declined."""
+        with self._confirmation_lock:
+            self._confirmations_abandoned = True
+            pending = list(self._pending_confirmations)
+            self._pending_confirmations.clear()
+        for answered in pending:
+            answered.set()
 
     def _execute_run_for_tui(self, request: AnalysisRunRequest, logger: logging.Logger, log_widget: Log):
         """Run analysis while keeping library print output inside the TUI log.
@@ -2132,6 +2153,7 @@ class BenchmarkApp(App):
                         action_cancelled(self._telemetry_action(), "quit_during_run")
                     elif self._run_state == "validating":
                         action_cancelled(self._telemetry_action(), "quit_before_run")
+                    self._abandon_pending_confirmations()
                     self._save_session()
                     self.exit()
 
@@ -2608,6 +2630,8 @@ class BenchmarkApp(App):
                         self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
                     if posture == 'accuracy_first':
                         if not self._confirm_accuracy_first_consent():
+                            if self._confirmations_abandoned:
+                                return  # App is quitting; the quit is already recorded.
                             action_cancelled(self._telemetry_action(), "accuracy_first_consent")
                             self._fail_launch(
                                 "accuracy_first run cancelled: operator consent was not given.",
@@ -2675,6 +2699,8 @@ class BenchmarkApp(App):
                 if request.fraud_col:
                     assert request.total_col is not None
                     if not self._confirm_clearing_spend_basis(request.total_col):
+                        if self._confirmations_abandoned:
+                            return  # App is quitting; the quit is already recorded.
                         action_cancelled("rate_analysis", "clearing_spend")
                         write_log_message(log_widget, "Analysis cancelled by user.")
                         self.call_from_thread(self._reset_run_ui)

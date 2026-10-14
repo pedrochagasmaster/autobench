@@ -79,16 +79,18 @@ replaces those tests.
    - D7: a frozen `RunInputs` snapshot is built on the UI thread before the
      worker starts.
    - D8: entity loading uses the resolved CSV path.
-   - D10: quitting while a consent or confirmation dialog is open hangs the
-     app.
+   - Owner decisions 1, 4, 5 and 6: the engine cancel/stage hook, no
+     `txn_cnt` Total default, balanced CSV off everywhere, and the rate sweep
+     sent as shown.
 
-   Each fix gets a regression test.
+   Each fix gets a regression test. (D10 was fixed in PR #75.)
 2. **Performance foundations, with no visual change.**
    - Theme set in `__init__`.
    - Presets parsed once.
    - CSV reload only when (realpath, mtime, size) changes.
    - Picker built on `OptionList` with a worker scan.
    - `core.analysis_run` loaded lazily and pre-warmed in a thread.
+   - The lazy `core/__init__.py` facade (owner decision 8).
    - Probe budgets updated, and the report-only CI job added.
 3. **Visual system.**
    - The token stylesheet, the status language and NO_COLOR/ANSI rules.
@@ -99,7 +101,7 @@ replaces those tests.
 4. **Layout shell.**
    - Step rail, action bar, and the results column or `^T` view.
    - Global bindings that work in any field (no `ctrl+a`/`ctrl+e`), plus the
-     command palette.
+     command palette, which is the only way to jump to a step (decision 7).
    - Only the active step is mounted.
    - Existing fields move into steps unchanged.
 5. **Step contents.**
@@ -121,20 +123,20 @@ replaces those tests.
 - All TUI, privacy and telemetry tests pass with no weakened assertions.
 - Snapshots are approved at both sizes.
 
-## Open questions for the owner
+## Owner decisions (2026-10-14)
 
-1. **Engine cancel and progress.** May `execute_run` get an optional
-   progress/cancel hook? Without one, cancel works only before the engine
-   starts, and progress shows stages, not percentages.
-2. Should advanced-override files move out of the launch folder (01 §8.2)?
-3. Should "Verified safe coverage" and the preset keep being restored between
-   sessions?
-4. Should the `txn_cnt` default for the rate Total column be dropped?
-5. Balanced-CSV export defaults differ (share on, rate off, CLI off). Should
-   they be aligned?
-6. In rate mode, should the TUI send the sweep value shown on screen, without
-   the old lock?
-7. Do F2–F6 reach the app in the analysts' terminals? If not, the
-   `alt+1…5` fallback (01 §4.1) becomes primary.
-8. Should the optional lazy `core/__init__.py` facade (0.3 s of import time)
-   be in scope for Phase 2?
+These answers replace the open questions that were listed here. Where a
+decision changes a spec, this section wins over 01–03.
+
+| # | Question | Decision | Effect on the plan |
+|---|---|---|---|
+| 1 | Engine cancel and progress hook in `core/` | **Add it.** An optional, additive `cancel_requested` callable plus a stage callback on the shared run seam. Core checks it at the configuration → input → analysis boundaries and before `output` starts. | Phase 2 PR 1. CLI behaviour is unchanged when no hook is passed. Log-gate finalisation still runs in `finally`. Cancel is offered until output writing starts. |
+| 2 | Where advanced-override files live | **Keep as today**: written to the launch folder and left there. | No `PresetWorkflow` change. D2 is still fixed, because the file is regenerated from the current preset on every run (01 §8.2 items 1–4). 01 §8.2 item 2's "deleted after the run" is dropped. |
+| 3 | Restore Verified safe coverage and the preset | **Keep restoring**, marked ↺ restored. | As 01 §8.1. |
+| 4 | `txn_cnt` default for the rate Total column | **Drop it.** The clearing-spend basis is always an explicit choice. | Phase 2 PR 1. J2 projections gain the explicit selection. |
+| 5 | Balanced-CSV export defaults | **Off everywhere** (TUI share, TUI rate, CLI). | Phase 2 PR 1. This is a behaviour change for TUI share runs, documented in the PR and README. The CLI default is already off. |
+| 6 | Rate-mode sweep after Verified safe coverage | **Send the value shown, unlocked.** The lock applies only while VSC is active on a share run. | Phase 2 PR 1 (bug fix), with a regression test. |
+| 7 | Step-jump keys | **Command palette only.** No F2–F6 and no Alt+1…5. Tab still flows through the steps. | 01 §4.1 step keys are dropped. Ctrl+P lists "Go to step: …" entries. Projections in 01 §9 are re-measured in PR 6, J3b most affected. |
+| 8 | Lazy `core/__init__.py` facade | **Include it.** | Phase 2 PR 2, with an import-time check in the perf probe. |
+| — | D10 (quit while a confirmation is open hangs) | **Fixed in PR #75.** | Removed from Phase 2 PR 1. |
+| — | Phase 2 delivery | One short-lived branch and draft PR per Phase 2 PR, stacked on #75. Run all six. | Wave 1 (PRs 1–3) in parallel, then PR 4, PR 5 and PR 6 in sequence. |
