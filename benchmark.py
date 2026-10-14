@@ -37,10 +37,22 @@ from core.analysis_run import (
     execute_share_run,
     RunBlocked,
 )
-from core.telemetry.constants import DEFAULT_DAYS
+from core.telemetry.constants import DEFAULT_DAYS, LAUNCH_CONTEXTS
+from core.telemetry.events import validate_app_version
 from core.telemetry.identity import validate_username
 from core.telemetry.reader import TelemetryReader
-from core.telemetry.render import format_summary, format_who, sanitize_terminal
+from core.telemetry import report as telemetry_report
+from core.telemetry.render import (
+    format_breakdown,
+    format_durations,
+    format_friction,
+    format_funnel,
+    format_report_header,
+    format_summary,
+    format_surfaces,
+    format_who,
+    sanitize_terminal,
+)
 from core.telemetry import end_session, start_session
 from utils.logger import finalize_deferred_logging, setup_deferred_logging
 from utils.runtime_environment import warn_if_personal_runtime
@@ -343,51 +355,77 @@ EXAMPLES:
     # ========================================================================
     telemetry_parser = subparsers.add_parser(
         'telemetry',
-        help='Report local offline telemetry (who / summary)',
+        help='Report local offline telemetry (who / summary / funnel / ...)',
     )
     telemetry_subparsers = telemetry_parser.add_subparsers(
         dest='telemetry_command',
         help='Telemetry report to show',
     )
 
+    def _add_window_args(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            '--days',
+            type=int,
+            default=DEFAULT_DAYS,
+            help=f'Include events from the last N days (default: {DEFAULT_DAYS})',
+        )
+        sub.add_argument(
+            '--dir',
+            default=None,
+            help='Telemetry parent directory whose direct child is users/',
+        )
+
     who_parser = telemetry_subparsers.add_parser(
         'who',
         help='List users with session and completion counts',
     )
-    who_parser.add_argument(
-        '--days',
-        type=int,
-        default=DEFAULT_DAYS,
-        help=f'Include events from the last N days (default: {DEFAULT_DAYS})',
-    )
-    who_parser.add_argument(
-        '--dir',
-        default=None,
-        help='Telemetry parent directory whose direct child is users/',
-    )
+    _add_window_args(who_parser)
 
     summary_parser = telemetry_subparsers.add_parser(
         'summary',
-        help='Summarize surfaces, actions, and outcomes',
+        help='Summarize surfaces, run intents, and outcomes',
     )
-    summary_parser.add_argument(
-        '--days',
-        type=int,
-        default=DEFAULT_DAYS,
-        help=f'Include events from the last N days (default: {DEFAULT_DAYS})',
-    )
-    summary_parser.add_argument(
-        '--dir',
-        default=None,
-        help='Telemetry parent directory whose direct child is users/',
-    )
+    _add_window_args(summary_parser)
     summary_parser.add_argument(
         '--user',
         default=None,
         help='Limit summary to one username',
     )
-    
+
+    for name, help_text in TELEMETRY_BREAKDOWN_COMMANDS.items():
+        breakdown_parser = telemetry_subparsers.add_parser(name, help=help_text)
+        _add_window_args(breakdown_parser)
+        breakdown_parser.add_argument(
+            '--user',
+            default=None,
+            help='Limit the report to one username',
+        )
+        breakdown_parser.add_argument(
+            '--context',
+            choices=LAUNCH_CONTEXTS,
+            default=None,
+            help='Only sessions started from this launch context',
+        )
+        breakdown_parser.add_argument(
+            '--app-version',
+            dest='app_version',
+            default=None,
+            help='Only sessions recorded by this app_version (pre/post release split)',
+        )
+
     return parser
+
+
+# Read-only breakdown reports over TelemetryReader (05 §5.2, promoted to CLI).
+TELEMETRY_BREAKDOWN_COMMANDS = {
+    'funnel': 'Per-action funnel: intents, blocks, cancels, attempts, outcomes',
+    'refusals': 'Refused runs by reason and action',
+    'failures': 'Failed runs by category and action',
+    'blocks': 'Pre-run launch blocks by reason, and cancels by prompt',
+    'surfaces': 'Surface views and launch contexts',
+    'durations': 'Session duration distribution per launch context',
+    'friction': 'Every breakdown plus derived TUI friction metrics',
+}
 
 
 def _telemetry_warn(message: str) -> None:
@@ -395,13 +433,79 @@ def _telemetry_warn(message: str) -> None:
     print(f"WARNING: {sanitize_terminal(str(message))}", file=sys.stderr)
 
 
+def _render_telemetry_breakdown(
+    command: str,
+    reader: TelemetryReader,
+    *,
+    days: int,
+    user: Optional[str],
+    context: Optional[str],
+    app_version: Optional[str],
+) -> str:
+    """Build one read-only breakdown report (no writes, no session)."""
+    sessions = telemetry_report.group_sessions(reader.iter_events(days=days, user=user))
+    sessions = telemetry_report.filter_sessions(
+        sessions, context=context, app_version=app_version
+    )
+    selection = reader.last_selection
+    filters = {
+        key: value
+        for key, value in (('user', user), ('context', context), ('app_version', app_version))
+        if value is not None
+    }
+    header = telemetry_report.ReportHeader(
+        days=days,
+        source=selection.kind.value if selection is not None else 'none',
+        scope=telemetry_report.scope(sessions),
+        filters=filters,
+    )
+    sections = []
+    if command in ('funnel', 'friction'):
+        sections.append(format_funnel(telemetry_report.funnel(sessions)))
+    if command in ('refusals', 'friction'):
+        sections.append(
+            format_breakdown('Refusals by reason', telemetry_report.refusals(sessions))
+        )
+    if command in ('failures', 'friction'):
+        sections.append(
+            format_breakdown(
+                'Failures by category',
+                telemetry_report.failures(sessions),
+                label='CATEGORY',
+            )
+        )
+    if command in ('blocks', 'friction'):
+        sections.append(
+            format_breakdown(
+                'Launch blocks by reason (before any attempt)',
+                telemetry_report.launch_blocks(sessions),
+            )
+        )
+        sections.append(
+            format_breakdown(
+                'Cancels by prompt',
+                telemetry_report.cancels(sessions),
+                label='PROMPT',
+            )
+        )
+    if command in ('surfaces', 'friction'):
+        sections.append(format_surfaces(telemetry_report.surfaces(sessions)))
+    if command in ('durations', 'friction'):
+        sections.append(format_durations(telemetry_report.durations(sessions)))
+    if command == 'friction':
+        sections.append(format_friction(telemetry_report.friction(sessions)))
+    return format_report_header(header) + "\n" + "\n".join(sections)
+
+
 def handle_telemetry_command(args: argparse.Namespace) -> int:
-    """Handle telemetry who/summary without starting writers or sessions."""
+    """Handle read-only telemetry reports without starting writers or sessions."""
     command = getattr(args, 'telemetry_command', None)
-    if command not in ('who', 'summary'):
-        print("Usage: benchmark telemetry {who|summary}")
+    if command not in ('who', 'summary', *TELEMETRY_BREAKDOWN_COMMANDS):
+        print("Usage: benchmark telemetry {who|summary|" + "|".join(TELEMETRY_BREAKDOWN_COMMANDS) + "}")
         print("  who                     List users, sessions, last seen, completions")
-        print("  summary                 Summarize surfaces, actions, and outcomes")
+        print("  summary                 Summarize surfaces, run intents, and outcomes")
+        for name, help_text in TELEMETRY_BREAKDOWN_COMMANDS.items():
+            print(f"  {name:<24}{help_text}")
         return EXIT_FAILURE
 
     days = getattr(args, 'days', DEFAULT_DAYS)
@@ -433,12 +537,32 @@ def handle_telemetry_command(args: argparse.Namespace) -> int:
             print("Error: invalid username.", file=sys.stderr)
             return EXIT_FAILURE
 
+    app_version = getattr(args, 'app_version', None)
+    if app_version is not None:
+        try:
+            app_version = validate_app_version(app_version)
+        except ValueError:
+            print("Error: invalid --app-version.", file=sys.stderr)
+            return EXIT_FAILURE
+    context = getattr(args, 'context', None)
+
     try:
         reader = TelemetryReader(shared_dir=shared_dir, warn=_telemetry_warn)
         if command == 'who':
             sys.stdout.write(format_who(reader.who(days=days)))
-        else:
+        elif command == 'summary':
             sys.stdout.write(format_summary(reader.summary(days=days, user=user)))
+        else:
+            sys.stdout.write(
+                _render_telemetry_breakdown(
+                    command,
+                    reader,
+                    days=days,
+                    user=user,
+                    context=context,
+                    app_version=app_version,
+                )
+            )
         return EXIT_OK
     except (ValueError, OSError, KeyError):
         print("Error: unable to read telemetry.", file=sys.stderr)

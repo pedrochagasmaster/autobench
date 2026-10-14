@@ -328,7 +328,9 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
     cancelled: list[str] = []
     monkeypatch.setattr(tui_app, "prepare_run_data", prepare)
     monkeypatch.setattr(tui_app, "setup_deferred_logging", setup_logging)
-    monkeypatch.setattr(tui_app, "action_cancelled", cancelled.append)
+    monkeypatch.setattr(
+        tui_app, "action_cancelled", lambda action, prompt: cancelled.append((action, prompt))
+    )
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
@@ -353,7 +355,7 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
     prepare.assert_not_called()
     setup_logging.assert_not_called()
     assert not (tmp_path / "logs").exists()
-    assert cancelled == ["rate_analysis"]
+    assert cancelled == [("rate_analysis", "clearing_spend")]
 
 
 def test_fraud_confirmation_continues_run_and_marks_tui_source(
@@ -427,7 +429,7 @@ def test_new_fraud_run_attempt_shows_confirmation_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
-    monkeypatch.setattr(tui_app, "action_cancelled", lambda _action: None)
+    monkeypatch.setattr(tui_app, "action_cancelled", lambda _action, _prompt: None)
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:

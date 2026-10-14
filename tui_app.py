@@ -79,7 +79,11 @@ try:
     from core.preset_workflow import PresetWorkflow
     from core.telemetry import (
         action_cancelled,
+        advanced_override,
+        dataset_load,
         end_session,
+        launch_blocked,
+        session_restored,
         start_session,
         surface_viewed,
     )
@@ -1229,6 +1233,8 @@ class BenchmarkApp(App):
         # Session starts once the TUI is mounted and usable.
         start_session("tui")
         self._telemetry_session_started = True
+        if getattr(self, "_telemetry_session_restored", False):
+            session_restored()
         self._emit_surface_if_changed(self._analysis_mode())
 
     def on_unmount(self) -> None:
@@ -1264,13 +1270,22 @@ class BenchmarkApp(App):
         saved_df: Any,
         log_widget: Log,
     ) -> None:
-        """Handle ValidationModal dismiss; cancel telemetry only for explicit False."""
+        """Handle ValidationModal dismiss.
+
+        Telemetry: a dismissal that could not have proceeded (errors, so
+        Proceed is disabled, or should_abort) is a forced exit, recorded as
+        launch_blocked(validation_errors); an explicit Cancel on a modal that
+        could proceed is the operator's choice, recorded as
+        action_cancelled(validation_review). A None result records nothing.
+        """
         if result and not has_errors and not should_abort:
             self.run_analysis(confirmed=True, saved_request=request, saved_df=saved_df)
             return
-        if result is False:
-            action = "share_analysis" if request.is_share else "rate_analysis"
-            action_cancelled(action)
+        action = "share_analysis" if request.is_share else "rate_analysis"
+        if result is not None and (has_errors or should_abort):
+            launch_blocked(action, "validation_errors")
+        elif result is False:
+            action_cancelled(action, "validation_review")
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1330,6 +1345,8 @@ class BenchmarkApp(App):
             return
         with self.batch_update():
             self._apply_session(session)
+        # Reported as session_restored once the telemetry session starts.
+        self._telemetry_session_restored = bool(session)
 
     def _apply_session(self, session: Dict[str, Any]) -> None:
         # Legacy sessions may contain governed dataset/output paths and entity
@@ -1520,8 +1537,31 @@ class BenchmarkApp(App):
         btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
         self._refresh_run_status()
 
-    def _fail_launch(self, message: str, focus_id: Optional[str] = None) -> None:
-        """Notify about an invalid launch and return UI to idle (worker-safe)."""
+    def _telemetry_action(self) -> str:
+        """Telemetry action of the current launch (closed: share/rate_analysis)."""
+        mode = getattr(self, "_run_mode", None)
+        if mode not in ("share", "rate"):
+            try:
+                mode = self._analysis_mode()
+            except Exception:
+                # Telemetry must never break an error path (e.g. teardown).
+                mode = "share"
+        return "share_analysis" if mode == "share" else "rate_analysis"
+
+    def _fail_launch(
+        self,
+        message: str,
+        focus_id: Optional[str] = None,
+        *,
+        block_reason: Optional[str] = None,
+    ) -> None:
+        """Notify about an invalid launch and return UI to idle (worker-safe).
+
+        ``block_reason`` is a closed LAUNCH_BLOCK_REASONS value recorded as
+        ``launch_blocked``; ``message`` never reaches telemetry.
+        """
+        if block_reason is not None:
+            launch_blocked(self._telemetry_action(), block_reason)
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1689,6 +1729,7 @@ class BenchmarkApp(App):
         if not csv_path:
             return None
         if not os.path.isfile(csv_path):
+            self._emit_dataset_load("not_found", csv_path)
             self.notify(
                 f"CSV file not found: {csv_path}",
                 title="Invalid Path",
@@ -1709,6 +1750,7 @@ class BenchmarkApp(App):
 
     def load_csv_headers(self, file_path, announce: bool = True):
         """Load CSV headers and populate Select widgets."""
+        headers_read = False
         try:
             resolved = self._resolve_csv_path(file_path)
             if not resolved:
@@ -1716,6 +1758,8 @@ class BenchmarkApp(App):
             file_path = resolved
             # Read only headers
             cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            headers_read = True
+            self._emit_dataset_load("loaded", file_path)
             self.csv_columns = cols
             options = [(c, c) for c in cols]
             selection_options = [(c, c) for c in cols]
@@ -1768,8 +1812,22 @@ class BenchmarkApp(App):
                 )
 
         except Exception as e:
+            if not headers_read:
+                self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
             self.notify(f"Failed to read CSV: {e}", title="CSV Error", severity="error")
+
+    def _emit_dataset_load(self, outcome: str, file_path: Any) -> None:
+        """Record a closed dataset_load outcome once per (outcome, file).
+
+        Blur and Enter both reload the same path, so repeats are dropped. The
+        path is only compared in memory; telemetry receives ``outcome`` alone.
+        """
+        key = (outcome, str(file_path))
+        if key == getattr(self, "_last_dataset_telemetry", None):
+            return
+        self._last_dataset_telemetry = key
+        dataset_load(outcome)
 
     def _update_csv_meta(self, file_path: str, cols: List[str]) -> None:
         """Show a compact summary of the loaded file under the path field."""
@@ -1973,6 +2031,7 @@ class BenchmarkApp(App):
         """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
         yaml_data = self._collect_advanced_override_data()
         if not yaml_data:
+            advanced_override("empty")
             self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
             return
 
@@ -2000,7 +2059,9 @@ class BenchmarkApp(App):
                 severity="information",
                 timeout=6,
             )
+            advanced_override("applied")
         except Exception as e:
+            advanced_override("failed")
             self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
 
     def setup_logging_capture(self):
@@ -2034,6 +2095,7 @@ class BenchmarkApp(App):
             self.run_analysis()
 
         elif event.button.id == "btn_preset_help":
+            surface_viewed("preset_help")
             self.push_screen(PresetHelpScreen())
         elif event.button.id == "btn_apply_advanced":
             self.apply_advanced_overrides()
@@ -2064,6 +2126,12 @@ class BenchmarkApp(App):
         if self._run_state in ("running", "validating"):
             def on_confirm(confirmed: Optional[bool]) -> None:
                 if confirmed:
+                    # G15: name the abandoned intent; "running" means the run
+                    # already emitted action_attempted.
+                    if self._run_state == "running":
+                        action_cancelled(self._telemetry_action(), "quit_during_run")
+                    elif self._run_state == "validating":
+                        action_cancelled(self._telemetry_action(), "quit_before_run")
                     self._save_session()
                     self.exit()
 
@@ -2215,6 +2283,7 @@ class BenchmarkApp(App):
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
+        surface_viewed("preset_help")
         self.push_screen(PresetHelpScreen())
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
@@ -2332,6 +2401,7 @@ class BenchmarkApp(App):
                 # replacement load (e.g. column cleared): drop the old values.
                 return
             if error is not None:
+                dataset_load("entity_list_failed")
                 log_output.write(f"Error loading entities: {error}\n")
                 return
             values = values or []
@@ -2412,6 +2482,11 @@ class BenchmarkApp(App):
         self._refresh_run_status()
         self._emit_surface_if_changed(self._analysis_mode())
 
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        """Record the advanced panel being opened (Ctrl+A, Ctrl+E or click)."""
+        if event.collapsible.id == "advanced_opt":
+            surface_viewed("advanced")
+
     def action_toggle_advanced(self) -> None:
         """Toggle the advanced optimization collapsible (Ctrl+A)."""
         collapsible = self.query_one("#advanced_opt")
@@ -2454,7 +2529,9 @@ class BenchmarkApp(App):
                 self.preset_workflow = PresetWorkflow()
             export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
             self.notify(f"Exported advanced config: {export_path.name}", title="Advanced Export", severity="information", timeout=6)
+            advanced_override("exported")
         except Exception as e:
+            advanced_override("export_failed")
             self.notify(f"Failed export: {e}", title="Advanced Export", severity="error", timeout=6)
 
     # ──────────────────────────────────────────────────────────────────
@@ -2477,7 +2554,9 @@ class BenchmarkApp(App):
             try:
                 csv_path = self.query_one("#csv_path").value
                 if not csv_path:
-                    self._fail_launch("CSV path is required.", focus_id="csv_path")
+                    self._fail_launch(
+                        "CSV path is required.", focus_id="csv_path", block_reason="csv_missing"
+                    )
                     return
                 if self.entity_selection_pending:
                     # The operator's target entity is cleared while the values
@@ -2486,6 +2565,7 @@ class BenchmarkApp(App):
                     self._fail_launch(
                         "Target entity values are still loading; wait for the list to finish.",
                         focus_id="entity_name",
+                        block_reason="entity_loading",
                     )
                     return
 
@@ -2528,6 +2608,7 @@ class BenchmarkApp(App):
                         self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
                     if posture == 'accuracy_first':
                         if not self._confirm_accuracy_first_consent():
+                            action_cancelled(self._telemetry_action(), "accuracy_first_consent")
                             self._fail_launch(
                                 "accuracy_first run cancelled: operator consent was not given.",
                             )
@@ -2538,7 +2619,7 @@ class BenchmarkApp(App):
                     metric_val = self.query_one("#share_metric").value
                     values["metric"] = metric_val if metric_val != SELECT_BLANK else None
                     if not values["metric"]:
-                        self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric")
+                        self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric", block_reason="metric_missing")
                         return
                     sec_metrics = self.query_one("#share_secondary", SelectionList).selected
                     values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
@@ -2548,6 +2629,7 @@ class BenchmarkApp(App):
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="share_dims",
+                            block_reason="dimensions_missing",
                         )
                         return
                     values["dimensions"] = list(dims) if dims and not values["auto"] else None
@@ -2564,14 +2646,14 @@ class BenchmarkApp(App):
                     total_val = self.query_one("#rate_total").value
                     values["total_col"] = total_val if total_val != SELECT_BLANK else None
                     if not values["total_col"]:
-                        self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total")
+                        self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total", block_reason="total_missing")
                         return
                     approved = self.query_one("#rate_approved").value
                     values["approved_col"] = approved if approved != SELECT_BLANK else None
                     fraud = self.query_one("#rate_fraud").value
                     values["fraud_col"] = fraud if fraud != SELECT_BLANK else None
                     if not values["approved_col"] and not values["fraud_col"]:
-                        self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved")
+                        self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved", block_reason="rate_column_missing")
                         return
                     sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
                     values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
@@ -2581,6 +2663,7 @@ class BenchmarkApp(App):
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="rate_dims",
+                            block_reason="dimensions_missing",
                         )
                         return
                     values["dimensions"] = list(dims) if dims and not values["auto"] else None
@@ -2592,7 +2675,7 @@ class BenchmarkApp(App):
                 if request.fraud_col:
                     assert request.total_col is not None
                     if not self._confirm_clearing_spend_basis(request.total_col):
-                        action_cancelled("rate_analysis")
+                        action_cancelled("rate_analysis", "clearing_spend")
                         write_log_message(log_widget, "Analysis cancelled by user.")
                         self.call_from_thread(self._reset_run_ui)
                         return
@@ -2663,9 +2746,15 @@ class BenchmarkApp(App):
                                     log_widget=log_widget,
                                 )
 
+                            # Timestamp for the time-in-review metric (G12).
+                            surface_viewed("validation_review")
                             self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
                             return
                     except Exception as exc:
+                        launch_blocked(
+                            "share_analysis" if request.is_share else "rate_analysis",
+                            "data_preparation_error",
+                        )
                         finalize_deferred_logging(
                             logging.getLogger(),
                             privacy_authorized=False,
@@ -2679,6 +2768,7 @@ class BenchmarkApp(App):
                 return
 
             except Exception as exc:
+                launch_blocked(self._telemetry_action(), "initialization_error")
                 finalize_deferred_logging(
                     logging.getLogger(),
                     privacy_authorized=False,

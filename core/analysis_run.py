@@ -64,6 +64,7 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import (
+    STRICT_PUBLICATION_WITHHELD_REASONS,
     SUPPRESSED_PUBLICATION_VIEW_NOTICE,
     apply_release_set_filter,
     filter_results_to_release_set,
@@ -2281,6 +2282,19 @@ def _failure_category(phase: str) -> FailCategory:
     return "unexpected"
 
 
+def _publication_withheld(artifacts: AnalysisArtifacts) -> bool:
+    """True when a strict posture withheld publication of an authorized run.
+
+    Reads only the closed ``publication_withheld_reason`` marker that
+    ``write_outputs`` sets; the boolean is all telemetry records (G13).
+    """
+    try:
+        reason = (artifacts.metadata or {}).get("publication_withheld_reason")
+        return reason in STRICT_PUBLICATION_WITHHELD_REASONS
+    except Exception:
+        return False
+
+
 def _execute_run(
     request: AnalysisRunRequest,
     mode_spec: AnalysisModeSpec,
@@ -2290,6 +2304,13 @@ def _execute_run(
 ) -> AnalysisArtifacts:
     # Telemetry helpers are best-effort and never raise, so the outcome
     # mapping below cannot alter analysis behavior.
+    #
+    # Outcome semantics (documented in docs/research/tui-redesign-phase0/
+    # 05-telemetry-friction.md §8): "refused" means the product deliberately
+    # declined to produce benchmark output (policy block, aborted input or
+    # configuration); "failed" means an error the product did not anticipate.
+    # RunAborted is therefore refused/input_validation in every phase, even
+    # though the TUI titles its toast "Failed".
     action: Action = "share_analysis" if request.is_share else "rate_analysis"
     tracker = _PhaseTracker()
     log_gate = PrivacyRunLogGate()
@@ -2326,7 +2347,7 @@ def _execute_run(
         privacy_sink_authorized = artifacts.privacy_sink_authorized is True
         privacy_log_authorized = artifacts.privacy_log_authorized is True
         if privacy_sink_authorized:
-            action_completed(action)
+            action_completed(action, _publication_withheld(artifacts))
         else:
             action_refused(action, "compliance_policy")
         return artifacts
