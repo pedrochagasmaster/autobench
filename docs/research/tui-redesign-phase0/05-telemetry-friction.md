@@ -6,6 +6,13 @@ a scratch directory, written through the real `TelemetryService` and writer
 (see [Reproduction](#7-reproduction-synthetic-store)). Sample numbers are
 invented. They show that the commands work and say nothing about real users.
 
+> **Update (telemetry pass 1):** most gaps below are now closed. Sections 1–7
+> describe the schema-v1 state that the Phase 0 baseline was measured on and are
+> kept as written. [§8 Implemented in this pass](#8-implemented-in-this-pass)
+> gives the schema-v2 catalog, the gap-by-gap disposition, the compatibility
+> rules and the new `benchmark.py telemetry` reports that replace the §5.2
+> script.
+
 ## Summary
 
 - **The schema is small and closed.** It has 8 event types. Every prop value
@@ -248,7 +255,8 @@ intact, and keeps CLI and TUI funnels comparable.
   UID of the username in the first valid record**, and the filename to match
   the base64url token. **Copying files to another host breaks this gate.** The
   copies are owned by whoever copied them, so `benchmark.py telemetry` silently
-  falls back to your own private file. To aggregate across hosts, either run
+  falls back to your own private file. (Since §8.5 the fallback is no longer
+  silent: a stderr warning names the rejection reasons.) To aggregate across hosts, either run
   the reader on each node or use the `jq` route (§5.3) on copied files, which
   bypasses the gate and the schema validation, so trust the inputs.
 - Check what you're reading with `telemetry who`. If it lists only yourself,
@@ -596,3 +604,354 @@ cd /home/user/autobench
 /usr/local/bin/uv run python benchmark.py telemetry summary --dir $S/fleet/shared
 /usr/local/bin/uv run python $S/scripts/friction_report.py --dir $S/fleet/shared --context tui
 ```
+
+---
+
+## 8. Implemented in this pass
+
+This pass closes the friction gaps from §3, fixes the three semantic traps
+from the Summary, replaces the §5.2 script with built-in CLI reports, and makes
+the reader's private fallback explicit. The privacy rule from §3 still holds:
+**every new value is a closed enum, a strict boolean, or the existing bounded
+duration.** No new field can carry a path, file name, column name, entity,
+data value, row count, exception text, or anything the user typed. Privacy
+enforcement, publishable-output validation and analysis results did not
+change.
+
+### 8.1 Schema v2 catalog
+
+Records are now written with `schema_version: 2`, except `session_start` and
+`session_end` (see §8.4). Changes from v1 are in **bold**.
+
+| event | props (exact key set) | emitted by |
+|---|---|---|
+| `session_start` | `launch_context` ∈ `cli_share`, `cli_rate`, `tui` | CLI, TUI mount |
+| `session_end` | `duration_s` (bounded number, as before) | shutdown |
+| **`session_restored`** | *(none)* | TUI mount, after a saved form was applied (G10) |
+| `surface_viewed` | `surface` ∈ `share`, `rate`, **`validation_review`**, **`preset_help`**, **`advanced`** | TUI tabs; the validation modal being pushed (G12); F1 or Preset Guide button; the advanced panel expanding by any route (G14) |
+| `action_attempted` | `action` ∈ `share_analysis`, `rate_analysis` | `core.analysis_run._execute_run` only |
+| `action_completed` | `action`, **`publication_withheld`: bool** | `_execute_run` only (G13) |
+| `action_cancelled` | `action`, **`prompt`** ∈ `validation_review`, `accuracy_first_consent`, `clearing_spend`, `quit_before_run`, `quit_during_run` | TUI only |
+| `action_refused` | `action`, `reason` ∈ `configuration`, `input_validation`, `compliance_policy` | `_execute_run` only |
+| `action_failed` | `action`, `category` ∈ `input`, `analysis`, `output`, `unexpected` | `_execute_run` only |
+| **`launch_blocked`** | `action`, `reason` ∈ `csv_missing`, `entity_loading`, `metric_missing`, `total_missing`, `rate_column_missing`, `dimensions_missing`, `validation_errors`, `data_preparation_error`, `initialization_error` | TUI only, before any attempt (G1, G2, G4, G5, G6) |
+| **`dataset_load`** | `outcome` ∈ `loaded`, `not_found`, `header_read_failed`, `entity_list_failed` | TUI CSV loading (G7, G8) |
+| **`advanced_override`** | `outcome` ∈ `applied`, `empty`, `failed`, `exported`, `export_failed` | TUI advanced panel (G9) |
+
+The vocabularies live in `core/telemetry/constants.py`, the catalogs in
+`core/telemetry/events.py` (`_EVENT_SCHEMAS_V1` is frozen, `_EVENT_SCHEMAS_V2`
+is current), and the typed helpers in `core/telemetry/__init__.py`
+(`launch_blocked`, `dataset_load`, `advanced_override`, `session_restored`,
+plus the new required arguments on `action_completed` and `action_cancelled`).
+`publication_withheld` accepts only a JSON `true`/`false`: `0`, `1`, `"true"`,
+`null` and reason strings are rejected.
+
+`publication_withheld` is true exactly when `write_outputs` set the closed
+`publication_withheld_reason` marker to `strict_posture_violations` or
+`strict_posture_noncompliant_verdict` on a run whose privacy sink was
+authorized (`core.analysis_run._publication_withheld`). Telemetry records the
+boolean only, never the reason or the violation count. The repo owner approved
+this flag (it resolves the sign-off question in the G13 row of §3).
+
+`dataset_load` events are deduplicated per (outcome, file) in TUI memory,
+because blur and Enter both reload the same path. Only the outcome is sent.
+
+### 8.2 Run intents: the funnel without guesswork
+
+Every TUI run press now ends in exactly one recorded terminal, and each
+terminal says whether it happened before or after the attempt:
+
+```text
+run intent ─┬─ launch_blocked{reason}                      (before attempt)
+            ├─ action_cancelled{prompt ≠ quit_during_run}  (before attempt)
+            └─ action_attempted ─┬─ action_completed{publication_withheld}
+                                 ├─ action_refused{reason}
+                                 ├─ action_failed{category}
+                                 ├─ action_cancelled{prompt = quit_during_run}
+                                 └─ (nothing: "open", the process died)
+```
+
+So **intents = launch_blocked + pre-attempt cancels + attempted**, and every
+term is an explicit record. `core.telemetry.report.is_run_intent` encodes the
+rule. v1 data still fits it: v1 cancels have no `prompt`, and in v1 every
+cancel was pre-attempt (validation modal or clearing-spend confirm), so they
+count as pre-attempt. The CLI emits only `action_attempted` and its outcomes,
+so CLI intents equal CLI attempts and CLI and TUI funnels stay comparable.
+
+Validation-modal outcomes (G4) are now distinguished:
+
+| modal state when dismissed | v1 | v2 |
+|---|---|---|
+| warnings only, Proceed pressed | `action_attempted` follows | unchanged |
+| warnings only, Cancel or Esc | `action_cancelled` | `action_cancelled{prompt=validation_review}` (the user's choice) |
+| errors (Proceed disabled), Cancel or Esc | `action_cancelled` | `launch_blocked{reason=validation_errors}` (a forced exit) |
+| `should_abort` set (with or without errors) | `action_cancelled` or nothing | `launch_blocked{reason=validation_errors}` |
+| dismissed with no result (`None`) | nothing | nothing |
+
+`surface_viewed{validation_review}` is emitted when the modal is pushed, so the
+time to the next attempt, cancel or block is the time spent in review (G12).
+
+Quitting while busy (G15) is no longer an unexplained open attempt.
+`quit_during_run` is recorded when the run state is `running` (the attempt was
+already emitted). `quit_before_run` is recorded while `validating`. One race
+remains: a run that finishes during the 250 ms shutdown budget after a
+`quit_during_run` could in principle record a second terminal. The service
+stops accepting events as soon as shutdown begins, so in practice the outcome is
+dropped.
+
+### 8.3 Outcome semantics, made explicit
+
+- **refused** means the product deliberately declined to produce benchmark
+  output for a known reason: a compliance policy block, an aborted input
+  (`RunAborted`, in any phase) or a configuration error. **failed** means an
+  error the product did not anticipate, categorised by the phase it happened
+  in. **launch_blocked** means the TUI stopped before the run was attempted.
+  This is documented next to the mapping in `core/analysis_run.py`.
+- **`RunAborted` stays `refused/input_validation`** (G16). The TUI toast title
+  "Failed" is not plainly wrong from the user's side (the run did not produce a
+  report), so the copy was not changed. Readers should treat "Failed" toasts
+  as refused-or-failed telemetry.
+- **Strict-withheld runs** still count as `completed`. In v2 they carry
+  `publication_withheld=true`, and the funnel shows them in the `WITHHELD`
+  column. v1 completions are reported as "predate schema v2" rather than being
+  guessed either way.
+
+### 8.4 Compatibility: how records are versioned, and what each reader does
+
+**Mechanism.** Every record carries `schema_version`. The reader decodes each
+record against the catalog of its own version (`SUPPORTED_SCHEMA_VERSIONS =
+(1, 2)`), so a file can mix versions freely: an upgraded node appends v2 records
+after its v1 history. The rule for future changes is in `constants.py`: any
+change to an existing event's key set or enum values needs a new version,
+because a reader on the same version silently drops records it cannot
+validate, but rejects a record with a different version **with a warning**.
+
+`session_start` and `session_end` did not change, so they are still written as
+`schema_version: 1` (`events.LEGACY_WRITE_EVENTS`; a test pins that their v1
+and v2 validators are the same objects). This keeps an installed v1 reader's
+shared-file gate working: the gate needs one v1-valid record in the first
+64 KiB. Without it, a node that only has v2 records would look **empty and
+silent** to a v1 reader. Only the session lifecycle qualifies. Writing
+`action_attempted` as v1 while `action_completed` is v2 would give old readers
+an inconsistent funnel.
+
+| reader | data | behaviour |
+|---|---|---|
+| new (v2) | v1 files | Reads everything. v1 cancels count as pre-attempt; v1 completions are reported as unflagged. |
+| new (v2) | mixed v1 + v2 | Reads everything (test `test_new_reader_reads_mixed_v1_and_v2_file`). |
+| new (v2) | a future v3 record | Skips it. At the end of the report it prints one counted warning: `skipped N record(s) with an unsupported schema_version (this reader supports 1, 2); upgrade Autobench to read them.` Invalid lines inside accepted files are also counted (`skipped N record(s) that failed schema validation.`). Before, they were dropped silently. |
+| installed v1 (main @ `ddea32c`) | mixed v1 + v2 | **No crash.** v1 records are aggregated correctly. Each v2 record prints `WARNING: unsupported schema_version: 2` and is skipped. `who` still shows every session (the session lifecycle is v1), while completions and summary counts cover only the v1 era. |
+| installed v1 | v2-only node | **No crash.** Files still pass the gate (via `session_start`). `who` lists users, sessions and last seen. `COMPLETED` and `summary` counts are 0, and one warning per skipped record says why. |
+
+The v1 rows were verified by running the real `core/telemetry` package from
+`main` (`git archive ddea32c core/telemetry`) against the synthetic stores in
+§8.7. On a mixed store (6 users, 504 records, 275 of them v2), the v1 `who`
+showed all 81 sessions and printed 275 `unsupported schema_version: 2`
+warnings. On a v2-only store, it listed all 6 users with their sessions and
+printed 325 warnings. In both cases the old output is partial but never wrong
+without warning. **Upgrade the reader before trusting reports over v2 data.**
+
+### 8.5 Reader: no more silent private fallback
+
+`TelemetryReader.select_sources` now records why each shared file was rejected
+(`SHARED_REJECTION_REASONS`: `unreadable`, `no_valid_record`, `name_mismatch`,
+`unknown_user`, `owner_mismatch`) and why it fell back to the caller's private
+file (`no_shared_dir`, `no_shared_files`, `all_shared_rejected`).
+`iter_events` passes that through the `warn` callback, which the CLI prints to
+stderr. The warning names only the directory the operator chose, closed reason
+names and counts. It never names a rejected file, its token, its user or
+anything inside it. The owner/token gate itself is unchanged, and copied files
+are still **not** read.
+
+```console
+$ python benchmark.py telemetry who --dir $S2/copied     # files cp'd by root: owner is root, not the writer
+WARNING: no shared telemetry file in $S2/copied/users passed the owner/name check (5 rejected: owner_mismatch=5); reporting only your own private telemetry file. Files copied from another host fail the owner check: run the report on the node that wrote them.
+USER	SESSIONS	LAST_SEEN	COMPLETED
+No telemetry events.
+```
+
+When some files qualify and others do not, the report uses the good ones and
+warns `skipped N shared telemetry file(s) in … (name_mismatch=1) …`. The
+breakdown reports also print `source=shared|private` in their header line.
+Cross-host aggregation still means running the report on each node (or the
+§5.3 `jq` route, which has no gate or validation).
+
+### 8.6 CLI reports (replacing the §5.2 script)
+
+`benchmark.py telemetry summary` "Actions" now counts **run intents**
+(`is_run_intent`), so outcomes are no longer counted twice. The section is
+relabelled `Actions (run intents)`. The new subcommands all use
+`TelemetryReader.iter_events`, so they keep the owner/token gate, the strict
+per-version decoding and the `--days` window. They never start a telemetry
+session or write anything.
+
+| command | shows |
+|---|---|
+| `telemetry funnel` | per action and pooled: intents, blocked, cancelled (pre-attempt), attempted, completed, withheld, refused, failed, quit in run, open, SUCCESS = completed/intents (M1), PER_ATTEMPT = completed/attempted (M2) |
+| `telemetry refusals` | refusals by reason × action |
+| `telemetry failures` | failures by category × action |
+| `telemetry blocks` | launch blocks by reason × action, and cancels by prompt × action (v1 cancels as `unrecorded_v1`) |
+| `telemetry surfaces` | views per surface, TUI sessions viewing each, sessions viewing both tabs, launch contexts |
+| `telemetry durations` | n/p10/p50/p90/max per launch context, histograms, sessions without `session_end` |
+| `telemetry friction` | all of the above, plus TUI no-intent sessions (M5), attempt-without-completion, restored sessions, recovery (M7), time to first intent/attempt/completion (M6), time in validation review, validation-review outcomes, dataset loads, advanced overrides |
+
+Options: `--days N`, `--dir PARENT_OF_USERS`, `--user NAME`,
+`--context {cli_share,cli_rate,tui}`, `--app-version V` (validated like the
+envelope field). Ratios whose denominator is under 30 are marked `*` (§6 rule
+1). The output contains only counts, durations and closed vocabulary values.
+It never contains usernames (except an explicit `--user` filter echoed in the
+header), paths or record content.
+
+### 8.7 Sample output (synthetic store)
+
+`$S2` = `/tmp/claude-0/-home-user-autobench/d13cb994-08e3-5f72-b4d1-86adf775fd7d/scratchpad/telemetry2`.
+`$S2/scripts/synth_store.py $S2/fleet` writes 6 real NSS accounts × 10–16
+sessions over 27 days, using a fixed seed. Each account has 4 sessions of
+hand-built v1 history, followed by records from the real v2 encoder. Files are
+chowned to each account so the owner/token gate passes. Numbers are invented.
+
+```console
+$ python benchmark.py telemetry summary --dir $S2/fleet/shared
+Surfaces
+share  57
+rate  18
+validation_review  15
+preset_help  7
+advanced  11
+
+Actions (run intents)
+share_analysis  60
+rate_analysis  25
+
+Outcomes
+completed  48
+cancelled  9
+refused  12
+failed  2
+
+$ python benchmark.py telemetry funnel --dir $S2/fleet/shared
+window=30d  source=shared  users=6  sessions=81  events=504
+
+Funnel per action (intents = blocked + cancelled + attempted)
+ACTION          INTENTS  BLOCKED  CANCELLED  ATTEMPTED  COMPLETED  WITHHELD  REFUSED  FAILED  QUIT_IN_RUN  OPEN  SUCCESS  PER_ATTEMPT
+share_analysis       60        8          3         49         36         4       11       2            0     0      60%          73%
+rate_analysis        25        6          3         16         12         0        1       0            3     0     48%*         75%*
+all                  85       14          6         65         48         4       12       2            3     0      56%          74%
+
+BLOCKED and CANCELLED happen before any attempt; WITHHELD is the part of COMPLETED whose publication a strict posture withheld.
+SUCCESS = COMPLETED / INTENTS; PER_ATTEMPT = COMPLETED / ATTEMPTED; * marks a denominator under 30.
+19 completion(s) predate schema v2 and carry no publication_withheld flag (counted in COMPLETED, not in WITHHELD).
+
+$ python benchmark.py telemetry funnel --context tui --app-version 3.1 --dir $S2/fleet/shared
+window=30d  source=shared  users=6  sessions=41  events=325  context=tui  app_version=3.1
+ACTION          INTENTS  BLOCKED  CANCELLED  ATTEMPTED  COMPLETED  WITHHELD  REFUSED  FAILED  QUIT_IN_RUN  OPEN  SUCCESS  PER_ATTEMPT
+share_analysis       24        8          0         16          8         2        6       2            0     0     33%*         50%*
+rate_analysis        18        6          3          9          5         0        1       0            3     0     28%*         56%*
+all                  42       14          3         25         13         2        7       2            3     0      31%         52%*
+```
+
+`telemetry friction` prints the funnel and every breakdown in one report:
+
+```console
+$ python benchmark.py telemetry friction --dir $S2/fleet/shared   # abridged: funnel, refusals, failures omitted
+Launch blocks by reason (before any attempt)
+REASON                  SHARE_ANALYSIS  RATE_ANALYSIS  TOTAL
+csv_missing                          1              0      1
+entity_loading                       0              0      0
+metric_missing                       6              0      6
+total_missing                        0              1      1
+rate_column_missing                  0              0      0
+dimensions_missing                   0              0      0
+validation_errors                    1              4      5
+data_preparation_error               0              1      1
+initialization_error                 0              0      0
+total                                8              6     14
+
+Cancels by prompt
+PROMPT                  SHARE_ANALYSIS  RATE_ANALYSIS  TOTAL
+validation_review                    0              2      2
+accuracy_first_consent               0              0      0
+clearing_spend                       0              1      1
+quit_before_run                      0              0      0
+quit_during_run                      0              3      3
+unrecorded_v1                        3              0      3
+total                                3              6      9
+
+Surface usage
+SURFACE            VIEWS  TUI_SESSIONS_VIEWING
+share                 57                 57/57
+rate                  18                 18/57
+validation_review     15                 13/57
+preset_help            7                  7/57
+advanced              11                 11/57
+
+TUI sessions viewing both tabs: 18/57
+Launch contexts: cli_share=17  cli_rate=7  tui=57  unknown=0
+
+Session duration (session_end.duration_s, seconds)
+CONTEXT     N    P10    P50    P90    MAX
+all        81   46.5  141.4  235.0  308.4
+cli_share  17  103.9  183.8  215.2  236.3
+cli_rate    7  130.8  141.4  185.6  192.3
+tui        57   39.8  131.1  238.4  308.4
+
+tui histogram: [0-10)s=2  [10-60)s=8  [60-300)s=46  [300-900)s=1  [900-3600)s=0  [3600-inf)s=0
+Sessions without session_end (crash, kill or drop): 0
+
+TUI friction
+TUI sessions: 57
+Sessions with no run intent: 14/57 (25%)
+Sessions with an attempt but no completion: 12/57
+Sessions restored from a saved form: 25/57
+Sessions recovering after a bad outcome: 4/27
+Time to first run intent: n=43 p50=87s p90=162s
+Time to first attempt: n=35 p50=102s p90=171s
+Time to first completion: n=23 p50=184s p90=252s
+Time in validation review: n=15 p50=16s p90=33s
+Validation review outcomes: proceeded=8  cancelled=2  blocked=5  no_decision=0
+Dataset loads: loaded=37  not_found=7  header_read_failed=4  entity_list_failed=0
+Advanced overrides: applied=2  empty=8  failed=1  exported=0  export_failed=0
+```
+
+To reproduce:
+
+```console
+cd /home/user/autobench
+PYTHONPATH=$PWD /usr/local/bin/uv run python $S2/scripts/synth_store.py $S2/fleet
+/usr/local/bin/uv run python benchmark.py telemetry friction --dir $S2/fleet/shared
+git archive ddea32c core/telemetry | tar -x -C $S2/oldreader && touch $S2/oldreader/core/__init__.py
+/usr/local/bin/uv run python $S2/scripts/old_reader_check.py $S2/oldreader $S2/fleet/shared who
+```
+
+### 8.8 Gap-by-gap disposition
+
+| # | disposition |
+|---|---|
+| G1 | **Done.** `launch_blocked{csv_missing}`. The guard's message is not recorded. |
+| G2 | **Done.** `metric_missing`, `total_missing`, `rate_column_missing`, `dimensions_missing` (share and rate). The 8th guard, added after the audit ("entity values still loading"), is `entity_loading`. |
+| G3 | **Done**, as `action_cancelled{prompt=accuracy_first_consent}`, the same treatment as the clearing-spend decline (`prompt=clearing_spend`). The consent decline is the operator's choice, so it is a cancel, not a block. |
+| G4 | **Done.** A forced exit (Proceed disabled or `should_abort`) is `launch_blocked{validation_errors}`; a voluntary Cancel is `action_cancelled{validation_review}`; see §8.2. Edits are in `_handle_validation_modal_result` and at the `push_screen` call. The `ValidationModal` class was not touched. |
+| G5 | **Done.** `launch_blocked{data_preparation_error}`. The exception text stays in the toast and log only. |
+| G6 | **Done.** `launch_blocked{initialization_error}`. |
+| G7 | **Done.** `dataset_load{not_found \| header_read_failed \| entity_list_failed}`. No path, basename, size or column count. |
+| G8 | **Done.** `dataset_load{loaded}`, with no props beyond the outcome. Column count deliberately not recorded. |
+| G9 | **Done, outcome only.** `advanced_override{applied \| empty \| failed \| exported \| export_failed}`. **Not done:** recording *which* fields changed. Field names describe a named user's tuning behaviour, and the audit asked for privacy-owner review first. |
+| G10 | **Done.** `session_restored{}`, emitted right after `session_start` when a saved form was applied. A new zero-prop event rather than a new key on `session_start`, so `session_start` stays v1-compatible (§8.4). |
+| G11 | **Already derivable**. Now printed by `telemetry friction` (time to first intent, attempt and completion). |
+| G12 | **Done** via `surface_viewed{validation_review}` + the next terminal; `telemetry friction` prints "Time in validation review". |
+| G13 | **Done** (owner-approved). `action_completed.publication_withheld: bool`. |
+| G14 | **Done.** `surface_viewed{preset_help \| advanced}`. Collapsing the panel emits nothing. |
+| G15 | **Done.** `action_cancelled{quit_during_run \| quit_before_run}`; see §8.2 for the remaining race. |
+| G16 | **Semantics documented, copy unchanged** (§8.3). |
+| CLI pre-run failures | **Not done.** `benchmark.py` argument and preset errors happen before `start_session` (argparse exits, `_validate_preset_arg`), so there is no session to attach them to, and they are not TUI friction. |
+
+### 8.9 Baseline caveat
+
+As §6 rule 5 says, the v2-only events (`launch_blocked`, `dataset_load`,
+`advanced_override`, `session_restored`, the new surfaces, cancel prompts,
+`publication_withheld`) have **no Phase 0 baseline**. Ship this pass in a
+release *before* the redesign, record at least 4 weeks on that `VERSION`,
+and only then compare. M1 computed on v1 data (attempted + cancelled) and on v2
+data (blocked + pre-attempt cancels + attempted) is **not** the same quantity.
+The v2 denominator also includes `_fail_launch` presses that v1 never saw. For
+a v1-comparable figure, subtract `BLOCKED` from `INTENTS`.

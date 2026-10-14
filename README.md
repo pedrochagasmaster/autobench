@@ -437,7 +437,30 @@ py benchmark.py telemetry summary --user alice --days 14
 
 `--dir` names the telemetry **parent** whose direct child is `users/`. Reports
 prefer shared `users/*.jsonl` when present; otherwise they fall back to the
-current user's private file.
+current user's private file. That fallback is never silent: a `WARNING:` on
+stderr names the reason (for example `owner_mismatch=5` when files were copied
+from another host, which the owner check deliberately rejects). Run reports on
+the node that wrote the files.
+
+Breakdown reports (read-only; same `--days` and `--dir`, plus `--user`,
+`--context {cli_share,cli_rate,tui}` and `--app-version V`):
+
+```powershell
+py benchmark.py telemetry funnel       # per-action run intents -> blocked / cancelled / attempted -> outcomes
+py benchmark.py telemetry refusals     # refusals by reason
+py benchmark.py telemetry failures     # failures by category
+py benchmark.py telemetry blocks       # pre-run launch blocks by reason, cancels by prompt
+py benchmark.py telemetry surfaces     # surface views and launch contexts
+py benchmark.py telemetry durations    # session duration distribution
+py benchmark.py telemetry friction --context tui   # everything above plus derived TUI friction
+```
+
+`summary` "Actions" counts run intents (one per attempt or pre-run stop), not
+every action event. Events are versioned (`schema_version` 1 and 2 are both
+read). Every recorded value is a closed enum, a boolean, or the session
+duration. See
+[docs/research/tui-redesign-phase0/05-telemetry-friction.md §8](docs/research/tui-redesign-phase0/05-telemetry-friction.md#8-implemented-in-this-pass)
+for the catalog and how the funnel is defined.
 
 ## Programmatic use (Python API)
 
