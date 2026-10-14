@@ -24,6 +24,12 @@ async def _run_tui_share_smoke(output: Path) -> str:
 
         app.query_one("#entity_col", Select).value = "issuer_name"
         app.load_unique_entities("issuer_name")
+        # Entity values load in a background worker; wait for the options.
+        for _ in range(200):
+            if not app.entity_values_loading:
+                break
+            await pilot.pause(0.05)
+        await pilot.pause()
         app.query_one("#entity_name", Select).value = "Target"
         app.query_one("#time_col", Select).value = "year_month"
         app.query_one("#share_metric", Select).value = "txn_cnt"

@@ -53,6 +53,8 @@ from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.worker import get_current_worker
+from rich.text import Text
 
 # Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
@@ -77,7 +79,11 @@ try:
     from core.preset_workflow import PresetWorkflow
     from core.telemetry import (
         action_cancelled,
+        advanced_override,
+        dataset_load,
         end_session,
+        launch_blocked,
+        session_restored,
         start_session,
         surface_viewed,
     )
@@ -141,6 +147,22 @@ SESSION_CHECKBOX_IDS = (
     "privacy_rule_sweep_mode",
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
+
+ENTITY_SELECT_PROMPT = "Select entity…"
+ENTITY_LOADING_PROMPT = "Loading entities…"
+
+
+def read_unique_entity_values(csv_path: str, column_name: str) -> List[str]:
+    """Return the sorted distinct non-null values of one CSV column as strings.
+
+    Runs on a worker thread (see ``BenchmarkApp._load_unique_entities_worker``)
+    so it must not touch widgets. The column is read with pandas' default type
+    inference on purpose: ``dtype=str`` was measured slower on 1M rows and would
+    change the rendered value of numeric IDs (``5.0`` vs ``5`` when the column
+    has nulls), which must keep matching what the analysis run filters on.
+    """
+    df = pd.read_csv(csv_path, usecols=[column_name])
+    return sorted(df[column_name].dropna().unique().astype(str).tolist())
 
 
 def write_log_message(log_widget: Log, message: str) -> None:
@@ -391,9 +413,17 @@ class PresetHelpScreen(ModalScreen):
 
 
 class ValidationModal(ModalScreen):
-    """Modal to display validation issues and allow proceed/cancel."""
+    """Modal to display validation issues and allow proceed/cancel.
+
+    Every issue gets its own content-sized row with a text severity badge
+    (``ERROR`` / ``WARNING``) so the outcome stays legible without colour.
+    Issue text comes from user data (CSV column names and values), so it is
+    rendered as literal ``rich.text.Text`` and never parsed as markup.
+    """
 
     BINDINGS = [("escape", "cancel_validation", "Cancel")]
+
+    _BADGE_WIDTH = max(len(s.value) for s in ValidationSeverity)
 
     def __init__(self, issues: List[ValidationIssue]) -> None:
         super().__init__()
@@ -411,25 +441,65 @@ class ValidationModal(ModalScreen):
                 yield Label(f"Errors: {error_count}", classes="issue-error" if error_count > 0 else "")
                 yield Label(f"  Warnings: {warning_count}", classes="issue-warning" if warning_count > 0 else "")
 
+            yield Label("", id="validation_hint")
+
             yield ListView(id="issue_list")
 
-            with Horizontal(classes="input-group"):
+            with Horizontal(classes="input-group", id="validation_buttons"):
                 yield Button("Proceed", id="btn_proceed", variant="success", disabled=self.has_errors)
                 yield Button("Cancel", id="btn_cancel", variant="error")
 
+    @classmethod
+    def _issue_text(cls, issue: ValidationIssue) -> Text:
+        """Build a literal (markup-free) row: severity badge, message, rows."""
+        badge = f" {issue.severity.value.upper():<{cls._BADGE_WIDTH}} "
+        text = Text.assemble((badge, "bold reverse"), " ", str(issue.message))
+        if issue.row_indices:
+            row_preview = ", ".join(str(i) for i in issue.row_indices[:10])
+            if len(issue.row_indices) > 10:
+                row_preview += f", ... ({len(issue.row_indices)} rows)"
+            text.append(f"\n{' ' * (len(badge) + 1)}Rows: {row_preview}", style="italic")
+        return text
+
     def on_mount(self) -> None:
-        """Populate the list view."""
-        list_view = self.query_one("#issue_list")
+        """Populate the list view and move focus off Proceed."""
+        list_view = self.query_one("#issue_list", ListView)
         for issue in self.issues:
-            severity_cls = "issue-error" if issue.severity == ValidationSeverity.ERROR else "issue-warning"
-            label = Label(f"[{issue.severity.value}] {issue.message}", classes=severity_cls)
-            if issue.row_indices:
-                row_preview = ", ".join(str(i) for i in issue.row_indices[:10])
-                sub_label = Label(f"  Rows: {row_preview}", classes="subsection-title")
-                item = ListItem(Vertical(label, sub_label), classes="issue-item")
+            if issue.severity == ValidationSeverity.ERROR:
+                severity_cls = "issue-error"
+            elif issue.severity == ValidationSeverity.WARNING:
+                severity_cls = "issue-warning"
             else:
-                item = ListItem(label, classes="issue-item")
-            list_view.append(item)
+                severity_cls = "issue-info"
+            row = Static(self._issue_text(issue), classes=f"issue-text {severity_cls}")
+            list_view.append(ListItem(row, classes="issue-item"))
+        # One stray Enter must never proceed past issues the operator has not seen.
+        if self.has_errors:
+            self.query_one("#btn_cancel", Button).focus()
+        else:
+            list_view.focus()
+        self.call_after_refresh(self._update_hint)
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self._update_hint)
+
+    def _update_hint(self) -> None:
+        """Say when the list overflows and why Proceed is unavailable."""
+        try:
+            list_view = self.query_one("#issue_list", ListView)
+            hint = self.query_one("#validation_hint", Label)
+        except NoMatches:
+            return
+        parts: List[str] = []
+        count = len(self.issues)
+        noun = "issue" if count == 1 else "issues"
+        if list_view.max_scroll_y > 0:
+            parts.append(f"{count} {noun}, scroll to review")
+        else:
+            parts.append(f"{count} {noun}")
+        if self.has_errors:
+            parts.append("Proceed is disabled until errors are fixed")
+        hint.update(Text(". ".join(parts) + "."))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_proceed":
@@ -508,6 +578,13 @@ class BenchmarkApp(App):
     ]
 
     ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = ADVANCED_FIELD_SPECS
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Confirmations the analysis worker is blocked on (see _await_confirmation).
+        self._confirmation_lock = threading.Lock()
+        self._pending_confirmations: set[threading.Event] = set()
+        self._confirmations_abandoned = False
 
     CSS = """
     #app_body {
@@ -725,10 +802,12 @@ class BenchmarkApp(App):
     #validation_container {
         width: 80%;
         max-width: 110;
-        height: 70%;
+        /* Sized so the list keeps several rows and both buttons stay visible at 80x24. */
+        height: 90%;
+        max-height: 36;
         background: $surface;
         border: round $primary;
-        padding: 1 2;
+        padding: 0 2;
     }
 
     #validation_title {
@@ -738,17 +817,33 @@ class BenchmarkApp(App):
         width: 100%;
     }
 
+    #validation_hint {
+        width: 100%;
+        color: $text-muted;
+    }
+
     #issue_list {
         height: 1fr;
+        min-height: 3;
         border: round $secondary;
-        margin-bottom: 1;
         background: $boost;
     }
 
-    .issue-item {
+    /* Rows size to their content; a 1fr child would swallow the whole list. */
+    #issue_list > .issue-item {
         height: auto;
-        padding: 1;
+        padding: 0 1;
         border-bottom: solid $primary 50%;
+    }
+
+    #issue_list .issue-text {
+        height: auto;
+        width: 1fr;
+    }
+
+    #validation_buttons {
+        height: auto;
+        margin-bottom: 0;
     }
 
     .issue-error {
@@ -877,7 +972,7 @@ class BenchmarkApp(App):
                             yield Select([], prompt="Select column…", id="entity_col")
                         with Vertical(classes="field-pair"):
                             yield Label("Target entity (blank = peer-only)", classes="field-label")
-                            yield Select([], prompt="Select entity…", id="entity_name", allow_blank=True)
+                            yield Select([], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True)
 
                 with Container(id="section_analysis", classes="form-section") as section:
                     section.border_title = "3 · Analysis Options"
@@ -1145,10 +1240,13 @@ class BenchmarkApp(App):
         # Session starts once the TUI is mounted and usable.
         start_session("tui")
         self._telemetry_session_started = True
+        if getattr(self, "_telemetry_session_restored", False):
+            session_restored()
         self._emit_surface_if_changed(self._analysis_mode())
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
+        self._abandon_pending_confirmations()
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1180,13 +1278,22 @@ class BenchmarkApp(App):
         saved_df: Any,
         log_widget: Log,
     ) -> None:
-        """Handle ValidationModal dismiss; cancel telemetry only for explicit False."""
+        """Handle ValidationModal dismiss.
+
+        Telemetry: a dismissal that could not have proceeded (errors, so
+        Proceed is disabled, or should_abort) is a forced exit, recorded as
+        launch_blocked(validation_errors); an explicit Cancel on a modal that
+        could proceed is the operator's choice, recorded as
+        action_cancelled(validation_review). A None result records nothing.
+        """
         if result and not has_errors and not should_abort:
             self.run_analysis(confirmed=True, saved_request=request, saved_df=saved_df)
             return
-        if result is False:
-            action = "share_analysis" if request.is_share else "rate_analysis"
-            action_cancelled(action)
+        action = "share_analysis" if request.is_share else "rate_analysis"
+        if result is not None and (has_errors or should_abort):
+            launch_blocked(action, "validation_errors")
+        elif result is False:
+            action_cancelled(action, "validation_review")
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1246,6 +1353,8 @@ class BenchmarkApp(App):
             return
         with self.batch_update():
             self._apply_session(session)
+        # Reported as session_restored once the telemetry session starts.
+        self._telemetry_session_restored = bool(session)
 
     def _apply_session(self, session: Dict[str, Any]) -> None:
         # Legacy sessions may contain governed dataset/output paths and entity
@@ -1436,8 +1545,31 @@ class BenchmarkApp(App):
         btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
         self._refresh_run_status()
 
-    def _fail_launch(self, message: str, focus_id: Optional[str] = None) -> None:
-        """Notify about an invalid launch and return UI to idle (worker-safe)."""
+    def _telemetry_action(self) -> str:
+        """Telemetry action of the current launch (closed: share/rate_analysis)."""
+        mode = getattr(self, "_run_mode", None)
+        if mode not in ("share", "rate"):
+            try:
+                mode = self._analysis_mode()
+            except Exception:
+                # Telemetry must never break an error path (e.g. teardown).
+                mode = "share"
+        return "share_analysis" if mode == "share" else "rate_analysis"
+
+    def _fail_launch(
+        self,
+        message: str,
+        focus_id: Optional[str] = None,
+        *,
+        block_reason: Optional[str] = None,
+    ) -> None:
+        """Notify about an invalid launch and return UI to idle (worker-safe).
+
+        ``block_reason`` is a closed LAUNCH_BLOCK_REASONS value recorded as
+        ``launch_blocked``; ``message`` never reaches telemetry.
+        """
+        if block_reason is not None:
+            launch_blocked(self._telemetry_action(), block_reason)
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -1460,29 +1592,27 @@ class BenchmarkApp(App):
         Runs on the analysis worker thread; blocks until the operator answers
         the modal on the app thread. Consent is never persisted or restored.
         """
-        decision: Dict[str, bool] = {}
-        answered = threading.Event()
-
-        def _on_dismiss(result: Optional[bool]) -> None:
-            decision["value"] = bool(result)
-            answered.set()
-
-        self.call_from_thread(
-            self.push_screen,
+        return self._await_confirmation(
             ConfirmScreen(
                 "This preset uses the accuracy_first compliance posture: it "
                 "prioritizes analytical fidelity over strict compliance and "
                 "may produce a NON-PUBLISHABLE diagnostic report.\n\n"
                 "Proceed with this run?",
                 confirm_label="I understand — proceed",
-            ),
-            _on_dismiss,
+            )
         )
-        answered.wait()
-        return decision.get("value", False)
 
     def _confirm_clearing_spend_basis(self, total_col: str) -> bool:
         """Ask for the fraud clearing-spend attestation for this run attempt."""
+        return self._await_confirmation(ClearingSpendConfirmScreen(total_col))
+
+    def _await_confirmation(self, screen: ModalScreen) -> bool:
+        """Show ``screen`` from the worker thread and block until it is answered.
+
+        A quit or unmount abandons every pending confirmation as declined (see
+        ``_abandon_pending_confirmations``); without that, the worker would
+        wait forever and keep the process alive after the UI has gone.
+        """
         decision: Dict[str, bool] = {}
         answered = threading.Event()
 
@@ -1490,13 +1620,28 @@ class BenchmarkApp(App):
             decision["value"] = bool(result)
             answered.set()
 
-        self.call_from_thread(
-            self.push_screen,
-            ClearingSpendConfirmScreen(total_col),
-            _on_dismiss,
-        )
-        answered.wait()
+        with self._confirmation_lock:
+            if self._confirmations_abandoned:
+                return False
+            self._pending_confirmations.add(answered)
+        try:
+            self.call_from_thread(self.push_screen, screen, _on_dismiss)
+            answered.wait()
+        finally:
+            with self._confirmation_lock:
+                self._pending_confirmations.discard(answered)
+        if self._confirmations_abandoned:
+            return False
         return decision.get("value", False)
+
+    def _abandon_pending_confirmations(self) -> None:
+        """Release worker threads blocked on a confirmation, as declined."""
+        with self._confirmation_lock:
+            self._confirmations_abandoned = True
+            pending = list(self._pending_confirmations)
+            self._pending_confirmations.clear()
+        for answered in pending:
+            answered.set()
 
     def _execute_run_for_tui(self, request: AnalysisRunRequest, logger: logging.Logger, log_widget: Log):
         """Run analysis while keeping library print output inside the TUI log.
@@ -1605,6 +1750,7 @@ class BenchmarkApp(App):
         if not csv_path:
             return None
         if not os.path.isfile(csv_path):
+            self._emit_dataset_load("not_found", csv_path)
             self.notify(
                 f"CSV file not found: {csv_path}",
                 title="Invalid Path",
@@ -1625,6 +1771,7 @@ class BenchmarkApp(App):
 
     def load_csv_headers(self, file_path, announce: bool = True):
         """Load CSV headers and populate Select widgets."""
+        headers_read = False
         try:
             resolved = self._resolve_csv_path(file_path)
             if not resolved:
@@ -1632,6 +1779,8 @@ class BenchmarkApp(App):
             file_path = resolved
             # Read only headers
             cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            headers_read = True
+            self._emit_dataset_load("loaded", file_path)
             self.csv_columns = cols
             options = [(c, c) for c in cols]
             selection_options = [(c, c) for c in cols]
@@ -1668,6 +1817,13 @@ class BenchmarkApp(App):
                         select.value = column
 
                 self._update_csv_meta(file_path, cols)
+
+            # A new file with an unchanged entity column posts no
+            # Select.Changed, so refresh the entity values explicitly. Requests
+            # for values already loaded or in flight are no-ops.
+            entity_col_value = self.query_one("#entity_col", Select).value
+            if entity_col_value != SELECT_BLANK:
+                self.load_unique_entities(entity_col_value)
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -1677,8 +1833,22 @@ class BenchmarkApp(App):
                 )
 
         except Exception as e:
+            if not headers_read:
+                self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
             self.notify(f"Failed to read CSV: {e}", title="CSV Error", severity="error")
+
+    def _emit_dataset_load(self, outcome: str, file_path: Any) -> None:
+        """Record a closed dataset_load outcome once per (outcome, file).
+
+        Blur and Enter both reload the same path, so repeats are dropped. The
+        path is only compared in memory; telemetry receives ``outcome`` alone.
+        """
+        key = (outcome, str(file_path))
+        if key == getattr(self, "_last_dataset_telemetry", None):
+            return
+        self._last_dataset_telemetry = key
+        dataset_load(outcome)
 
     def _update_csv_meta(self, file_path: str, cols: List[str]) -> None:
         """Show a compact summary of the loaded file under the path field."""
@@ -1882,6 +2052,7 @@ class BenchmarkApp(App):
         """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
         yaml_data = self._collect_advanced_override_data()
         if not yaml_data:
+            advanced_override("empty")
             self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
             return
 
@@ -1909,7 +2080,9 @@ class BenchmarkApp(App):
                 severity="information",
                 timeout=6,
             )
+            advanced_override("applied")
         except Exception as e:
+            advanced_override("failed")
             self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
 
     def setup_logging_capture(self):
@@ -1943,6 +2116,7 @@ class BenchmarkApp(App):
             self.run_analysis()
 
         elif event.button.id == "btn_preset_help":
+            surface_viewed("preset_help")
             self.push_screen(PresetHelpScreen())
         elif event.button.id == "btn_apply_advanced":
             self.apply_advanced_overrides()
@@ -1973,6 +2147,13 @@ class BenchmarkApp(App):
         if self._run_state in ("running", "validating"):
             def on_confirm(confirmed: Optional[bool]) -> None:
                 if confirmed:
+                    # G15: name the abandoned intent; "running" means the run
+                    # already emitted action_attempted.
+                    if self._run_state == "running":
+                        action_cancelled(self._telemetry_action(), "quit_during_run")
+                    elif self._run_state == "validating":
+                        action_cancelled(self._telemetry_action(), "quit_before_run")
+                    self._abandon_pending_confirmations()
                     self._save_session()
                     self.exit()
 
@@ -2124,6 +2305,7 @@ class BenchmarkApp(App):
 
     def action_show_help(self) -> None:
         """Show preset help (F1)."""
+        surface_viewed("preset_help")
         self.push_screen(PresetHelpScreen())
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
@@ -2144,30 +2326,141 @@ class BenchmarkApp(App):
                 self.query_one("#rate_dims").remove_class("hidden")
                 self.query_one("#rate_dims_label").remove_class("hidden")
 
-    def load_unique_entities(self, column_name):
-        """Load unique values from the specified column."""
+    # Entity value loading runs in a background worker. These track, on the UI
+    # thread only, which (csv_path, column) is in flight, which one the current
+    # #entity_name options were built from, and the entity the operator had
+    # chosen so it can be re-selected once the matching load completes.
+    _entity_load_key: Optional[tuple] = None
+    _entity_options_key: Optional[tuple] = None
+    _pending_entity_value: Any = SELECT_BLANK
+
+    def _entity_source_key(self) -> Optional[tuple]:
+        """The (csv_path, entity column) the form currently points at."""
         try:
-            csv_path = self.query_one("#csv_path").value
+            csv_path = self.query_one("#csv_path", Input).value
+            column = self.query_one("#entity_col", Select).value
+        except NoMatches:
+            return None
+        if not csv_path or column == SELECT_BLANK:
+            return None
+        return (csv_path, column)
+
+    def load_unique_entities(self, column_name) -> None:
+        """Populate ``#entity_name`` with the column's values, off the UI thread.
+
+        The CSV read happens in ``_load_unique_entities_worker``; this method
+        only flips the Select into its loading state and starts the worker. A
+        request for the (path, column) that is already loading or already shown
+        is a no-op, so the explicit call and the ``Select.Changed`` it causes
+        do not read the file twice.
+        """
+        try:
+            csv_path = self.query_one("#csv_path", Input).value
+            entity_select = self.query_one("#entity_name", Select)
         except NoMatches:
             # Deferred Select.Changed arriving while the app tears down.
             return
         if not csv_path or not os.path.exists(csv_path):
             return
+        key = (csv_path, column_name)
+        if key == self._entity_load_key:
+            return
+        if self._entity_load_key is None and key == self._entity_options_key:
+            return
 
+        # Remember the operator's choice before the options are replaced; it is
+        # re-applied when this load lands if the value exists in the new column.
+        if entity_select.value != SELECT_BLANK:
+            self._pending_entity_value = entity_select.value
+        if key != self._entity_options_key:
+            # Options from another file/column are meaningless for this one.
+            entity_select.set_options([])
+            self._entity_options_key = None
+        entity_select.prompt = ENTITY_LOADING_PROMPT
+        entity_select.disabled = True
+        self._entity_load_key = key
+        self._load_unique_entities_worker(csv_path, column_name)
+
+    @work(thread=True, exclusive=True, group="entity_values", exit_on_error=False)
+    def _load_unique_entities_worker(self, csv_path: str, column_name: str) -> None:
+        """Read the entity column on a worker thread and hand results back."""
+        worker = get_current_worker()
+        values: Optional[List[str]] = None
+        error: Optional[Exception] = None
         try:
-            # Read unique values from the column
-            df = pd.read_csv(csv_path, usecols=[column_name])
-            unique_vals = sorted(df[column_name].dropna().unique().astype(str).tolist())
+            values = read_unique_entity_values(csv_path, column_name)
+        except Exception as exc:  # reported on the UI thread like before
+            error = exc
+        if worker.is_cancelled:
+            return  # superseded by a newer request (exclusive group) or exit
+        try:
+            self.call_from_thread(
+                self._apply_unique_entities, (csv_path, column_name), values, error
+            )
+        except RuntimeError:
+            pass  # App loop already gone (shutdown); nothing to update.
 
-            options = [(val, val) for val in unique_vals]
+    def _apply_unique_entities(
+        self,
+        key: tuple,
+        values: Optional[List[str]],
+        error: Optional[Exception],
+    ) -> None:
+        """Apply a finished entity load on the UI thread, unless it is stale."""
+        if getattr(self, "_exit", False):
+            return
+        if key != self._entity_load_key:
+            return  # A newer request owns the loading state.
+        self._entity_load_key = None
+        try:
             entity_select = self.query_one("#entity_name", Select)
-            previous = entity_select.value
-            entity_select.set_options(options)
-            if previous != SELECT_BLANK and previous in unique_vals:
-                entity_select.value = previous
+            log_output = self.query_one("#log_output", Log)
+        except NoMatches:
+            return
+        try:
+            if key != self._entity_source_key():
+                # CSV path or entity column changed while reading without a
+                # replacement load (e.g. column cleared): drop the old values.
+                return
+            if error is not None:
+                dataset_load("entity_list_failed")
+                log_output.write(f"Error loading entities: {error}\n")
+                return
+            values = values or []
+            desired = self._pending_entity_value
+            self._pending_entity_value = SELECT_BLANK
+            with self.batch_update():
+                entity_select.set_options([(val, val) for val in values])
+                if desired != SELECT_BLANK and desired in set(values):
+                    entity_select.value = desired
+            self._entity_options_key = key
+        finally:
+            # Loaded, failed or dropped: the Select must be usable again.
+            entity_select.prompt = ENTITY_SELECT_PROMPT
+            entity_select.disabled = False
 
-        except Exception as e:
-            self.query_one("#log_output").write(f"Error loading entities: {e}\n")
+    def _cancel_entity_load(self) -> None:
+        """Abandon an in-flight entity load and leave the Select usable."""
+        if self._entity_load_key is None:
+            return
+        self._entity_load_key = None
+        self.workers.cancel_group(self, "entity_values")
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+        except NoMatches:
+            return
+        entity_select.prompt = ENTITY_SELECT_PROMPT
+        entity_select.disabled = False
+
+    @property
+    def entity_values_loading(self) -> bool:
+        """True while a background entity load has not been applied yet."""
+        return self._entity_load_key is not None
+
+    @property
+    def entity_selection_pending(self) -> bool:
+        """True while a chosen entity waits for its reload to be re-applied."""
+        return self.entity_values_loading and self._pending_entity_value != SELECT_BLANK
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Handle select widget changes."""
@@ -2176,8 +2469,14 @@ class BenchmarkApp(App):
             # being unmounted; reacting to it would query dead widgets.
             return
         if event.select.id == "entity_col":
-            if event.value != SELECT_BLANK:
-                self.load_unique_entities(event.value)
+            # Act on the widget's current value, not the message's: repopulating
+            # the column options posts a transient BLANK Changed that is already
+            # stale when handled, and must not cancel the load for the real value.
+            current = event.select.value
+            if current != SELECT_BLANK:
+                self.load_unique_entities(current)
+            else:
+                self._cancel_entity_load()
 
         elif event.select.id == "share_metric":
             self.update_secondary_options("#share_secondary", exclude=[event.value])
@@ -2204,6 +2503,11 @@ class BenchmarkApp(App):
         self._sync_privacy_release_mode_visibility()
         self._refresh_run_status()
         self._emit_surface_if_changed(self._analysis_mode())
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        """Record the advanced panel being opened (Ctrl+A, Ctrl+E or click)."""
+        if event.collapsible.id == "advanced_opt":
+            surface_viewed("advanced")
 
     def action_toggle_advanced(self) -> None:
         """Toggle the advanced optimization collapsible (Ctrl+A)."""
@@ -2247,7 +2551,9 @@ class BenchmarkApp(App):
                 self.preset_workflow = PresetWorkflow()
             export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
             self.notify(f"Exported advanced config: {export_path.name}", title="Advanced Export", severity="information", timeout=6)
+            advanced_override("exported")
         except Exception as e:
+            advanced_override("export_failed")
             self.notify(f"Failed export: {e}", title="Advanced Export", severity="error", timeout=6)
 
     # ──────────────────────────────────────────────────────────────────
@@ -2270,7 +2576,19 @@ class BenchmarkApp(App):
             try:
                 csv_path = self.query_one("#csv_path").value
                 if not csv_path:
-                    self._fail_launch("CSV path is required.", focus_id="csv_path")
+                    self._fail_launch(
+                        "CSV path is required.", focus_id="csv_path", block_reason="csv_missing"
+                    )
+                    return
+                if self.entity_selection_pending:
+                    # The operator's target entity is cleared while the values
+                    # reload and is re-applied when they land; launching now
+                    # would silently run peer-only instead.
+                    self._fail_launch(
+                        "Target entity values are still loading; wait for the list to finish.",
+                        focus_id="entity_name",
+                        block_reason="entity_loading",
+                    )
                     return
 
                 entity_val = self.query_one("#entity_name").value
@@ -2312,6 +2630,9 @@ class BenchmarkApp(App):
                         self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
                     if posture == 'accuracy_first':
                         if not self._confirm_accuracy_first_consent():
+                            if self._confirmations_abandoned:
+                                return  # App is quitting; the quit is already recorded.
+                            action_cancelled(self._telemetry_action(), "accuracy_first_consent")
                             self._fail_launch(
                                 "accuracy_first run cancelled: operator consent was not given.",
                             )
@@ -2322,7 +2643,7 @@ class BenchmarkApp(App):
                     metric_val = self.query_one("#share_metric").value
                     values["metric"] = metric_val if metric_val != SELECT_BLANK else None
                     if not values["metric"]:
-                        self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric")
+                        self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric", block_reason="metric_missing")
                         return
                     sec_metrics = self.query_one("#share_secondary", SelectionList).selected
                     values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
@@ -2332,6 +2653,7 @@ class BenchmarkApp(App):
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="share_dims",
+                            block_reason="dimensions_missing",
                         )
                         return
                     values["dimensions"] = list(dims) if dims and not values["auto"] else None
@@ -2348,14 +2670,14 @@ class BenchmarkApp(App):
                     total_val = self.query_one("#rate_total").value
                     values["total_col"] = total_val if total_val != SELECT_BLANK else None
                     if not values["total_col"]:
-                        self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total")
+                        self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total", block_reason="total_missing")
                         return
                     approved = self.query_one("#rate_approved").value
                     values["approved_col"] = approved if approved != SELECT_BLANK else None
                     fraud = self.query_one("#rate_fraud").value
                     values["fraud_col"] = fraud if fraud != SELECT_BLANK else None
                     if not values["approved_col"] and not values["fraud_col"]:
-                        self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved")
+                        self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved", block_reason="rate_column_missing")
                         return
                     sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
                     values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
@@ -2365,6 +2687,7 @@ class BenchmarkApp(App):
                         self._fail_launch(
                             "Select at least one dimension or enable auto-detect.",
                             focus_id="rate_dims",
+                            block_reason="dimensions_missing",
                         )
                         return
                     values["dimensions"] = list(dims) if dims and not values["auto"] else None
@@ -2376,7 +2699,9 @@ class BenchmarkApp(App):
                 if request.fraud_col:
                     assert request.total_col is not None
                     if not self._confirm_clearing_spend_basis(request.total_col):
-                        action_cancelled("rate_analysis")
+                        if self._confirmations_abandoned:
+                            return  # App is quitting; the quit is already recorded.
+                        action_cancelled("rate_analysis", "clearing_spend")
                         write_log_message(log_widget, "Analysis cancelled by user.")
                         self.call_from_thread(self._reset_run_ui)
                         return
@@ -2447,9 +2772,15 @@ class BenchmarkApp(App):
                                     log_widget=log_widget,
                                 )
 
+                            # Timestamp for the time-in-review metric (G12).
+                            surface_viewed("validation_review")
                             self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
                             return
                     except Exception as exc:
+                        launch_blocked(
+                            "share_analysis" if request.is_share else "rate_analysis",
+                            "data_preparation_error",
+                        )
                         finalize_deferred_logging(
                             logging.getLogger(),
                             privacy_authorized=False,
@@ -2463,6 +2794,7 @@ class BenchmarkApp(App):
                 return
 
             except Exception as exc:
+                launch_blocked(self._telemetry_action(), "initialization_error")
                 finalize_deferred_logging(
                     logging.getLogger(),
                     privacy_authorized=False,

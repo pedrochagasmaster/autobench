@@ -31,6 +31,11 @@ SUPPRESSED_PUBLICATION_VIEW_NOTICE = (
     "This artifact is a Suppressed Publication View. "
     "Missing units were privacy-suppressed."
 )
+# ``publication_withheld_reason`` values set by ``write_outputs`` when a strict
+# posture withholds the publication workbook of an otherwise authorized run.
+STRICT_PUBLICATION_WITHHELD_REASONS = frozenset(
+    {"strict_posture_violations", "strict_posture_noncompliant_verdict"}
+)
 
 
 def _flatten_rate_results(

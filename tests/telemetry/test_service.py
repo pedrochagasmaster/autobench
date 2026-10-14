@@ -150,7 +150,7 @@ def test_fifo_order_preserved() -> None:
     svc.start_session("tui")
     svc.surface_viewed("share")
     svc.action_attempted("share_analysis")
-    svc.action_completed("share_analysis")
+    svc.action_completed("share_analysis", False)
     assert order_done.wait(timeout=2.0)
     names = [_event_name(r) for r in written]
     assert names[:4] == [
@@ -340,7 +340,7 @@ def test_writer_exception_does_not_stop_consumer() -> None:
     svc = _make_service(writer=writer)
     svc.start_session("tui")
     svc.action_attempted("share_analysis")
-    svc.action_completed("share_analysis")
+    svc.action_completed("share_analysis", False)
     assert done.wait(timeout=2.0)
     assert any(_event_name(r) == "action_completed" for r in written)
     svc.shutdown()
@@ -805,7 +805,7 @@ def test_shared_capability_gate_evaluated_once_per_service(
     svc.start_session("tui")
     svc.surface_viewed("share")
     svc.action_attempted("share_analysis")
-    svc.action_completed("share_analysis")
+    svc.action_completed("share_analysis", False)
     private = storage_root / "alice" / ".autobench" / "telemetry" / "events.jsonl"
     deadline = _deadline()
     while (

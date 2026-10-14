@@ -9,14 +9,17 @@ from uuid import UUID
 
 import pytest
 
+from core.telemetry import events as events_module
 from core.telemetry.constants import MAX_RECORD_BYTES, SCHEMA_VERSION
 from core.telemetry.events import (
+    LEGACY_WRITE_EVENTS,
     MAX_APP_VERSION_BYTES,
     EventValidationError,
     UnsupportedSchemaVersion,
     ValidatedEvent,
     build_record,
     decode_record,
+    record_schema_version,
 )
 
 SESSION_ID = UUID("12345678-1234-5678-1234-567812345678")
@@ -35,10 +38,24 @@ APPROVED_EVENTS: list[tuple[str, dict[str, object]]] = [
     ("surface_viewed", {"surface": "rate"}),
     ("action_attempted", {"action": "share_analysis"}),
     ("action_attempted", {"action": "rate_analysis"}),
-    ("action_completed", {"action": "share_analysis"}),
-    ("action_completed", {"action": "rate_analysis"}),
-    ("action_cancelled", {"action": "share_analysis"}),
-    ("action_cancelled", {"action": "rate_analysis"}),
+    ("surface_viewed", {"surface": "validation_review"}),
+    ("surface_viewed", {"surface": "preset_help"}),
+    ("surface_viewed", {"surface": "advanced"}),
+    ("action_completed", {"action": "share_analysis", "publication_withheld": False}),
+    ("action_completed", {"action": "rate_analysis", "publication_withheld": True}),
+    ("action_cancelled", {"action": "share_analysis", "prompt": "validation_review"}),
+    ("action_cancelled", {"action": "rate_analysis", "prompt": "clearing_spend"}),
+    ("action_cancelled", {"action": "share_analysis", "prompt": "accuracy_first_consent"}),
+    ("action_cancelled", {"action": "rate_analysis", "prompt": "quit_before_run"}),
+    ("action_cancelled", {"action": "share_analysis", "prompt": "quit_during_run"}),
+    ("launch_blocked", {"action": "share_analysis", "reason": "csv_missing"}),
+    ("launch_blocked", {"action": "rate_analysis", "reason": "validation_errors"}),
+    ("launch_blocked", {"action": "share_analysis", "reason": "initialization_error"}),
+    ("dataset_load", {"outcome": "loaded"}),
+    ("dataset_load", {"outcome": "entity_list_failed"}),
+    ("advanced_override", {"outcome": "applied"}),
+    ("advanced_override", {"outcome": "export_failed"}),
+    ("session_restored", {}),
     ("action_refused", {"action": "share_analysis", "reason": "configuration"}),
     ("action_refused", {"action": "rate_analysis", "reason": "input_validation"}),
     ("action_refused", {"action": "share_analysis", "reason": "compliance_policy"}),
@@ -87,7 +104,7 @@ def test_build_and_decode_approved_events(event: str, props: dict[str, object]) 
 
     payload = json.loads(raw.decode("utf-8"))
     assert tuple(payload.keys()) == ENVELOPE_KEYS
-    assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["schema_version"] == record_schema_version(event)
     assert payload["ts"] == "2026-07-12T22:00:00Z"
     assert payload["event"] == event
     assert payload["user"] == USER
@@ -98,7 +115,7 @@ def test_build_and_decode_approved_events(event: str, props: dict[str, object]) 
 
     decoded = decode_record(raw)
     assert isinstance(decoded, ValidatedEvent)
-    assert decoded.schema_version == SCHEMA_VERSION
+    assert decoded.schema_version == record_schema_version(event)
     assert decoded.ts == FIXED_NOW
     assert decoded.event == event
     assert decoded.user == USER
@@ -220,7 +237,24 @@ def test_rejects_unknown_event() -> None:
         ("action_attempted", {"action": "share_analysis", "entity": "Acme"}),
         ("action_attempted", {"action": "delete"}),
         ("action_completed", {"action": "share_analysis", "result": "ok"}),
+        ("action_completed", {"action": "share_analysis"}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": 1}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": "true"}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": None}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": "strict_posture_violations"}),
         ("action_cancelled", {"action": "share_analysis", "why": "esc"}),
+        ("action_cancelled", {"action": "share_analysis"}),
+        ("action_cancelled", {"action": "share_analysis", "prompt": "esc"}),
+        ("launch_blocked", {"action": "share_analysis"}),
+        ("launch_blocked", {"reason": "csv_missing"}),
+        ("launch_blocked", {"action": "share_analysis", "reason": "txn_cnt"}),
+        ("launch_blocked", {"action": "share_analysis", "reason": "csv_missing", "field": "metric"}),
+        ("dataset_load", {}),
+        ("dataset_load", {"outcome": "peers.csv"}),
+        ("dataset_load", {"outcome": "loaded", "columns": 12}),
+        ("advanced_override", {"outcome": "applied", "field": "max_weight"}),
+        ("advanced_override", {"outcome": "0.25"}),
+        ("session_restored", {"restored": True}),
         ("action_refused", {"action": "share_analysis"}),
         ("action_refused", {"action": "share_analysis", "reason": "timeout"}),
         ("action_failed", {"action": "share_analysis"}),
@@ -311,13 +345,82 @@ def test_decode_rejects_invalid_uuid() -> None:
         decode_record(line)
 
 
-def test_decode_rejects_unsupported_schema_version() -> None:
+@pytest.mark.parametrize("version", [0, 3, 99])
+def test_decode_rejects_unsupported_schema_version(version: int) -> None:
     raw = _build("session_start", {"launch_context": "tui"})
     payload = json.loads(raw.decode("utf-8"))
-    payload["schema_version"] = 2
+    payload["schema_version"] = version
     line = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
     with pytest.raises(UnsupportedSchemaVersion):
         decode_record(line)
+
+
+def test_writer_emits_current_schema_version_two() -> None:
+    # A v1 reader rejects schema_version != 1 with a warning instead of
+    # silently mis-reading v2 props; this bump is what makes that safe.
+    assert SCHEMA_VERSION == 2
+    payload = json.loads(_build("action_attempted", {"action": "share_analysis"}))
+    assert payload["schema_version"] == 2
+
+
+def test_session_lifecycle_records_stay_v1_decodable() -> None:
+    """session_start/end are unchanged since v1 and are written as v1 so an
+    installed v1 reader keeps passing its shared-file gate."""
+    assert LEGACY_WRITE_EVENTS == frozenset({"session_start", "session_end"})
+    for event, props in (
+        ("session_start", {"launch_context": "cli_rate"}),
+        ("session_end", {"duration_s": 2.5}),
+    ):
+        payload = json.loads(_build(event, props))
+        assert payload["schema_version"] == 1
+        assert events_module._EVENT_SCHEMAS_V1[event] is events_module._EVENT_SCHEMAS_V2[event]
+    for event in set(events_module.event_names()) - LEGACY_WRITE_EVENTS:
+        assert record_schema_version(event) == SCHEMA_VERSION
+
+
+def _legacy_v1_line(event: str, props: dict[str, object]) -> bytes:
+    payload = {
+        "schema_version": 1,
+        "ts": "2026-07-12T22:00:00Z",
+        "event": event,
+        "user": USER,
+        "session_id": str(SESSION_ID),
+        "app_version": APP_VERSION,
+        "props": props,
+    }
+    return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("event", "props"),
+    [
+        ("session_start", {"launch_context": "tui"}),
+        ("surface_viewed", {"surface": "rate"}),
+        ("action_completed", {"action": "share_analysis"}),
+        ("action_cancelled", {"action": "rate_analysis"}),
+        ("action_refused", {"action": "share_analysis", "reason": "compliance_policy"}),
+    ],
+)
+def test_decode_accepts_frozen_v1_records(event: str, props: dict[str, object]) -> None:
+    decoded = decode_record(_legacy_v1_line(event, props))
+    assert decoded.schema_version == 1
+    assert dict(decoded.props) == props
+
+
+@pytest.mark.parametrize(
+    ("event", "props"),
+    [
+        # v2-only events and values stay invalid inside a v1 record.
+        ("launch_blocked", {"action": "share_analysis", "reason": "csv_missing"}),
+        ("session_restored", {}),
+        ("surface_viewed", {"surface": "advanced"}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": True}),
+        ("action_cancelled", {"action": "share_analysis", "prompt": "clearing_spend"}),
+    ],
+)
+def test_decode_v1_record_uses_frozen_v1_catalog(event: str, props: dict[str, object]) -> None:
+    with pytest.raises(EventValidationError):
+        decode_record(_legacy_v1_line(event, props))
 
 
 def test_decode_rejects_malformed_utf8() -> None:
