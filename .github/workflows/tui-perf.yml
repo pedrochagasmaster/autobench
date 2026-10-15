@@ -1,0 +1,97 @@
+name: TUI performance (report only)
+
+# Paired base-vs-head check of scripts/tui_perf_probe.py
+# (docs/research/tui-redesign-phase1/03-performance-architecture.md §8.2).
+#
+# REPORT ONLY. Every step that can fail is continue-on-error and the job is
+# continue-on-error, so this workflow never blocks a merge. Do not add it to
+# branch protection: that is a Release Operator decision, taken after about
+# two weeks of false-positive data.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - tui_app.py
+      - "tui/**"
+      - scripts/tui_perf_probe.py
+      - core/__init__.py
+      - .github/workflows/tui-perf.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tui-perf-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  paired:
+    name: Paired TUI probe (base vs head, Python 3.13)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      PERF_OUT: ${{ github.workspace }}/perf-results
+      PROBE_ARGS: >-
+        --rows 10000 --cardinality 50 5000 --repeat 1 --quiet
+        --phases startup csv entity keys advanced picker log entity-large
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.0"
+
+      - name: Install dependencies
+        run: uv sync --locked --extra dev --python 3.13
+
+      - name: Check out the merge base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          echo "Merge base: $merge_base"
+          git worktree add --detach "$RUNNER_TEMP/base" "$merge_base"
+
+      # Base and head run on the same runner, interleaved, so machine speed
+      # cancels out. The head's probe drives both revisions (--repo).
+      - name: Run the probe, interleaved
+        continue-on-error: true
+        run: |
+          mkdir -p "$PERF_OUT"
+          for round in 1 2 3; do
+            uv run --locked --no-sync python scripts/tui_perf_probe.py \
+              --repo "$RUNNER_TEMP/base" --data-dir "$RUNNER_TEMP/tui-perf-data" $PROBE_ARGS \
+              --json-out "$PERF_OUT/base_$round.json"
+            uv run --locked --no-sync python scripts/tui_perf_probe.py \
+              --repo "$GITHUB_WORKSPACE" --data-dir "$RUNNER_TEMP/tui-perf-data" $PROBE_ARGS \
+              --json-out "$PERF_OUT/head_$round.json"
+          done
+
+      - name: Compare head with base
+        continue-on-error: true
+        run: |
+          uv run --locked --no-sync python scripts/tui_perf_probe.py \
+            --compare-base "$PERF_OUT"/base_*.json \
+            --compare-head "$PERF_OUT"/head_*.json \
+            --summary-md "$GITHUB_STEP_SUMMARY" \
+            --json-out "$PERF_OUT/compare.json"
+
+      - name: Upload probe results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tui-perf-pr-${{ github.event.pull_request.number }}
+          path: perf-results/
+          if-no-files-found: warn

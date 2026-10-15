@@ -340,6 +340,11 @@ def test_smoke_uses_configured_report_contract_fields(
     assert any(
         '"$RUNTIME/bin/python" -m compileall' in args[-1] for args in seen_args
     )
+    # The remote compile check covers the TUI's UI package too.
+    assert any(
+        "-m compileall benchmark.py tui_app.py core utils scripts tools tui" in args[-1]
+        for args in seen_args
+    )
     assert "source=abc1234" in captured.out
     assert "snapshot=def5678" in captured.out
     assert "install=install recommended" in captured.out

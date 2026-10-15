@@ -47,7 +47,10 @@ def test_select_sources_private_only_when_no_shared_jsonl(tmp_path: Path) -> Non
 
     selection = _reader(tmp_path, identity=identity, shared_dir=shared, storage_root=storage).select_sources()
 
-    assert selection == SourceSelection(kind=SourceKind.PRIVATE, paths=(private,))
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert selection.fallback_reason == "no_shared_files"
+    assert dict(selection.rejected) == {}
 
 
 def test_select_sources_prefers_shared_and_never_combines_private(
@@ -456,7 +459,9 @@ def test_select_sources_uses_env_when_shared_dir_omitted(
         now=FIXED_NOW,
     ).select_sources()
 
-    assert selection == SourceSelection(kind=SourceKind.SHARED, paths=(path,))
+    assert selection.kind is SourceKind.SHARED
+    assert selection.paths == (path,)
+    assert selection.fallback_reason is None
 
 
 def test_select_sources_empty_env_falls_back_to_default(
@@ -702,5 +707,157 @@ def test_close_errors_are_swallowed(
         _reader(tmp_path, identity=identity, shared_dir=shared).iter_events(days=None)
     )
     assert len(events) == 1
+
+
+# ---------------------------------------------------------------------------
+# Explicit fallback: why shared files were not read (no silent private reads)
+# ---------------------------------------------------------------------------
+
+
+def test_copied_files_fall_back_with_owner_mismatch_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Files copied from another host are owned by the copier: owner_mismatch."""
+    identity = _identity()
+    shared = tmp_path / "copied"
+    _write_shared(shared, "bob", _session_start(user="bob"))
+    _write_shared(shared, "carol", _session_start(user="carol"))
+    storage = tmp_path / "ads"
+    private = _write_private(storage, identity, _session_start(session_id=SESSION_B))
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid + 1)
+    warnings: list[str] = []
+    reader = _reader(
+        tmp_path, identity=identity, shared_dir=shared, storage_root=storage, warn=warnings.append
+    )
+
+    selection = reader.select_sources()
+    assert isinstance(selection, SourceSelection)
+    assert selection.kind is SourceKind.PRIVATE
+    assert selection.paths == (private,)
+    assert selection.fallback_reason == "all_shared_rejected"
+    assert dict(selection.rejected) == {"owner_mismatch": 2}
+
+    events = list(reader.iter_events(days=None))
+    assert [e.user for e in events] == ["alice"]
+    assert reader.last_selection is not None
+    assert len(warnings) == 1
+    message = warnings[0]
+    assert "owner_mismatch=2" in message
+    assert "private" in message
+    assert str(shared / "users") in message
+    for leaked in ("bob", "carol", encode_user_token("bob"), "session_start"):
+        assert leaked not in message
+
+
+@pytest.mark.parametrize(
+    ("setup", "reason"),
+    [
+        ("unknown_user", "unknown_user"),
+        ("bad_name", "name_mismatch"),
+        ("garbage", "no_valid_record"),
+        ("symlink", "unreadable"),
+    ],
+)
+def test_each_rejection_reason_is_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str, reason: str
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    if setup == "unknown_user":
+        _write_shared(shared, "ghost", _session_start(user="ghost"))
+
+        def lookup(_user: str) -> int:
+            raise KeyError("no such user")
+
+        monkeypatch.setattr("core.telemetry.reader.lookup_uid", lookup)
+    elif setup == "bad_name":
+        (users / "renamed.jsonl").write_bytes(_session_start())
+    elif setup == "garbage":
+        (users / f"{encode_user_token('alice')}.jsonl").write_bytes(b"{not json\n")
+    else:
+        target = tmp_path / "elsewhere.jsonl"
+        target.write_bytes(_session_start())
+        (users / f"{encode_user_token('alice')}.jsonl").symlink_to(target)
+    if setup != "unknown_user":
+        monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+    selection = _reader(tmp_path, identity=identity, shared_dir=shared).select_sources()
+    assert selection.kind is SourceKind.PRIVATE
+    assert dict(selection.rejected) == {reason: 1}
+
+
+def test_partial_rejection_reads_shared_and_warns_with_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    good = _write_shared(shared, "alice", _session_start())
+    (shared / "users" / "renamed.jsonl").write_bytes(_session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+    warnings: list[str] = []
+    reader = _reader(tmp_path, identity=identity, shared_dir=shared, warn=warnings.append)
+    events = list(reader.iter_events(days=None))
+    assert len(events) == 1
+    assert reader.last_selection.paths == (good,)
+    assert warnings == [
+        f"skipped 1 shared telemetry file(s) in {shared / 'users'} that failed the "
+        "owner/name check (name_mismatch=1). Files copied from another host fail "
+        "the owner check."
+    ]
+    assert "renamed" not in warnings[0]
+
+
+def test_missing_shared_dir_warns_before_private_fallback(tmp_path: Path) -> None:
+    identity = _identity()
+    storage = tmp_path / "ads"
+    _write_private(storage, identity, _session_start())
+    warnings: list[str] = []
+    reader = _reader(
+        tmp_path,
+        identity=identity,
+        shared_dir=tmp_path / "absent",
+        storage_root=storage,
+        warn=warnings.append,
+    )
+    assert len(list(reader.iter_events(days=None))) == 1
+    assert reader.last_selection.fallback_reason == "no_shared_dir"
+    assert len(warnings) == 1 and "not found" in warnings[0]
+
+
+def test_skipped_records_are_counted_once_per_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = _identity()
+    shared = tmp_path / "shared"
+    future = b'{"schema_version":4,"ts":"2026-07-12T22:00:00Z","event":"x","user":"alice",' \
+        b'"session_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","app_version":"9","props":{}}\n'
+    unknown_event = _session_start().replace(b'"session_start"', b'"session_pause"')
+    _write_shared(
+        shared, "alice", _session_start(), future, future, unknown_event, _session_start()
+    )
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+    warnings: list[str] = []
+    reader = _reader(tmp_path, identity=identity, shared_dir=shared, warn=warnings.append)
+    assert len(list(reader.iter_events(days=None))) == 2
+    assert len(warnings) == 2
+    assert warnings[0].startswith("skipped 2 record(s) with an unsupported schema_version")
+    assert "supports 1, 2, 3" in warnings[0]
+    assert warnings[1] == "skipped 1 record(s) that failed schema validation."
+
+
+def test_rejected_file_contributes_no_skip_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Junk inside a file that fails the gate is neither read nor reported."""
+    identity = _identity()
+    shared = tmp_path / "shared"
+    _write_shared(shared, "alice", _session_start())
+    (shared / "users" / "renamed.jsonl").write_bytes(b"{junk\n" + _session_start())
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: identity.uid)
+    warnings: list[str] = []
+    reader = _reader(tmp_path, identity=identity, shared_dir=shared, warn=warnings.append)
+    list(reader.iter_events(days=None))
+    assert not any("schema validation" in w for w in warnings)
 
 

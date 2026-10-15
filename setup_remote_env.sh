@@ -22,7 +22,7 @@ echo "Running shared-launcher smoke checks..."
 "$ROOT_DIR/bin/autobench-cli" share --help
 
 echo "Running compile and drift checks with the active runtime..."
-"$RUNTIME/bin/python" -m compileall benchmark.py tui_app.py core utils scripts tools
+"$RUNTIME/bin/python" -m compileall benchmark.py tui_app.py core utils scripts tools tui
 mkdir -p tools/prod_tui/reports
 "$RUNTIME/bin/python" -m tools.prod_tui drift \
   --local . \
