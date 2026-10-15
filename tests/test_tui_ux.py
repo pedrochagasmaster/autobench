@@ -931,6 +931,9 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             dims.select("channel")
             app.query_one("#output_file").value = str(output)
             app.query_one("#validate_input", Checkbox).value = True
+            # Balanced CSV is off by default (owner decision 5); this test
+            # needs its console line, so opt in explicitly.
+            app.query_one("#share_export_csv", Checkbox).value = True
 
             app.run_analysis()
             log_text = await _await_run_completion(pilot)
