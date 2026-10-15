@@ -850,7 +850,9 @@ def test_preflight_blocks_invalid_launches(tmp_path: Path, monkeypatch, missing:
             for _ in range(40):
                 await pilot.pause(0.25)
                 log_text = "\n".join(app.query_one("#log_output").lines)
-                if "ERROR:" in log_text:
+                # The UI reset lands on a later loop turn than the log line,
+                # so wait for both rather than racing the reset under load.
+                if "ERROR:" in log_text and app._run_state == "idle":
                     break
             # Run button must be re-enabled after a refused launch
             assert app.query_one("#btn_run").disabled is False
