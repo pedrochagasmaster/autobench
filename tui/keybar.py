@@ -29,9 +29,9 @@ class KeyHint(NamedTuple):
 
 _RUN = KeyHint("^R", "Run", "app.run_analysis")
 _OPEN = KeyHint("^O", "Open CSV", "app.open_file")
-_ADVANCED = KeyHint("F8", "Advanced", "app.toggle_advanced")
-_EXPORT = KeyHint("F9", "Export advanced", "app.export_advanced")
-_PRESETS = KeyHint("F1", "Preset guide", "app.show_help")
+_ADVANCED = KeyHint("F8", "Expert", "app.toggle_advanced")
+_EXPORT = KeyHint("F9", "Export expert", "app.export_advanced")
+_PRESETS = KeyHint("F1", "Help", "app.show_help")
 _CLEAR = KeyHint("^L", "Clear log", "app.clear_log")
 _QUIT = KeyHint("^Q", "Quit", "app.quit")
 _RESULTS = KeyHint("^T", "Results", "app.toggle_results")
@@ -78,10 +78,20 @@ CONTEXTS: Dict[str, Tuple[KeyHint, ...]] = {
         _ESC_CANCEL,
     ),
     "help": (KeyHint("Up/Down", "Scroll"), KeyHint("Esc", "Close")),
+    "expert": (
+        KeyHint("Esc", "Done"),
+        KeyHint("Tab", "Next"),
+        KeyHint("F9", "Export to file"),
+        KeyHint("Space", "Toggle"),
+    ),
+    # The run log view: Ctrl+T (or the button) goes back to the form.
+    "log": (KeyHint("Up/Down", "Scroll"), _RESULTS, _RUN, _QUIT, _PRESETS),
 }
 
 # Contexts that show "^P Commands" on the right (the main screen).
-_COMMAND_CONTEXTS = frozenset({"field", "select", "list", "choose", "toggle", "button", "tabs", "results", "running"})
+_COMMAND_CONTEXTS = frozenset(
+    {"field", "select", "list", "choose", "toggle", "button", "tabs", "results", "running", "log", "expert"}
+)
 
 _GLYPH_KEYS = {"Enter": "↵", "Space": "␣", "Up/Down": "↑↓", "Left/Right": "←→"}
 

@@ -57,6 +57,8 @@ $ab-modal-md: 76;          /* fits 80 columns with a 2-column margin       */
 $ab-modal-lg: 110;         /* CSV picker: two panes and full paths         */
 $ab-results-column: 42;    /* status/results column at 110+ columns (01)  */
 $ab-list-rows: 6;
+$ab-toast-width: 40;
+$ab-label-column: 18;      /* label column of a compact field row (01 §3.2) */       /* toasts, top right (01 §5.3)                 */
 """
 
 COMPONENTS = """
@@ -152,10 +154,52 @@ StepRail > .rail--pending   { color: $ab-muted; }
     scrollbar-gutter: stable;
 }
 .step-title { text-style: bold; color: $ab-accent; }
-/* Toasts sit just above the action bar: they never cover the rail, the
-   action bar or the top of the results card (verdict and path, T1). */
-ToastRack { margin: 0 0 2 0; }
+/* Toasts (01 §5.3): top right below the header and rail, 40 columns, at
+   most two. When the focused field is up there they move to just above the
+   action bar (ToastRack.-bottom, set by BenchmarkApp._place_toasts), so
+   they never cover the focused field, the rail or the action bar. Modals
+   never show toasts: they wait until the modal closes. */
+ToastRack { dock: top; align: right top; margin: 2 0 0 0; }
+ToastRack.-bottom { dock: bottom; align: right bottom; margin: 0 0 2 0; }
+Toast { width: $ab-toast-width; max-width: 50%; margin: 0 0 $ab-space-1 0; }
+
+/* Step contents (PR 5): compact rows, a label column then the field
+   (01 §3.2). Hints sit under the field, indented to its column. */
+.field-block { height: auto; }
+.field-row { layout: horizontal; height: auto; }
+.field-row > .field-label { width: $ab-label-column; margin: 0; }
+.field-row > Select, .field-row > Input, .field-row > EntityChooser,
+.field-row > ModeSwitch, .field-row > Static, .field-row > Checkbox { width: 1fr; }
+.field-hint-indented { padding: 0 0 0 $ab-label-column; }
+.dims-block { margin: $ab-space-1 0 0 0; }
+.step-title { margin: 0 0 $ab-space-1 0; }
+#csv_meta { padding: 0 0 0 11; }
+/* Step contents (PR 5): groups size to their content. */
+.mode-fields, .nested-option, #more_options_form, #review_buttons, #expert_row,
+#section_data, #section_entity, #section_mode, #section_privacy { height: auto; }
+.nested-option { padding: 0 0 0 4; }
+#more_options { margin: $ab-space-1 0 0 0; padding: 0; border: none; background: $ab-surface; }
+#more_options > CollapsibleTitle { padding: 0; }
+#more_options > Contents { padding: 0 0 0 2; }
+#more_options_form .field-label { margin: 0; }
+#expert_row { margin: $ab-space-1 0 0 0; }
+#expert_row > Static { width: 1fr; padding: 0 1; }
+#launch_folder { margin: $ab-space-1 0 0 0; }
+ModeSwitch { height: 1; }
+ModeSwitch:focus { background: $ab-focus 25%; }
+#review_status { height: auto; margin: $ab-space-1 0 0 0; }
+#review_blockers { height: auto; max-height: 8; border: none; background: $ab-surface; }
+#review_blockers:focus { background: $ab-field; }
+#review_blockers_hint { margin: 0 0 $ab-space-1 0; }
 #review_summary { height: auto; margin: 0 0 $ab-space-1 0; }
+#review_buttons > Button { margin: 0 $ab-space-2 0 0; }
+
+/* A run locks the form (01 §5.2); this line says why. */
+#form_lock_note { height: auto; padding: 0 1; text-style: bold; color: $ab-info; background: $ab-panel; }
+
+/* Run log view: the log takes the whole body at any width (Show run log). */
+#btn_show_log { margin: 0 0 $ab-space-1 0; }
+#btn_show_log { width: auto; }
 
 /* The status/results pane: a right-hand column at 110+ columns, a full-width
    view toggled by ^T below that (it then replaces the step body). */
@@ -170,6 +214,11 @@ Screen.-narrow.-show-results #setup_pane { display: none; }
 /* Below 110 columns an outcome card replaces the idle status panel, so the
    verdict, the report path and Copy fit at 80x24 (heuristic T1). */
 Screen.-narrow.-has-outcome #run_status { display: none; }
+/* Run log view (PR 5): the log takes the whole body at any width. */
+Screen.-show-log #setup_pane { display: none; }
+Screen.-wide.-show-log #activity_pane,
+Screen.-narrow.-show-log #activity_pane { display: block; width: 1fr; }
+Screen.-show-log #run_status, Screen.-show-log #last_run { display: none; }
 
 ActionBar { height: 1; background: $ab-panel-raised; }
 ActionBar #action_badge { width: auto; }
@@ -278,6 +327,19 @@ TabbedContent { height: auto; }
 #confirm_buttons Button { margin: 0 $ab-space-2 0 0; }
 
 #help_container { width: $ab-modal-md; height: 80%; }
+
+/* Expert settings (F8): a full screen over the main screen. */
+#expert_container { width: 100%; height: 100%; border: none; }
+#expert_header { height: auto; }
+#expert_hint { height: auto; }
+#expert_buttons { height: auto; margin: $ab-space-1 0 0 0; }
+#expert_buttons > Button { margin: 0 $ab-space-2 0 0; }
+#expert_export_path { height: auto; }
+#expert_body { height: 1fr; }
+.expert-grid { grid-size: 3; grid-columns: 34 16 1fr; grid-rows: 1; height: auto; }
+.expert-label { width: 1fr; }
+.expert-grid > Input, .expert-grid > Checkbox { width: 1fr; }
+.expert-source { width: 1fr; padding: 0 0 0 2; color: $ab-muted; }
 #help_text { height: 1fr; margin: $ab-space-1 0; overflow-y: auto; }
 #btn_close_help { width: 100%; dock: bottom; }
 
@@ -297,7 +359,10 @@ App:nocolor StatusBadge.-blocked,
 App:nocolor StatusBadge.-error    { text-style: bold reverse; }
 App:nocolor .ab-hint, App:nocolor .ab-code,
 App:nocolor .field-hint, App:nocolor #csv_meta,
-App:nocolor .subsection-title, App:nocolor #validation_hint { color: $ab-text; text-style: italic; }
+App:nocolor .subsection-title, App:nocolor #validation_hint,
+App:nocolor .expert-source { color: $ab-text; text-style: italic; }
+App:nocolor ModeSwitch:focus { text-style: bold reverse; }
+App:nocolor #review_blockers:focus > .option-list--option-highlighted { text-style: bold reverse; }
 App:nocolor .ab-panel, App:nocolor .ab-list, App:nocolor .multi-select { border-title-color: $ab-text; }
 App:nocolor KeyBar > .keybar--key { color: $ab-text; text-style: bold reverse; }
 App:nocolor StepRail > .rail--done,

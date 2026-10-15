@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, OptionList, Select
+from textual.widgets import Input, OptionList, Select, Static
 
 import tui_app
 from tui_app import SELECT_BLANK, BenchmarkApp, PresetCatalog
@@ -80,19 +80,31 @@ def test_presets_are_parsed_once_across_startup_and_advanced_expand(
             # ConfigManager owns a PresetManager; utils/ is unchanged). The
             # eager code did 4 here.
             assert startup <= 3, parses
+            # PR 5: F8 opens (and closes) the Expert settings screen. Startup
+            # no longer resolves the preset's expert values; the first open
+            # does, once, and later opens reuse it.
+            await app.run_action("toggle_advanced")
+            await pilot.pause()
+            first_open = len(parses)
+            assert first_open <= 3, parses
             for _ in range(3):
                 await app.run_action("toggle_advanced")
                 await pilot.pause()
-            assert len(parses) == startup, "Advanced expand re-parsed the presets"
+            assert len(parses) == first_open, "Opening Expert settings re-parsed the presets"
+            await app.ensure_step("privacy")
             select = app.query_one("#preset_select", Select)
             default = select.value
             other = next(v for _, v in select._options if v not in (default, SELECT_BLANK))
             select.value = other
             await pilot.pause()
-            after_switch = len(parses)
+            # PR 5: startup no longer resolves the default preset's release
+            # mode; the first switch back does. Visit both once, then revisit.
             select.value = default
             await pilot.pause()
+            after_switch = len(parses)
             select.value = other
+            await pilot.pause()
+            select.value = default
             await pilot.pause()
             assert len(parses) == after_switch, "revisiting a preset re-parsed the presets"
 
@@ -226,7 +238,9 @@ def test_csv_tab_out_reloads_only_when_the_file_changed(
     real_read_csv = tui_app.pd.read_csv
 
     def counting_read_csv(path, *args, **kwargs):
-        if kwargs.get("nrows") == 0:
+        # Header (+ PR 5: a small sample for numeric columns) reads; the
+        # entity worker reads one column with usecols.
+        if kwargs.get("nrows") is not None:
             header_reads.append(str(path))
         return real_read_csv(path, *args, **kwargs)
 
@@ -253,15 +267,24 @@ def test_csv_tab_out_reloads_only_when_the_file_changed(
             await pilot.press("enter")  # Enter on the unchanged path: no-op too
             await _settle(pilot)
             assert header_reads == [str(csv_path)], "unchanged CSV was re-read"
-            assert toasts.count("CSV loaded") == 1, toasts
+            # PR 5 (01 §5.3): a load is never toasted; the meta line under the
+            # path is the confirmation.
+            assert "CSV loaded" not in toasts, toasts
+            meta = app.query_one("#csv_meta", Static)
+            first_meta = str(meta.content)
+            assert "data.csv" in first_meta
 
-            # The same file edited on disk reloads on the next tab-out.
+            # The same file edited on disk reloads on the next tab-out. (PR 5:
+            # Enter moved focus on to Target entity, so go back to the path.)
             with open(csv_path, "a", encoding="utf-8") as handle:
                 handle.write("P9,2024-01,CREDIT,Online,1,10,9,0\n")
+            path_input.focus()
+            await pilot.pause()
             await pilot.press("tab")
             await _settle(pilot)
             assert len(header_reads) == 2
-            assert toasts.count("CSV loaded") == 2
+            assert "data.csv" in str(meta.content)
+            assert "CSV loaded" not in toasts, toasts
 
     asyncio.run(scenario())
 
@@ -278,7 +301,10 @@ def test_csv_tab_out_still_reports_a_missing_file(tmp_path: Path) -> None:
             await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
-            assert toasts == ["CSV file not found"]
+            # PR 5 (01 §5.3): reported inline under the path, not as a toast.
+            assert toasts == []
+            meta = str(app.query_one("#csv_meta", Static).content)
+            assert "Not found:" in meta and "missing.csv" in meta
 
     asyncio.run(scenario())
 
@@ -424,6 +450,7 @@ async def _load_entities(pilot, csv_path: Path) -> None:
     app.query_one("#csv_path", Input).value = str(csv_path)
     app.load_csv_headers(str(csv_path))
     await _settle(pilot)
+    await app.ensure_step("entity")  # PR 5: step 2 mounts on first show
 
 
 def test_entity_index_prefix_substring_and_cap() -> None:
@@ -635,3 +662,16 @@ def test_no_focus_within_rule_on_large_containers() -> None:
     css = re.sub(r"/\*.*?\*/", "", BenchmarkApp.CSS, flags=re.S)
     rules = re.findall(r"([^{}]+):focus-within", css)
     assert rules == [], f":focus-within restyles a whole subtree on every Tab: {rules}"
+
+
+def test_more_options_disclosure_carries_no_focus_within_rule() -> None:
+    """Stock ``Collapsible`` tints ``&:focus-within``; More options must not."""
+    from textual.widgets import Collapsible
+
+    from tui.form_widgets import Disclosure
+
+    assert issubclass(Disclosure, Collapsible)
+    # Every DEFAULT_CSS the widget inherits (inherit_css=False stops at itself).
+    css = "".join(base.DEFAULT_CSS for base in Disclosure._css_bases(Disclosure))
+    assert "Disclosure {" in css
+    assert "focus-within" not in css

@@ -8,6 +8,7 @@ All analysis execution flows through the shared ``core.analysis_run`` seam,
 so behaviour stays identical to the CLI.
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -15,7 +16,6 @@ import logging
 import threading
 import traceback
 import glob
-import bisect
 import contextlib
 import collections
 import copy
@@ -25,7 +25,7 @@ import io
 import pandas as pd
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, NamedTuple, Optional, Tuple
 import yaml
 
 # Remote-friendly renderer defaults (must be set before Textual is imported).
@@ -40,6 +40,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.geometry import Region
 from textual.markup import escape as escape_markup
 from textual.widgets import (
     Header,
@@ -48,8 +49,6 @@ from textual.widgets import (
     Select,
     Checkbox,
     Label,
-    TabbedContent,
-    TabPane,
     Log,
     Static,
     ListView,
@@ -61,12 +60,12 @@ from textual.widgets import (
     Tabs,
 )
 from textual.widgets._collapsible import CollapsibleTitle
+from textual.widgets._toast import ToastRack
 from textual.widgets.option_list import Option
 from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.suggester import SuggestFromList, Suggester
 from textual.worker import get_current_worker
 from rich.text import Text
 
@@ -104,12 +103,59 @@ try:
     from core import labels
     from tui.actionbar import ActionBar
     from tui.commands import AutobenchCommands
+    from tui.expert import (
+        ExpertScreen,
+        diff_with,
+        effective_values,
+        expert_changes_text,
+        rebase_diff,
+    )
+    from tui.form_state import (
+        COLUMN_FIELDS,
+        COLUMN_LIST_FIELDS,
+        FIELD_STEPS,
+        MORE_OPTIONS_FIELDS,
+        FormState,
+        SMART_DEFAULTS,
+        read_session,
+        session_payload,
+    )
+    from tui.form_widgets import (
+        ENTITY_FILTER_PLACEHOLDER,
+        ENTITY_LOADING_PROMPT,
+        ENTITY_MATCH_LIMIT,
+        ENTITY_SELECT_MAX,
+        ENTITY_SELECT_PROMPT,
+        SEPARATOR,
+        ColumnSelect,
+        EntityChooser,
+        EntityIndex,
+        EntitySuggester,
+        ModeSwitch,
+    )
     from tui.keybar import KeyBar
     from tui.rail import ATTENTION, DONE, PENDING, RESTORED, STEP_BY_ID, STEPS, StepRail
     from tui.readiness import LaunchBlocker, launch_blockers
+    from tui.steps import (
+        BUILDERS,
+        FIELD_WIDGETS,
+        MORE_OPTIONS_WIDGETS,
+        OUTPUT_FORMAT_CODES,
+        PAIR_LABELS,
+        RELEASE_MODE_HINTS,
+        MODE_FIELD_WIDGETS,
+        WIDGET_FIELDS,
+        build_mode_fields,
+        build_more_options,
+        WIDGET_STEPS,
+        StepContext,
+        dimension_selections,
+        more_options_title,
+        secondary_selections,
+    )
     from tui.status import glyph as status_glyph, status_text
     from tui.styles import AUTOBENCH_TCSS
-    from tui.widgets import BoxCheckbox, BoxSelectionList, StatusBadge
+    from tui.widgets import StatusBadge
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
@@ -183,107 +229,61 @@ def _resolve_log_dir() -> Path:
     )
 
 
-SESSION_INPUT_IDS: tuple[str, ...] = ()
-SESSION_SELECT_IDS = (
-    "entity_col",
-    "time_col",
-    "preset_select",
-    "output_format",
-    "privacy_release_mode",
-    "share_metric",
-    "rate_total",
-    "rate_approved",
-    "rate_fraud",
+# Entity widgets (tui.form_widgets) re-exported for callers and tests:
+# EntityIndex, EntitySuggester, ENTITY_SELECT_MAX, ENTITY_MATCH_LIMIT and the
+# prompts. Above ENTITY_SELECT_MAX values the filter picker replaces the
+# Select (03 §6).
+__all_entity__ = (
+    EntityIndex,
+    EntitySuggester,
+    ENTITY_SELECT_MAX,
+    ENTITY_MATCH_LIMIT,
+    ENTITY_SELECT_PROMPT,
+    ENTITY_LOADING_PROMPT,
+    ENTITY_FILTER_PLACEHOLDER,
 )
-# Compliance attestations and consent acknowledgements are deliberately
-# excluded: they are per-run declarations and must not be restored from a
-# previous session (acknowledge_accuracy_first, privacy_merchant_spend_scope,
-# citi_competitor_receives_output).
-SESSION_CHECKBOX_IDS = (
-    "analyze_distortion",
-    "compare_presets",
-    "validate_input",
-    "include_calculated",
-    "share_auto_dim",
-    "share_debug",
-    "share_export_csv",
-    "rate_auto_dim",
-    "rate_debug",
-    "rate_export_csv",
-    "fraud_in_bps",
-    "privacy_rule_sweep_mode",
-)
-SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
 
-ENTITY_SELECT_PROMPT = "None: peer group only"
-ENTITY_LOADING_PROMPT = "Loading entities…"
-ENTITY_FILTER_PLACEHOLDER = "Type to filter entities…"
-# Above this many distinct values the stock Select (one option per value,
-# opened as an overlay) gets slow: 0.28 s to open at 5,000 and 2.6 s at 100k.
-# Larger lists use the filter + capped OptionList picker instead (03 §6).
-ENTITY_SELECT_MAX = 2000
-ENTITY_MATCH_LIMIT = 200
-_ENTITY_PEER_ONLY_ID = "peer-only"
-_ENTITY_VALUE_ID_PREFIX = "v:"
+# Header rows plus a sample: enough to tell numeric columns (Metric and Total
+# list them first) without reading the file on the UI thread.
+NUMERIC_SAMPLE_ROWS = 500
+# After a CSV load, steps 2 and 3 mount in the background (one per tick,
+# this long after the load) so their first show is a display toggle.
+STEP_PREWARM_DELAY_S = 0.25
+STEP_PREWARM_ORDER = ("entity", "analysis")
 
+# Toasts (01 §5.3): top right, 40 columns; they move to the bottom when the
+# focused field is in this top-right area.
+TOAST_WIDTH = 40
+TOAST_AREA_ROWS = 14
 
-class EntityIndex:
-    """All distinct values of an entity column, searchable without a widget.
-
-    Built on the entity worker thread. Matching is a ``bisect`` prefix search
-    over the casefolded values, with a substring scan as the fallback when
-    nothing starts with the typed text. ``value_set`` is the full set used to
-    validate a typed target entity: only an exact value ever becomes one.
-    """
-
-    def __init__(self, values: List[str]) -> None:
-        self.values = values
-        self.value_set = frozenset(values)
-        pairs = sorted((value.casefold(), value) for value in values)
-        self.folded = [folded for folded, _ in pairs]
-        self.ordered = [value for _, value in pairs]
-
-    def __len__(self) -> int:
-        return len(self.values)
-
-    def _prefix_range(self, needle: str) -> tuple:
-        lo = bisect.bisect_left(self.folded, needle)
-        hi = bisect.bisect_left(self.folded, needle + "\U0010ffff", lo)
-        return lo, hi
-
-    def first_with_prefix(self, needle: str) -> Optional[str]:
-        """First value (casefolded order) starting with casefolded ``needle``."""
-        lo, hi = self._prefix_range(needle)
-        return self.ordered[lo] if lo < hi else None
-
-    def matches(self, text: str, limit: int = ENTITY_MATCH_LIMIT) -> tuple:
-        """Return (up to ``limit`` matching values, total number of matches)."""
-        needle = text.casefold()
-        if not needle:
-            return self.values[:limit], len(self.values)
-        lo, hi = self._prefix_range(needle)
-        if lo < hi:
-            return self.ordered[lo:min(hi, lo + limit)], hi - lo
-        found = [value for folded, value in zip(self.folded, self.ordered) if needle in folded]
-        return found[:limit], len(found)
-
-
-class EntitySuggester(SuggestFromList):
-    """``SuggestFromList`` over an ``EntityIndex``: O(log n) prefix lookups.
-
-    The stock implementation scans its list linearly on every keystroke and
-    casefolds the whole list up front on the UI thread; the index has already
-    done that work on the worker thread.
-    """
-
-    def __init__(self, index: EntityIndex) -> None:
-        Suggester.__init__(self, case_sensitive=False)
-        self._index = index
-        self._suggestions = index.ordered
-        self._for_comparison = index.folded
-
-    async def get_suggestion(self, value: str) -> Optional[str]:
-        return self._index.first_with_prefix(value)
+# Fields whose role decides what the dimensions and secondary lists offer.
+ROLE_FIELDS = frozenset({"entity_col", "time_col", "metric", "total_col", "approved_col", "fraud_col"})
+# Restored values marked ↺ even when they equal the default (owner decision 3).
+ALWAYS_MARK_RESTORED = frozenset({"mode", "preset", "release_mode"})
+# Plain names for the Review "Restored"/"Not restored" lines.
+FIELD_LABELS = {
+    "mode": "mode",
+    "entity_col": "entity column",
+    "metric": "metric",
+    "total_col": "total",
+    "approved_col": "approved",
+    "fraud_col": "fraud",
+    "time_col": "time column",
+    "dimensions": "dimensions",
+    "secondary": "secondary metrics",
+    "auto_dims": "auto-detect",
+    "preset": "preset",
+    "release_mode": "release mode",
+    "rule_sweep": "rule sweep",
+    "output_format": "output format",
+    "validate_input": "input validation",
+    "analyze_distortion": "impact analysis",
+    "compare_presets": "preset comparison",
+    "export_balanced_csv": "balanced CSV",
+    "include_calculated": "calculated metrics",
+    "fraud_in_bps": "fraud in bps",
+    "debug": "debug sheets",
+}
 
 
 def read_unique_entity_values(csv_path: str, column_name: str) -> List[str]:
@@ -316,6 +316,14 @@ def write_log_message(log_widget: Log, message: str) -> None:
             app.call_from_thread(log_widget.write, text)
         except RuntimeError:
             pass  # App loop already gone (e.g. a run cancelled by Quit).
+
+
+def _log_view_formatter() -> logging.Formatter:
+    """Short ``HH:MM:SS LEVEL message`` lines for the run log view (03 T8).
+
+    The full record, with the date, stays in the deferred log file on disk.
+    """
+    return logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
 
 
 class LogHandler(logging.Handler):
@@ -679,18 +687,27 @@ class ConfirmScreen(ModalScreen[bool]):
 
     BINDINGS = [("escape", "cancel_confirm", "Cancel")]
 
-    def __init__(self, message: str, confirm_label: str = "Confirm") -> None:
+    def __init__(
+        self,
+        message: str,
+        confirm_label: str = "Confirm",
+        *,
+        cancel_label: str = "Cancel",
+        variant: str = "error",
+    ) -> None:
         super().__init__()
         self.message = message
         self.confirm_label = confirm_label
+        self.cancel_label = cancel_label
+        self.variant = variant
 
     def compose(self) -> ComposeResult:
         with Container(id="confirm_container", classes="ab-modal"):
             # Literal text: messages can carry column names from the CSV.
             yield Label(Text(self.message), id="confirm_message")
             with Horizontal(id="confirm_buttons"):
-                yield Button(self.confirm_label, id="btn_confirm_yes", variant="error", compact=True)
-                yield Button("Cancel", id="btn_confirm_no", variant="default", compact=True)
+                yield Button(self.confirm_label, id="btn_confirm_yes", variant=self.variant, compact=True)
+                yield Button(self.cancel_label, id="btn_confirm_no", variant="default", compact=True)
         yield KeyBar("confirm")
 
     def on_mount(self) -> None:
@@ -744,7 +761,7 @@ class PresetHelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Container(id="help_container", classes="ab-modal"):
-            yield Label("Preset guide", classes="section-title")
+            yield Label("Help · keys and presets", classes="section-title")
             yield Markdown(
                 """
 ### compliance_strict
@@ -778,9 +795,11 @@ class PresetHelpScreen(ModalScreen):
 - **Trade-off:** Lower rank preservation, higher weight bounds.
 
 ### Keyboard
-- **Ctrl+R** run · **Ctrl+O** open a CSV · **Ctrl+L** clear the log
-- **F8** show or hide Advanced optimization · **F9** export the advanced settings
-- **F1** this guide · **Ctrl+P** commands · **Ctrl+Q** or **Ctrl+C** quit
+- **Ctrl+R** run (or jump to the first thing to fix) · **Ctrl+O** open a CSV
+- **Ctrl+P** commands, including "Go to step: …" · **Tab** flows through the steps
+- **F8** Expert settings · **F9** export them to a file
+- **Ctrl+T** results · **Ctrl+Y** copy the report path · **Ctrl+G** cancel a run
+- **F1** this guide · **Ctrl+Q** or **Ctrl+C** quit
                 """,
                 id="help_text"
             )
@@ -974,21 +993,9 @@ _PRIVACY_RELEASE_MODE_VALUES = frozenset(
     value for _, value in _PRIVACY_RELEASE_MODE_OPTIONS
 )
 
-# D5: advanced fields whose value is owned by a Share/Rate tab control.
+# D5: the advanced field whose value is owned by the one "Debug sheets"
+# control (the ``debug`` request field).
 TUI_TAB_OWNED_ADVANCED_FIELDS = frozenset({"adv_output_debug_sheets"})
-
-# D4: session keys that name CSV columns. They are applied only after a CSV
-# header load, and only where the column exists in that file.
-SESSION_COLUMN_SELECT_IDS = frozenset({
-    "entity_col",
-    "time_col",
-    "share_metric",
-    "rate_total",
-    "rate_approved",
-    "rate_fraud",
-})
-SESSION_TAB_KEY = "analysis_mode"
-_SESSION_TABS = {"share": "share_tab", "rate": "rate_tab"}
 
 # Layout shell breakpoint: the status/results column needs 42 columns and the
 # form at least 66, so below 110 columns results become a Ctrl+T view.
@@ -1071,19 +1078,18 @@ def _step_body(step_id: str) -> VerticalScroll:
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
 
-    # F8/F9 replace Ctrl+A/Ctrl+E: a focused Input binds Ctrl+A/Ctrl+E to
-    # Home/End, so those never reached the app from a text field (and Ctrl+A
-    # is the GNU screen prefix). No widget binds F8/F9, so they work in any
-    # field. The old keys stay as hidden aliases for muscle memory and the
-    # perf probe. The key bar (tui.keybar) shows the keys; no Footer.
+    # F8 opens the Expert settings screen and F9 exports it; no widget binds
+    # either, so they work in any field. Ctrl+A/Ctrl+E stay as hidden aliases
+    # for muscle memory and the perf probe (a focused Input takes them for
+    # Home/End). The key bar (tui.keybar) shows the keys; no Footer.
     BINDINGS = [
         Binding("ctrl+o", "open_file", "Open CSV"),
         Binding("ctrl+r", "run_analysis", "Run"),
-        Binding("f1", "show_help", "Preset guide"),
-        Binding("f8", "toggle_advanced", "Advanced"),
-        Binding("f9", "export_advanced", "Export advanced"),
-        Binding("ctrl+a", "toggle_advanced", "Advanced", show=False),
-        Binding("ctrl+e", "export_advanced", "Export advanced", show=False),
+        Binding("f1", "show_help", "Help"),
+        Binding("f8", "toggle_advanced", "Expert settings"),
+        Binding("f9", "export_advanced", "Export expert settings"),
+        Binding("ctrl+a", "toggle_advanced", "Expert settings", show=False),
+        Binding("ctrl+e", "export_advanced", "Export expert settings", show=False),
         Binding("ctrl+l", "clear_log", "Clear log"),
         # Layout shell (01 §4.1): no stock widget binds these, and none is a
         # tmux (^B) or GNU screen (^A) prefix, so they work from any field.
@@ -1097,13 +1103,18 @@ class BenchmarkApp(App):
         Binding("ctrl+c", "copy_or_quit", "Quit", show=False, priority=True),
     ]
 
-    # D5: output.include_debug_sheets is driven only by the tab-level "Debug
-    # sheets" checkbox (request field ``debug``). The shared spec stays in
+    # D5: output.include_debug_sheets is driven only by the "Debug sheets"
+    # control (request field ``debug``). The shared spec stays in
     # utils.config_overrides for other adapters; the TUI has no second,
     # silently overridden control for it.
     ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = [
         spec for spec in ADVANCED_FIELD_SPECS if spec.widget_id not in TUI_TAB_OWNED_ADVANCED_FIELDS
     ]
+
+    # At most this many toasts at once (01 §5.3); a third replaces the oldest.
+    MAX_TOASTS = 2
+    # Toasts raised while a modal is open wait for it to close, unless older.
+    QUEUED_TOAST_MAX_AGE_S = 10.0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -1112,6 +1123,10 @@ class BenchmarkApp(App):
         self.theme = "tokyo-night"
         # One parse of presets/*.yaml for display (see PresetCatalog).
         self._preset_catalog = PresetCatalog()
+        self._preset_options: List[Tuple[str, str]] = []
+        # PR 5: the form model. Widgets bind to it; everything else reads it.
+        self.form = FormState()
+        self.form.set_listener(self._on_form_change)
         # Confirmations the analysis worker is blocked on (see _await_confirmation).
         self._confirmation_lock = threading.Lock()
         self._pending_confirmations: set[threading.Event] = set()
@@ -1121,14 +1136,19 @@ class BenchmarkApp(App):
         self._cancel_event = threading.Event()
         self._run_stage: Optional[str] = None
         # D4: restored column choices wait here for the first CSV header load.
-        self._pending_session_selects: Dict[str, Any] = {}
-        self._pending_session_lists: Dict[str, List[Any]] = {}
-        # D2: the preset an applied advanced-override file was written for.
-        self._advanced_config_preset: Optional[str] = None
-        # Layout shell (PR 4). Steps whose fields hold values restored from
-        # the last session (rail ↺); cleared when a run starts.
+        self._pending_session: Dict[str, Any] = {}
+        self._not_restored: List[Tuple[str, Any]] = []
+        self._restore_toast_due = False
+        # Layout shell. Steps mount on first show (03 §1.1): mounted = mount
+        # started, ready = widgets composed and synced from the form.
         self._current_step = STEPS[0].id
-        self._restored_steps: set = set()
+        self._mounted_steps: set = {STEPS[0].id}
+        self._ready_steps: set = set()
+        # Step 3's share/rate field groups: mounted with the step for the
+        # active mode, the other on the first switch.
+        self._mode_fields_mounted: set = set()
+        self._mode_fields_ready: set = set()
+        self._pending_focus: Optional[Tuple[str, Any]] = None
         self._blockers: Tuple[LaunchBlocker, ...] = ()
         self._shell_refresh_pending = False
         # Who asked for the cancel ("button" for ^G, "quit" for Quit). The
@@ -1138,6 +1158,14 @@ class BenchmarkApp(App):
         self._copy_path: Optional[str] = None
         self._outcome_message = ""
         self._setup_focus: Any = None
+        self._focus_before_lock: Any = None
+        # Dataset facts from the last header load.
+        self._csv_loaded = False
+        self._csv_meta: Any = Text("No file loaded. Type a path and press Enter, or press Ctrl+O.")
+        # Expert settings: preset values per preset, for the diff.
+        self._expert_preset_cache: Dict[str, Dict[str, Any]] = {}
+        # Toast policy (01 §5.3).
+        self._queued_toasts: "collections.deque[tuple]" = collections.deque()
 
     # One token stylesheet for every screen (tui/styles.py, 02 §1).
     CSS = AUTOBENCH_TCSS
@@ -1154,11 +1182,11 @@ class BenchmarkApp(App):
     def compose(self) -> ComposeResult:
         """Create child widgets for the app.
 
-        Layout shell (Phase 2 PR 4, 01 §3.1): header, step rail, the five
-        step bodies (all mounted, only the current one displayed), the
+        Layout shell (01 §3.1): header, step rail, the five step bodies, the
         status/results column (a right-hand column at 110+ columns, a ``^T``
-        view below that), the action bar and the key bar. Every form widget
-        keeps its id and behaviour from the single-page layout.
+        view below that), the action bar and the key bar. Only step 1's
+        widgets are composed here; the other steps mount on first show
+        (``_ensure_step_mounted``), built from the form model.
         """
         # No clock: it would repaint the header (and push bytes over SSH)
         # every second for the lifetime of the app.
@@ -1167,293 +1195,14 @@ class BenchmarkApp(App):
 
         with Horizontal(id="app_body"):
             with Vertical(id="setup_pane"):
-                # ── 1 · Data ───────────────────────────────────────────────
-                with _step_body("data"):
-                    yield Label("1 · Data — which file?", classes="step-title")
-                    with Container(id="section_data", classes="form-section"):
-                        yield Label("CSV file path", classes="field-label")
-                        with Horizontal(classes="ab-row"):
-                            yield Button("Browse…", id="btn_browse_csv", variant="default", compact=True)
-                            yield Input(placeholder="path/to/data.csv", id="csv_path", classes="file-input", compact=True)
-                        yield Static("No file loaded.", id="csv_meta")
-
-                # ── 2 · Entity ─────────────────────────────────────────────
-                with _step_body("entity"):
-                    yield Label("2 · Entity — who is benchmarked?", classes="step-title")
-                    with Container(id="section_entity", classes="form-section"):
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Entity ID column", classes="field-label")
-                                yield Select([], prompt="Select column…", id="entity_col", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Target entity", classes="field-label")
-                                yield Select(
-                                    [], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True, compact=True
-                                )
-                                # Replaces the Select above ENTITY_SELECT_MAX values.
-                                with Vertical(id="entity_picker", classes="hidden"):
-                                    yield Input(placeholder=ENTITY_FILTER_PLACEHOLDER, id="entity_filter", compact=True)
-                                    yield Static("", id="entity_match_count", classes="field-hint")
-                                    yield OptionList(id="entity_matches", classes="ab-list")
-                        yield Static(
-                            "Blank target = peer-only benchmark. Chosen fresh every run; never restored.",
-                            classes="field-hint",
-                        )
-
-                # ── 3 · Analysis & mode ────────────────────────────────────
-                with _step_body("analysis"):
-                    yield Label("3 · Analysis & mode", classes="step-title")
-                    with Container(id="section_mode", classes="form-section"):
-                        with TabbedContent(initial="share_tab"):
-                            with TabPane("Share analysis", id="share_tab"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Primary metric column", classes="field-label")
-                                    yield Select([], prompt="Select column…", id="share_metric", compact=True)
-
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Secondary metrics", classes="field-label")
-                                    yield BoxSelectionList(id="share_secondary", classes="multi-select")
-
-                                yield Label("Dimension options", classes="subsection-title")
-                                with Vertical(classes="ab-checks"):
-                                    yield BoxCheckbox("Auto-detect dimensions", value=False, id="share_auto_dim", compact=True)
-                                    yield BoxCheckbox("Debug sheets", value=True, id="share_debug", compact=True)
-                                    # Owner decision 5: off by default, as for rate and the CLI.
-                                    yield BoxCheckbox(
-                                        "Export balanced CSV", value=False, id="share_export_csv", compact=True
-                                    )
-
-                                yield Label("Dimensions", id="share_dims_label", classes="field-label")
-                                yield BoxSelectionList(id="share_dims", classes="multi-select")
-
-                            with TabPane("Rate analysis", id="rate_tab"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Total column (denominator)", classes="field-label")
-                                    yield Select([], prompt="Select column…", id="rate_total", compact=True)
-                                with Horizontal(classes="split-inputs"):
-                                    with Vertical(classes="field-pair"):
-                                        yield Label("Approved column", classes="field-label")
-                                        yield Select(
-                                            [], prompt="Select column…", id="rate_approved", allow_blank=True, compact=True
-                                        )
-                                    with Vertical(classes="field-pair"):
-                                        yield Label("Fraud column", classes="field-label")
-                                        yield Select(
-                                            [], prompt="Select column…", id="rate_fraud", allow_blank=True, compact=True
-                                        )
-
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Secondary metrics", classes="field-label")
-                                    yield BoxSelectionList(id="rate_secondary", classes="multi-select")
-
-                                yield Label("Dimension options", classes="subsection-title")
-                                with Vertical(classes="ab-checks"):
-                                    yield BoxCheckbox("Auto-detect dimensions", value=False, id="rate_auto_dim", compact=True)
-                                    yield BoxCheckbox("Debug sheets", value=True, id="rate_debug", compact=True)
-                                    yield BoxCheckbox("Export balanced CSV", value=False, id="rate_export_csv", compact=True)
-                                    yield BoxCheckbox(
-                                        "Show fraud in basis points (publication workbook)",
-                                        value=True,
-                                        id="fraud_in_bps",
-                                        compact=True,
-                                    )
-
-                                yield Label("Dimensions", id="rate_dims_label", classes="field-label")
-                                yield BoxSelectionList(id="rate_dims", classes="multi-select")
-
-                    with Container(id="section_analysis", classes="form-section"):
-                        yield Label("Options", classes="ab-section")
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Time period column", classes="field-label")
-                                yield Select([], prompt="Select column…", id="time_col", allow_blank=True, compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Output file name", classes="field-label")
-                                yield Input(placeholder="Leave blank to name it automatically", id="output_file", compact=True)
-
-                        with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox("Show how the weighting changed results", value=True, id="analyze_distortion", compact=True)
-                            yield BoxCheckbox("Compare presets", id="compare_presets", compact=True)
-                            yield BoxCheckbox("Validate input", id="validate_input", value=True, compact=True)
-                            yield BoxCheckbox("Add calculated metrics to the balanced CSV", id="include_calculated", compact=True)
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Output format", classes="field-label")
-                                yield Select(
-                                    [
-                                        (labels.text_for(labels.OUTPUT_FORMAT, "analysis"), "analysis"),
-                                        (labels.text_for(labels.OUTPUT_FORMAT, "publication"), "publication"),
-                                        (labels.text_for(labels.OUTPUT_FORMAT, "both"), "both"),
-                                    ],
-                                    id="output_format",
-                                    value="analysis",
-                                    allow_blank=False,
-                                    compact=True,
-                                )
-
-                    # ───────────────────────────────────────────────────
-                    # ADVANCED OPTIMIZATION (collapsed by default; PR 5
-                    # moves it to the Expert settings screen)
-                    # ───────────────────────────────────────────────────
-                    with Collapsible(title="Advanced optimization (F8)", id="advanced_opt", collapsed=True):
-                        with Vertical(id="advanced_form"):
-                            yield Label("Linear programming", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Tolerance (pp)", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Max iterations", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations", compact=True)
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Lambda penalty", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Volume weighting exponent", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent", compact=True)
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox(
-                                    "Enable volume-weighted penalties", id="adv_lp_volume_weighted_penalties", compact=True
-                                )
-
-                            yield Label("Constraints", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Volume preservation", classes="adv-field-label")
-                                    yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation", compact=True)
-
-                            yield Label("Weight bounds", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Min weight", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Max weight", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight", compact=True)
-
-                            yield Label("Subset search", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                yield BoxCheckbox("Enable subset search", id="adv_subset_enabled", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Strategy", classes="adv-field-label")
-                                    yield Input(placeholder="greedy / random", id="adv_subset_strategy", compact=True)
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Max attempts", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Max slack threshold", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold", compact=True)
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox("Trigger on slack", id="adv_subset_trigger_on_slack", compact=True)
-                                yield BoxCheckbox("Prefer slacks first", id="adv_subset_prefer_slacks_first", compact=True)
-
-                            yield Label("Bayesian optimization (fallback)", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Max iterations", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations", compact=True)
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Learning rate", classes="adv-field-label")
-                                    yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate", compact=True)
-
-                            yield Label("Analysis settings", classes="adv-group-title")
-                            with Horizontal(classes="input-group"):
-                                with Vertical(classes="field-pair"):
-                                    yield Label("Best-in-class percentile", classes="adv-field-label")
-                                    yield Input(
-                                        placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile", compact=True
-                                    )
-
-                            yield Label("Output settings", classes="adv-group-title")
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox(
-                                    "Include privacy validation", id="adv_output_privacy_validation", compact=True
-                                )
-                            # D5: debug sheets have one control, the "Debug sheets"
-                            # checkbox on the Share/Rate tab (the ``debug`` request
-                            # field, which wins over the preset as on the CLI).
-                            yield Label("Debug sheets are set on the Share/Rate tab.", classes="ab-hint")
-
-                            with Horizontal(classes="ab-row ab-checks"):
-                                yield Button("Apply overrides", id="btn_apply_advanced", variant="primary", compact=True)
-                                yield Button("Export settings (F9)", id="btn_export_advanced", variant="default", compact=True)
-                            yield Label(
-                                "Applied values override the preset for the next runs.", classes="subsection-title"
-                            )
-
-                # ── 4 · Privacy & compliance ───────────────────────────────
-                with _step_body("privacy"):
-                    yield Label("4 · Privacy & compliance", classes="step-title")
-                    with Container(id="section_privacy", classes="form-section"):
-                        yield Label("Optimization preset", classes="field-label")
-                        with Horizontal(classes="ab-row"):
-                            yield Select([], prompt="Select preset…", id="preset_select", compact=True)
-                            yield Button("Preset guide", id="btn_preset_help", variant="default", compact=True)
-                        yield Static("", id="preset_blurb", classes="field-hint")
-                        yield Label(
-                            "Privacy release mode",
-                            classes="field-label",
-                            id="privacy_release_mode_label",
-                        )
-                        yield Select(
-                            list(_PRIVACY_RELEASE_MODE_OPTIONS),
-                            id="privacy_release_mode",
-                            value=PrivacyReleaseMode.COMPLETE_OUTPUT.value,
-                            allow_blank=False,
-                            compact=True,
-                        )
-                        yield Static(
-                            "Verified safe coverage publishes only verified safe units. "
-                            "Missing units are privacy-suppressed. "
-                            "Coverage is not a maximum claim.",
-                            id="privacy_release_mode_hint",
-                            classes="field-hint",
-                        )
-                        with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox(
-                                "Privacy rule sweep: try every applicable rule",
-                                id="privacy_rule_sweep_mode",
-                                value=False,
-                                compact=True,
-                            )
-
-                    # Compliance declarations: always visible on this step
-                    # (never collapsed), checked before every run and never
-                    # saved between sessions.
-                    declarations = Vertical(id="compliance_declarations", classes="ab-panel")
-                    declarations.border_title = "Compliance declarations"
-                    with declarations:
-                        yield Static(
-                            "Check before every run. Never saved between sessions.",
-                            classes="field-hint",
-                        )
-                        with Vertical(id="compliance_form"):
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox(
-                                    "Anonymized aggregated merchant-spend context (enables 4/35)",
-                                    id="privacy_merchant_spend_scope",
-                                    compact=True,
-                                )
-                            yield Label("Citi privacy overlay", classes="adv-group-title")
-                            yield BoxCheckbox(
-                                "A Citi competitor receives the output",
-                                id="citi_competitor_receives_output",
-                                compact=True,
-                            )
-                            yield Label("Citibank entity name", classes="field-label")
-                            yield Input(
-                                placeholder="Exact Citibank entity name (required for Citi overlay)",
-                                id="citibank_entity_name",
-                                compact=True,
-                            )
-
-                # ── 5 · Review & run ───────────────────────────────────────
-                with _step_body("review"):
-                    yield Label("5 · Review & run", classes="step-title")
-                    yield Button("▶  Run Analysis", id="btn_run", variant="primary", compact=True)
-                    yield Static("", id="review_summary")
+                yield Static("", id="form_lock_note", classes="hidden")
+                for step in STEPS:
+                    body = _step_body(step.id)
+                    if step.id == STEPS[0].id:
+                        with body:
+                            yield from BUILDERS[step.id](self._step_context())
+                    else:
+                        yield body
 
             # ═══════════════════════════════════════════════════════════
             # STATUS / RESULTS — a right-hand column at 110+ columns, the
@@ -1472,7 +1221,7 @@ class BenchmarkApp(App):
                     with Horizontal(id="results_badges", classes="hidden"):
                         yield StatusBadge("success", id="results_badge")
                         yield StatusBadge("compliant", id="results_verdict_badge", classes="hidden")
-                    yield Static("No runs yet.", id="results_panel")
+                    yield Static("No runs yet in this session.", id="results_panel")
                     # The path to copy, whole and selectable even when the
                     # terminal blocks clipboard writes (OSC 52) over SSH.
                     with Vertical(id="results_copy", classes="hidden"):
@@ -1480,11 +1229,12 @@ class BenchmarkApp(App):
                         yield Static("", id="results_path", classes="ab-path")
                         yield Button("Copy report path ^Y", id="btn_copy_path", compact=True)
 
+                yield Button("Show run log", id="btn_show_log", compact=True)
                 # highlight=False: per-line regex highlighting is CPU-costly on
                 # busy logs. max_lines bounds memory and re-render cost on
                 # long sessions.
                 log = Log(id="log_output", highlight=False, max_lines=2000, classes="ab-panel")
-                log.border_title = "Execution log"
+                log.border_title = "Run log"
                 yield log
 
         yield ActionBar(id="action_bar")
@@ -1504,23 +1254,20 @@ class BenchmarkApp(App):
         self._outcome_badge: Optional[str] = None
         self._last_telemetry_surface: Optional[str] = None
         self._telemetry_session_started = False
-        # Prior privacy-rule-sweep checkbox value while Verified Safe Coverage
-        # locks the control; restored when the operator returns to Complete output.
-        self._privacy_sweep_before_lock: Optional[bool] = None
-        self._restored_privacy_release_mode: Optional[str] = None
-        # Suppress preset-driven release-mode refresh until after session restore
-        # and any deferred Select.Changed messages from load_presets settle.
+        # Preset-driven release-mode refresh waits until session restore is done.
         self._tui_bootstrapping = True
         self.load_presets()
         self.setup_logging_capture()
         self._refresh_run_status()
         self._restore_session()
         self._tui_bootstrapping = False
-        self.call_after_refresh(self._finalize_privacy_release_mode_bootstrap)
 
-        # Layout shell: only step 1 is displayed; every step stays mounted.
-        # No launch toast (01 §5.3): the key bar and action bar show the keys.
+        # Only step 1 is mounted. No launch toast (01 §5.3): the key bar and
+        # the action bar show the keys.
         self._main_screen = self.screen
+        self._ready_steps.add(STEPS[0].id)
+        self._sync_step(STEPS[0].id)
+        self._bind_step(STEPS[0].id)
         self._show_step(STEPS[0].id, focus=False)
         self._refresh_shell()
 
@@ -1618,45 +1365,470 @@ class BenchmarkApp(App):
         write_log_message(log_widget, "Analysis cancelled by user.")
         self._reset_run_ui()
 
+    # ──────────────────────────────────────────────────────────────────
+    # Form model binding (PR 5)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _step_context(self) -> StepContext:
+        return StepContext(
+            form=self.form,
+            loaded=self._csv_loaded,
+            entity_values=list(self._entity_values),
+            entity_index=self._entity_index,
+            entity_loading=self.entity_values_loading,
+            preset_options=list(self._preset_options),
+            launch_folder=os.getcwd(),
+            csv_meta=self._csv_meta,
+        )
+
+    def _widget(self, widget_id: str, kind: Any = None) -> Any:
+        """A bound widget if its step is ready, else None (never raises)."""
+        step = WIDGET_STEPS.get(widget_id)
+        if step is not None and step not in self._ready_steps:
+            return None
+        try:
+            return self.query_one(f"#{widget_id}", kind) if kind else self.query_one(f"#{widget_id}")
+        except NoMatches:
+            return None
+
+    def _bound(self, widget: Any) -> bool:
+        """Widget events count only once their step is synced from the form."""
+        step = self._step_of(widget)
+        return step is None or step in self._ready_steps
+
+    def _on_form_change(self, name: str, old: Any, new: Any) -> None:
+        """FormState listener: re-sync the widget, then the dependent state."""
+        if getattr(self, "_exit", False):
+            return
+        if not getattr(self, "_applying_restore", False):
+            # Editing a restored value makes it the operator's own choice.
+            self.form.restored.discard(name)
+        self._sync_widget(name)
+        if name in ROLE_FIELDS:
+            self._refresh_column_lists()
+        if name == "mode":
+            self._ensure_mode_fields(new)
+            self._refresh_column_lists()
+            if not getattr(self, "_tui_bootstrapping", False):
+                self._emit_surface_if_changed(self._analysis_mode())
+            self._refresh_run_status()
+        elif name == "entity_col":
+            if new:
+                self.load_unique_entities(new)
+            else:
+                self._cancel_entity_load()
+        elif name == "preset":
+            self._on_preset_changed(old, new)
+        self._refresh_derived_ui()
+        self._schedule_shell_refresh()
+
+    def _sync_widget(self, name: str) -> None:
+        """Show the form value ``name`` in its widget, if that widget is mounted."""
+        with self._syncing():
+            self._sync_widget_now(name)
+
+    def _sync_widget_now(self, name: str) -> None:
+        widget_id = FIELD_WIDGETS.get(name)
+        if widget_id is None:
+            return
+        widget = self._widget(widget_id)
+        if widget is None:
+            return
+        value = getattr(self.form, name)
+        if isinstance(widget, EntityChooser):
+            if widget.id == "entity_chooser":
+                widget.set_choice(self.form.entity, self.form.entity_filter)
+            else:
+                widget.set_choice(self.form.citibank_entity, self.form.citibank_filter)
+        elif isinstance(widget, ColumnSelect):
+            widget.set_value(value)
+        elif isinstance(widget, Select):
+            target = SELECT_BLANK if value is None else value
+            if widget.value != target:
+                try:
+                    widget.value = target
+                except Exception:
+                    pass  # Not an option here (e.g. an unknown preset).
+        elif isinstance(widget, ModeSwitch):
+            if widget.mode != value:
+                widget.mode = value
+        elif isinstance(widget, SelectionList):
+            self._sync_selection_list(widget, name)
+        elif isinstance(widget, Checkbox):
+            if name == "rule_sweep":
+                value = self.form.effective_sweep
+            if widget.value != bool(value):
+                widget.value = bool(value)
+        elif isinstance(widget, Input):
+            if widget.value != (value or ""):
+                widget.value = value or ""
+
+    def _sync_selection_list(self, widget: SelectionList, name: str) -> None:
+        form = self.form
+        selections = dimension_selections(form) if name == "dimensions" else secondary_selections(form)
+        values = [value for _, value, _ in selections]
+        current = [widget.get_option_at_index(i).value for i in range(widget.option_count)]
+        if current != values:
+            with self.batch_update():
+                widget.clear_options()
+                widget.add_options(selections)
+            return
+        wanted = {value for value, chosen in ((v, c) for _, v, c in selections) if chosen}
+        if set(widget.selected) != wanted:
+            with self.batch_update():
+                for value in values:
+                    if value in wanted:
+                        widget.select(value)
+                    else:
+                        widget.deselect(value)
+
+    def _refresh_column_lists(self) -> None:
+        """Dimensions and secondary metrics follow the active mode's roles."""
+        for name in ("dimensions", "secondary"):
+            self._sync_widget(name)
+
+    def _refresh_column_selects(self) -> None:
+        with self._syncing():
+            self._refresh_column_selects_now()
+
+    def _refresh_column_selects_now(self) -> None:
+        form = self.form
+        numeric, other = form.numeric_first()
+        for name, widget_id in (
+            ("entity_col", "entity_col"),
+            ("time_col", "time_col"),
+            ("metric", "share_metric"),
+            ("total_col", "rate_total"),
+            ("approved_col", "rate_approved"),
+            ("fraud_col", "rate_fraud"),
+        ):
+            widget = self._widget(widget_id, ColumnSelect)
+            if widget is None:
+                continue
+            numeric_first = name not in ("entity_col", "time_col")
+            primary, secondary = (numeric, other) if numeric_first else (other, numeric)
+            widget.prompt = "Select column…" if self._csv_loaded else "Load a CSV first"
+            widget.set_columns(primary, secondary, getattr(form, name), mark=form.numeric_columns)
+        self._refresh_column_lists()
+
+    def _sync_step(self, step_id: str) -> None:
+        """Bring every widget of a just-mounted step up to the form (UI thread)."""
+        with self.batch_update(), self._syncing():
+            for name, step in FIELD_STEPS.items():
+                if step == step_id:
+                    self._sync_widget(name)
+            if step_id in ("entity", "analysis", "privacy"):
+                self._refresh_column_selects()
+            if step_id in ("entity", "privacy"):
+                self._sync_entity_choosers()
+            self._refresh_derived_ui()
+        if step_id == "data":
+            self._show_csv_meta()
+
+    def _sync_entity_choosers(self) -> None:
+        with self._syncing():
+            self._sync_entity_choosers_now()
+
+    def _sync_entity_choosers_now(self) -> None:
+        for chooser_id, choice, text in (
+            ("entity_chooser", self.form.entity, self.form.entity_filter),
+            ("citibank_chooser", self.form.citibank_entity, self.form.citibank_filter),
+        ):
+            step = "entity" if chooser_id == "entity_chooser" else "privacy"
+            if step not in self._ready_steps:
+                continue
+            try:
+                chooser = self.query_one(f"#{chooser_id}", EntityChooser)
+            except NoMatches:
+                continue
+            chooser.set_loading(self.entity_values_loading)
+            if chooser.large != (self._entity_index is not None) or chooser.values != self.entity_choices:
+                chooser.set_values(
+                    self._entity_values, self._entity_index, choice=choice, text=text, loaded=self._csv_loaded
+                )
+            else:
+                chooser.set_choice(choice, text)
+
+    def _refresh_derived_ui(self) -> None:
+        """Visibility, enablement and summaries that follow the form (idempotent)."""
+        with self._syncing():
+            self._refresh_derived_ui_now()
+
+    def _refresh_derived_ui_now(self) -> None:
+        form = self.form
+        share = form.mode == "share"
+
+        def show(widget_id: str, visible: bool) -> None:
+            widget = self._widget(widget_id)
+            if widget is not None and widget.display != visible:
+                widget.display = visible
+
+        def enable(widget_id: str, enabled: bool) -> None:
+            widget = self._widget(widget_id)
+            if widget is not None and widget.disabled == enabled:
+                widget.disabled = not enabled
+
+        cache = self.__dict__.setdefault("_derived_text", {})
+
+        def text(widget_id: str, value: Any) -> None:
+            # Static.update forces a layout pass; this runs on every form
+            # change (each keystroke in a text field), so skip unchanged text.
+            widget = self._widget(widget_id, Static)
+            if widget is None:
+                return
+            key = str(value) if not isinstance(value, Text) else (value.plain, str(value.spans))
+            if cache.get(widget_id) == (id(widget), key):
+                return
+            cache[widget_id] = (id(widget), key)
+            widget.update(value)
+
+        if "analysis" in self._ready_steps:
+            show("share_fields", share)
+            show("rate_fields", not share)
+            show("dims", not form.auto_dims)
+            show("dims_hint", not form.auto_dims)
+            show("fraud_in_bps_row", not share)
+            bps_ok = bool(form.fraud_col) and form.output_format in ("publication", "both")
+            enable("fraud_in_bps", bps_ok)
+            text(
+                "fraud_in_bps_hint",
+                "" if bps_ok else "(disabled here: needs a fraud column and a publication workbook)",
+            )
+            enable("include_calculated", form.export_balanced_csv)
+            more = self._widget("more_options", Collapsible)
+            if more is not None:
+                title = more_options_title(form)
+                if more.title != title:
+                    more.title = title
+            text("expert_summary", f"optimizer tuning · {expert_changes_text(len(form.expert))}")
+        if "privacy" in self._ready_steps:
+            show("release_mode_row", share)
+            show("release_mode_rate_note", not share)
+            sweep = self._widget("privacy_rule_sweep_mode", Checkbox)
+            if sweep is not None:
+                if sweep.disabled != form.sweep_locked:
+                    sweep.disabled = form.sweep_locked
+                if sweep.value != form.effective_sweep:
+                    sweep.value = form.effective_sweep
+            text(
+                "sweep_lock_note",
+                "Locked on by Verified safe coverage." if form.sweep_locked else "",
+            )
+            restored = " ↺ restored" if "release_mode" in form.restored else ""
+            text("privacy_release_mode_hint", RELEASE_MODE_HINTS.get(form.release_mode, "") + restored)
+            chooser = self._widget("citibank_chooser", EntityChooser)
+            if chooser is not None:
+                chooser.set_enabled(form.citi_competitor)
+            text(
+                "citibank_entity_hint",
+                "Pick the exact value from the entity column. Never restored."
+                if form.citi_competitor
+                else "Only needed when the box above is ticked.",
+            )
+            text("posture_line", self._posture_line())
+            text("preset_blurb", self._preset_blurb_text(form.preset))
+        for name, (label_id, base) in PAIR_LABELS.items():
+            label = self._widget(label_id, Label)
+            if label is not None:
+                wanted = self._restored_label(base, name)
+                if str(label.content) != wanted:
+                    label.update(wanted)
+        if "entity" in self._ready_steps:
+            count = len(self.entity_choices)
+            column = form.entity_col or "—"
+            text(
+                "entity_count",
+                f"{count:,} entities in {column}." if self._csv_loaded and count else "",
+            )
+
+    def _restored_label(self, label: str, name: str) -> str:
+        return f"{label}  ↺" if name in self.form.restored else label
+
+    # ── Widget → form binding ─────────────────────────────────────────
+    #
+    # Synchronous: each bound widget's reactive is watched (App.watch), so the
+    # form holds a widget's value the moment it changes, as reading the widget
+    # did before PR 5. App-driven widget updates run inside ``_syncing`` and
+    # are not echoed back.
+
+    @contextlib.contextmanager
+    def _syncing(self) -> Iterator[None]:
+        self._sync_depth = getattr(self, "_sync_depth", 0) + 1
+        try:
+            yield
+        finally:
+            self._sync_depth -= 1
+
+    @property
+    def _is_syncing(self) -> bool:
+        return getattr(self, "_sync_depth", 0) > 0
+
+    def _bind_step(self, step_id: str) -> None:
+        """Watch every bound widget of a mounted step (after its first sync)."""
+        try:
+            body = self.query_one(f"#{STEP_BY_ID[step_id].container_id}")
+        except NoMatches:
+            return
+        self._bind_container(body)
+
+    def _bind_container(self, container: Any) -> None:
+        for widget in container.query("*"):
+            if getattr(widget, "_ab_bound", False):
+                continue
+            widget._ab_bound = True
+            if isinstance(widget, EntityChooser):
+                widget.change_callback = self._chooser_changed
+                continue
+            if (widget.id or "") not in WIDGET_FIELDS:
+                continue
+            callback = self._widget_callback(widget)
+            if isinstance(widget, SelectionList):
+                widget.selection_callback = callback  # type: ignore[attr-defined]
+            elif isinstance(widget, ModeSwitch):
+                self.watch(widget, "mode", callback, init=False)
+            else:
+                self.watch(widget, "value", callback, init=False)
+
+    def _widget_callback(self, widget: Any) -> Callable[[Any], None]:
+        def changed(_value: Any = None) -> None:
+            self._widget_to_form(widget)
+
+        return changed
+
+    def _widget_to_form(self, widget: Any) -> None:
+        """Write one bound widget's current value into the form."""
+        if self._is_syncing or getattr(self, "_exit", False) or not self._bound(widget):
+            return
+        name = WIDGET_FIELDS.get(widget.id or "")
+        if name is None:
+            return
+        form = self.form
+        if isinstance(widget, ColumnSelect):
+            if widget.value == SEPARATOR:
+                with self._syncing():
+                    widget.set_value(getattr(form, name))
+                return
+            setattr(form, name, widget.column)
+        elif isinstance(widget, Select):
+            raw = widget.value
+            value = None if raw == SELECT_BLANK else raw
+            if name == "preset":
+                self._preset_selected(value)
+            elif value is not None or name not in ("release_mode", "output_format"):
+                setattr(form, name, value)
+        elif isinstance(widget, SelectionList):
+            options = set(form.dimension_options() if name == "dimensions" else form.secondary_options())
+            hidden = [value for value in getattr(form, name) if value not in options]
+            setattr(form, name, tuple(hidden) + tuple(widget.selected))
+        elif isinstance(widget, Checkbox):
+            if name == "rule_sweep" and form.sweep_locked:
+                return  # Shows the forced value; the operator's own value is kept.
+            setattr(form, name, bool(widget.value))
+        elif isinstance(widget, ModeSwitch):
+            form.mode = widget.mode
+        elif isinstance(widget, Input):
+            setattr(form, name, widget.value)
+
+    def _chooser_changed(self, chooser: EntityChooser, choice: Optional[str], text: str) -> None:
+        if self._is_syncing or not self._bound(chooser):
+            return
+        if chooser.id == "entity_chooser":
+            self.form.update(entity=choice, entity_filter=text)
+        else:
+            self.form.update(citibank_entity=choice, citibank_filter=text)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "review_blockers":
+            option_id = event.option.id or ""
+            if option_id.startswith("blocker:"):
+                self._focus_field(option_id[len("blocker:"):])
+
+    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
+        if event.collapsible.id == "more_options":
+            self._ensure_more_options()
+        self._scroll_focus_into_view()
+
+    _mode_pending_focus: Optional[str] = None
+
+    def _prewarm_next_step(self) -> None:
+        """Mount the next unmounted step of STEP_PREWARM_ORDER while idle.
+
+        One step per tick keeps each stall short; a run in progress or a
+        modal screen defers nothing (the step simply mounts on first show).
+        """
+        if getattr(self, "_exit", False) or not self.is_running or self._run_state in ("validating", "running"):
+            return
+        stack = self.screen_stack  # empty while the app shuts down
+        if not stack or isinstance(stack[-1], ModalScreen):
+            return
+        for step_id in STEP_PREWARM_ORDER:
+            if step_id not in self._mounted_steps:
+                self._ensure_step_mounted(step_id)
+                self.set_timer(STEP_PREWARM_DELAY_S, self._prewarm_next_step)
+                return
+
+    # More options' fields mount on first open (step 3 shows faster; most runs
+    # never open it). Until then the form model holds their values as usual.
+    _more_mounted = False
+    _more_ready = False
+    _more_pending_focus: Optional[str] = None
+
+    def _ensure_more_options(self) -> None:
+        if self._more_mounted:
+            return
+        more = self._widget("more_options", Collapsible)
+        if more is None:
+            return
+        self._more_mounted = True
+        contents = more.query_one(Collapsible.Contents)
+        mounted = contents.mount_all(build_more_options(self._step_context()))
+
+        async def finish() -> None:
+            await mounted
+            if self._mount_abandoned(contents):
+                return
+            with self.batch_update(), self._syncing():
+                for name in MORE_OPTIONS_FIELDS:
+                    self._sync_widget_now(name)
+                self._refresh_column_selects_now()
+                self._refresh_derived_ui_now()
+            self._bind_container(contents)
+            self._more_ready = True
+            self._schedule_shell_refresh()
+            widget_id, self._more_pending_focus = self._more_pending_focus, None
+            if widget_id is not None:
+                self._focus_now(widget_id)
+
+        self.call_later(finish)
+
+    async def open_more_options(self, timeout: float = 10.0) -> None:
+        """Show step 3's More options and await its fields (palette, tests)."""
+        await self.ensure_step("analysis")
+        more = self._widget("more_options", Collapsible)
+        if more is not None and more.collapsed:
+            more.collapsed = False
+        self._ensure_more_options()
+        deadline = time.monotonic() + timeout
+        while not self._more_ready:
+            if time.monotonic() > deadline:
+                raise TimeoutError("More options did not mount")
+            await asyncio.sleep(0.005)
+
+    def on_collapsible_collapsed(self, event: Collapsible.Collapsed) -> None:
+        """Focus inside a closing disclosure moves to its title, not elsewhere."""
+        focused = self.focused
+        collapsible = event.collapsible
+        if focused is not None and collapsible in focused.ancestors:
+            collapsible.query_one(CollapsibleTitle).focus()
 
     # ──────────────────────────────────────────────────────────────────
-    # Session persistence
+    # Session persistence (01 §8.1; owner decision 3)
     # ──────────────────────────────────────────────────────────────────
 
     def _collect_session(self) -> Dict[str, Any]:
-        session: Dict[str, Any] = {}
-        for widget_id in SESSION_INPUT_IDS:
-            try:
-                session[widget_id] = self.query_one(f"#{widget_id}", Input).value
-            except NoMatches:
-                continue
-        for widget_id in SESSION_SELECT_IDS:
-            try:
-                value = self.query_one(f"#{widget_id}", Select).value
-            except NoMatches:
-                continue
-            session[widget_id] = None if value == SELECT_BLANK else value
-        for widget_id in SESSION_CHECKBOX_IDS:
-            try:
-                session[widget_id] = self.query_one(f"#{widget_id}", Checkbox).value
-            except NoMatches:
-                continue
-        for widget_id in SESSION_SELECTION_LIST_IDS:
-            try:
-                session[widget_id] = list(self.query_one(f"#{widget_id}", SelectionList).selected)
-            except NoMatches:
-                continue
-        # Column choices restored from the last session but never applied
-        # (no CSV loaded since) are kept, so a quit before loading a file
-        # does not erase them.
-        for widget_id, value in self._pending_session_selects.items():
-            if session.get(widget_id) is None:
-                session[widget_id] = value
-        for widget_id, values in self._pending_session_lists.items():
-            if not session.get(widget_id):
-                session[widget_id] = list(values)
-        session[SESSION_TAB_KEY] = self._analysis_mode()
-        return session
+        # Column choices restored but never applied (no CSV loaded since)
+        # are kept, so a quit before loading a file does not erase them.
+        return session_payload(self.form, self._pending_session)
 
     def _save_session(self) -> None:
         try:
@@ -1678,110 +1850,49 @@ class BenchmarkApp(App):
             return
         if not isinstance(session, dict):
             return
-        with self.batch_update():
-            self._apply_session(session)
+        self._apply_session(session)
         # Reported as session_restored once the telemetry session starts.
         self._telemetry_session_restored = bool(session)
 
     def _apply_session(self, session: Dict[str, Any]) -> None:
-        # Legacy sessions may contain governed dataset/output paths and entity
-        # selections. Never restore those values; the operator must choose the
-        # dataset afresh for each process.
-        tab = _SESSION_TABS.get(str(session.get(SESSION_TAB_KEY)))
-        if tab is not None:
-            try:
-                self.query_one(TabbedContent).active = tab
-                self._mark_restored("section_mode")
-            except NoMatches:
-                pass
-        for widget_id in SESSION_SELECT_IDS:
-            if widget_id == "privacy_release_mode":
-                continue  # Restored after checkboxes so sweep coupling sees prior value.
-            value = session.get(widget_id)
-            if value is None:
-                continue
-            if widget_id in SESSION_COLUMN_SELECT_IDS:
-                # D4: no CSV is loaded yet, so these Selects have no options.
-                # Keep the choice until a header load offers the column.
-                self._pending_session_selects[widget_id] = value
-                continue
-            try:
-                select = self.query_one(f"#{widget_id}", Select)
-            except NoMatches:
-                continue
-            try:
-                select.value = value
-            except Exception:
-                continue  # Stored value no longer valid for this dataset/presets.
-            self._mark_restored(widget_id)
-        for widget_id in SESSION_CHECKBOX_IDS:
-            if widget_id not in session:
-                continue
-            try:
-                self.query_one(f"#{widget_id}", Checkbox).value = bool(session[widget_id])
-            except NoMatches:
-                continue
-            self._mark_restored(widget_id)
-        # Restore release mode after the sweep checkbox so locking preserves the
-        # operator's prior sweep preference from the session.
-        if "privacy_release_mode" in session:
-            self._restore_privacy_release_mode(session.get("privacy_release_mode"))
-        for widget_id in SESSION_SELECTION_LIST_IDS:
-            values = session.get(widget_id)
-            if not isinstance(values, list) or not values:
-                continue
-            # D4: dims and secondary metrics are column names too; they are
-            # applied by the first header load (see _apply_pending_session_columns).
-            self._pending_session_lists[widget_id] = list(values)
+        """Restore preferences into the form; column roles wait for a header load.
 
-    def _apply_pending_session_columns(self, cols: List[str]) -> None:
-        """Apply restored column choices once a CSV header load offers them.
-
-        Runs inside ``load_csv_headers``' batch update, after the options are
-        set and before smart defaults. A stored column missing from this file
-        is dropped silently. Pending choices are used by the first header load
-        only; a later file never resurrects them.
+        Legacy sessions may contain governed dataset/output paths, the target
+        entity and the compliance declarations. ``read_session`` never returns
+        those; the operator chooses them afresh in each process.
         """
-        selects, self._pending_session_selects = self._pending_session_selects, {}
-        lists, self._pending_session_lists = self._pending_session_lists, {}
-        available = set(cols)
-        for widget_id, value in selects.items():
-            if value not in available:
-                continue
-            try:
-                self.query_one(f"#{widget_id}", Select).value = value
-            except Exception:
-                continue  # Widget gone, or the value is no longer an option.
-            self._mark_restored(widget_id)
-        for widget_id, values in lists.items():
-            try:
-                s_list = self.query_one(f"#{widget_id}", SelectionList)
-            except NoMatches:
-                continue
-            for value in values:
-                if value in available:
-                    s_list.select(value)
-                    self._mark_restored(widget_id)
+        values = read_session(session)
+        defaults = FormState()
+        self._applying_restore = True
+        try:
+            for name, value in values.items():
+                if name in COLUMN_FIELDS or name in COLUMN_LIST_FIELDS:
+                    # D4: no CSV is loaded yet. Keep the choice until a header
+                    # load offers the column.
+                    self._pending_session[name] = value
+                    continue
+                if name == "release_mode":
+                    continue  # After the sweep, so the coupling sees its value.
+                if name == "preset":
+                    if value not in {v for _, v in self._preset_options}:
+                        continue  # Stored preset no longer exists.
+                elif name == "output_format" and value not in OUTPUT_FORMAT_CODES:
+                    continue
+                setattr(self.form, name, value)
+                if name in ALWAYS_MARK_RESTORED or getattr(self.form, name) != getattr(defaults, name):
+                    self.form.restored.add(name)
+            if "release_mode" in values:
+                self._restore_privacy_release_mode(values["release_mode"])
+        finally:
+            self._applying_restore = False
 
     def _restore_privacy_release_mode(self, value: Any) -> None:
         """Restore a session release mode; unknown values fall back safely."""
-        try:
-            select = self.query_one("#privacy_release_mode", Select)
-        except NoMatches:
-            return
         if value in _PRIVACY_RELEASE_MODE_VALUES:
-            try:
-                select.value = value
-                self._restored_privacy_release_mode = str(value)
-                self._mark_restored("privacy_release_mode")
-            except Exception:
-                select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
-                self._restored_privacy_release_mode = (
-                    PrivacyReleaseMode.COMPLETE_OUTPUT.value
-                )
+            self.form.release_mode = str(value)
+            self.form.restored.add("release_mode")
             return
-        select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
-        self._restored_privacy_release_mode = PrivacyReleaseMode.COMPLETE_OUTPUT.value
+        self.form.release_mode = PrivacyReleaseMode.COMPLETE_OUTPUT.value
         self.notify(
             "The saved release mode is no longer available, so the release "
             "fell back to Complete output.",
@@ -1790,20 +1901,49 @@ class BenchmarkApp(App):
             timeout=6,
         )
 
-    def _finalize_privacy_release_mode_bootstrap(self) -> None:
-        """Re-assert session release mode after deferred preset events settle."""
-        restored = getattr(self, "_restored_privacy_release_mode", None)
-        if restored is not None:
-            try:
-                select = self.query_one("#privacy_release_mode", Select)
-                if select.value != restored:
-                    select.value = restored
-            except NoMatches:
-                pass
-        self._sync_privacy_release_mode_visibility()
-        self._apply_privacy_release_mode_coupling(
-            self._privacy_release_mode_value_from_widget()
-        )
+    def _apply_pending_session_columns(self, cols: List[str]) -> None:
+        """Apply restored column choices once a CSV header load offers them.
+
+        Runs inside ``load_csv_headers``, after the columns are known and
+        before smart defaults. A stored column missing from this file is
+        dropped and listed in Review. Pending choices are used by the first
+        header load only; a later file never resurrects them.
+        """
+        pending, self._pending_session = self._pending_session, {}
+        if not pending:
+            return
+        available = set(cols)
+        self._applying_restore = True
+        try:
+            for name, value in pending.items():
+                if name in COLUMN_LIST_FIELDS:
+                    kept = [v for v in value if v in available]
+                    if kept:
+                        setattr(self.form, name, tuple(kept))
+                        self.form.restored.add(name)
+                    for missing in (v for v in value if v not in available):
+                        self._not_restored.append((name, missing))
+                    continue
+                if value in available:
+                    setattr(self.form, name, value)
+                    self.form.restored.add(name)
+                else:
+                    self._not_restored.append((name, value))
+        finally:
+            self._applying_restore = False
+        self._restore_toast_due = bool(self.form.restored)
+
+    def action_clear_restored(self) -> None:
+        """Reset every restored value to its default (Review, palette)."""
+        defaults = FormState()
+        for name in sorted(self.form.restored):
+            if name == "preset":
+                self.form.preset = self._default_preset()
+            else:
+                setattr(self.form, name, getattr(defaults, name))
+        self.form.restored.clear()
+        self._not_restored.clear()
+        self._schedule_shell_refresh()
 
     # ──────────────────────────────────────────────────────────────────
     # Layout shell: steps, rail, results view, action bar (PR 4, 01 §3)
@@ -1818,15 +1958,107 @@ class BenchmarkApp(App):
         return None
 
     def _step_of_id(self, widget_id: str) -> Optional[str]:
+        step = WIDGET_STEPS.get(widget_id)
+        if step is not None:
+            return step
         try:
             return self._step_of(self.query_one(f"#{widget_id}"))
         except NoMatches:
             return None
 
-    def _mark_restored(self, widget_id: str) -> None:
-        step = self._step_of_id(widget_id)
-        if step is not None:
-            self._restored_steps.add(step)
+    @property
+    def _restored_steps(self) -> set:
+        return {FIELD_STEPS[name] for name in self.form.restored if name in FIELD_STEPS}
+
+    def _mount_abandoned(self, container: Any) -> bool:
+        """True when a lazy mount finished after the app began closing."""
+        # ``is_running`` turns False first thing in App._shutdown.
+        return bool(
+            getattr(self, "_exit", False) or not self.is_running or self._closing or not container.is_attached
+        )
+
+    def _ensure_step_mounted(self, step_id: str) -> None:
+        """Mount a step's widgets the first time it is shown (03 §1.1)."""
+        if step_id in self._mounted_steps or step_id not in STEP_BY_ID:
+            return
+        try:
+            body = self.query_one(f"#{STEP_BY_ID[step_id].container_id}")
+        except NoMatches:
+            return
+        self._mounted_steps.add(step_id)
+        if step_id == "analysis":
+            self._mode_fields_mounted.add(self.form.mode)
+            built_mode = self.form.mode
+        mounted = body.mount_all(BUILDERS[step_id](self._step_context()))
+
+        async def finish() -> None:
+            await mounted
+            if self._mount_abandoned(body):
+                return
+            if step_id == "analysis":
+                self._mode_fields_ready.add(built_mode)
+            self._ready_steps.add(step_id)
+            if self._run_state in ("validating", "running"):
+                body.disabled = True
+            self._sync_step(step_id)
+            self._bind_step(step_id)
+            if step_id == "analysis":
+                self._ensure_mode_fields(self.form.mode)
+            self._refresh_shell()
+            pending, self._pending_focus = self._pending_focus, None
+            if pending is not None:
+                if pending[0] == step_id:
+                    self._apply_focus(step_id, pending[1])
+                else:
+                    self._pending_focus = pending
+
+        self.call_later(finish)
+
+    async def ensure_step(self, step_id: str, timeout: float = 10.0) -> None:
+        """Await a step's widgets (mounting it if needed) without showing it.
+
+        For step 3 that is the active mode's fields; the other mode's mount
+        when the mode is switched.
+        """
+        self._ensure_step_mounted(step_id)
+        deadline = time.monotonic() + timeout
+
+        def ready() -> bool:
+            if step_id not in self._ready_steps:
+                return False
+            return step_id != "analysis" or self.form.mode in self._mode_fields_ready
+
+        while not ready():
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"step {step_id} did not mount")
+            await asyncio.sleep(0.005)
+
+    def _ensure_mode_fields(self, mode: str) -> None:
+        """Mount a mode's step 3 fields the first time that mode is used."""
+        if "analysis" not in self._ready_steps or mode in self._mode_fields_mounted:
+            return
+        try:
+            group = self.query_one("#share_fields" if mode == "share" else "#rate_fields")
+        except NoMatches:
+            return
+        self._mode_fields_mounted.add(mode)
+        mounted = group.mount_all(build_mode_fields(self._step_context(), mode))
+
+        async def finish() -> None:
+            await mounted
+            if self._mount_abandoned(group):
+                return
+            with self.batch_update(), self._syncing():
+                self._refresh_column_selects_now()
+                self._refresh_derived_ui_now()
+            self._bind_container(group)
+            self._mode_fields_ready.add(mode)
+            self._schedule_shell_refresh()
+            widget_id, self._mode_pending_focus = self._mode_pending_focus, None
+            if widget_id is not None and widget_id in MODE_FIELD_WIDGETS[mode]:
+                self._focus_now(widget_id)
+
+        self.call_later(finish)
 
     def _step_focus_chain(self, step_id: str) -> List[Any]:
         try:
@@ -1844,11 +2076,8 @@ class BenchmarkApp(App):
         """First blocker in the step (01 §4.3 rule 3), else its first stop."""
         for blocker in self._blockers:
             if self._step_of_id(blocker.focus_id) == step_id:
-                try:
-                    widget = self.query_one(f"#{blocker.focus_id}")
-                except NoMatches:
-                    continue
-                if widget.focusable and widget.display:
+                widget = self._widget(blocker.focus_id)
+                if widget is not None and widget.focusable and widget.display:
                     return widget
         chain = self._step_focus_chain(step_id)
         return chain[0] if chain else None
@@ -1857,13 +2086,21 @@ class BenchmarkApp(App):
         """Display one step body; the others stay mounted with ``display: none``.
 
         ``focus=True`` moves focus to the step's entry widget unless focus is
-        already inside it; ``"last"`` focuses its last stop; ``False`` leaves
-        focus alone (the caller focuses something itself).
+        already inside it; ``"entry"`` always does; ``"first"``/``"last"``
+        focus its first/last stop;
+        a widget id focuses that field; ``False`` leaves focus alone. A step
+        shown for the first time is mounted, and the focus waits for it.
         """
         if step_id not in STEP_BY_ID:
             return
         changed = step_id != self._current_step
         self._current_step = step_id
+        self._ensure_step_mounted(step_id)
+        focused = self.focused
+        if focused is not None and self._step_of(focused) not in (None, step_id):
+            # Its step is about to be hidden. Textual would otherwise refocus
+            # a sibling in that hidden step, which would bring the step back.
+            self.screen.set_focus(None)
         for step in STEPS:
             try:
                 self.query_one(f"#{step.container_id}").display = step.id == step_id
@@ -1875,17 +2112,54 @@ class BenchmarkApp(App):
             # scroll inside it happens after the next refresh.
             self.call_after_refresh(self._scroll_focus_into_view)
         if focus:
-            focused = self.focused
-            if focus == "last":
-                chain = self._step_focus_chain(step_id)
-                target = chain[-1] if chain else None
-            elif focused is not None and self._step_of(focused) == step_id:
-                target = None
+            if step_id in self._ready_steps:
+                self._apply_focus(step_id, focus)
             else:
-                target = self._step_entry_widget(step_id)
-            if target is not None:
-                target.focus()
+                self._pending_focus = (step_id, focus)
         self._schedule_shell_refresh()
+
+    def _apply_focus(self, step_id: str, focus: Any) -> None:
+        if focus in ("first", "last"):
+            chain = self._step_focus_chain(step_id)
+            target = (chain[0] if focus == "first" else chain[-1]) if chain else None
+        elif focus == "entry":
+            target = self._step_entry_widget(step_id)
+        elif focus is True:
+            focused = self.focused
+            if focused is not None and self._step_of(focused) == step_id:
+                return
+            target = self._step_entry_widget(step_id)
+        else:
+            widget_id = str(focus)
+            if widget_id in MORE_OPTIONS_WIDGETS and not self._more_ready:
+                more = self._widget("more_options", Collapsible)
+                if more is not None:
+                    self._more_pending_focus = widget_id
+                    more.collapsed = False
+                    self._ensure_more_options()
+                    return
+            if widget_id in MORE_OPTIONS_WIDGETS:
+                more = self._widget("more_options", Collapsible)
+                if more is not None and more.collapsed:
+                    more.collapsed = False
+                    self.call_after_refresh(self._focus_now, widget_id)
+                    return
+            target = self._widget(widget_id)
+            if target is None:
+                for mode, ids in MODE_FIELD_WIDGETS.items():
+                    if widget_id in ids and mode not in self._mode_fields_ready:
+                        # Its mode group is still mounting: focus it when ready.
+                        self._mode_pending_focus = widget_id
+                        self._ensure_mode_fields(mode)
+                        return
+        if target is not None:
+            target.focus()
+
+    def _focus_now(self, widget_id: str) -> None:
+        widget = self._widget(widget_id)
+        if widget is not None:
+            widget.focus()
+            widget.scroll_visible(animate=False)
 
     def _scroll_focus_into_view(self) -> None:
         focused = self.focused
@@ -1896,24 +2170,21 @@ class BenchmarkApp(App):
         """Palette "Go to step: …" and rail clicks: show the step, focus its entry."""
         if isinstance(self.screen, ModalScreen) or step_id not in STEP_BY_ID:
             return
-        self._show_step(step_id)
-        target = self._step_entry_widget(step_id)
-        if target is not None:
-            target.focus()
+        self._show_step(step_id, focus="entry")
 
     def on_step_rail_step_clicked(self, event: StepRail.StepClicked) -> None:
         self.action_go_to_step(event.step_id)
 
     def _focus_field(self, widget_id: str) -> None:
         """Show the step holding ``widget_id`` (closing the results view) and focus it."""
-        try:
-            widget = self.query_one(f"#{widget_id}")
-        except NoMatches:
+        step = self._step_of_id(widget_id)
+        if step is None:
+            try:
+                self.query_one(f"#{widget_id}").focus()
+            except NoMatches:
+                pass
             return
-        step = self._step_of(widget)
-        if step is not None:
-            self._show_step(step, focus=False)
-        widget.focus()
+        self._show_step(step, focus=widget_id)
 
     # Tab flows from the last stop of a step into the next step, Shift+Tab
     # from the first stop into the previous one; Review wraps to Data (01 §4.3).
@@ -1927,7 +2198,7 @@ class BenchmarkApp(App):
 
     def _flow_between_steps(self, direction: int) -> bool:
         main = getattr(self, "_main_screen", None)
-        if main is None or self.screen is not main or self._results_view_open():
+        if main is None or self.screen is not main or self._results_view_open() or self._log_view_open():
             return False
         focused = self.focused
         if focused is None or self._step_of(focused) != self._current_step:
@@ -1940,13 +2211,7 @@ class BenchmarkApp(App):
             return False
         ids = [step.id for step in STEPS]
         target = ids[(ids.index(self._current_step) + direction) % len(ids)]
-        if direction > 0:
-            self._show_step(target, focus=False)
-            new_chain = self._step_focus_chain(target)
-            if new_chain:
-                new_chain[0].focus()
-        else:
-            self._show_step(target, focus="last")
+        self._show_step(target, focus="first" if direction > 0 else "last")
         return True
 
     # ── Results column (wide) / ^T view (narrow) ──────────────────────
@@ -2008,6 +2273,9 @@ class BenchmarkApp(App):
         """Ctrl+T: <110 swaps setup and results; ≥110 moves focus into the column and back."""
         if isinstance(self.screen, ModalScreen):
             return
+        if self._log_view_open():
+            self.action_show_log()
+            return
         focused = self.focused
         in_results = focused is not None and any(
             node.id == "activity_pane" for node in focused.ancestors_with_self
@@ -2027,6 +2295,34 @@ class BenchmarkApp(App):
         else:
             self._open_results_view(focus_copy=True)
 
+    # ── Run log view (PR 5): the whole body for the log, at any width ──
+
+    def _log_view_open(self) -> bool:
+        main = getattr(self, "_main_screen", None)
+        return bool(main is not None and main.has_class("-show-log"))
+
+    def action_show_log(self) -> None:
+        """Show the run log across the whole body (again: back to the form)."""
+        main = getattr(self, "_main_screen", None)
+        if main is None or isinstance(self.screen, ModalScreen):
+            return
+        opening = not main.has_class("-show-log")
+        if opening:
+            focused = self.focused
+            if focused is not None and self._step_of(focused) is not None:
+                self._setup_focus = focused
+        main.set_class(opening, "-show-log")
+        try:
+            button = self.query_one("#btn_show_log", Button)
+            button.label = "Back to the form ^T" if opening else "Show run log"
+        except NoMatches:
+            pass
+        if opening:
+            self.query_one("#log_output", Log).focus()
+        else:
+            self._restore_setup_focus()
+        self._update_key_bar()
+
     # ── Copy path (01 §7.3) ──────────────────────────────────────────
 
     def action_copy_path(self) -> None:
@@ -2044,10 +2340,10 @@ class BenchmarkApp(App):
         except Exception:
             logging.getLogger(__name__).debug("copy_to_clipboard failed", exc_info=True)
         self.notify(
-            "Path sent to the clipboard. If your terminal blocks that (common over "
-            f"SSH), select it in Results instead:\n{path}",
+            "Sent to the clipboard. If your terminal blocks that (common over SSH), "
+            "select the path in Results instead.",
             title="Path copied",
-            timeout=4,
+            timeout=3,
             markup=False,
         )
         if not self._is_wide() and not self._results_view_open():
@@ -2073,7 +2369,9 @@ class BenchmarkApp(App):
         if self._shell_refresh_pending or getattr(self, "_exit", False):
             return
         self._shell_refresh_pending = True
-        self.call_after_refresh(self._refresh_shell)
+        # Next message, not next repaint: one refresh per burst of changes,
+        # and done by the time the app is idle again.
+        self.call_later(self._refresh_shell)
 
     def _readiness_blockers(self) -> Tuple[LaunchBlocker, ...]:
         """``launch_blockers`` over a side-effect-free snapshot of the form."""
@@ -2088,9 +2386,18 @@ class BenchmarkApp(App):
         if getattr(self, "_exit", False):
             return
         self._blockers = self._readiness_blockers()
+        self._refresh_derived_ui()
         self._refresh_rail()
-        self._refresh_action_bar()
+        self._refresh_run_status()  # also refreshes the action bar
         self._refresh_review()
+        if self._restore_toast_due and self._csv_loaded:
+            self._restore_toast_due = False
+            count = len(self.form.restored)
+            self.notify(
+                f"Restored {count} value{'s' if count != 1 else ''} from last session · Review & run lists them",
+                title="Session restore",
+                timeout=3,
+            )
 
     def _blocked_steps(self) -> set:
         return {self._step_of_id(b.focus_id) for b in self._blockers}
@@ -2098,6 +2405,7 @@ class BenchmarkApp(App):
     def _rail_states(self) -> Dict[str, str]:
         blocked = self._blocked_steps()
         loaded = getattr(self, "_loaded_csv_signature", None) is not None
+        restored = self._restored_steps
         states: Dict[str, str] = {}
         for step in STEPS:
             if not loaded and step.id in ("entity", "analysis"):
@@ -2105,7 +2413,7 @@ class BenchmarkApp(App):
                 states[step.id] = PENDING
             elif step.id in blocked or (step.id == "review" and self._blockers):
                 states[step.id] = ATTENTION
-            elif step.id in self._restored_steps:
+            elif step.id in restored:
                 states[step.id] = RESTORED
             elif step.id in ("data", "entity", "analysis"):
                 states[step.id] = DONE if loaded else PENDING
@@ -2128,26 +2436,16 @@ class BenchmarkApp(App):
         return f"{mode} analysis"
 
     def _ready_summary(self) -> str:
-        entity, _ = self._target_entity_for_run() if self._entity_widgets_ready() else (None, None)
+        entity, _ = self._target_entity_for_run()
         parts = [self._run_label(), entity or "peer-only"]
-        try:
-            prefix = "share" if self._analysis_mode() == "share" else "rate"
-            if self.query_one(f"#{prefix}_auto_dim", Checkbox).value:
-                parts.append("auto dims")
-            else:
-                count = len(self.query_one(f"#{prefix}_dims", SelectionList).selected)
-                parts.append(f"{count} dim{'s' if count != 1 else ''}")
-        except NoMatches:
-            pass
+        if self.form.auto_dims:
+            parts.append("auto dims")
+        else:
+            count = len(self.form.effective_dimensions())
+            parts.append(f"{count} dim{'s' if count != 1 else ''}")
+        if self._effective_preset_posture() == "accuracy_first":
+            parts.append("consent asked at run")
         return " · ".join(parts)
-
-    def _entity_widgets_ready(self) -> bool:
-        try:
-            self.query_one("#entity_name", Select)
-            self.query_one("#entity_filter", Input)
-        except NoMatches:
-            return False
-        return True
 
     def _refresh_action_bar(self) -> None:
         """One row: readiness or run stage or outcome, plus the key that acts on it."""
@@ -2194,114 +2492,124 @@ class BenchmarkApp(App):
         bar.set_state("ready", self._ready_summary(), run_key, "app.run_analysis")
 
     def _refresh_review(self) -> None:
-        """Step 5: a read-only summary of the current form, blockers first."""
+        """Step 5: blockers you can jump to, then a read-only summary of the form."""
+        if "review" not in self._ready_steps:
+            return
         try:
+            status = self.query_one("#review_status", Static)
+            blockers = self.query_one("#review_blockers", OptionList)
+            hint = self.query_one("#review_blockers_hint", Static)
             review = self.query_one("#review_summary", Static)
         except NoMatches:
             return
-        text = Text()
         label = self._run_label()
         if self._blockers:
             count = len(self._blockers)
             noun = "thing" if count == 1 else "things"
-            text.append(f"{status_glyph('notready')} {count} {noun} to fix before this {label} can run\n", style="bold")
+            _update_if_changed(status, Text(f"{status_glyph('notready')} {count} {noun} to fix before this {label} can run", style="bold"))
+            options = []
             for blocker in self._blockers:
                 step = STEP_BY_ID.get(self._step_of_id(blocker.focus_id) or "")
-                where = f"  (step {step.number} {step.title})" if step else ""
-                text.append(f"  {status_glyph('notready')} {blocker.message}{where}\n")
-            text.append("  Ctrl+R jumps to the first one.\n")
+                where = f"  · step {step.number}" if step else ""
+                options.append(
+                    Option(Text(f"{status_glyph('notready')} {blocker.message}{where}"), id=f"blocker:{blocker.focus_id}")
+                )
+            key = tuple(option.id for option in options) + tuple(str(o.prompt) for o in options)
+            if getattr(self, "_review_blockers_key", None) != key:
+                self._review_blockers_key = key
+                blockers.set_options(options)
+                blockers.highlighted = 0  # ↵ jumps to the first one at once
+            blockers.display = True
+            _update_if_changed(hint, "↵ or click a line to jump to that field. Ctrl+R jumps to the first one.")
         else:
-            text.append(f"{status_glyph('ready')} Ready to run {label}\n", style="bold")
-        text.append("\n")
+            _update_if_changed(status, Text(f"{status_glyph('ready')} Ready to run {label}", style="bold"))
+            if blockers.display:
+                blockers.display = False
+            self._review_blockers_key = None
+            _update_if_changed(hint, "")
+        text = Text()
         for name, value in self._review_lines():
             text.append(f"{name:<10}", style="bold")
             text.append(f"{value}\n")
-        if self._restored_steps:
-            steps = ", ".join(step.title for step in STEPS if step.id in self._restored_steps)
-            text.append(f"\n↺ Restored from the last session: {steps}\n")
-        review.update(text)
+        restored = sorted({FIELD_LABELS.get(n, n) for n in self.form.restored})
+        if restored:
+            text.append(f"\n↺ Restored from the last session: {', '.join(restored)}\n")
+        for name, value in self._not_restored:
+            text.append(f"Not restored: {FIELD_LABELS.get(name, name)} (column {value!r} not in this file)\n")
+        _update_if_changed(review, text)
+        try:
+            run_button = self.query_one("#btn_run", Button)
+            clear = self.query_one("#btn_clear_restored", Button)
+        except NoMatches:
+            return
+        if self._run_state not in ("validating", "running"):
+            run_button.label = f"Run {label} ^R"
+        clear.display = bool(self.form.restored)
 
     def _review_lines(self) -> List[Tuple[str, str]]:
-        def select_text(widget_id: str) -> str:
-            try:
-                value = self.query_one(f"#{widget_id}", Select).value
-            except NoMatches:
-                return "—"
-            return "—" if value == SELECT_BLANK or value is None else str(value)
+        form = self.form
 
-        def checked(widget_id: str) -> bool:
-            try:
-                return bool(self.query_one(f"#{widget_id}", Checkbox).value)
-            except NoMatches:
-                return False
+        def on_off(value: bool) -> str:
+            return "on" if value else "off"
 
-        def on_off(widget_id: str) -> str:
-            return "on" if checked(widget_id) else "off"
+        def mark(name: str) -> str:
+            return " ↺" if name in form.restored else ""
 
         lines: List[Tuple[str, str]] = []
-        try:
-            csv_text = self.query_one("#csv_path", Input).value.strip()
-        except NoMatches:
-            csv_text = ""
-        columns = len(getattr(self, "csv_columns", []) or [])
+        csv_text = form.csv_path.strip()
+        columns = len(form.columns)
         loaded = getattr(self, "_loaded_csv_signature", None) is not None
-        lines.append(("Data", f"{csv_text} · {columns} columns" if loaded and csv_text else (csv_text or "no file loaded")))
-        entity = None
-        if self._entity_widgets_ready():
-            entity, _ = self._target_entity_for_run()
-        lines.append(("Entity", f"{select_text('entity_col')} → {entity or 'peer-only benchmark'}"))
-        mode = self._analysis_mode()
-        prefix = "share" if mode == "share" else "rate"
-        try:
-            dims_list = list(self.query_one(f"#{prefix}_dims", SelectionList).selected)
-        except NoMatches:
-            dims_list = []
-        dims = "auto-detect" if checked(f"{prefix}_auto_dim") else (", ".join(map(str, dims_list)) or "none")
-        if mode == "share":
-            lines.append(("Analysis", f"Share · metric {select_text('share_metric')} · dims {dims}"))
+        if loaded and csv_text:
+            folder = os.path.dirname(os.path.abspath(csv_text))
+            lines.append(("Data", f"{os.path.basename(csv_text)} · {columns} columns  ({folder})"))
+        else:
+            lines.append(("Data", csv_text or "no file loaded"))
+        entity, _ = self._target_entity_for_run()
+        lines.append(("Entity", f"{form.entity_col or '—'}{mark('entity_col')} → {entity or 'peer-only benchmark'}"))
+        if form.auto_dims:
+            dims = "auto-detect"
+        else:
+            dims = ", ".join(form.effective_dimensions()) or "none"
+        if form.mode == "share":
+            lines.append(("Analysis", f"Share{mark('mode')} · metric {form.metric or '—'}{mark('metric')} · dims {dims}{mark('dimensions')}"))
         else:
             lines.append((
                 "Analysis",
-                f"Rate · total {select_text('rate_total')} · approved {select_text('rate_approved')} · "
-                f"fraud {select_text('rate_fraud')} · dims {dims}",
+                f"Rate{mark('mode')} · total {form.total_col or '—'} · approved {form.approved_col or '—'} · "
+                f"fraud {form.fraud_col or '—'} · dims {dims}{mark('dimensions')}",
             ))
-        preset = select_text("preset_select")
-        posture = "—"
-        try:
-            data = self.preset_workflow.load_preset_data(preset) if preset != "—" else None
-            if isinstance(data, dict) and data.get("compliance_posture"):
-                posture = labels.text_for(labels.POSTURE, data["compliance_posture"])
-        except Exception:
-            pass
+        preset_text = _preset_display(form.preset)
+        posture = self._effective_preset_posture()
+        if posture:
+            posture_text = labels.text_for(labels.POSTURE, posture)
+            if posture_text not in preset_text:
+                preset_text = f"{preset_text} · posture {posture_text}"
         release = (
-            labels.text_for(labels.RELEASE_MODE, self._privacy_release_mode_value_from_widget())
-            if mode == "share"
-            else "not used for rate"
+            labels.text_for(labels.RELEASE_MODE, form.release_mode) + mark("release_mode")
+            if form.mode == "share"
+            else "release mode not used for rate"
         )
-        preset_text = _preset_display(None if preset == "—" else preset)
-        if posture != "—" and posture not in preset_text:
-            preset_text = f"{preset_text} · posture {posture}"
         lines.append((
             "Privacy",
-            f"{preset_text} · {release} · rule sweep {on_off('privacy_rule_sweep_mode')}",
+            f"{preset_text}{mark('preset')} · {release} · rule sweep {on_off(form.effective_sweep)}",
         ))
-        citi = "Yes" if checked("citi_competitor_receives_output") else "No"
+        citi = "Yes" if form.citi_competitor else "No"
+        if form.citi_competitor:
+            citi += f" ({form.citibank_entity or 'Citibank entity not chosen'})"
         lines.append((
             "Declared",
-            f"merchant spend: {'Yes' if checked('privacy_merchant_spend_scope') else 'No'} · Citi competitor: {citi}",
+            f"merchant spend: {'Yes' if form.merchant_spend else 'No'} · Citi competitor: {citi}",
         ))
         lines.append((
             "Checks",
-            f"input validation {on_off('validate_input')} · impact {on_off('analyze_distortion')} · "
-            f"preset comparison {on_off('compare_presets')}",
+            f"input validation {on_off(form.validate_input)} · impact {on_off(form.analyze_distortion)} · "
+            f"preset comparison {on_off(form.compare_presets)}",
         ))
-        try:
-            output = self.query_one("#output_file", Input).value.strip()
-        except NoMatches:
-            output = ""
-        output_format = select_text("output_format")
-        format_text = labels.text_for(labels.OUTPUT_FORMAT, output_format) if output_format != "—" else "—"
-        lines.append(("Output", f"{format_text} → {output or 'named automatically'}"))
+        output = form.output_file.strip()
+        format_text = labels.text_for(labels.OUTPUT_FORMAT, form.output_format)
+        where = os.path.abspath(output) if output else f"named automatically in {os.getcwd()}"
+        lines.append(("Output", f"{format_text} → {where}"))
+        lines.append(("Expert", expert_changes_text(len(form.expert))))
         return lines
 
     # ── Cancel (owner decision 1; 01 §7.2) ────────────────────────────
@@ -2366,16 +2674,13 @@ class BenchmarkApp(App):
 
     def _refresh_run_status(self) -> None:
         badge = self._current_run_badge()
-        preset = None
-        try:
-            preset_val = self.query_one("#preset_select", Select).value
-            preset = None if preset_val == SELECT_BLANK else preset_val
-        except NoMatches:
-            pass
+        if badge.state == "ready" and self._blockers:
+            # Idle with blockers: say what the action bar says, not READY.
+            badge = RunBadge("notready")
         mode = self._run_mode or self._analysis_mode()
         lines = [
             f"[$text-muted]Mode[/]    {escape_markup(labels.text_for(labels.ANALYSIS_MODE, mode))}",
-            f"[$text-muted]Preset[/]  {escape_markup(_preset_display(preset))}",
+            f"[$text-muted]Preset[/]  {escape_markup(_preset_display(self.form.preset))}",
         ]
         if self._run_started_at is not None and self._run_state == "running":
             elapsed = time.monotonic() - self._run_started_at
@@ -2416,8 +2721,10 @@ class BenchmarkApp(App):
                 context = "toggle"
             elif isinstance(focused, (Button, CollapsibleTitle)):
                 context = "button"
-            elif isinstance(focused, Tabs):
+            elif isinstance(focused, (Tabs, ModeSwitch)):
                 context = "tabs"
+            elif isinstance(focused, Log):
+                context = "log"
         if context == "field" and getattr(self, "_run_state", "idle") in ("success", "error", "blocked", "cancelled"):
             return "results"
         return context
@@ -2436,8 +2743,11 @@ class BenchmarkApp(App):
         step = self._step_of(event.widget)
         if step is not None and (step != self._current_step or self._results_view_open()):
             self._show_step(step, focus=False)
+        if step is not None and self._log_view_open():
+            self.action_show_log()
         self._mark_field_pair(event.widget, True)
         self._update_key_bar()
+        self._place_toasts()
 
     @staticmethod
     def _mark_field_pair(widget: Any, focused: bool) -> None:
@@ -2476,20 +2786,123 @@ class BenchmarkApp(App):
             return  # The quit question is already open.
         self.action_quit()
 
+    # ── Toast policy (01 §5.3) ────────────────────────────────────────
+
+    def _on_notify(self, event: Any) -> None:
+        """At most two toasts; none over a modal; never over the focused field.
+
+        Textual 7.5 has no public per-toast dismiss, so the cap uses the
+        private ``_unnotify`` here and nowhere else.
+        """
+        event.prevent_default()  # App._on_notify would add it uncapped.
+        if isinstance(self.screen, ModalScreen):
+            self._queued_toasts.append((time.monotonic(), event.notification))
+            return
+        self._show_toast(event.notification)
+
+    def _show_toast(self, notification: Any) -> None:
+        live = list(self._notifications)
+        while len(live) >= self.MAX_TOASTS:
+            self._unnotify(live.pop(0), refresh=False)
+        self._place_toasts()
+        self._notifications.add(notification)
+        self._refresh_notifications()
+
+    def _flush_queued_toasts(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        now = time.monotonic()
+        while self._queued_toasts:
+            raised_at, notification = self._queued_toasts.popleft()
+            if now - raised_at <= self.QUEUED_TOAST_MAX_AGE_S:
+                self._show_toast(notification)
+
+    def pop_screen(self) -> Any:
+        result = super().pop_screen()
+        self.call_after_refresh(self._flush_queued_toasts)
+        return result
+
+    def _place_toasts(self) -> None:
+        """Toasts sit top right; they move to the bottom when the focus is up there."""
+        main = getattr(self, "_main_screen", None)
+        if main is None or not self.screen_stack:  # no stack while shutting down
+            return
+        focused = self.focused
+        bottom = False
+        if focused is not None and focused.screen is main:
+            region = focused.region
+            width = self.size.width
+            top_area = Region(max(width - TOAST_WIDTH - 1, 0), 0, TOAST_WIDTH + 1, TOAST_AREA_ROWS)
+            bottom = region.overlaps(top_area)
+        # On the rack, not the Screen: a Screen class change restyles every
+        # widget (a 100+ ms Tab), a rack class change restyles the rack.
+        try:
+            rack = main.get_child_by_type(ToastRack)
+        except NoMatches:
+            return
+        if rack.has_class("-bottom") != bottom:
+            rack.set_class(bottom, "-bottom")
+
+    # ── Run lifecycle (UI) ────────────────────────────────────────────
+
+    def _set_form_locked(self, locked: bool, *, restore_focus: bool = True) -> None:
+        """Lock the form while a run is active, and say why (01 §5.2).
+
+        Unlocking puts focus back on the field that had it, unless the caller
+        moves focus itself (``restore_focus=False``: a blocker jump).
+        """
+        if locked and self._focus_before_lock is None:
+            focused = self.focused
+            if focused is not None and self._step_of(focused) is not None:
+                self._focus_before_lock = focused
+        for step in STEPS:
+            try:
+                body = self.query_one(f"#{step.container_id}")
+            except NoMatches:
+                continue
+            if body.disabled != locked:
+                body.disabled = locked
+        try:
+            note = self.query_one("#form_lock_note", Static)
+        except NoMatches:
+            return
+        note.update(
+            f"{status_glyph('running')} Form locked while the run is active · ^G cancels"
+            if locked
+            else ""
+        )
+        note.set_class(not locked, "hidden")
+        if not locked:
+            widget, self._focus_before_lock = self._focus_before_lock, None
+            if widget is None or not widget.is_attached or not restore_focus:
+                return
+            if self._results_view_open():
+                # <110: Results stay open; ^T goes back to this field.
+                self._setup_focus = widget
+            elif self.focused is None and self._step_of(widget) == self._current_step:
+                widget.focus()
+
+    def _set_run_button(self, label: str, disabled: bool) -> None:
+        try:
+            button = self.query_one("#btn_run", Button)
+        except NoMatches:
+            return
+        button.disabled = disabled
+        button.label = label
+
     def _begin_validation_ui(self) -> None:
         """Switch UI into the pre-run validation state (app thread only).
 
-        Disables the run button (to block double launches) and shows a
-        distinct ``Validating`` badge, but deliberately does NOT start the
-        elapsed clock or the ``running`` badge: execution has not begun yet,
-        and a ``ValidationModal`` may still be awaiting the user's decision.
+        Locks the form (and the run button, to block double launches) and
+        shows a distinct ``Validating`` badge, but deliberately does NOT start
+        the elapsed clock or the ``running`` badge: execution has not begun
+        yet, and a ``ValidationModal`` may still be awaiting the user's decision.
         """
         self._run_state = "validating"
         self._run_started_at = None
         self._run_mode = "privacy-sweep" if self._privacy_sweep_enabled() else self._analysis_mode()
-        btn = self.query_one("#btn_run", Button)
-        btn.disabled = True
-        btn.label = "Validating…"
+        self._set_run_button("Validating…", True)
+        self._set_form_locked(True)
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
             self._elapsed_timer = None
@@ -2504,14 +2917,14 @@ class BenchmarkApp(App):
         self._run_started_at = time.monotonic()
         self._run_stage = None
         self._run_mode = "privacy-sweep" if self._privacy_sweep_enabled() else self._analysis_mode()
-        btn = self.query_one("#btn_run", Button)
-        btn.disabled = True
-        btn.label = "Running…"
+        self._set_run_button("Running…", True)
+        self._set_form_locked(True)
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
         self._elapsed_timer = self.set_interval(1.0, self._refresh_run_status)
         # Restored-value markers clear once a run uses them (01 §7.3).
-        self._restored_steps.clear()
+        self.form.restored.clear()
+        self._not_restored.clear()
         self._refresh_run_status()
         self._schedule_shell_refresh()
         self._save_session()
@@ -2544,7 +2957,8 @@ class BenchmarkApp(App):
         denial) and ``verdict`` adds a second badge (``compliant`` or
         ``warning``) next to DONE. ``copy_path`` is the whole path ^Y copies
         and the results view shows (the report, or a log); ``message`` is the
-        action bar's one-line outcome.
+        action bar's one-line outcome. Outcomes are not toasted: the action
+        bar and the results card already say them (01 §5.3 rule 5).
         """
         self._run_state = state
         self._outcome_badge = badge
@@ -2559,9 +2973,8 @@ class BenchmarkApp(App):
         if self._run_started_at is not None:
             elapsed = time.monotonic() - self._run_started_at
         self._run_started_at = None
-        btn = self.query_one("#btn_run", Button)
-        btn.disabled = False
-        btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
+        self._set_form_locked(False)
+        self._set_run_button(f"Run {self._run_label()} ^R", False)
         self._refresh_run_status()
 
         header = f"Finished {datetime.now().strftime('%H:%M:%S')}"
@@ -2583,7 +2996,7 @@ class BenchmarkApp(App):
         if self.focused is None or self._results_view_open() or self._step_of(self.focused) is None:
             self._open_results_view(focus_copy=True)
 
-    def _reset_run_ui(self) -> None:
+    def _reset_run_ui(self, *, restore_focus: bool = True) -> None:
         """Re-enable the run controls after an aborted launch (app thread only)."""
         self._run_state = "idle"
         self._outcome_badge = None
@@ -2591,9 +3004,8 @@ class BenchmarkApp(App):
             self._elapsed_timer.stop()
             self._elapsed_timer = None
         self._run_started_at = None
-        btn = self.query_one("#btn_run", Button)
-        btn.disabled = False
-        btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
+        self._set_form_locked(False, restore_focus=restore_focus)
+        self._set_run_button(f"Run {self._run_label()} ^R", False)
         self._outcome_message = ""
         self._set_has_outcome(False)
         self._refresh_run_status()
@@ -2623,11 +3035,13 @@ class BenchmarkApp(App):
         block_reason: Optional[str] = None,
         title_state: str = "notready",
     ) -> None:
-        """Notify about an invalid launch and return UI to idle (worker-safe).
+        """Report an invalid launch and return UI to idle (worker-safe).
 
         ``block_reason`` is a closed LAUNCH_BLOCK_REASONS value recorded as
         ``launch_blocked``; ``message`` never reaches telemetry.
         ``title_state`` picks the status-language toast title (tui.status).
+        A readiness blocker (``focus_id``) is not toasted: the action bar
+        names it and focus moves to its field (01 §5.3).
         """
         if block_reason is not None:
             launch_blocked(self._telemetry_action(), block_reason)
@@ -2638,14 +3052,17 @@ class BenchmarkApp(App):
         # Resolved on the UI thread at mount; workers must not query the DOM.
         log_widget = getattr(self, "_log_widget", None) or self.query_one("#log_output", Log)
         write_log_message(log_widget, f"ERROR: {message}")
-        self.call_from_thread(
-            self.notify, message, title=status_text(title_state), severity="error", markup=False
-        )
-        self.call_from_thread(self._reset_run_ui)
+        if not focus_id:
+            self.call_from_thread(
+                self.notify, message, title=status_text(title_state), severity="error", markup=False
+            )
         if focus_id:
             # Ctrl+R from any step: show the blocker's step and focus it; the
             # action bar names it (the same launch_blockers result).
+            self.call_from_thread(partial(self._reset_run_ui, restore_focus=False))
             self.call_from_thread(self._focus_field, focus_id)
+        else:
+            self.call_from_thread(self._reset_run_ui)
 
     def _confirm_accuracy_first_consent(self) -> bool:
         """Ask for explicit per-run consent to the accuracy_first posture.
@@ -2846,7 +3263,8 @@ class BenchmarkApp(App):
 
         ``quiet`` skips the not-found notice, log line and telemetry; callers
         that only need the same normalization as the header load (entity
-        loading, D8) use it so one bad path is reported once.
+        loading, D8) use it so one bad path is reported once. The notice is
+        inline under the path field, not a toast (01 §5.3).
         """
         csv_path = raw_path.strip()
         if not csv_path:
@@ -2855,12 +3273,12 @@ class BenchmarkApp(App):
             if quiet:
                 return None
             self._emit_dataset_load("not_found", csv_path)
-            self.notify(
-                f"Not found: {csv_path}. Check the folder, or press Ctrl+O to browse.",
-                title="CSV file not found",
-                severity="error",
-                timeout=6,
-                markup=False,
+            self._set_csv_meta(
+                Text(
+                    f"{status_glyph('error')} Not found: {csv_path}\n"
+                    "  Check the spelling, or press Ctrl+O to browse."
+                ),
+                error=True,
             )
             self.query_one("#log_output").write(f"CSV file not found: {csv_path}\n")
             return None
@@ -2879,91 +3297,84 @@ class BenchmarkApp(App):
             return None
         return (path, os.path.realpath(path), stat.st_mtime_ns, stat.st_size)
 
-    def _try_load_csv_from_path_input(self, raw_path: Optional[str] = None) -> None:
+    def _try_load_csv_from_path_input(self, raw_path: Optional[str] = None, *, focus_next: bool = False) -> None:
         """Load headers when the user submits or leaves the CSV path field.
 
         A path whose (realpath, mtime, size) matches the last successful load
-        is a no-op: no header re-read, no widget repopulation and no second
-        "CSV loaded" toast (03 §3). A changed file reloads as before.
+        is a no-op: no header re-read and no widget repopulation (03 §3). A
+        changed file reloads as before.
         """
         if raw_path is None:
-            raw_path = self.query_one("#csv_path", Input).value
+            raw_path = self.form.csv_path
         signature = self._csv_signature(raw_path.strip()) if raw_path.strip() else None
         if signature is not None and signature == getattr(self, "_loaded_csv_signature", None):
+            if focus_next:
+                self._focus_next_empty_field()
             return
         csv_path = self._resolve_csv_path(raw_path)
         if csv_path:
-            self.load_csv_headers(csv_path)
+            self.load_csv_headers(csv_path, focus_next=focus_next)
 
-    def load_csv_headers(self, file_path, announce: bool = True):
-        """Load CSV headers and populate Select widgets."""
+    def load_csv_headers(self, file_path, announce: bool = True, *, focus_next: bool = False):
+        """Load CSV headers into the form; mounted widgets follow it.
+
+        ``focus_next`` (Enter in the path, or a picker choice) then moves focus
+        to the next empty every-run field: Entity column, else Target entity
+        (01 §4.3 rule 2). ``announce`` is kept for callers; the meta line under
+        the path is the confirmation, so a load is never toasted (01 §5.3).
+        """
         headers_read = False
         try:
             resolved = self._resolve_csv_path(file_path)
             if not resolved:
                 return
             file_path = resolved
-            # Read only headers
-            cols = pd.read_csv(file_path, nrows=0).columns.tolist()
+            # Headers plus a small sample: enough to tell numeric columns
+            # (Metric/Total list them first) without reading the file.
+            sample = pd.read_csv(file_path, nrows=NUMERIC_SAMPLE_ROWS)
+            cols = [str(c) for c in sample.columns.tolist()]
             headers_read = True
+            numeric = [
+                str(c)
+                for c in sample.columns
+                if pd.api.types.is_numeric_dtype(sample[c]) and not pd.api.types.is_bool_dtype(sample[c])
+            ]
             self._emit_dataset_load("loaded", file_path)
             self.csv_columns = cols
-            options = [(c, c) for c in cols]
-            selection_options = [(c, c) for c in cols]
-
-            # Repopulating ten widgets repaints once, not ten times.
+            form = self.form
+            if form.csv_path.strip() != file_path:
+                # The file being loaded is the form's file (picker, callers).
+                form.csv_path = file_path
+            # Repopulating the form repaints once, not once per field.
             with self.batch_update():
-                # Update Select widgets, preserving still-valid selections
-                for select_id in ("entity_col", "time_col", "share_metric", "rate_total", "rate_approved", "rate_fraud"):
-                    select = self.query_one(f"#{select_id}", Select)
-                    previous = select.value
-                    select.set_options(options)
-                    if previous != SELECT_BLANK and previous in cols:
-                        select.value = previous
-
-                # Update SelectionLists, preserving still-valid selections
-                for list_id in ["#share_secondary", "#share_dims", "#rate_secondary", "#rate_dims"]:
-                    s_list = self.query_one(list_id, SelectionList)
-                    previously_selected = set(s_list.selected)
-                    s_list.clear_options()
-                    s_list.add_options(
-                        [(label, value, value in previously_selected) for label, value in selection_options]
-                    )
-
+                form.set_columns(cols, numeric)
+                self._csv_loaded = True
+                available = set(cols)
+                # Still-valid choices survive a reload; others are cleared.
+                for name in COLUMN_FIELDS:
+                    if getattr(form, name) not in available:
+                        setattr(form, name, None)
                 # D4: restored session column choices win over smart defaults.
                 self._apply_pending_session_columns(cols)
-
-                # Fill smart defaults for selects that are still empty. The
-                # rate Total column has none (owner decision 4): it is the
+                # Smart defaults for fields that are still empty. The rate
+                # Total column has none (owner decision 4): it is the
                 # clearing-spend basis and must always be an explicit choice.
-                defaults = {
-                    "entity_col": "issuer_name",
-                    "share_metric": "txn_cnt",
-                    "rate_approved": "app_cnt",
-                }
-                for select_id, column in defaults.items():
-                    select = self.query_one(f"#{select_id}", Select)
-                    if column in cols and select.value == SELECT_BLANK:
-                        select.value = column
+                for name, column in SMART_DEFAULTS:
+                    if getattr(form, name) is None and column in available:
+                        setattr(form, name, column)
+                self._refresh_column_selects()
+                self._update_csv_meta(file_path, cols, numeric)
 
-                self._update_csv_meta(file_path, cols)
-
-            # A new file with an unchanged entity column posts no
-            # Select.Changed, so refresh the entity values explicitly. Requests
-            # for values already loaded or in flight are no-ops.
-            entity_col_value = self.query_one("#entity_col", Select).value
-            if entity_col_value != SELECT_BLANK:
-                self.load_unique_entities(entity_col_value)
+            # A new file with an unchanged entity column posts no change, so
+            # refresh the entity values explicitly. Requests for values
+            # already loaded or in flight are no-ops.
+            if form.entity_col:
+                self.load_unique_entities(form.entity_col)
             self._loaded_csv_signature = self._csv_signature(file_path)
             self._schedule_shell_refresh()
-            if announce:
-                self.notify(
-                    f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
-                    title="CSV loaded",
-                    severity="information",
-                    timeout=5,
-                    markup=False,
-                )
+            if focus_next:
+                self._focus_next_empty_field()
+            self.set_timer(STEP_PREWARM_DELAY_S, self._prewarm_next_step)
 
         except Exception as e:
             self._loaded_csv_signature = None
@@ -2971,12 +3382,28 @@ class BenchmarkApp(App):
                 self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
             first_line = str(e).splitlines()[0] if str(e) else type(e).__name__
-            self.notify(
-                f"Can't read this file as CSV: {first_line}. Check that it is comma-separated text.",
-                title="CSV not loaded",
-                severity="error",
-                markup=False,
+            self._set_csv_meta(
+                Text(
+                    f"{status_glyph('error')} Can't read this file as CSV: {first_line}\n"
+                    "  Check that it is comma-separated text."
+                ),
+                error=True,
             )
+
+    def _focus_next_empty_field(self) -> None:
+        """After a load: Entity column if it has no value, else Target entity.
+
+        Target entity is disabled while its values load; the focus then waits
+        for them (``_apply_unique_entities``) with step 2 already shown.
+        """
+        if not self.form.entity_col:
+            self._focus_field("entity_col")
+            return
+        if self.entity_values_loading:
+            self._focus_target_when_loaded = True
+            self._show_step("entity", focus=False)
+            return
+        self._focus_field("entity_filter" if self._entity_index is not None else "entity_name")
 
     def _emit_dataset_load(self, outcome: str, file_path: Any) -> None:
         """Record a closed dataset_load outcome once per (outcome, file).
@@ -2990,7 +3417,19 @@ class BenchmarkApp(App):
         self._last_dataset_telemetry = key
         dataset_load(outcome)
 
-    def _update_csv_meta(self, file_path: str, cols: List[str]) -> None:
+    def _set_csv_meta(self, content: Any, *, error: bool = False) -> None:
+        self._csv_meta = content
+        self._csv_meta_error = error
+        self._show_csv_meta()
+
+    def _show_csv_meta(self) -> None:
+        widget = self._widget("csv_meta", Static)
+        if widget is None:
+            return
+        widget.update(self._csv_meta)
+        widget.set_class(getattr(self, "_csv_meta_error", False), "-error")
+
+    def _update_csv_meta(self, file_path: str, cols: List[str], numeric: Iterable[str] = ()) -> None:
         """Show a compact summary of the loaded file under the path field."""
         try:
             size_bytes = os.path.getsize(file_path)
@@ -3002,67 +3441,22 @@ class BenchmarkApp(App):
                 size_text = f"{size_bytes} B"
         except OSError:
             size_text = "?"
-        preview = ", ".join(cols[:6]) + ("…" if len(cols) > 6 else "")
+        numeric_set = set(numeric)
+        listed = [f"{c}#" if c in numeric_set else c for c in cols[:12]]
+        preview = " · ".join(listed) + (" …" if len(cols) > 12 else "")
         # Literal text: file and column names come from the operator's data.
-        self.query_one("#csv_meta", Static).update(
+        self._set_csv_meta(
             Text(
                 f"{status_glyph('success')} {os.path.basename(file_path)} · "
-                f"{len(cols)} columns · {size_text}\n{preview}"
+                f"{len(cols)} columns · {len(numeric_set)} numeric (#) · {size_text}\n{preview}"
             )
         )
-
-    def update_secondary_options(self, list_id, exclude=None):
-        """Update options in a SelectionList, excluding specified values."""
-        if not hasattr(self, 'csv_columns'):
-            return
-
-        if exclude is None:
-            exclude = []
-
-        try:
-            s_list = self.query_one(list_id, SelectionList)
-        except NoMatches:
-            return
-        current_selected = set(s_list.selected)
-
-        s_list.clear_options()
-
-        options = []
-        for col in self.csv_columns:
-            if col in exclude:
-                continue
-            # Preserve selection state if possible
-            is_selected = col in current_selected
-            options.append((col, col, is_selected))
-
-        s_list.add_options(options)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter in text inputs."""
         if event.input.id == "csv_path":
-            self._try_load_csv_from_path_input(event.input.value)
-        elif event.input.id == "entity_filter":
-            self.query_one("#entity_matches", OptionList).focus()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "entity_filter" and self._entity_large:
-            self._refresh_entity_matches()
-        self._schedule_shell_refresh()
-
-    def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
-        self._schedule_shell_refresh()
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option_list.id != "entity_matches":
-            return
-        option_id = event.option.id or ""
-        entity_filter = self.query_one("#entity_filter", Input)
-        if option_id == _ENTITY_PEER_ONLY_ID:
-            entity_filter.value = ""
-        elif option_id.startswith(_ENTITY_VALUE_ID_PREFIX):
-            entity_filter.value = option_id[len(_ENTITY_VALUE_ID_PREFIX):]
-        self._refresh_entity_matches()
-        entity_filter.focus()
+            self.form.csv_path = event.input.value
+            self._try_load_csv_from_path_input(event.input.value, focus_next=True)
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
         """Handle focus leaving text inputs."""
@@ -3080,7 +3474,7 @@ class BenchmarkApp(App):
                 pass
 
     # ──────────────────────────────────────────────────────────────────
-    # Presets / advanced overrides
+    # Presets / expert settings
     # ──────────────────────────────────────────────────────────────────
 
     @property
@@ -3098,47 +3492,94 @@ class BenchmarkApp(App):
     def load_presets(self):
         """Load available presets through the shared preset workflow."""
         presets = self.preset_workflow.list_presets()
-        options = [(preset, preset) for preset in presets] or [("standard", "standard")]
-        self.query_one("#preset_select").set_options(options)
-        default_preset = (
-            DEFAULT_PRESET_NAME
-            if DEFAULT_PRESET_NAME in presets
-            else (options[0][0] if options else None)
-        )
-        self.query_one("#preset_select").value = default_preset
-        if default_preset:
-            self.update_advanced_parameters(default_preset)
-            self._update_preset_blurb(default_preset)
-        self.advanced_config_path = None
+        self._preset_options = [(preset, preset) for preset in presets] or [("standard", "standard")]
+        default_preset = self._default_preset()
+        self.form.preset = default_preset
         # Do not refresh privacy_release_mode here: load_presets runs before
-        # session restore, and a deferred preset Select.Changed must not wipe
-        # a restored Verified Safe Coverage selection. User-driven preset
-        # changes refresh via on_select_changed.
+        # session restore, which must be able to restore Verified safe
+        # coverage. User-driven preset changes refresh it (_on_preset_changed).
 
-    def _update_preset_blurb(self, preset_name: str) -> None:
-        """Show the preset's description and privacy posture under the selector.
+    def _default_preset(self) -> Optional[str]:
+        values = [value for _, value in self._preset_options]
+        if DEFAULT_PRESET_NAME in values:
+            return DEFAULT_PRESET_NAME
+        return values[0] if values else None
 
-        The posture is shown before the run (02 §5.4 #11), so a Best effort or
-        Accuracy first run is never a surprise in the log afterwards.
-        """
-        description = ""
-        posture = None
+    def _preset_selected(self, value: Optional[str]) -> None:
+        """The preset Select changed. With expert changes, ask first (01 §8.2 item 3)."""
+        form = self.form
+        if value is None or value == form.preset:
+            return
+        if not form.expert:
+            form.preset = value
+            return
+        count = len(form.expert)
+        old = form.preset
+
+        def answered(reset: Optional[bool]) -> None:
+            if reset:
+                form.expert = {}
+                form.preset = value
+            else:
+                self._sync_widget("preset")  # Back to the current preset.
+
+        self.push_screen(
+            ConfirmScreen(
+                f"Change the preset to {value}?\n\n"
+                f"You have {expert_changes_text(count)} on {old}. Switching resets "
+                f"them to {value}'s values.",
+                confirm_label=f"Reset and use {value}",
+                cancel_label="Keep current preset",
+                variant="primary",
+            ),
+            answered,
+        )
+
+    def _on_preset_changed(self, old: Optional[str], new: Optional[str]) -> None:
+        if new:
+            if self.form.expert:
+                # Programmatic change: entries the new preset already has go.
+                self.form.expert = rebase_diff(
+                    self.ADVANCED_FIELD_SPECS, self.form.expert, self._expert_preset_values(new)
+                )
+            if not getattr(self, "_tui_bootstrapping", False):
+                self._refresh_privacy_release_mode_from_config()
+        self._refresh_run_status()
+
+    def _preset_posture(self, preset: Optional[str]) -> Optional[str]:
+        if not preset:
+            return None
+        try:
+            data = self.preset_workflow.load_preset_data(preset)
+        except Exception:
+            return None
+        posture = data.get("compliance_posture") if isinstance(data, dict) else None
+        return str(posture) if posture else None
+
+    def _effective_preset_posture(self) -> Optional[str]:
+        """The posture a run will use: the expert file inherits the preset's (01 §8.2)."""
+        return self._preset_posture(self.form.preset)
+
+    def _posture_line(self) -> Text:
+        posture = self._effective_preset_posture()
+        if not posture:
+            return Text("—")
+        label = labels.label_for(labels.POSTURE, posture)
+        glyph = status_glyph("success") if posture == "strict" else status_glyph("warning")
+        changes = len(self.form.expert)
+        source = "from preset" if not changes else f"from preset + {expert_changes_text(changes, short=True)}"
+        return Text(f"{glyph} {label.primary} — {label.why}\n{source} · F1 explains every preset")
+
+    def _preset_blurb_text(self, preset_name: Optional[str]) -> Text:
+        if not preset_name:
+            return Text("")
         try:
             data = self.preset_workflow.load_preset_data(preset_name)
-            if isinstance(data, dict):
-                description = labels.strip_preset_description(str(data.get("description") or ""))
-                posture = data.get("compliance_posture")
+            description = labels.strip_preset_description(str(data.get("description") or "")) if isinstance(data, dict) else ""
         except Exception:
             description = ""
-        lines = [description] if description else []
-        if posture:
-            posture_label = labels.label_for(labels.POSTURE, posture)
-            mark = f"{status_glyph('warning')} " if posture in ("best_effort", "accuracy_first") else ""
-            lines.append(f"{mark}Privacy posture: {posture_label.primary}. {posture_label.why}".rstrip())
-        try:
-            self.query_one("#preset_blurb", Static).update(Text("\n".join(lines)))
-        except NoMatches:
-            pass
+        mark = "  ↺ restored" if "preset" in self.form.restored else ""
+        return Text(description + mark)
 
     def _warn_missing_widget(self, widget_id: str) -> None:
         logging.getLogger(__name__).warning("Advanced widget not found: %s", widget_id)
@@ -3149,32 +3590,6 @@ class BenchmarkApp(App):
             timeout=4,
             markup=False,
         )
-
-    def _safe_set_input(self, field_id: str, value: Any) -> None:
-        try:
-            self.query_one(f"#{field_id}", Input).value = str(value)
-        except NoMatches:
-            self._warn_missing_widget(field_id)
-
-    def _safe_set_checkbox(self, field_id: str, value: Any) -> None:
-        try:
-            self.query_one(f"#{field_id}", Checkbox).value = bool(value)
-        except NoMatches:
-            self._warn_missing_widget(field_id)
-
-    def _get_input(self, field_id: str) -> str:
-        try:
-            return self.query_one(f"#{field_id}", Input).value.strip()
-        except NoMatches:
-            self._warn_missing_widget(field_id)
-            return ""
-
-    def _get_bool(self, checkbox_id: str) -> bool:
-        try:
-            return self.query_one(f"#{checkbox_id}", Checkbox).value
-        except NoMatches:
-            self._warn_missing_widget(checkbox_id)
-            return False
 
     @property
     def _override_builder(self) -> ConfigOverrideBuilder:
@@ -3202,112 +3617,55 @@ class BenchmarkApp(App):
             )
             return raw_data
 
-    def update_advanced_parameters(self, preset_name: str) -> None:
-        """Populate editable advanced optimization inputs from preset YAML."""
-        data = self._load_advanced_parameter_data(preset_name)
+    def _expert_preset_values(self, preset: Optional[str]) -> Dict[str, Any]:
+        """Preset value per expert field (None = engine default), cached per preset."""
+        if not preset:
+            return {}
+        if preset not in self._expert_preset_cache:
+            data = self._load_advanced_parameter_data(preset)
+            self._expert_preset_cache[preset] = {
+                spec.widget_id: self._read_field_value_from_preset(data, spec) for spec in self.ADVANCED_FIELD_SPECS
+            }
+        return dict(self._expert_preset_cache[preset])
 
-        # ~20 widgets get reset and rewritten; one repaint instead of dozens.
-        with self.batch_update():
-            for inp in self.query(Input):
-                if inp.id and inp.id.startswith("adv_"):
-                    inp.value = ""
-            for cb in self.query(Checkbox):
-                if cb.id and cb.id.startswith("adv_"):
-                    cb.value = False
+    def set_expert_value(self, widget_id: str, value: Any) -> Dict[str, Any]:
+        """One Expert screen edit: update the in-memory diff and return it."""
+        self.form.expert = diff_with(
+            self.ADVANCED_FIELD_SPECS, self.form.expert, widget_id, value, self._expert_preset_values(self.form.preset)
+        )
+        return dict(self.form.expert)
 
-            if not data:
-                return
+    def reset_expert(self) -> None:
+        self.form.expert = {}
 
-            for spec in self.ADVANCED_FIELD_SPECS:
-                value = self._read_field_value_from_preset(data, spec)
-                if value is None:
-                    continue
-                if spec.kind == "input":
-                    self._safe_set_input(spec.widget_id, value)
-                else:
-                    self._safe_set_checkbox(spec.widget_id, value)
-
-    def _collect_advanced_override_data(self) -> Dict[str, Any]:
-        values: Dict[str, Any] = {}
-        for spec in self.ADVANCED_FIELD_SPECS:
-            widget_id = spec.widget_id
-            values[widget_id] = self._get_bool(widget_id) if spec.kind == "checkbox" else self._get_input(widget_id)
+    def _expert_override_data(self, values: Mapping[str, Any]) -> Dict[str, Any]:
         return self._override_builder.read_from_mapping(values)
 
-    def apply_advanced_overrides(self) -> None:
-        """Generate a temporary YAML config file from advanced inputs and set path for analysis."""
-        yaml_data = self._collect_advanced_override_data()
-        if not yaml_data:
-            advanced_override("empty")
-            self.notify(
-                "No advanced values to apply. Enter at least one value, then apply again.",
-                title="Advanced overrides",
-                severity="warning",
-                timeout=4,
-            )
-            return
+    def _write_expert_override(self) -> Optional[str]:
+        """Write the expert diff for this run (stage 1), with the current preset's posture.
 
-        posture = "strict"
-        preset_val = self.query_one("#preset_select").value
-        if preset_val and preset_val != SELECT_BLANK:
-            preset_data = self.preset_workflow.load_preset_data(str(preset_val))
-            if isinstance(preset_data, dict):
-                posture = preset_data.get("compliance_posture", posture)
-
-        try:
-            tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
-            self.advanced_config_path = str(tmp_path)
-            self._advanced_config_preset = (
-                str(preset_val) if preset_val and preset_val != SELECT_BLANK else None
-            )
-            # Optimization override files usually omit privacy_release_mode; only
-            # refresh the Select when the loaded YAML declares the field.
-            if self._config_file_declares_privacy_release_mode(str(tmp_path)):
-                self._refresh_privacy_release_mode_from_config()
-            self.notify(
-                f"Advanced overrides apply to the next runs. File: {tmp_path}",
-                title="Advanced overrides",
-                severity="information",
-                timeout=6,
-                markup=False,
-            )
-            advanced_override("applied")
-        except Exception as e:
-            advanced_override("failed")
-            self.notify(
-                f"Couldn't save the advanced overrides for this run. Why: {e}. "
-                "Next: check that the working folder is writable, then apply again.",
-                title=status_text("error"),
-                severity="error",
-                timeout=6,
-                markup=False,
-            )
-
-    def _invalidate_stale_advanced_override(self, preset: Optional[str]) -> bool:
-        """Drop an applied override file written for a different preset (D2).
-
-        The file carries the old preset's ``compliance_posture`` and values;
-        sending it with the new preset would run the old posture and skip
-        the new preset's consent. The file itself stays in the launch folder
-        (owner decision 2); it is simply no longer sent. Returns True when an
-        override was dropped.
+        Owner decision 2: the file goes to the launch folder and stays there.
+        It is regenerated from the current preset on every run, so its posture
+        can never be stale (D2).
         """
-        if not getattr(self, "advanced_config_path", None):
-            return False
-        if self._advanced_config_preset == preset:
-            return False
-        self.advanced_config_path = None
-        self._advanced_config_preset = None
-        self.notify(
-            "The preset changed, so the advanced overrides applied for the "
-            "previous preset will not be used. Review the values and press "
-            "Apply overrides again to use them with this preset.",
-            title="Advanced overrides cleared",
-            severity="warning",
-            timeout=8,
-            markup=False,
+        yaml_data = self._expert_override_data(self.form.expert)
+        if not yaml_data:
+            return None
+        posture = self._preset_posture(self.form.preset) or "strict"
+        try:
+            path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
+        except Exception:
+            advanced_override("failed")
+            raise
+        advanced_override("applied")
+        return str(path)
+
+    def _collect_advanced_override_data(self) -> Dict[str, Any]:
+        """Preset values with the expert diff on top (what Export writes)."""
+        values = effective_values(
+            self.ADVANCED_FIELD_SPECS, self.form.expert, self._expert_preset_values(self.form.preset)
         )
-        return True
+        return self._expert_override_data(values)
 
     def _effective_compliance_posture(
         self, preset: Optional[str], config_path: Optional[str]
@@ -3352,7 +3710,7 @@ class BenchmarkApp(App):
         log_widget = self.query_one("#log_output", Log)
         self._log_widget = log_widget
         handler = LogHandler(log_widget)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(_log_view_formatter())
 
         # Attach to root logger only (propagation will handle the rest)
         root_logger = logging.getLogger()
@@ -3366,34 +3724,103 @@ class BenchmarkApp(App):
         logging.getLogger("benchmark").handlers.clear()
         logging.getLogger("core").handlers.clear()
 
+    def action_toggle_advanced(self) -> None:
+        """F8: open the Expert settings screen (again: close it)."""
+        if isinstance(self.screen, ExpertScreen):
+            self.screen.dismiss(None)
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        surface_viewed("advanced")
+        preset = self.form.preset
+        posture = self._effective_preset_posture()
+        self.push_screen(
+            ExpertScreen(
+                specs=self.ADVANCED_FIELD_SPECS,
+                preset=preset,
+                preset_values=self._expert_preset_values(preset),
+                diff=self.form.expert,
+                debug=self.form.debug,
+                posture_text=labels.text_for(labels.POSTURE, posture) if posture else "—",
+            )
+        )
+
+    action_open_expert = action_toggle_advanced
+
+    def action_export_advanced(self) -> None:
+        """F9: export the expert settings (preset values plus your changes)."""
+        self.export_advanced_overrides()
+
+    def export_advanced_overrides(self) -> Optional[str]:
+        """Write ``exported_<preset>_overrides.yaml`` to the launch folder; return its full path."""
+        yaml_data = self._collect_advanced_override_data()
+        if not yaml_data:
+            advanced_override("empty")
+            self.notify(
+                "No expert values to export: this preset sets none and nothing was changed.",
+                title="Expert settings",
+                severity="warning",
+                timeout=4,
+            )
+            return None
+        posture = self._preset_posture(self.form.preset) or "strict"
+        content = {**yaml_data, "version": "3.0", "compliance_posture": posture}
+        try:
+            export_path = self.preset_workflow.export_override_file(
+                content, preset_name=str(self.form.preset or "custom")
+            )
+            full_path = os.path.abspath(str(export_path))
+            self.notify(
+                f"Expert settings exported to {full_path}",
+                title="Expert settings exported",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
+            advanced_override("exported")
+            return full_path
+        except Exception as e:
+            advanced_override("export_failed")
+            self.notify(
+                f"Couldn't export the expert settings. Why: {e}. "
+                "Next: check that the folder is writable, then export again (F9).",
+                title=status_text("error"),
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
+            return None
+
     # ──────────────────────────────────────────────────────────────────
     # Events / actions
     # ──────────────────────────────────────────────────────────────────
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
-        if event.button.id == "btn_browse_csv":
+        button_id = event.button.id
+        if button_id == "btn_browse_csv":
             self.action_open_file()
-
-        elif event.button.id == "btn_run":
+        elif button_id == "btn_run":
             self.run_analysis()
-
-        elif event.button.id == "btn_preset_help":
-            surface_viewed("preset_help")
-            self.push_screen(PresetHelpScreen())
-        elif event.button.id == "btn_apply_advanced":
-            self.apply_advanced_overrides()
-        elif event.button.id == "btn_export_advanced":
-            self.export_advanced_overrides()
+        elif button_id == "btn_expert":
+            self.action_toggle_advanced()
+        elif button_id == "btn_clear_restored":
+            self.action_clear_restored()
+        elif button_id == "btn_copy_path":
+            self.action_copy_path()
+        elif button_id == "btn_show_log":
+            self.action_show_log()
 
     def action_open_file(self) -> None:
         """Open the CSV picker modal (Ctrl+O)."""
+        if self._run_state in ("validating", "running"):
+            return  # The form is locked while a run is active.
 
         def on_picked(path: Optional[str]) -> None:
             if not path:
                 return
-            self.query_one("#csv_path", Input).value = path
-            self.load_csv_headers(path)
+            self.form.csv_path = path
+            self.load_csv_headers(path, focus_next=True)
 
         self.push_screen(CsvPickerScreen(self._quick_pick_files()), on_picked)
 
@@ -3434,337 +3861,122 @@ class BenchmarkApp(App):
         self.exit()
 
     def _analysis_mode(self) -> str:
-        try:
-            active = str(self.query_one(TabbedContent).active)
-        except NoMatches:
-            return "share"
-        return "share" if active == "share_tab" else "rate"
+        return self.form.mode
+
+    def set_analysis_mode(self, mode: str) -> None:
+        self.form.mode = mode
 
     def _privacy_sweep_enabled(self) -> bool:
-        try:
-            return bool(self.query_one("#privacy_rule_sweep_mode", Checkbox).value)
-        except NoMatches:
-            return False
+        return self.form.effective_sweep
 
-    def _privacy_release_mode_value_from_widget(self) -> str:
-        """Return the stored Select value, defaulting to complete-output."""
-        try:
-            value = self.query_one("#privacy_release_mode", Select).value
-        except NoMatches:
-            return PrivacyReleaseMode.COMPLETE_OUTPUT.value
-        if value == SELECT_BLANK or value is None:
-            return PrivacyReleaseMode.COMPLETE_OUTPUT.value
-        return str(value)
+    def _privacy_release_mode_value(self) -> str:
+        value = self.form.release_mode
+        return value if value in _PRIVACY_RELEASE_MODE_VALUES else PrivacyReleaseMode.COMPLETE_OUTPUT.value
 
-    def _privacy_release_mode_from_widget(self) -> PrivacyReleaseMode:
-        """Return the selected PrivacyReleaseMode enum for share requests."""
-        value = self._privacy_release_mode_value_from_widget()
+    def _privacy_release_mode(self) -> PrivacyReleaseMode:
+        """The selected PrivacyReleaseMode enum for share requests."""
         try:
-            return PrivacyReleaseMode(value)
+            return PrivacyReleaseMode(self._privacy_release_mode_value())
         except ValueError:
             return PrivacyReleaseMode.COMPLETE_OUTPUT
 
-    def _privacy_values_from_widgets(self) -> Dict[str, Any]:
-        """Return privacy request fields from TUI widgets.
+    def _privacy_values(self) -> Dict[str, Any]:
+        """Privacy request fields from the form.
 
         Includes rule strategy, release mode (share only), and compliance
-        attestations. Rate analysis never receives a hidden Maximum Safe
-        Coverage selection from the release-mode widget.
+        attestations. Rate analysis never receives a hidden Verified safe
+        coverage selection from the release-mode field.
         """
+        form = self.form
         values: Dict[str, Any] = {
             "privacy_rule_strategy": (
                 PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
-                if self._privacy_sweep_enabled()
+                if form.effective_sweep
                 else PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
             ),
-            "is_anonymized_aggregated_merchant_spend": self.query_one(
-                "#privacy_merchant_spend_scope",
-                Checkbox,
-            ).value,
-            "citibank_entity_name": (
-                self.query_one("#citibank_entity_name", Input).value.strip()
-                or None
-            ),
-            "citi_competitor_receives_output": self.query_one(
-                "#citi_competitor_receives_output",
-                Checkbox,
-            ).value,
+            "is_anonymized_aggregated_merchant_spend": form.merchant_spend,
+            "citibank_entity_name": (form.citibank_entity or "").strip() or None,
+            "citi_competitor_receives_output": form.citi_competitor,
         }
-        if self._analysis_mode() == "share":
-            values["privacy_release_mode"] = self._privacy_release_mode_from_widget()
+        if form.mode == "share":
+            values["privacy_release_mode"] = self._privacy_release_mode()
         else:
-            # Do not let a hidden verified-safe-coverage widget value reach a
-            # rate request. Leave None so configuration resolution stays clear.
+            # Do not let a hidden verified-safe-coverage value reach a rate
+            # request. Leave None so configuration resolution stays clear.
             values["privacy_release_mode"] = None
         return values
 
-    def _sync_privacy_release_mode_visibility(self) -> None:
-        """Show the release-mode control for share; hide it for rate."""
-        hide = self._analysis_mode() != "share"
-        for widget_id in (
-            "privacy_release_mode_label",
-            "privacy_release_mode",
-            "privacy_release_mode_hint",
-        ):
-            try:
-                widget = self.query_one(f"#{widget_id}")
-            except NoMatches:
-                continue
-            if hide:
-                widget.add_class("hidden")
-            else:
-                widget.remove_class("hidden")
-
-    def _apply_privacy_release_mode_coupling(self, mode_value: str) -> None:
-        """Enable and lock rule sweep while Verified Safe Coverage is active.
-
-        Owner decision 6: the lock applies only while VSC is selected *and*
-        the Share tab is active. Rate requests never carry a release mode, so
-        on the Rate tab the checkbox is unlocked, shows the operator's own
-        value again, and the request sends exactly that value.
-        """
+    def _refresh_privacy_release_mode_from_config(self, config_file: Optional[str] = None) -> None:
+        """Set the release mode the resolved preset (and config file) declares."""
         try:
-            sweep = self.query_one("#privacy_rule_sweep_mode", Checkbox)
-        except NoMatches:
-            return
-        if (
-            mode_value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
-            and self._analysis_mode() == "share"
-        ):
-            if getattr(self, "_privacy_sweep_before_lock", None) is None:
-                self._privacy_sweep_before_lock = bool(sweep.value)
-            sweep.value = True
-            sweep.disabled = True
-            return
-        was_locked = sweep.disabled
-        sweep.disabled = False
-        prior = getattr(self, "_privacy_sweep_before_lock", None)
-        if was_locked and prior is not None:
-            sweep.value = prior
-        self._privacy_sweep_before_lock = None
-
-    def _config_file_declares_privacy_release_mode(self, path: str) -> bool:
-        """Return True when a YAML/JSON config file sets privacy_release_mode."""
-        try:
-            with open(path, encoding="utf-8") as handle:
-                data = yaml.safe_load(handle) or {}
-        except Exception:
-            return False
-        return isinstance(data, dict) and "privacy_release_mode" in data
-
-    def _refresh_privacy_release_mode_from_config(self) -> None:
-        """Refresh the Select from the resolved preset/YAML configuration."""
-        try:
-            preset_val = self.query_one("#preset_select", Select).value
-        except NoMatches:
-            return
-        preset = None if preset_val == SELECT_BLANK else str(preset_val)
-        config_file = getattr(self, "advanced_config_path", None)
-        try:
-            mode_value = self._preset_catalog.resolved_release_mode(preset, config_file)
+            mode_value = self._preset_catalog.resolved_release_mode(self.form.preset, config_file)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Could not resolve privacy_release_mode from configuration: %s",
                 exc,
             )
             return
-        try:
-            select = self.query_one("#privacy_release_mode", Select)
-        except NoMatches:
-            return
-        if select.value != mode_value:
-            select.value = mode_value
-        self._apply_privacy_release_mode_coupling(mode_value)
+        self.form.release_mode = mode_value
 
     def action_show_help(self) -> None:
-        """Show preset help (F1)."""
+        """Show help (F1): keys and the preset guide."""
         surface_viewed("preset_help")
         self.push_screen(PresetHelpScreen())
 
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Handle checkbox toggles."""
-        self._schedule_shell_refresh()
-        if event.checkbox.id == "share_auto_dim":
-            if event.value:
-                self.query_one("#share_dims").add_class("hidden")
-                self.query_one("#share_dims_label").add_class("hidden")
-            else:
-                self.query_one("#share_dims").remove_class("hidden")
-                self.query_one("#share_dims_label").remove_class("hidden")
-
-        elif event.checkbox.id == "rate_auto_dim":
-            if event.value:
-                self.query_one("#rate_dims").add_class("hidden")
-                self.query_one("#rate_dims_label").add_class("hidden")
-            else:
-                self.query_one("#rate_dims").remove_class("hidden")
-                self.query_one("#rate_dims_label").remove_class("hidden")
-
     # Entity value loading runs in a background worker. These track, on the UI
-    # thread only, which (csv_path, column) is in flight, which one the current
-    # #entity_name options were built from, and the entity the operator had
-    # chosen so it can be re-selected once the matching load completes.
+    # thread only, which (csv_path, column) is in flight and which one the
+    # current values were built from. The chosen entity lives in the form.
     _entity_load_key: Optional[tuple] = None
     _entity_options_key: Optional[tuple] = None
-    _pending_entity_value: Any = SELECT_BLANK
-    # Large-list mode (more than ENTITY_SELECT_MAX values): the #entity_picker
-    # filter replaces the Select, the full value set lives in _entity_index,
-    # and _entity_choice is the chosen value (None = peer-only / no match).
-    _entity_large: bool = False
+    _entity_values: List[str] = []
+    # Large-list mode (more than ENTITY_SELECT_MAX values): the filter picker
+    # replaces the Select and the full value set lives in _entity_index.
     _entity_index: Optional[EntityIndex] = None
-    _entity_choice: Optional[str] = None
+
+    @property
+    def _entity_large(self) -> bool:
+        return self._entity_index is not None
 
     @property
     def entity_choices(self) -> List[str]:
         """Every target-entity value currently offered, in either widget."""
-        if self._entity_large and self._entity_index is not None:
+        if self._entity_index is not None:
             return list(self._entity_index.values)
-        try:
-            select = self.query_one("#entity_name", Select)
-        except NoMatches:
-            return []
-        return [value for _, value in select._options if value != SELECT_BLANK]
-
-    def _current_entity_choice(self) -> Any:
-        """The chosen target entity, or SELECT_BLANK for none (either widget)."""
-        if self._entity_large:
-            return self._entity_choice if self._entity_choice is not None else SELECT_BLANK
-        try:
-            return self.query_one("#entity_name", Select).value
-        except NoMatches:
-            return SELECT_BLANK
-
-    def _set_entity_loading(self, loading: bool) -> None:
-        """Flip both entity widgets between their loading and usable states."""
-        try:
-            entity_select = self.query_one("#entity_name", Select)
-            entity_filter = self.query_one("#entity_filter", Input)
-        except NoMatches:
-            return
-        entity_select.prompt = ENTITY_LOADING_PROMPT if loading else ENTITY_SELECT_PROMPT
-        entity_select.disabled = loading
-        entity_filter.placeholder = ENTITY_LOADING_PROMPT if loading else ENTITY_FILTER_PLACEHOLDER
-        entity_filter.disabled = loading
-
-    def _show_entity_picker(self, large: bool) -> None:
-        """Show the filter picker (large lists) or the Select (the rest)."""
-        try:
-            entity_select = self.query_one("#entity_name", Select)
-            picker = self.query_one("#entity_picker")
-        except NoMatches:
-            return
-        focused = self.focused
-        had_focus = focused is not None and (
-            focused is entity_select or picker in focused.ancestors
-        )
-        entity_select.set_class(large, "hidden")
-        picker.set_class(not large, "hidden")
-        if had_focus:
-            (self.query_one("#entity_filter", Input) if large else entity_select).focus()
-
-    def _reset_large_entity_picker(self) -> None:
-        """Leave large-list mode; the (empty) Select is shown until a load lands."""
-        self._entity_large = False
-        self._entity_index = None
-        self._entity_choice = None
-        self._show_entity_picker(False)
-        try:
-            entity_filter = self.query_one("#entity_filter", Input)
-            matches = self.query_one("#entity_matches", OptionList)
-            count = self.query_one("#entity_match_count", Static)
-        except NoMatches:
-            return
-        entity_filter.suggester = None
-        entity_filter.value = ""
-        matches.clear_options()
-        count.update("")
-        count.remove_class("-error")
-
-    def _refresh_entity_matches(self) -> None:
-        """Rebuild the capped match list for the current filter text (UI thread)."""
-        index = self._entity_index
-        try:
-            text = self.query_one("#entity_filter", Input).value
-            matches = self.query_one("#entity_matches", OptionList)
-            count = self.query_one("#entity_match_count", Static)
-        except NoMatches:
-            return
-        if index is None:
-            matches.clear_options()
-            count.update("")
-            return
-        # Privacy rule (03 §6): only an exact value becomes the target entity;
-        # free text never does, so a typo cannot turn into a peer-only run.
-        self._entity_choice = text if text in index.value_set else None
-        shown, total = index.matches(text.strip())
-        options = [Option(ENTITY_SELECT_PROMPT, id=_ENTITY_PEER_ONLY_ID)]
-        options.extend(
-            Option(Text(value), id=f"{_ENTITY_VALUE_ID_PREFIX}{value}") for value in shown
-        )
-        matches.set_options(options)
-        typed = text.strip()
-        count.update(Text(self._entity_match_message(typed, len(index), len(shown), total)))
-        count.set_class(bool(typed) and not total, "-error")
-
-    def _entity_match_message(self, typed: str, size: int, shown: int, total: int) -> str:
-        """One-line hint under the entity filter (02 §4.1, §5.1 copy rules)."""
-        if self._entity_choice is not None:
-            return f"{status_glyph('success')} Target entity: {self._entity_choice}"
-        if not typed:
-            return f"{size:,} entities. Leave blank to compare with the peer group only."
-        if not total:
-            return f"{status_glyph('error')} No match. Pick from the list, or clear the filter for peer group only."
-        noun = "match" if total == 1 else "matches"
-        counted = f"{total:,} {noun}" if shown >= total else f"Showing {shown:,} of {total:,} {noun}"
-        return f"{counted}. Pick one: typed text must match exactly."
+        return list(self._entity_values)
 
     def _target_entity_for_run(self) -> tuple:
         """Return (target entity or None, blocking message or None) for a run."""
-        if not self._entity_large:
-            value = self.query_one("#entity_name", Select).value
-            return (value if value != SELECT_BLANK else None), None
-        text = self.query_one("#entity_filter", Input).value
+        form = self.form
+        if self._entity_index is None:
+            return form.entity, None
+        text = form.entity_filter
         if not text.strip():
             return None, None  # blank = peer-only, as with the Select
-        index = self._entity_index
-        if index is not None and text in index.value_set:
+        if text in self._entity_index.value_set:
             return text, None
-        column = self.query_one("#entity_col", Select).value
         return None, (
-            f"Target entity not found in {column}. Pick a value from the list, "
+            f"Target entity not found in {form.entity_col}. Pick a value from the list, "
             "or clear the filter to compare with the peer group only."
         )
 
     def _entity_source_key(self) -> Optional[tuple]:
         """The (csv_path, entity column) the form currently points at."""
-        try:
-            raw_path = self.query_one("#csv_path", Input).value
-            column = self.query_one("#entity_col", Select).value
-        except NoMatches:
+        csv_path = self._resolve_csv_path(self.form.csv_path, quiet=True)
+        if not csv_path or not self.form.entity_col:
             return None
-        csv_path = self._resolve_csv_path(raw_path, quiet=True)
-        if not csv_path or column == SELECT_BLANK:
-            return None
-        return (csv_path, column)
+        return (csv_path, self.form.entity_col)
 
     def load_unique_entities(self, column_name) -> None:
-        """Populate ``#entity_name`` with the column's values, off the UI thread.
+        """Load the column's distinct values for both entity choosers, off the UI thread.
 
         The CSV read happens in ``_load_unique_entities_worker``; this method
-        only flips the Select into its loading state and starts the worker. A
-        request for the (path, column) that is already loading or already shown
-        is a no-op, so the explicit call and the ``Select.Changed`` it causes
-        do not read the file twice.
+        only flips the choosers into their loading state and starts the
+        worker. A request for the (path, column) that is already loading or
+        already shown is a no-op.
         """
-        try:
-            raw_path = self.query_one("#csv_path", Input).value
-            entity_select = self.query_one("#entity_name", Select)
-        except NoMatches:
-            # Deferred Select.Changed arriving while the app tears down.
-            return
         # D8: the same normalization as the header load, so a path with
         # surrounding spaces loads entities as well as headers.
-        csv_path = self._resolve_csv_path(raw_path, quiet=True)
+        csv_path = self._resolve_csv_path(self.form.csv_path, quiet=True)
         if not csv_path:
             return
         key = (csv_path, column_name)
@@ -3772,21 +3984,26 @@ class BenchmarkApp(App):
             return
         if self._entity_load_key is None and key == self._entity_options_key:
             return
-
-        # Remember the operator's choice before the options are replaced; it is
-        # re-applied when this load lands if the value exists in the new column.
-        current = self._current_entity_choice()
-        if current != SELECT_BLANK:
-            self._pending_entity_value = current
+        self._entity_load_key = key
         if key != self._entity_options_key:
-            # Options from another file/column are meaningless for this one.
-            entity_select.set_options([])
-            if self._entity_large:
-                self._reset_large_entity_picker()
+            # Values from another file/column are meaningless for this one.
+            # The chosen entity stays in the form, pending, until they land.
+            self._entity_values = []
+            self._entity_index = None
             self._entity_options_key = None
         self._set_entity_loading(True)
-        self._entity_load_key = key
+        with self.batch_update():
+            self._sync_entity_choosers()
         self._load_unique_entities_worker(csv_path, column_name)
+
+    def _set_entity_loading(self, loading: bool) -> None:
+        for chooser_id, step in (("entity_chooser", "entity"), ("citibank_chooser", "privacy")):
+            if step not in self._ready_steps:
+                continue
+            try:
+                self.query_one(f"#{chooser_id}", EntityChooser).set_loading(loading)
+            except NoMatches:
+                continue
 
     @work(thread=True, exclusive=True, group="entity_values", exit_on_error=False)
     def _load_unique_entities_worker(self, csv_path: str, column_name: str) -> None:
@@ -3819,8 +4036,9 @@ class BenchmarkApp(App):
     ) -> None:
         """Apply a finished entity load on the UI thread, unless it is stale.
 
-        Up to ENTITY_SELECT_MAX values fill the Select. Above that, the filter
-        picker replaces it and the full value set stays in an ``EntityIndex``.
+        Up to ENTITY_SELECT_MAX values fill the Selects. Above that, the filter
+        picker replaces them and the full value set stays in an ``EntityIndex``.
+        A chosen entity that is not in the new values is cleared.
         """
         if getattr(self, "_exit", False):
             return
@@ -3828,7 +4046,6 @@ class BenchmarkApp(App):
             return  # A newer request owns the loading state.
         self._entity_load_key = None
         try:
-            entity_select = self.query_one("#entity_name", Select)
             log_output = self.query_one("#log_output", Log)
         except NoMatches:
             return
@@ -3842,38 +4059,40 @@ class BenchmarkApp(App):
                 log_output.write(f"Error loading entities: {error}\n")
                 return
             values = values or []
-            desired = self._pending_entity_value
-            self._pending_entity_value = SELECT_BLANK
+            form = self.form
             if len(values) > ENTITY_SELECT_MAX:
-                self._apply_large_entity_values(index or EntityIndex(values), desired)
+                self._entity_index = index or EntityIndex(values)
+                self._entity_values = []
+                value_set = self._entity_index.value_set
+                if form.entity is not None and form.entity in value_set and not form.entity_filter:
+                    form.entity_filter = form.entity
+                if form.entity_filter and form.entity_filter not in value_set:
+                    form.entity_filter = form.entity_filter  # kept: readiness names it
+                form.entity = form.entity_filter if form.entity_filter in value_set else None
             else:
-                with self.batch_update():
-                    if self._entity_large:
-                        self._reset_large_entity_picker()
-                    self._show_entity_picker(False)
-                    entity_select.set_options([(val, val) for val in values])
-                    if desired != SELECT_BLANK and desired in set(values):
-                        entity_select.value = desired
+                self._entity_index = None
+                self._entity_values = list(values)
+                value_set = set(values)
+                form.entity_filter = ""
+                if form.entity not in value_set:
+                    form.entity = None
+            if form.citibank_entity is not None and form.citibank_entity not in set(self.entity_choices):
+                form.update(citibank_entity=None, citibank_filter="")
             self._entity_options_key = key
         finally:
             # Loaded, failed or dropped: the entity widgets must be usable again.
             self._set_entity_loading(False)
+            with self.batch_update():
+                self._sync_entity_choosers()
             self._schedule_shell_refresh()
-
-    def _apply_large_entity_values(self, index: EntityIndex, desired: Any) -> None:
-        """Switch to the filter picker for a list above ENTITY_SELECT_MAX (UI thread)."""
-        entity_filter = self.query_one("#entity_filter", Input)
-        with self.batch_update():
-            self._entity_large = True
-            self._entity_index = index
-            entity_filter.suggester = EntitySuggester(index)
-            restored = desired if desired != SELECT_BLANK and desired in index.value_set else None
-            entity_filter.value = restored or ""
-            self._refresh_entity_matches()
-            self._show_entity_picker(True)
+            if getattr(self, "_focus_target_when_loaded", False):
+                self._focus_target_when_loaded = False
+                focused = self.focused
+                if self._current_step == "entity" and (focused is None or self._step_of(focused) == "entity"):
+                    self._focus_field("entity_filter" if self._entity_index is not None else "entity_name")
 
     def _cancel_entity_load(self) -> None:
-        """Abandon an in-flight entity load and leave the Select usable."""
+        """Abandon an in-flight entity load and leave the choosers usable."""
         if self._entity_load_key is None:
             return
         self._entity_load_key = None
@@ -3888,206 +4107,68 @@ class BenchmarkApp(App):
     @property
     def entity_selection_pending(self) -> bool:
         """True while a chosen entity waits for its reload to be re-applied."""
-        return self.entity_values_loading and self._pending_entity_value != SELECT_BLANK
-
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle select widget changes."""
-        if getattr(self, "_exit", False):
-            # A queued Changed message can land after exit() while the DOM is
-            # being unmounted; reacting to it would query dead widgets.
-            return
-        self._schedule_shell_refresh()
-        if event.select.id == "entity_col":
-            # Act on the widget's current value, not the message's: repopulating
-            # the column options posts a transient BLANK Changed that is already
-            # stale when handled, and must not cancel the load for the real value.
-            current = event.select.value
-            if current != SELECT_BLANK:
-                self.load_unique_entities(current)
-            else:
-                self._cancel_entity_load()
-
-        elif event.select.id == "share_metric":
-            self.update_secondary_options("#share_secondary", exclude=[event.value])
-
-        elif event.select.id == "rate_total":
-            self.update_secondary_options("#rate_secondary", exclude=[event.value])
-
-        elif event.select.id == "preset_select":
-            if event.value != SELECT_BLANK:
-                self._invalidate_stale_advanced_override(str(event.value))
-                self.update_advanced_parameters(event.value)
-                self._update_preset_blurb(str(event.value))
-                if not getattr(self, "_tui_bootstrapping", False):
-                    self._refresh_privacy_release_mode_from_config()
-                self._refresh_run_status()
-                if not self.query_one("#advanced_opt").collapsed:
-                    self.notify(
-                        f"Advanced values reloaded from the preset {event.value}.",
-                        title="Advanced optimization",
-                        severity="information",
-                        timeout=4,
-                        markup=False,
-                    )
-
-        elif event.select.id == "privacy_release_mode":
-            if event.value != SELECT_BLANK and event.value is not None:
-                self._apply_privacy_release_mode_coupling(str(event.value))
-
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
-        """Keep the status panel's mode line current; emit surface on real changes."""
-        self._sync_privacy_release_mode_visibility()
-        if not getattr(self, "_tui_bootstrapping", False):
-            # Owner decision 6: the VSC sweep lock follows the active tab.
-            self._apply_privacy_release_mode_coupling(
-                self._privacy_release_mode_value_from_widget()
-            )
-        self._refresh_run_status()
-        self._schedule_shell_refresh()
-        self._emit_surface_if_changed(self._analysis_mode())
-
-    def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
-        """Record the advanced panel being opened (Ctrl+A, Ctrl+E or click)."""
-        if event.collapsible.id == "advanced_opt":
-            surface_viewed("advanced")
-
-    def action_toggle_advanced(self) -> None:
-        """Toggle the advanced optimization collapsible (F8; step 3)."""
-        collapsible = self.query_one("#advanced_opt")
-        collapsible.collapsed = not collapsible.collapsed
-        if not collapsible.collapsed:
-            # The panel lives in step 3: show it and put focus on its title,
-            # so keys never go to a field on a hidden step.
-            if not isinstance(self.screen, ModalScreen):
-                self._show_step("analysis", focus=False)
-                try:
-                    title = collapsible.query_one(CollapsibleTitle)
-                    title.focus()
-                    self.call_after_refresh(collapsible.scroll_visible, animate=False, top=True)
-                except NoMatches:
-                    pass
-            preset_val = self.query_one("#preset_select").value
-            if preset_val and preset_val != SELECT_BLANK:
-                self.update_advanced_parameters(preset_val)
-            self.notify("Advanced optimization shown (F8 hides it)", title="Advanced optimization", severity="information", timeout=3)
-        else:
-            self.notify("Advanced optimization hidden (F8 shows it)", title="Advanced optimization", severity="information", timeout=3)
-
-    def action_export_advanced(self) -> None:
-        """Keyboard shortcut to export advanced overrides (Ctrl+E)."""
-        # Ensure overrides exist
-        if self.query_one("#advanced_opt").collapsed:
-            self.query_one("#advanced_opt").collapsed = False
-            preset_val = self.query_one("#preset_select").value
-            if preset_val and preset_val != SELECT_BLANK:
-                self.update_advanced_parameters(preset_val)
-        # Apply then export
-        self.apply_advanced_overrides()
-        self.export_advanced_overrides()
-
-    def export_advanced_overrides(self) -> None:
-        """Export current advanced override values to a timestamped YAML file (persistent)."""
-        # Reuse apply collection logic without setting temporary file name
-        if not getattr(self, 'advanced_config_path', None):
-            # Create a temporary first if user hasn't applied
-            self.apply_advanced_overrides()
-            if not getattr(self, 'advanced_config_path', None):
-                return
-        preset_val = self.query_one("#preset_select").value or 'custom'
-        try:
-            tmp_path = Path(self.advanced_config_path)
-            with open(tmp_path, 'r', encoding='utf-8') as f:
-                content = yaml.safe_load(f) or {}
-            export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
-            self.notify(
-                f"Advanced settings exported to {export_path}",
-                title="Advanced settings exported",
-                severity="information",
-                timeout=6,
-                markup=False,
-            )
-            advanced_override("exported")
-        except Exception as e:
-            advanced_override("export_failed")
-            self.notify(
-                f"Couldn't export the advanced settings. Why: {e}. "
-                "Next: check that the folder is writable, then export again (F9).",
-                title=status_text("error"),
-                severity="error",
-                timeout=6,
-                markup=False,
-            )
+        return self.entity_values_loading and (
+            self.form.entity is not None or bool(self.form.entity_filter.strip())
+        )
 
     # ──────────────────────────────────────────────────────────────────
     # Analysis execution
     # ──────────────────────────────────────────────────────────────────
 
     def _collect_run_inputs(self, *, resolve_config: bool = True) -> RunInputs:
-        """Read every form value a run attempt needs (UI thread only, D7).
+        """Snapshot every form value a run attempt needs (UI thread only, D7).
 
-        ``resolve_config=False`` is the readiness snapshot for the action
-        bar, rail and Review step: the same values, without the D2 override
-        invalidation or the posture lookup (no side effects, no file reads).
+        Reads ``FormState``, never a widget. ``resolve_config=False`` is the
+        readiness snapshot for the action bar, rail and Review step: the same
+        values, without writing the expert override file or looking up the
+        posture (no side effects, no file writes). With ``resolve_config``, a
+        non-empty expert diff is written once through
+        ``PresetWorkflow.write_override_file`` with the current preset's
+        posture, and consent follows the effective posture (D2).
         """
-
-        def select_value(widget_id: str) -> Any:
-            value = self.query_one(f"#{widget_id}", Select).value
-            return None if value == SELECT_BLANK else value
-
-        def checked(widget_id: str, default: bool = False) -> bool:
-            return bool(getattr(self.query_one(f"#{widget_id}"), "value", default))
-
-        preset_value = select_value("preset_select")
-        preset = str(preset_value) if preset_value is not None else None
-        if resolve_config:
-            # D2: an override written for another preset is never sent with this one.
-            self._invalidate_stale_advanced_override(preset)
-        config = getattr(self, "advanced_config_path", None) or None
+        form = self.form
+        preset = form.preset
+        config = self._write_expert_override() if resolve_config and form.expert else None
         posture = (
             self._effective_compliance_posture(preset, config)
             if resolve_config and (preset or config)
             else None
         )
-        mode = self._analysis_mode()
-        output_format = select_value("output_format") or "analysis"
-        # Either entity widget (Select, or the filter above ENTITY_SELECT_MAX).
+        mode = form.mode
         entity, entity_error = self._target_entity_for_run()
         common: Dict[str, Any] = {
             "mode": mode,
-            "csv_path": self.query_one("#csv_path", Input).value,
+            "csv_path": form.csv_path,
             "entity_selection_pending": self.entity_selection_pending,
             "entity": entity,
             "entity_error": entity_error,
-            "entity_col": select_value("entity_col") or "issuer_name",
+            "entity_col": form.entity_col or "issuer_name",
             "preset": preset,
             "config": config,
             "compliance_posture": posture,
-            "output": self.query_one("#output_file", Input).value or None,
-            "time_col": select_value("time_col"),
-            "validate_input": checked("validate_input", True),
-            "analyze_distortion": checked("analyze_distortion"),
-            "compare_presets": checked("compare_presets"),
-            "include_calculated": checked("include_calculated"),
-            "output_format": str(output_format),
-            "privacy_values": tuple(self._privacy_values_from_widgets().items()),
+            "output": form.output_file or None,
+            "time_col": form.time_col,
+            "validate_input": form.validate_input,
+            "analyze_distortion": form.analyze_distortion,
+            "compare_presets": form.compare_presets,
+            "include_calculated": form.include_calculated,
+            "output_format": str(form.output_format or "analysis"),
+            "privacy_values": tuple(self._privacy_values().items()),
         }
-        prefix = "share" if mode == "share" else "rate"
         per_mode: Dict[str, Any] = {
-            "secondary_metrics": tuple(
-                self.query_one(f"#{prefix}_secondary", SelectionList).selected
-            ),
-            "auto": checked(f"{prefix}_auto_dim"),
-            "dimensions": tuple(self.query_one(f"#{prefix}_dims", SelectionList).selected),
-            "debug": checked(f"{prefix}_debug"),
-            "export_balanced_csv": checked(f"{prefix}_export_csv"),
+            "secondary_metrics": form.effective_secondary(),
+            "auto": form.auto_dims,
+            "dimensions": form.effective_dimensions(),
+            "debug": form.debug,
+            "export_balanced_csv": form.export_balanced_csv,
         }
         if mode == "share":
-            per_mode["metric"] = select_value("share_metric")
+            per_mode["metric"] = form.metric
         else:
-            per_mode["total_col"] = select_value("rate_total")
-            per_mode["approved_col"] = select_value("rate_approved")
-            per_mode["fraud_col"] = select_value("rate_fraud")
-            per_mode["fraud_in_bps"] = checked("fraud_in_bps", True)
+            per_mode["total_col"] = form.total_col
+            per_mode["approved_col"] = form.approved_col
+            per_mode["fraud_col"] = form.fraud_col
+            per_mode["fraud_in_bps"] = form.fraud_in_bps
         return RunInputs(**common, **per_mode)
 
     def run_analysis(
@@ -4106,8 +4187,8 @@ class BenchmarkApp(App):
         if confirmed and saved_request is not None:
             self._run_confirmed_worker(saved_request, saved_df, log_widget)
             return
-        if self.query_one("#btn_run", Button).disabled:
-            return
+        if self._run_state in ("validating", "running"):
+            return  # Already running; the action bar says so.
         try:
             inputs = self._collect_run_inputs()
         except Exception as exc:
@@ -4295,7 +4376,7 @@ class BenchmarkApp(App):
             logging.getLogger("benchmark").handlers.clear()
             logging.getLogger("core").handlers.clear()
             handler = LogHandler(log_widget)
-            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            handler.setFormatter(_log_view_formatter())
             logging.getLogger().addHandler(handler)
 
             df = None
@@ -4363,12 +4444,6 @@ class BenchmarkApp(App):
                         privacy_authorized=False,
                     )
                     write_log_message(log_widget, f"Data check failed: {exc}")
-                    self.call_from_thread(
-                        self.notify,
-                        "The data check couldn't finish. Details are in Last run.",
-                        title=status_text("error"),
-                        severity="error",
-                    )
                     self.call_from_thread(
                         self._end_run_ui,
                         "error",
@@ -4480,8 +4555,9 @@ class BenchmarkApp(App):
                 _summary_field("Verdict", labels.text_for(labels.COMPLIANCE_VERDICT, verdict)),
                 _summary_field("Posture", f"{posture_text} · Consent: {consent_text}"),
             ]
-            for path in report_paths:
-                details.append(_summary_field("Report", path))
+            # The first report is the copy path, shown once below the card.
+            for path in report_paths[1:]:
+                details.append(_summary_field("Also written", path))
             details.extend(self._format_safe_coverage_summary_markup(artifacts))
             if hard_privacy_block:
                 reason = privacy_decision.withholding_reason
@@ -4513,8 +4589,7 @@ class BenchmarkApp(App):
                     )
                 if artifacts.audit_log_output:
                     details.append(_summary_field("Non-publishable audit", str(artifacts.audit_log_output)))
-                if quarantine_path:
-                    details.append(_summary_field("Internal run log (do not share)", str(quarantine_path)))
+                # The quarantined log is the copy path: shown once, below the card.
                 self.call_from_thread(
                     partial(
                         self._end_run_ui,
@@ -4524,14 +4599,6 @@ class BenchmarkApp(App):
                         copy_path=str(quarantine_path) if quarantine_path else None,
                         copy_label="Internal run log (do not share)",
                     )
-                )
-                self.call_from_thread(
-                    self.notify,
-                    f"Publication withheld: {headline.primary} Details are in Last run.",
-                    title=status_text("withheld"),
-                    severity="error",
-                    timeout=10,
-                    markup=False,
                 )
             else:
                 verdict_state = labels.VERDICT_STATUS.get(verdict)
@@ -4553,14 +4620,6 @@ class BenchmarkApp(App):
                         copy_label="Report",
                         message=" · ".join(part for part in (verdict_text, first_report) if part),
                     )
-                )
-                self.call_from_thread(
-                    self.notify,
-                    f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
-                    title=status_text("success"),
-                    severity="information",
-                    timeout=10,
-                    markup=False,
                 )
         # ``except`` expressions are evaluated only while an exception
         # propagates, and by then execute_run has imported the module.
@@ -4585,13 +4644,10 @@ class BenchmarkApp(App):
                 partial(
                     self._end_run_ui,
                     "blocked",
-                    _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunBlocked"),
+                    _outcome_markup(label, why=str(exc), code="RunBlocked"),
                     copy_path=log_path,
                     copy_label="Internal run log (do not share)",
                 )
-            )
-            self.call_from_thread(
-                self.notify, label.primary, title=status_text("blocked"), severity="error", timeout=10, markup=False
             )
         except _analysis_run().RunAborted as exc:
             log_path = self._quarantine_run_logging(logger, log_widget)
@@ -4601,13 +4657,10 @@ class BenchmarkApp(App):
                 partial(
                     self._end_run_ui,
                     "error",
-                    _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunAborted"),
+                    _outcome_markup(label, why=str(exc), code="RunAborted"),
                     copy_path=log_path,
                     copy_label="Internal run log (do not share)",
                 )
-            )
-            self.call_from_thread(
-                self.notify, label.primary, title=status_text("error"), severity="error", timeout=10, markup=False
             )
         except Exception as exc:
             log_path = self._quarantine_run_logging(logger, log_widget)
@@ -4620,7 +4673,6 @@ class BenchmarkApp(App):
                     "error",
                     _outcome_markup(
                         label,
-                        _log_details(log_path),
                         why=f"An unexpected error ({type(exc).__name__}) stopped the run. The input file was not changed.",
                         code=f"{type(exc).__name__}: {exc}",
                     ),
@@ -4649,6 +4701,15 @@ class BenchmarkApp(App):
                 f"Internal run log (do not share):\n{quarantine_path}\n",
             )
         return str(quarantine_path) if quarantine_path else None
+
+
+def _update_if_changed(widget: Static, value: Any) -> None:
+    """``Static.update`` only when the content changed (each update re-lays out)."""
+    key = (value.plain, str(value.spans)) if isinstance(value, Text) else str(value)
+    if getattr(widget, "_ab_last_update", None) == key:
+        return
+    widget._ab_last_update = key  # type: ignore[attr-defined]
+    widget.update(value)
 
 
 def _summary_field(name: str, value: str) -> str:

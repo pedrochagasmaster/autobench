@@ -10,7 +10,7 @@ from typing import Any, List, Tuple
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import TabbedContent
+from tui.form_widgets import ModeSwitch
 
 import core.analysis_run as analysis_run
 import core.telemetry as telemetry
@@ -115,14 +115,16 @@ def test_tab_switch_rate_and_share_deduped(
             app = pilot.app
             await pilot.pause()
 
-            tabs = app.query_one(TabbedContent)
-            tabs.active = "rate_tab"
+            # PR 5: the Share/Rate switch on step 3 (one control, ←/→).
+            await app.ensure_step("analysis")
+            switch = app.query_one("#mode_switch", ModeSwitch)
+            switch.mode = "rate"
             await pilot.pause()
-            tabs.active = "rate_tab"
+            switch.mode = "rate"
             await pilot.pause()
-            tabs.active = "share_tab"
+            switch.mode = "share"
             await pilot.pause()
-            tabs.active = "share_tab"
+            switch.mode = "share"
             await pilot.pause()
 
             surfaces = [c for c in calls if c[0] == "surface"]
@@ -265,7 +267,7 @@ def test_csv_picker_cancel_and_quit_confirm_cancel_semantics(
     _patch_tui_helpers(monkeypatch, calls)
 
     app = BenchmarkApp()
-    app._run_state = run_state
+    app._run_state = "idle"  # PR 5: the picker is not offered while a run locks the form
     app._run_mode = "rate"
     app._save_session = MagicMock()  # type: ignore[method-assign]
     app.exit = MagicMock()  # type: ignore[method-assign]
@@ -288,6 +290,9 @@ def test_csv_picker_cancel_and_quit_confirm_cancel_semantics(
     assert calls == []
 
     captured.clear()
+    app._run_state = run_state
+    app.action_open_file()  # locked while a run is active: nothing opens
+    assert captured == []
     app.action_quit()
     assert len(captured) == 1
     on_confirm = captured[0][1]
@@ -377,9 +382,9 @@ def test_help_and_advanced_panel_emit_surfaces(
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            pilot.app.action_toggle_advanced()
+            pilot.app.action_toggle_advanced()  # PR 5: opens Expert settings
             await pilot.pause()
-            pilot.app.action_toggle_advanced()  # collapsing emits nothing
+            pilot.app.action_toggle_advanced()  # closing emits nothing
             await pilot.pause()
             pilot.app.action_show_help()
             await pilot.pause()
@@ -397,16 +402,21 @@ def test_advanced_overrides_emit_closed_outcomes(
     _patch_tui_helpers(monkeypatch, calls)
     app = BenchmarkApp()
     app.notify = MagicMock()  # type: ignore[method-assign]
+    # Export with nothing to export: "empty".
     app._collect_advanced_override_data = MagicMock(return_value={})  # type: ignore[method-assign]
-    app.apply_advanced_overrides()
-    app._collect_advanced_override_data = MagicMock(  # type: ignore[method-assign]
-        return_value={"optimization": {"max_weight": 0.3}}
-    )
-    app.query_one = MagicMock(return_value=MagicMock(value=tui_app.SELECT_BLANK))  # type: ignore[method-assign]
+    assert app.export_advanced_overrides() is None
+    # PR 5: expert changes are written at run time; a write failure is
+    # "failed" and stops the launch (the caller reports it).
+    app.form.expert = {"adv_bounds_max_weight": "0.3"}
     app.preset_workflow = MagicMock()
+    app.preset_workflow.load_preset_data.return_value = {"compliance_posture": "strict"}
     app.preset_workflow.write_override_file.side_effect = OSError("/secret/dir is read-only")
-    app.apply_advanced_overrides()
-    assert calls == [("advanced", ("empty",)), ("advanced", ("failed",))]
+    with pytest.raises(OSError):
+        app._write_expert_override()
+    app.preset_workflow.write_override_file.side_effect = None
+    app.preset_workflow.write_override_file.return_value = "adv_override_x.yaml"
+    assert app._write_expert_override() == "adv_override_x.yaml"
+    assert calls == [("advanced", ("empty",)), ("advanced", ("failed",)), ("advanced", ("applied",))]
 
 
 def test_telemetry_service_failure_does_not_crash_lifecycle(
@@ -422,7 +432,7 @@ def test_telemetry_service_failure_does_not_crash_lifecycle(
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            pilot.app.query_one(TabbedContent).active = "rate_tab"
+            pilot.app.form.mode = "rate"
             await pilot.pause()
 
     asyncio.run(scenario())

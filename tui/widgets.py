@@ -64,7 +64,21 @@ class BoxCheckbox(Checkbox):
 
 
 class BoxSelectionList(SelectionList):
-    """SelectionList with the same ``[x]`` / ``[ ]`` gutter (still 3 cells wide)."""
+    """SelectionList with the same ``[x]`` / ``[ ]`` gutter (still 3 cells wide).
+
+    ``selection_callback`` (optional) is called synchronously whenever the
+    selection changes, before ``SelectedChanged`` is posted, so a form model
+    bound to the list never lags it (``SelectionList._message_changed``,
+    Textual 7.5).
+    """
+
+    selection_callback: Any = None
+
+    def _message_changed(self) -> None:  # SelectionList, Textual 7.5
+        callback = self.selection_callback
+        if callback is not None:
+            callback()
+        super()._message_changed()
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)

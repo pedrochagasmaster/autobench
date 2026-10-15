@@ -853,7 +853,7 @@ def test_tui_v3_emissions_record_only_closed_values(
     text, the file and its columns never do."""
     import time as _time
 
-    from textual.widgets import Checkbox, Input, Select, SelectionList, TabbedContent
+    from textual.widgets import Input, Select
 
     captured: list[bytes] = []
     _inject_service(writer=captured.append, storage_root=tmp_path / "ads", environ={})
@@ -878,9 +878,9 @@ def test_tui_v3_emissions_record_only_closed_values(
             app.query_one("#csv_path", Input).value = str(secret_csv)
             app.load_csv_headers(str(secret_csv), announce=False)
             await until(pilot, lambda: app._entity_large and not app.entity_values_loading)
-            app.query_one("#validate_input", Checkbox).value = False
-            app.query_one("#share_metric", Select).value = "txn_cnt"
-            app.query_one("#share_dims", SelectionList).select("card_type")
+            # PR 5: the form model holds the values; step 2 mounts on first show.
+            app.form.update(validate_input=False, metric="txn_cnt", dimensions=("card_type",))
+            await app.ensure_step("entity")
             app.query_one("#entity_filter", Input).value = "SecretBank_0000x"
             await pilot.pause()
             app.run_analysis()
@@ -888,11 +888,10 @@ def test_tui_v3_emissions_record_only_closed_values(
             await until(pilot, lambda: app._run_state == "idle")
             # Visible Cancel at the clearing-spend dialog (rate + fraud).
             app.query_one("#entity_filter", Input).value = ""
-            app.query_one(TabbedContent).active = "rate_tab"
-            await pilot.pause()
+            app.form.mode = "rate"
+            await app.ensure_step("analysis")
             app.query_one("#rate_total", Select).value = "total"
             app.query_one("#rate_fraud", Select).value = "fraud"
-            app.query_one("#rate_dims", SelectionList).select("card_type")
             await pilot.pause()
             app.run_analysis()
             await until(pilot, lambda: isinstance(app.screen, tui_app.ClearingSpendConfirmScreen))

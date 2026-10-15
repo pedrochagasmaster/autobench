@@ -22,8 +22,17 @@ def _entries(app: Any) -> Iterator[Tuple[str, Any, str]]:
         )
     yield ("Run analysis", app.action_run_analysis, "Same as Ctrl+R")
     yield ("Cancel run", app.action_cancel_run, "Same as Ctrl+G; only before output writing starts")
+    yield ("Open CSV…", app.action_open_file, "Same as Ctrl+O")
+    yield ("Switch mode to Share", lambda: app.set_analysis_mode("share"), "Step 3 · Analysis & mode")
+    yield ("Switch mode to Rate", lambda: app.set_analysis_mode("rate"), "Step 3 · Analysis & mode")
+    yield ("Expert settings", app.action_toggle_advanced, "Same as F8")
+    yield ("Reset expert settings to preset", app.reset_expert, "Drops every expert change")
+    yield ("Export expert settings to file…", app.action_export_advanced, "Same as F9; shows the full path")
+    yield ("Clear restored values", app.action_clear_restored, "Back to defaults for values restored from last session")
     yield ("Toggle results view", app.action_toggle_results, "Same as Ctrl+T")
+    yield ("Show run log", app.action_show_log, "The log across the whole window; again to go back")
     yield ("Copy report path", app.action_copy_path, "Same as Ctrl+Y")
+    yield ("Help: keys and presets", app.action_show_help, "Same as F1")
 
 
 class AutobenchCommands(Provider):

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 from textual.pilot import Pilot
-from textual.widgets import Button, Checkbox, Log, Select, SelectionList, Static, TabbedContent
+from textual.widgets import Button, Checkbox, Input, Log, Select, SelectionList, Static
 
 import benchmark
 import tui_app
@@ -28,6 +28,7 @@ from tui_app import (
     LogHandler,
     RunInputs,
 )
+from tui.expert import ExpertScreen
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
 SIZE = (140, 45)
@@ -70,26 +71,31 @@ def _load_fixture(app: BenchmarkApp, path: str | None = None) -> None:
 
 
 async def _share_form(pilot: Pilot, tmp_path: Path) -> None:
+    # PR 5: the form model is the one source of truth; widgets bind to it.
     app = pilot.app
     _load_fixture(app)
     await pilot.pause()
-    app.query_one("#share_metric", Select).value = "txn_cnt"
-    app.query_one("#share_dims", SelectionList).select("card_type")
-    app.query_one("#output_file").value = str(tmp_path / "share.xlsx")
-    app.query_one("#validate_input", Checkbox).value = False
+    app.form.update(
+        metric="txn_cnt",
+        dimensions=("card_type",),
+        output_file=str(tmp_path / "share.xlsx"),
+        validate_input=False,
+    )
 
 
 async def _rate_form(pilot: Pilot, tmp_path: Path, *, fraud: bool) -> None:
     app = pilot.app
     _load_fixture(app)
-    app.query_one(TabbedContent).active = "rate_tab"
+    app.form.mode = "rate"
     await pilot.pause()
-    app.query_one("#rate_total", Select).value = "total"
-    app.query_one("#rate_approved", Select).value = "approved"
-    app.query_one("#rate_fraud", Select).value = "fraud" if fraud else SELECT_BLANK
-    app.query_one("#rate_dims", SelectionList).select("card_type")
-    app.query_one("#output_file").value = str(tmp_path / "rate.xlsx")
-    app.query_one("#validate_input", Checkbox).value = False
+    app.form.update(
+        total_col="total",
+        approved_col="approved",
+        fraud_col="fraud" if fraud else None,
+        dimensions=("card_type",),
+        output_file=str(tmp_path / "rate.xlsx"),
+        validate_input=False,
+    )
 
 
 def _capture_notices(app: BenchmarkApp) -> list[str]:
@@ -109,27 +115,41 @@ def _capture_notices(app: BenchmarkApp) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_preset_change_invalidates_applied_override_with_notice(tmp_path: Path) -> None:
+def test_preset_change_with_expert_changes_asks_and_keeps_by_default(tmp_path: Path) -> None:
+    """01 §8.2 item 3: a non-empty expert diff makes a preset change ask first.
+
+    The dialog opens on **Keep current preset** (D3): Enter keeps the preset
+    and the diff. Confirming resets the diff to the new preset, so nothing
+    written for the old preset can reach a run (D2).
+    """
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause()
-            preset = app.query_one("#preset_select", Select)
-            preset.value = "balanced_default"
+            await app.ensure_step("privacy")
+            app.form.preset = "balanced_default"
             await pilot.pause()
-            app.apply_advanced_overrides()
-            override = Path(app.advanced_config_path)
-            assert override.is_file()
-            notices = _capture_notices(app)
+            app.set_expert_value("adv_bounds_max_weight", "3.5")
+            assert app.form.expert == {"adv_bounds_max_weight": "3.5"}
+            preset = app.query_one("#preset_select", Select)
 
             preset.value = "low_distortion"
+            await _wait_for_screen(pilot, ConfirmScreen)
+            assert app.focused is not None and app.focused.id == "btn_confirm_no"
+            assert str(app.screen.query_one("#btn_confirm_no", Button).label) == "Keep current preset"
+            await pilot.press("enter")
             await pilot.pause()
+            assert app.form.preset == "balanced_default"
+            assert preset.value == "balanced_default"
+            assert app.form.expert == {"adv_bounds_max_weight": "3.5"}
 
-            assert app.advanced_config_path is None
-            assert any("previous preset will not be used" in n for n in notices)
-            # Owner decision 2: the file stays in the launch folder.
-            assert override.is_file()
-            assert override.parent.resolve() == tmp_path.resolve()
+            preset.value = "low_distortion"
+            await _wait_for_screen(pilot, ConfirmScreen)
+            app.screen.query_one("#btn_confirm_yes", Button).press()
+            await pilot.pause()
+            assert app.form.preset == "low_distortion"
+            assert app.form.expert == {}
 
             inputs = app._collect_run_inputs()
             assert inputs.config is None
@@ -139,22 +159,42 @@ def test_preset_change_invalidates_applied_override_with_notice(tmp_path: Path) 
     asyncio.run(scenario())
 
 
-def test_run_snapshot_never_sends_override_written_for_another_preset(tmp_path: Path) -> None:
-    """Belt and braces: even without a Changed event, the snapshot drops it."""
+def test_expert_diff_is_written_once_at_run_with_the_current_presets_posture(tmp_path: Path) -> None:
+    """D2 + owner decision 2: the override file is made at run time from the
+    current preset (never a stale one), written to the launch folder and left
+    there. The readiness snapshot never writes it."""
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause()
-            app.query_one("#preset_select", Select).value = "balanced_default"
-            await pilot.pause()
-            app.apply_advanced_overrides()
-            assert app.advanced_config_path
-            # Simulate the preset changing without the handler having run.
-            app._advanced_config_preset = "compliance_strict"
+            app.form.preset = "balanced_default"
+            app.set_expert_value("adv_bounds_max_weight", "3.5")
+            # A preset change without the dialog (palette, session) keeps the diff.
+            app.form.preset = "low_distortion"
+            assert app.form.expert == {"adv_bounds_max_weight": "3.5"}
+
+            app._collect_run_inputs(resolve_config=False)
+            assert list(tmp_path.glob("adv_override_*.yaml")) == []
+
+            inputs = app._collect_run_inputs()
+            override = Path(inputs.config)
+            assert override.is_file()
+            assert override.parent.resolve() == tmp_path.resolve()
+            data = yaml.safe_load(override.read_text(encoding="utf-8"))
+            assert data["compliance_posture"] == "accuracy_first"
+            assert data["optimization"]["bounds"]["max_weight"] == 3.5
+            assert inputs.preset == "low_distortion"
+            assert inputs.compliance_posture == "accuracy_first"
+            # Written once per run attempt; nothing deletes it afterwards.
+            assert len(list(tmp_path.glob("adv_override_*.yaml"))) == 1
+
+            # With no expert changes, nothing is written and the preset posture is sent.
+            app.reset_expert()
             inputs = app._collect_run_inputs()
             assert inputs.config is None
-            assert inputs.compliance_posture == "best_effort"
+            assert len(list(tmp_path.glob("adv_override_*.yaml"))) == 1
+            assert override.is_file()
 
     asyncio.run(scenario())
 
@@ -174,10 +214,10 @@ def test_accuracy_first_consent_is_asked_when_an_override_is_applied(
             app = pilot.app
             await pilot.pause()
             await _share_form(pilot, tmp_path)
-            app.query_one("#preset_select", Select).value = "low_distortion"
+            app.form.preset = "low_distortion"
             await pilot.pause()
-            app.apply_advanced_overrides()
-            assert app.advanced_config_path
+            app.set_expert_value("adv_bounds_max_weight", "3.5")
+            assert app.form.expert
             executed = MagicMock()
             app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
 
@@ -283,10 +323,13 @@ def test_restored_column_choices_apply_after_csv_load(tmp_path: Path) -> None:
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause(0.3)
+            for step in ("entity", "analysis", "privacy"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             # Nothing is applied before a CSV is loaded...
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#time_col", Select).value == SELECT_BLANK
-            assert app.query_one("#share_dims", SelectionList).selected == []
+            assert app.query_one("#dims", SelectionList).selected == []
 
             _load_fixture(app)
             await pilot.pause(0.3)
@@ -295,19 +338,22 @@ def test_restored_column_choices_apply_after_csv_load(tmp_path: Path) -> None:
             assert app.query_one("#entity_col", Select).value == "issuer_name"
             assert app.query_one("#time_col", Select).value == "year_month"
             assert app.query_one("#share_metric", Select).value == "total"
-            assert set(app.query_one("#share_dims", SelectionList).selected) == {
+            # Legacy per-tab keys map to the one dimensions list (01 §8.1):
+            # the active tab's list (share here) wins.
+            assert set(app.query_one("#dims", SelectionList).selected) == {
                 "card_type",
                 "channel",
             }
-            assert app.query_one("#share_secondary", SelectionList).selected == ["approved"]
-            assert app.query_one("#rate_total", Select).value == "total"
-            assert app.query_one("#rate_fraud", Select).value == SELECT_BLANK
-            assert app.query_one("#rate_dims", SelectionList).selected == ["channel"]
+            assert app.query_one("#secondary", SelectionList).selected == ["approved"]
+            assert app.form.total_col == "total"
+            assert app.form.fraud_col is None
+            assert ("fraud_col", "missing_in_this_file") in app._not_restored
             # Governed references and attestations stay unset.
             assert app.query_one("#output_file").value == ""
             assert app.query_one("#entity_name", Select).value == SELECT_BLANK
             assert app.query_one("#citi_competitor_receives_output", Checkbox).value is False
             assert app.query_one("#privacy_merchant_spend_scope", Checkbox).value is False
+            assert app.form.entity is None and app.form.output_file == ""
 
     asyncio.run(scenario())
 
@@ -321,6 +367,7 @@ def test_restored_column_choices_are_used_by_the_first_load_only(tmp_path: Path)
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.open_more_options()
             _load_fixture(app, str(other))
             await pilot.pause()
             assert app.query_one("#time_col", Select).value == SELECT_BLANK
@@ -338,16 +385,16 @@ def test_session_round_trip_restores_tab_and_dims(tmp_path: Path) -> None:
             app = pilot.app
             await pilot.pause()
             _load_fixture(app)
-            app.query_one(TabbedContent).active = "rate_tab"
-            await pilot.pause()
+            app.form.mode = "rate"
+            await app.ensure_step("analysis")
             app.query_one("#rate_total", Select).value = "total"
-            app.query_one("#rate_dims", SelectionList).select("channel")
+            app.query_one("#dims", SelectionList).select("channel")
             app._save_session()
 
     asyncio.run(save())
     saved = yaml.safe_load((tmp_path / "session.yaml").read_text(encoding="utf-8"))
     assert saved["analysis_mode"] == "rate"
-    assert saved["rate_dims"] == ["channel"]
+    assert saved["dimensions"] == ["channel"]
     assert "csv_path" not in saved and "entity_name" not in saved
 
     async def restore() -> None:
@@ -358,11 +405,12 @@ def test_session_round_trip_restores_tab_and_dims(tmp_path: Path) -> None:
             # Quitting before any CSV load keeps the pending choices saved.
             app._save_session()
             again = yaml.safe_load((tmp_path / "session.yaml").read_text(encoding="utf-8"))
-            assert again["rate_dims"] == ["channel"]
+            assert again["dimensions"] == ["channel"]
             assert again["rate_total"] == "total"
             _load_fixture(app)
             await pilot.pause(0.3)
-            assert app.query_one("#rate_dims", SelectionList).selected == ["channel"]
+            await app.ensure_step("analysis")
+            assert app.query_one("#dims", SelectionList).selected == ["channel"]
             assert app.query_one("#rate_total", Select).value == "total"
 
     asyncio.run(restore())
@@ -382,15 +430,24 @@ def test_debug_sheets_have_a_single_control(tmp_path: Path) -> None:
             assert "adv_output_debug_sheets" not in {
                 spec.widget_id for spec in BenchmarkApp.ADVANCED_FIELD_SPECS
             }
-            # The override file never carries a debug value the tab would override.
-            app.apply_advanced_overrides()
-            data = yaml.safe_load(Path(app.advanced_config_path).read_text(encoding="utf-8"))
-            assert "include_debug_sheets" not in (data.get("output") or {})
             await _share_form(pilot, tmp_path)
-            app.query_one("#share_debug", Checkbox).value = False
+            # One control, on the Expert settings screen (01 §2.2).
+            await pilot.press("f8")
+            assert await _until(pilot, lambda: isinstance(app.screen, ExpertScreen))
+            await pilot.pause()
+            expert = app.screen
+            assert len(expert.query("#debug_sheets")) == 1
+            assert not expert.query("#adv_output_debug_sheets")
+            debug = expert.query_one("#debug_sheets", Checkbox)
+            debug.value = False
             assert app._collect_run_inputs().debug is False
-            app.query_one("#share_debug", Checkbox).value = True
+            debug.value = True
             assert app._collect_run_inputs().debug is True
+            # The override file never carries a debug value the control would override.
+            expert.query_one("#adv_bounds_max_weight", Input).value = "3.5"
+            config = app._collect_run_inputs().config
+            data = yaml.safe_load(Path(config).read_text(encoding="utf-8"))
+            assert "include_debug_sheets" not in (data.get("output") or {})
 
     asyncio.run(scenario())
 
@@ -551,9 +608,9 @@ def test_run_worker_never_queries_widgets(tmp_path: Path) -> None:
             app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
             app.run_analysis()
             await _wait_for_screen(pilot, ClearingSpendConfirmScreen)
-            # Widgets changed while the worker waits do not reach the request.
-            real_query_one("#rate_total", Select).value = "txn_cnt"
-            real_query_one("#rate_dims", SelectionList).select("channel")
+            # Form values changed while the worker waits do not reach the request.
+            app.form.total_col = "txn_cnt"
+            app.form.dimensions = ("card_type", "channel")
             await pilot.click("#btn_confirm_yes")
             await _until(pilot, lambda: executed.called)
             app.query_one = real_query_one  # type: ignore[method-assign]
@@ -582,6 +639,7 @@ def test_entity_values_load_for_a_path_with_surrounding_spaces() -> None:
             await pilot.pause()
             assert await _until(pilot, lambda: not app.entity_values_loading)
             await pilot.pause()
+            await app.ensure_step("entity")
             select = app.query_one("#entity_name", Select)
             return [value for _, value in select._options if value != SELECT_BLANK]
 
@@ -599,7 +657,7 @@ def test_request_cancel_stops_the_engine_before_anything_is_written(tmp_path: Pa
             app = pilot.app
             await pilot.pause()
             await _share_form(pilot, tmp_path)
-            app.query_one("#share_export_csv", Checkbox).value = True
+            app.form.export_balanced_csv = True
             stages: list[str] = []
             real_report = app._report_run_stage
 
@@ -710,7 +768,13 @@ def test_rate_total_has_no_smart_default(tmp_path: Path) -> None:
             await pilot.pause()
             _load_fixture(app, str(csv_path))
             await pilot.pause()
+            await app.ensure_step("entity")
+            app.form.mode = "rate"
+            await app.ensure_step("analysis")
+            assert app.form.total_col is None
             assert app.query_one("#rate_total", Select).value == SELECT_BLANK
+            app.form.mode = "share"
+            await pilot.pause()
             # The other smart defaults are unchanged.
             assert app.query_one("#share_metric", Select).value == "txn_cnt"
             assert app.query_one("#rate_approved", Select).value == "app_cnt"
@@ -724,8 +788,14 @@ def test_balanced_csv_export_defaults_off_for_share_and_rate() -> None:
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause()
-            assert app.query_one("#share_export_csv", Checkbox).value is False
-            assert app.query_one("#rate_export_csv", Checkbox).value is False
+            await app.open_more_options()
+            # One control for both modes (01 §2.2), off in each.
+            assert app.query_one("#export_csv", Checkbox).value is False
+            assert app._collect_run_inputs(resolve_config=False).export_balanced_csv is False
+            app.form.mode = "rate"
+            await pilot.pause()
+            assert app.query_one("#export_csv", Checkbox).value is False
+            assert app._collect_run_inputs(resolve_config=False).export_balanced_csv is False
 
     asyncio.run(scenario())
 
@@ -745,6 +815,7 @@ def test_rate_mode_sweep_is_unlocked_and_sent_as_shown() -> None:
         async with BenchmarkApp().run_test(size=SIZE) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             assert sweep.value is False
             app.query_one("#privacy_release_mode", Select).value = (
@@ -753,23 +824,23 @@ def test_rate_mode_sweep_is_unlocked_and_sent_as_shown() -> None:
             await pilot.pause()
             assert sweep.disabled is True and sweep.value is True
 
-            app.query_one(TabbedContent).active = "rate_tab"
+            app.form.mode = "rate"
             await pilot.pause()
             # The VSC lock is share-only: rate shows and sends its own value.
             assert sweep.disabled is False
             assert sweep.value is False
-            values = app._privacy_values_from_widgets()
+            values = app._privacy_values()
             assert values["privacy_rule_strategy"] is PrivacyRuleStrategy.SELECT_BY_PEER_COUNT
             assert values["privacy_release_mode"] is None
 
             sweep.value = True
             await pilot.pause()
-            values = app._privacy_values_from_widgets()
+            values = app._privacy_values()
             assert values["privacy_rule_strategy"] is PrivacyRuleStrategy.SWEEP_ANY_APPLICABLE
             sweep.value = False
             await pilot.pause()
 
-            app.query_one(TabbedContent).active = "share_tab"
+            app.form.mode = "share"
             await pilot.pause()
             assert sweep.disabled is True and sweep.value is True
             app.query_one("#privacy_release_mode", Select).value = (

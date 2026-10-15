@@ -34,6 +34,7 @@ from core.data_loader import ValidationIssue, ValidationSeverity
 from core import privacy_output_policy
 from tui import status as tui_status
 from tui.keybar import CONTEXTS, KeyBar, context_text
+from tui.expert import ExpertScreen
 from tui.status import STATUS, status_text
 from tui.styles import AUTOBENCH_TCSS
 from tui.widgets import BoxCheckbox, BoxSelectionList, StatusBadge
@@ -138,9 +139,12 @@ def test_no_color_marks_filled_states_with_reverse_video(monkeypatch: pytest.Mon
             # Twelve states, twelve distinct texts: no state relies on colour.
             assert len(texts) == len(EXPECTED_STATES)
 
-            # Checkboxes and lists also read without colour. (PR 4: the
-            # checkbox lives on step 3, so show that step first.)
+            # Checkboxes and lists also read without colour. (PR 5: the
+            # checkbox lives in step 3's More options, so open it first.)
             app.action_go_to_step("analysis")
+            await app.ensure_step("analysis")
+            await app.open_more_options()
+            await pilot.pause()
             validate = app.query_one("#validate_input", Checkbox)
             validate.scroll_visible(animate=False, immediate=True)
             await pilot.pause()
@@ -153,12 +157,21 @@ def test_no_color_marks_filled_states_with_reverse_video(monkeypatch: pytest.Mon
 
 
 def test_textual_private_apis_used_by_box_widgets_still_exist() -> None:
-    """BoxCheckbox overrides ToggleButton._button; BoxSelectionList reads _selected."""
+    """BoxCheckbox overrides ToggleButton._button; BoxSelectionList reads _selected
+    and hooks _message_changed (PR 5: synchronous form binding)."""
     assert isinstance(getattr(ToggleButton, "_button", None), property)
+    assert callable(getattr(SelectionList, "_message_changed", None))
+    # SafeSelect / ColumnSelect (tui.form_widgets) wrap Select._on_mount and
+    # Select._setup_options_renderables.
+    from textual.widgets import Select
+
+    assert callable(getattr(Select, "_on_mount", None))
+    assert callable(getattr(Select, "_setup_options_renderables", None))
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
-            sl = pilot.app.query_one("#share_dims", SelectionList)
+            await pilot.app.ensure_step("analysis")
+            sl = pilot.app.query_one("#dims", SelectionList)
             assert isinstance(sl._selected, dict)
 
     asyncio.run(scenario())
@@ -169,6 +182,8 @@ def test_checkboxes_and_selection_lists_draw_box_marks() -> None:
         async with BenchmarkApp().run_test(size=(120, 50)) as pilot:
             app = pilot.app
             await pilot.pause()
+            for step in tui_app.STEPS:
+                await app.ensure_step(step.id)
             # Every checkbox and multi-select in the app uses the box subclasses,
             # attestations included.
             assert all(isinstance(cb, BoxCheckbox) for cb in app.query(Checkbox))
@@ -176,8 +191,10 @@ def test_checkboxes_and_selection_lists_draw_box_marks() -> None:
             assert isinstance(app.query_one("#citi_competitor_receives_output"), BoxCheckbox)
             assert isinstance(app.query_one("#privacy_merchant_spend_scope"), BoxCheckbox)
 
-            # PR 4: both checkboxes and the lists live on step 3.
+            # PR 4: both checkboxes and the lists live on step 3 (PR 5: in
+            # its More options).
             app.action_go_to_step("analysis")
+            await app.open_more_options()
             await pilot.pause()
             on = app.query_one("#validate_input", Checkbox)
             off = app.query_one("#compare_presets", Checkbox)
@@ -194,7 +211,7 @@ def test_checkboxes_and_selection_lists_draw_box_marks() -> None:
             app.query_one("#csv_path", Input).value = str(ROOT / "tests" / "fixtures" / "gate_demo.csv")
             app.load_csv_headers(str(ROOT / "tests" / "fixtures" / "gate_demo.csv"))
             await pilot.pause()
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.scroll_visible(animate=False, top=True)
             await pilot.pause()
@@ -229,15 +246,19 @@ def test_key_bar_shows_the_right_keys_per_context() -> None:
             assert app.focused is app.query_one("#csv_path", Input)
             assert bar.context == "field"
             text = bar.visible_text
-            for expected in ("^R Run", "^O Open CSV", "F8 Advanced", "F1 Preset guide", "^Q Quit", "^P Commands"):
+            # PR 5: F8 opens Expert settings; F1 is Help (keys and presets).
+            for expected in ("^R Run", "^O Open CSV", "F8 Expert", "F1 Help", "^Q Quit", "^P Commands"):
                 assert expected in text
 
+            for step in ("entity", "analysis"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             app.query_one("#entity_col", Select).focus()
             await pilot.pause()
             assert bar.context == "select"
             assert "↵ Open" in bar.visible_text
 
-            app.query_one("#share_dims", SelectionList).focus()
+            app.query_one("#dims", SelectionList).focus()
             await pilot.pause()
             assert bar.context == "list"
             assert "␣ Toggle" in bar.visible_text
@@ -270,7 +291,7 @@ def test_key_bar_truncates_at_80_columns_and_keeps_run() -> None:
             text = bar.visible_text
             assert len(text) <= 80
             assert text.lstrip().startswith("^R Run")
-            assert "F8 Advanced" in text
+            assert "F8 Expert" in text
 
     asyncio.run(scenario())
 
@@ -300,7 +321,7 @@ def test_key_bar_click_runs_the_key_action() -> None:
             await pilot.pause()
             app.action_show_help = MagicMock()  # type: ignore[method-assign]
             text = app.query_one("#key_bar", KeyBar).visible_text
-            await pilot.click("#key_bar", offset=(text.index("F1 Preset") + 1, 0))
+            await pilot.click("#key_bar", offset=(text.index("F1 Help") + 1, 0))
             await pilot.pause()
             app.action_show_help.assert_called_once()
 
@@ -314,20 +335,28 @@ def test_context_text_lists_every_hint() -> None:
 # ── Bindings: F8/F9 work from a text field, Ctrl+C quits ────────────────────
 
 
-def test_f8_toggles_advanced_from_a_focused_input() -> None:
+def test_f8_toggles_expert_settings_from_a_focused_input() -> None:
+    """PR 5: F8 opens the Expert settings screen (it replaces the Advanced
+    collapsible) from a focused text field; F8 again, or Esc, closes it."""
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
             app = pilot.app
             await pilot.pause()
             assert isinstance(app.focused, Input)
-            advanced = app.query_one("#advanced_opt")
-            assert advanced.collapsed
+            assert not isinstance(app.screen, ExpertScreen)
             await pilot.press("f8")
             await pilot.pause()
-            assert not advanced.collapsed
+            assert isinstance(app.screen, ExpertScreen)
             await pilot.press("f8")
             await pilot.pause()
-            assert advanced.collapsed
+            assert not isinstance(app.screen, ExpertScreen)
+            await pilot.press("f8")
+            await pilot.pause()
+            assert isinstance(app.screen, ExpertScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ExpertScreen)
 
     asyncio.run(scenario())
 
@@ -433,8 +462,9 @@ def test_withheld_outcome_has_what_why_next_code_and_withheld_badge() -> None:
     assert "Why" in summary and "Next" in summary
     assert "Code: control3_numeric_policy_blocked" in summary
     assert "[red]" not in summary and "[dim]" not in summary
-    title = app.notify.call_args.kwargs["title"]
-    assert "WITHHELD" in title and "◐" in title
+    # PR 5: no toast; the action bar shows "◐ WITHHELD" (the withheld badge,
+    # checked in test_withheld_badge_reaches_the_action_bar).
+    app.notify.assert_not_called()
 
 
 def test_success_outcome_adds_the_verdict_badge() -> None:
@@ -443,7 +473,7 @@ def test_success_outcome_adds_the_verdict_badge() -> None:
         return_value=AnalysisArtifacts(
             metadata={},
             compliance_summary={"compliance_verdict": "fully_compliant", "posture": "strict"},
-            report_paths=["/out/[weird] report.xlsx"],
+            report_paths=["/out/[weird] report.xlsx", "/out/[weird] second.xlsx"],
             privacy_output_decision=PrivacyOutputDecision(True, False),
             privacy_sink_authorized=True,
             privacy_log_authorized=True,
@@ -453,8 +483,14 @@ def test_success_outcome_adds_the_verdict_badge() -> None:
     args, kwargs = app._end_run_ui.call_args
     assert args[0] == "success" and kwargs["verdict"] == "compliant"
     # Paths are escaped, never parsed as markup.
-    assert r"\[weird]" in args[1]
-    assert "DONE" in app.notify.call_args.kwargs["title"]
+    assert r"\[weird] second.xlsx" in args[1]
+    # PR 5: the report path appears once: the copy line under the card (a
+    # literal Static), not again in the card; the action bar names the outcome.
+    assert kwargs["copy_path"] == "/out/[weird] report.xlsx"
+    assert "report.xlsx" not in args[1]
+    assert "Privacy checks passed" in kwargs["message"] and "/out/[weird] report.xlsx" in kwargs["message"]
+    # Outcomes are not toasted: the action bar and the card already say them.
+    app.notify.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -473,8 +509,28 @@ def test_failure_outcomes_use_plain_headlines(exc, state, headline, word) -> Non
     assert args[0] == state
     assert headline in args[1]
     assert "Code:" in args[1]
+    # PR 5: not toasted; the action bar badge carries the status word.
+    app.notify.assert_not_called()
     if word:
-        assert word in app.notify.call_args.kwargs["title"]
+        assert word == tui_app.status_text(state).split(" ", 1)[1]
+
+
+def test_withheld_badge_reaches_the_action_bar() -> None:
+    """The outcome is said by the action bar, glyph and word (not a toast)."""
+
+    async def scenario() -> tuple:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app._begin_run_ui()
+            app._end_run_ui("blocked", "summary", badge="withheld")
+            await pilot.pause()
+            bar = app.query_one("#action_bar")
+            return bar.state, bar.query_one("#action_badge", StatusBadge).text
+
+    state, text = asyncio.run(scenario())
+    assert state == "withheld"
+    assert "WITHHELD" in text and "◐" in text
 
 
 def test_run_status_panel_and_last_run_show_badges_after_a_run() -> None:
@@ -493,7 +549,10 @@ def test_run_status_panel_and_last_run_show_badges_after_a_run() -> None:
             assert app.query_one("#results_verdict_badge", StatusBadge).state == "compliant"
             app._reset_run_ui()
             await pilot.pause()
-            assert app.query_one("#run_status_badge", StatusBadge).state == "ready"
+            # Idle again; the empty form still has blockers, so the panel
+            # agrees with the action bar instead of claiming READY.
+            assert app._blockers
+            assert app.query_one("#run_status_badge", StatusBadge).state == "notready"
 
     asyncio.run(scenario())
 
@@ -590,6 +649,7 @@ def test_focused_field_pair_label_is_marked_without_focus_within() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("entity")
             entity_col = app.query_one("#entity_col", Select)
             label = entity_col.parent.query_children(".field-label").first()
             entity_col.focus()
@@ -641,20 +701,27 @@ def test_everything_is_reachable_at_80x24() -> None:
         async with BenchmarkApp().run_test(size=(80, 24)) as pilot:
             app = pilot.app
             await pilot.pause()
-            app.query_one("#advanced_opt").collapsed = False
+            await app.ensure_step("analysis")
+            await app.open_more_options()
             await pilot.pause()
             screen = Region(0, 0, 80, 24)
             checked = 0
-            for step in tui_app.STEPS:
-                app.action_go_to_step(step.id)
+            # PR 5: step 3 is checked in both modes (its fields follow the mode).
+            visits = [step.id for step in tui_app.STEPS] + ["analysis:rate"]
+            for visit in visits:
+                step_id, _, mode = visit.partition(":")
+                if mode:
+                    app.form.mode = mode
+                app.action_go_to_step(step_id)
+                await app.ensure_step(step_id)
                 await pilot.pause()
-                body = app.query_one(f"#{step.container_id}")
+                body = app.query_one(f"#{tui_app.STEP_BY_ID[step_id].container_id}")
                 for chrome in ("#step_rail", "#action_bar", "#key_bar"):
                     region = app.query_one(chrome).region
-                    assert region.area > 0 and screen.contains_region(region), (step.id, chrome)
-                for widget in body.query("Input, Select, Checkbox, Button, SelectionList"):
+                    assert region.area > 0 and screen.contains_region(region), (visit, chrome)
+                for widget in body.query("Input, Select, Checkbox, Button, SelectionList, ModeSwitch"):
                     if any(not node.display for node in widget.ancestors_with_self if node is not body):
-                        continue  # Inactive tab or hidden by a mode switch.
+                        continue  # Hidden by the mode switch or a large-list picker.
                     # Layout can take more than one frame to settle under
                     # load, and a late focus scroll can move the step body.
                     for _ in range(20):
@@ -666,7 +733,9 @@ def test_everything_is_reachable_at_80x24() -> None:
                     assert body.region.contains_region(widget.region), widget
                     assert screen.contains_region(widget.region), widget
                     checked += 1
-            assert checked > 30
+            # 01 §2.2: fewer main-screen widgets (expert fields moved to F8,
+            # share/rate pairs merged); share + rate visits cover them all.
+            assert checked >= 28
 
     asyncio.run(scenario())
 

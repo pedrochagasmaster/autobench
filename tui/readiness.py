@@ -75,7 +75,8 @@ def launch_blockers(inputs: Any) -> Tuple[LaunchBlocker, ...]:
         found.append(
             LaunchBlocker(
                 "Select at least one dimension or enable auto-detect.",
-                f"{'share' if inputs.mode == 'share' else 'rate'}_dims",
+                # One dimensions list for both modes (PR 5, 01 §2.2).
+                "dims",
                 "dimensions_missing",
             )
         )

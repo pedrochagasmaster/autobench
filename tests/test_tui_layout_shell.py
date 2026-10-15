@@ -18,7 +18,7 @@ import pytest
 import yaml
 from textual.geometry import Region
 from textual.pilot import Pilot
-from textual.widgets import Button, Checkbox, Input, Select, SelectionList, Static, TabbedContent
+from textual.widgets import Button, Checkbox, Input, Select, Static
 
 import tui_app
 from tui import status as tui_status
@@ -28,6 +28,7 @@ from tui.actionbar import ActionBar
 from tui.commands import AutobenchCommands
 from tui.rail import ATTENTION, DONE, PENDING, RESTORED, STEPS, StepRail
 from tui.readiness import launch_blockers
+from tui.expert import ExpertScreen
 from tui_app import SELECT_BLANK, BenchmarkApp, ClearingSpendConfirmScreen, RunInputs
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
@@ -67,16 +68,15 @@ async def _load(pilot: Pilot) -> None:
     app.load_csv_headers(str(FIXTURE), announce=False)
     await pilot.pause()
     assert await _until(pilot, lambda: not app.entity_values_loading)
-    app.query_one("#validate_input", Checkbox).value = False
+    # PR 5: the form model is the source of truth; step widgets bind to it.
+    app.form.validate_input = False
     await pilot.pause()
 
 
 async def _ready_share_form(pilot: Pilot) -> None:
     await _load(pilot)
     app = pilot.app
-    app.query_one("#entity_name", Select).value = "Target"
-    app.query_one("#share_metric", Select).value = "txn_cnt"
-    app.query_one("#share_dims", SelectionList).select("card_type")
+    app.form.update(entity="Target", metric="txn_cnt", dimensions=("card_type",))
     await pilot.pause()
 
 
@@ -99,7 +99,9 @@ def _rail(app: BenchmarkApp) -> StepRail:
 # ── Rail ────────────────────────────────────────────────────────────────────
 
 
-def test_every_step_is_mounted_and_only_the_current_one_is_displayed() -> None:
+def test_only_step_one_is_mounted_and_each_step_mounts_on_first_show() -> None:
+    """03 §1.1 (PR 5): startup lays out step 1 only; a step mounts when first shown."""
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(80, 24)) as pilot:
             app = pilot.app
@@ -107,14 +109,34 @@ def test_every_step_is_mounted_and_only_the_current_one_is_displayed() -> None:
             for step in STEPS:
                 body = app.query_one(f"#{step.container_id}")
                 assert body.display is (step.id == "data"), step.id
-            # Every field of every step stays queryable (ids unchanged).
-            for widget_id in ("csv_path", "entity_name", "share_dims", "rate_total", "preset_select",
-                              "privacy_release_mode", "citibank_entity_name", "btn_run", "adv_lp_tolerance"):
-                app.query_one(f"#{widget_id}")
+                assert bool(body.children) is (step.id == "data"), step.id
+            app.query_one("#csv_path")
+            assert not app.query("#entity_name") and not app.query("#preset_select")
             app.action_go_to_step("privacy")
+            assert await _until(pilot, lambda: "privacy" in app._ready_steps)
             await pilot.pause()
             shown = [step.id for step in STEPS if app.query_one(f"#{step.container_id}").display]
             assert shown == ["privacy"]
+            assert app.focused is not None and app.focused.id == "preset_select"
+            assert not app.query("#entity_name")  # step 2 was never shown
+            # Every field keeps its id once its step is mounted.
+            for step in STEPS:
+                await app.ensure_step(step.id)
+            for widget_id in ("csv_path", "entity_name", "dims", "share_metric", "preset_select",
+                              "privacy_release_mode", "citibank_entity_name", "btn_run"):
+                app.query_one(f"#{widget_id}")
+            # Step 3 mounts the active mode's fields; the other mode's mount
+            # on the first switch.
+            assert not app.query("#rate_total")
+            app.form.mode = "rate"
+            await app.ensure_step("analysis")
+            app.query_one("#rate_total")
+            # Expert fields left the main screen for the Expert settings screen (F8).
+            assert not app.query("#adv_lp_tolerance")
+            await pilot.press("f8")
+            assert await _until(pilot, lambda: isinstance(app.screen, ExpertScreen))
+            await pilot.pause()
+            app.screen.query_one("#adv_lp_tolerance", Input)
 
     asyncio.run(scenario())
 
@@ -144,7 +166,7 @@ def test_rail_states_follow_the_form_and_launch_guards() -> None:
             assert rail.states["data"] == DONE
             assert rail.states["analysis"] == ATTENTION
             assert rail.states["review"] == ATTENTION
-            app.query_one("#share_dims", SelectionList).select("card_type")
+            app.form.dimensions = ("card_type",)
             await pilot.pause()
             await pilot.pause()
             assert set(rail.states.values()) == {DONE}
@@ -177,14 +199,19 @@ def test_rail_marks_restored_steps_and_never_restores_declarations(tmp_path: Pat
             await pilot.pause()
             await _load(pilot)
             await pilot.pause()
+            for step in ("entity", "privacy", "review"):
+                await app.ensure_step(step)
             states = _rail(app).states
             assert states["analysis"] == RESTORED
             assert states["privacy"] == RESTORED
             assert "↺ Restored from the last session" in str(app.query_one("#review_summary", Static).content)
             assert app.query_one("#privacy_merchant_spend_scope", Checkbox).value is False
             assert app.query_one("#citi_competitor_receives_output", Checkbox).value is False
-            assert app.query_one("#citibank_entity_name", Input).value == ""
+            # PR 5: the Citibank entity is a Select over the entity values.
+            assert app.query_one("#citibank_entity_name", Select).value == SELECT_BLANK
             assert app.query_one("#entity_name", Select).value == SELECT_BLANK
+            assert app.form.citibank_entity is None and app.form.entity is None
+            assert not app.form.merchant_spend and not app.form.citi_competitor
 
     asyncio.run(scenario())
 
@@ -196,7 +223,7 @@ def test_rail_click_goes_to_the_step() -> None:
             await pilot.pause()
             text = _rail(app).visible_text
             await pilot.click("#step_rail", offset=(text.index("4 Privacy") + 1, 0))
-            await pilot.pause()
+            assert await _until(pilot, lambda: app.focused is not None and app._step_of(app.focused) == "privacy")
             assert app._current_step == "privacy"
             assert app._step_of(app.focused) == "privacy"
 
@@ -243,14 +270,16 @@ def test_forward_tab_alone_reaches_every_field_at_80x24() -> None:
             app = pilot.app
             await pilot.pause()
             await _load(pilot)
-            app.query_one("#advanced_opt").collapsed = False
+            for step in STEPS:
+                await app.ensure_step(step.id)
+            await app.open_more_options()
             app.action_go_to_step("data")
             app.query_one("#btn_browse_csv").focus()
             await pilot.pause()
             expected = set()
             for step in STEPS:
                 body = app.query_one(f"#{step.container_id}")
-                for widget in body.query("Input, Select, Checkbox, Button, SelectionList, Tabs"):
+                for widget in body.query("Input, Select, Checkbox, Button, SelectionList, ModeSwitch, OptionList"):
                     hidden = any(
                         not node.display for node in widget.ancestors_with_self
                         if node is not body and node is not app
@@ -315,7 +344,7 @@ def test_palette_go_to_step_jumps_and_focuses_the_first_blocker() -> None:
             assert await _until(pilot, lambda: app._current_step == "analysis")
             await pilot.pause()
             # No dimensions yet: the step's first blocker gets focus.
-            assert app.focused.id == "share_dims"
+            assert await _until(pilot, lambda: app.focused is not None and app.focused.id == "dims")
             # A step without blockers focuses its first field.
             await pilot.press("ctrl+p")
             await pilot.pause()
@@ -323,8 +352,7 @@ def test_palette_go_to_step_jumps_and_focuses_the_first_blocker() -> None:
             await pilot.pause(0.5)
             await pilot.press("enter")
             assert await _until(pilot, lambda: app._current_step == "privacy")
-            await pilot.pause()
-            assert app.focused.id == "preset_select"
+            assert await _until(pilot, lambda: app.focused is not None and app.focused.id == "preset_select")
 
     asyncio.run(scenario())
 
@@ -338,8 +366,7 @@ def test_ctrl_r_jumps_to_the_first_blocker_and_says_why(telemetry_calls) -> None
             app = pilot.app
             await pilot.pause()
             await _load(pilot)
-            app.query_one(TabbedContent).active = "rate_tab"
-            app.query_one("#rate_dims", SelectionList).select("card_type")
+            app.form.update(mode="rate", dimensions=("card_type",))
             app.action_go_to_step("review")
             await pilot.pause()
             await pilot.pause()
@@ -390,12 +417,12 @@ def test_ctrl_g_in_the_clearing_spend_dialog_cancels_before_the_run(tmp_path, te
             app = pilot.app
             await pilot.pause()
             await _load(pilot)
-            app.query_one(TabbedContent).active = "rate_tab"
+            app.form.mode = "rate"
             await pilot.pause()
-            app.query_one("#rate_total", Select).value = "total"
-            app.query_one("#rate_fraud", Select).value = "fraud"
-            app.query_one("#rate_dims", SelectionList).select("card_type")
-            app.query_one("#output_file").value = str(tmp_path / "rate.xlsx")
+            app.form.update(
+                total_col="total", fraud_col="fraud", dimensions=("card_type",),
+                output_file=str(tmp_path / "rate.xlsx"),
+            )
             await pilot.pause()
             app.run_analysis()
             assert await _until(pilot, lambda: isinstance(app.screen, ClearingSpendConfirmScreen))
@@ -623,11 +650,14 @@ def test_review_summarises_the_current_form() -> None:
             app = pilot.app
             await pilot.pause()
             await _ready_share_form(pilot)
-            app.query_one("#citi_competitor_receives_output", Checkbox).value = True
+            app.form.citi_competitor = True
             app.action_go_to_step("review")
+            await app.ensure_step("review")
             await pilot.pause()
             await pilot.pause()
-            return str(app.query_one("#review_summary", Static).content)
+            return str(app.query_one("#review_status", Static).content) + "\n" + str(
+                app.query_one("#review_summary", Static).content
+            )
 
     text = asyncio.run(scenario())
     assert "Ready to run share analysis" in text
@@ -645,6 +675,7 @@ def test_review_button_still_runs(monkeypatch: pytest.MonkeyPatch) -> None:
             await pilot.pause()
             await _ready_share_form(pilot)
             app.action_go_to_step("review")
+            await app.ensure_step("review")
             await pilot.pause()
             app.query_one("#btn_run", Button).press()
             assert await _until(pilot, lambda: app._run_state == "success")

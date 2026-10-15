@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 import pytest
-from textual.widgets import Checkbox, Collapsible, Input
+from textual.widgets import Checkbox, Collapsible, Select
 from unittest.mock import MagicMock
 
 import tui_app
@@ -14,6 +14,7 @@ from core.contracts import (
     PrivacyOutputDecision,
     PrivacyRuleStrategy,
 )
+from tui.expert import ExpertScreen
 from tui_app import BenchmarkApp
 from utils.logger import (
     DeferredFileHandler,
@@ -31,12 +32,16 @@ def test_tui_privacy_sweep_mode_keeps_normal_analysis_form_visible() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
+            for step in ("analysis", "privacy", "review"):
+                await app.ensure_step(step)
             mode = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             mode.value = True
             await pilot.pause()
 
             assert not app.query_one("#section_mode").has_class("hidden")
-            assert app.query_one("#btn_run").label == "▶  Run Analysis"
+            assert app.query_one("#section_mode").display
+            # PR 5 (01 P1): the run button says what it will run.
+            assert str(app.query_one("#btn_run").label) == "Run share privacy sweep ^R"
 
     asyncio.run(scenario())
 
@@ -45,7 +50,9 @@ def test_tui_privacy_sweep_mode_is_off_by_default() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
+            await app.ensure_step("privacy")
             assert not app.query_one("#privacy_rule_sweep_mode", Checkbox).value
+            assert app.form.rule_sweep is False
 
     asyncio.run(scenario())
 
@@ -60,6 +67,7 @@ def test_tui_citi_controls_live_in_compliance_declarations_group() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
+            await app.ensure_step("privacy")
             compliance = app.query_one("#compliance_declarations")
 
             assert not isinstance(compliance, Collapsible)
@@ -77,12 +85,17 @@ def test_tui_citi_controls_live_in_compliance_declarations_group() -> None:
                 "#citi_competitor_receives_output",
                 Checkbox,
             )
-            assert compliance.query_one("#citibank_entity_name", Input)
+            # PR 5: a Select over the loaded entity values, not free text.
+            assert compliance.query_one("#citibank_entity_name", Select)
 
-            advanced = pilot.app.query_one("#advanced_opt", Collapsible)
-            assert not advanced.query("#citi_competitor_receives_output")
-            assert not advanced.query("#citibank_entity_name")
-            assert not advanced.query("#privacy_merchant_spend_scope")
+            # None of them is on the Expert settings screen (it replaced Advanced).
+            await pilot.press("f8")
+            await pilot.pause()
+            expert = pilot.app.screen
+            assert isinstance(expert, ExpertScreen)
+            assert not expert.query("#citi_competitor_receives_output")
+            assert not expert.query("#citibank_entity_name")
+            assert not expert.query("#privacy_merchant_spend_scope")
 
     asyncio.run(scenario())
 
@@ -95,6 +108,7 @@ def test_tui_sweep_request_executes_through_shared_executor(
         fixture = tui_app.Path(__file__).parent / "fixtures" / "gate_demo.csv"
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
+            await app.ensure_step("privacy")
             app.query_one("#privacy_rule_sweep_mode", Checkbox).value = True
             await pilot.pause()
             request = AnalysisRunRequest.from_widget_values(
@@ -108,7 +122,7 @@ def test_tui_sweep_request_executes_through_shared_executor(
                     "preset": "balanced_default",
                     "compliance_posture": "strict",
                     "output": str(tmp_path / "tui_sweep.xlsx"),
-                    **app._privacy_values_from_widgets(),
+                    **app._privacy_values(),
                 },
             )
             log = MagicMock()

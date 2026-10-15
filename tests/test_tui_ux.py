@@ -22,7 +22,6 @@ from textual.widgets import (
     Select,
     SelectionList,
     Static,
-    TabbedContent,
 )
 
 import tui_app
@@ -95,16 +94,17 @@ async def _configure_rate_form(
     app = pilot.app
     app.query_one("#csv_path").value = str(FIXTURE)
     app.load_csv_headers(str(FIXTURE))
-    app.query_one(TabbedContent).active = "rate_tab"
+    # PR 5: the form model is the source of truth; step widgets bind to it.
+    app.form.mode = "rate"
     await pilot.pause()
-    app.query_one("#rate_total", Select).value = "total"
-    app.query_one("#rate_fraud", Select).value = "fraud" if fraud else SELECT_BLANK
-    app.query_one("#rate_approved", Select).value = (
-        "approved" if approval else SELECT_BLANK
+    app.form.update(
+        total_col="total",
+        fraud_col="fraud" if fraud else None,
+        approved_col="approved" if approval else None,
+        dimensions=("card_type",),
+        output_file=str(tmp_path / "rate.xlsx"),
+        validate_input=validate_input,
     )
-    app.query_one("#rate_dims", SelectionList).select("card_type")
-    app.query_one("#output_file").value = str(tmp_path / "rate.xlsx")
-    app.query_one("#validate_input", Checkbox).value = validate_input
 
 
 def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkeypatch) -> None:
@@ -115,6 +115,7 @@ def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkey
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             await pilot.pause()
+            await pilot.app.ensure_step("entity")
             entity = pilot.app.query_one("#entity_name", Select)
             assert entity.value == SELECT_BLANK
 
@@ -131,6 +132,8 @@ def test_load_csv_headers_populates_columns_and_meta(tmp_path: Path, monkeypatch
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.ensure_step("analysis")
 
             assert app.query_one("#entity_col", Select).value == "issuer_name"
             assert app.query_one("#share_metric", Select).value == "txn_cnt"
@@ -151,18 +154,22 @@ def test_load_csv_headers_preserves_existing_selections(tmp_path: Path, monkeypa
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("analysis")
 
             app.query_one("#share_metric", Select).value = "total"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
+            await pilot.pause()
 
             # Re-picking the same file must not wipe user selections.
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
 
             assert app.query_one("#share_metric", Select).value == "total"
-            assert set(app.query_one("#share_dims", SelectionList).selected) == {"card_type", "channel"}
+            assert set(app.query_one("#dims", SelectionList).selected) == {"card_type", "channel"}
+            assert app.form.metric == "total"
+            assert set(app.form.dimensions) == {"card_type", "channel"}
 
     asyncio.run(scenario())
 
@@ -178,13 +185,17 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
             # Entity values load in a background worker; wait for the options.
             await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
-            app.query_one("#share_dims", SelectionList).select("card_type")
+            app.query_one("#dims", SelectionList).select("card_type")
+            await pilot.pause()
+            assert app.form.entity == "Target"
             app._save_session()
 
     asyncio.run(save_scenario())
@@ -198,17 +209,21 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
     assert "citi_competitor_receives_output" not in saved
     assert "privacy_merchant_spend_scope" not in saved
     assert "acknowledge_accuracy_first" not in saved
-    assert saved["share_dims"] == ["card_type"]
+    # PR 5: one dimensions list for both modes, saved under one key.
+    assert saved["dimensions"] == ["card_type"]
+    assert "entity" not in saved and "citibank_entity" not in saved
 
     async def restore_scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause(0.3)
+            await app.ensure_step("entity")
+            await app.open_more_options()
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
             assert app.query_one("#entity_name", Select).value == SELECT_BLANK
             assert app.query_one("#time_col", Select).value == SELECT_BLANK
-            assert app.query_one("#share_dims", SelectionList).selected == []
+            assert app.query_one("#dims", SelectionList).selected == []
 
     asyncio.run(restore_scenario())
 
@@ -233,11 +248,13 @@ def test_restore_session_never_restores_compliance_attestations(
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             for widget_id in (
                 "citi_competitor_receives_output",
                 "privacy_merchant_spend_scope",
             ):
                 assert app.query_one(f"#{widget_id}", Checkbox).value is False
+            assert app.form.citi_competitor is False and app.form.merchant_spend is False
             # The acknowledgement checkbox no longer exists; consent is a
             # per-run modal and cannot be restored from a session file.
             assert not app.query("#acknowledge_accuracy_first")
@@ -781,6 +798,7 @@ def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> No
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("entity")
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
 
@@ -811,6 +829,8 @@ def test_restore_session_ignores_valid_legacy_sensitive_paths(
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.open_more_options()
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#output_file").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
@@ -838,12 +858,12 @@ def test_preflight_blocks_invalid_launches(tmp_path: Path, monkeypatch, missing:
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
                 await pilot.pause()
-                app.query_one("#validate_input", Checkbox).value = False
+                app.form.validate_input = False
             if missing == "metric":
-                app.query_one("#share_metric", Select).clear()
+                app.form.metric = None
             if missing == "dims":
-                app.query_one("#share_metric", Select).value = "txn_cnt"
-                # auto-detect off and nothing selected in #share_dims
+                app.form.metric = "txn_cnt"
+                # auto-detect off and nothing selected in the dimensions list
 
             app.run_analysis()
             log_text = ""
@@ -855,6 +875,7 @@ def test_preflight_blocks_invalid_launches(tmp_path: Path, monkeypatch, missing:
                 if "ERROR:" in log_text and app._run_state == "idle":
                     break
             # Run button must be re-enabled after a refused launch
+            await app.ensure_step("review")
             assert app.query_one("#btn_run").disabled is False
             assert app._run_state == "idle"
             return log_text
@@ -874,6 +895,9 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            for step in ("entity", "analysis"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
             # Entity values load in a background worker; wait for the options.
@@ -881,13 +905,14 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
             app.query_one("#output_file").value = str(output)
             # Keep input validation on: clean fixture data produces no issues,
             # so the run proceeds and the verdict is fully_compliant.
             app.query_one("#validate_input", Checkbox).value = True
+            await pilot.pause()
 
             app.run_analysis()
             log_text = await _await_run_completion(pilot)
@@ -921,6 +946,9 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            for step in ("entity", "analysis"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
             # Entity values load in a background worker; wait for the options.
@@ -928,14 +956,15 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
             app.query_one("#output_file").value = str(output)
             app.query_one("#validate_input", Checkbox).value = True
             # Balanced CSV is off by default (owner decision 5); this test
             # needs its console line, so opt in explicitly.
-            app.query_one("#share_export_csv", Checkbox).value = True
+            app.query_one("#export_csv", Checkbox).value = True
+            await pilot.pause()
 
             app.run_analysis()
             log_text = await _await_run_completion(pilot)
@@ -1014,6 +1043,7 @@ def test_entity_values_populate_after_worker_finishes(tmp_path: Path, monkeypatc
             app.query_one("#csv_path").value = str(FIXTURE)
             # Header load defaults entity_col to issuer_name and starts the load.
             app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
             await _wait_for_entity_values(pilot)
             await pilot.pause()
 
@@ -1040,6 +1070,7 @@ def test_entity_load_keeps_ui_responsive(tmp_path: Path, monkeypatch) -> None:
                 await pilot.pause()
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
                 assert await _wait_until(pilot, reader.started.is_set)
 
                 entity = app.query_one("#entity_name", Select)
@@ -1048,6 +1079,9 @@ def test_entity_load_keeps_ui_responsive(tmp_path: Path, monkeypatch) -> None:
                 assert entity.prompt == tui_app.ENTITY_LOADING_PROMPT
 
                 # The event loop keeps serving input while the read is blocked.
+                await app.ensure_step("analysis")
+                await app.open_more_options()
+                await pilot.pause()
                 output = app.query_one("#output_file")
                 output.value = ""
                 output.focus()
@@ -1081,6 +1115,7 @@ def test_stale_entity_result_discarded_when_column_changes(tmp_path: Path, monke
                 await pilot.pause()
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
                 assert await _wait_until(pilot, reader.started.is_set)
 
                 # Switch column while the issuer_name read is still blocked.
@@ -1113,6 +1148,7 @@ def test_stale_entity_result_discarded_when_csv_path_changes(tmp_path: Path, mon
                 await pilot.pause()
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
                 assert await _wait_until(pilot, reader.started.is_set)
                 # Operator starts typing another path; no new load yet.
                 app.query_one("#csv_path").value = str(tmp_path / "other.csv")
@@ -1144,9 +1180,11 @@ def test_entity_selection_survives_reload_of_matching_column(tmp_path: Path, mon
                 await pilot.pause()
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
                 await _wait_for_entity_values(pilot)
                 entity = app.query_one("#entity_name", Select)
                 entity.value = "Target"
+                await pilot.pause()
 
                 # Same column, different file: the reload is blocked mid-flight.
                 reader.blocked_columns.add("issuer_name")
@@ -1190,6 +1228,7 @@ def test_session_restore_with_async_entity_load_never_restores_entity(
             await pilot.pause(0.3)
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
             await _wait_for_entity_values(pilot)
             await pilot.pause()
             assert app.query_one("#entity_col", Select).value == "issuer_name"
@@ -1213,6 +1252,7 @@ def test_entity_load_error_is_logged_and_select_stays_usable(tmp_path: Path, mon
             await pilot.pause()
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
             await _wait_for_entity_values(pilot)
             await pilot.pause()
             entity = app.query_one("#entity_name", Select)
@@ -1241,8 +1281,10 @@ def test_run_is_refused_while_chosen_entity_reloads(tmp_path: Path, monkeypatch)
                 await pilot.pause()
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
                 await _wait_for_entity_values(pilot)
                 app.query_one("#entity_name", Select).value = "Target"
+                await pilot.pause()
 
                 reader.blocked_columns.add("issuer_name")
                 app.query_one("#csv_path").value = str(copy)
@@ -1255,6 +1297,7 @@ def test_run_is_refused_while_chosen_entity_reloads(tmp_path: Path, monkeypatch)
                     lambda: "still loading" in "\n".join(app.query_one("#log_output").lines),
                 )
                 assert await _wait_until(pilot, lambda: app._run_state == "idle")
+                await app.ensure_step("review")
                 assert app.query_one("#btn_run").disabled is False
                 return "\n".join(app.query_one("#log_output").lines)
             finally:
