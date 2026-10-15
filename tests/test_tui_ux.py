@@ -12,11 +12,28 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 from textual.pilot import Pilot
-from textual.widgets import Checkbox, Select, SelectionList, Static, TabbedContent
+from textual.geometry import Region
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Label,
+    ListItem,
+    ListView,
+    Select,
+    SelectionList,
+    Static,
+)
 
 import tui_app
 from core.contracts import AnalysisRunRequest
-from tui_app import SELECT_BLANK, BenchmarkApp, ClearingSpendConfirmScreen
+from core.data_loader import ValidationIssue, ValidationSeverity
+from tui_app import (
+    SELECT_BLANK,
+    BenchmarkApp,
+    ClearingSpendConfirmScreen,
+    ConfirmScreen,
+    ValidationModal,
+)
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gate_demo.csv"
 
@@ -38,6 +55,34 @@ async def _await_run_completion(pilot: Pilot, timeout: float = 60.0) -> str:
     return "\n".join(pilot.app.query_one("#log_output").lines)
 
 
+async def _wait_for_entity_values(pilot: Pilot, timeout: float = 10.0) -> None:
+    """Wait for the background entity-value load to be applied to the form."""
+    deadline = time.monotonic() + timeout
+    await pilot.pause()
+    while pilot.app.entity_values_loading and time.monotonic() < deadline:
+        await pilot.pause(0.02)
+    await pilot.pause()
+
+
+async def _wait_for_confirm_screen(pilot: Pilot, timeout: float = 5.0) -> None:
+    """Wait until the clearing-spend modal is pushed *and* laid out.
+
+    ``app.screen`` switches to the modal before its buttons are composed and
+    given a region, so clicking as soon as the screen type matches races the
+    layout pass (NoMatches / OutOfBounds under parallel load).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause(0.1)
+        screen = pilot.app.screen
+        if not isinstance(screen, ClearingSpendConfirmScreen):
+            continue
+        buttons = list(screen.query("#btn_confirm_yes, #btn_confirm_no"))
+        if len(buttons) == 2 and all(b.region.width and b.region.height for b in buttons):
+            break
+    await pilot.pause()
+
+
 async def _configure_rate_form(
     pilot: Pilot,
     tmp_path: Path,
@@ -49,16 +94,17 @@ async def _configure_rate_form(
     app = pilot.app
     app.query_one("#csv_path").value = str(FIXTURE)
     app.load_csv_headers(str(FIXTURE))
-    app.query_one(TabbedContent).active = "rate_tab"
+    # PR 5: the form model is the source of truth; step widgets bind to it.
+    app.form.mode = "rate"
     await pilot.pause()
-    app.query_one("#rate_total", Select).value = "total"
-    app.query_one("#rate_fraud", Select).value = "fraud" if fraud else SELECT_BLANK
-    app.query_one("#rate_approved", Select).value = (
-        "approved" if approval else SELECT_BLANK
+    app.form.update(
+        total_col="total",
+        fraud_col="fraud" if fraud else None,
+        approved_col="approved" if approval else None,
+        dimensions=("card_type",),
+        output_file=str(tmp_path / "rate.xlsx"),
+        validate_input=validate_input,
     )
-    app.query_one("#rate_dims", SelectionList).select("card_type")
-    app.query_one("#output_file").value = str(tmp_path / "rate.xlsx")
-    app.query_one("#validate_input", Checkbox).value = validate_input
 
 
 def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkeypatch) -> None:
@@ -69,6 +115,7 @@ def test_select_blank_sentinel_matches_empty_select_value(tmp_path: Path, monkey
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             await pilot.pause()
+            await pilot.app.ensure_step("entity")
             entity = pilot.app.query_one("#entity_name", Select)
             assert entity.value == SELECT_BLANK
 
@@ -85,6 +132,8 @@ def test_load_csv_headers_populates_columns_and_meta(tmp_path: Path, monkeypatch
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.ensure_step("analysis")
 
             assert app.query_one("#entity_col", Select).value == "issuer_name"
             assert app.query_one("#share_metric", Select).value == "txn_cnt"
@@ -105,18 +154,22 @@ def test_load_csv_headers_preserves_existing_selections(tmp_path: Path, monkeypa
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("analysis")
 
             app.query_one("#share_metric", Select).value = "total"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
+            await pilot.pause()
 
             # Re-picking the same file must not wipe user selections.
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
 
             assert app.query_one("#share_metric", Select).value == "total"
-            assert set(app.query_one("#share_dims", SelectionList).selected) == {"card_type", "channel"}
+            assert set(app.query_one("#dims", SelectionList).selected) == {"card_type", "channel"}
+            assert app.form.metric == "total"
+            assert set(app.form.dimensions) == {"card_type", "channel"}
 
     asyncio.run(scenario())
 
@@ -132,11 +185,17 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
-            app.query_one("#share_dims", SelectionList).select("card_type")
+            app.query_one("#dims", SelectionList).select("card_type")
+            await pilot.pause()
+            assert app.form.entity == "Target"
             app._save_session()
 
     asyncio.run(save_scenario())
@@ -150,17 +209,21 @@ def test_session_round_trip_restores_form(tmp_path: Path, monkeypatch) -> None:
     assert "citi_competitor_receives_output" not in saved
     assert "privacy_merchant_spend_scope" not in saved
     assert "acknowledge_accuracy_first" not in saved
-    assert saved["share_dims"] == ["card_type"]
+    # PR 5: one dimensions list for both modes, saved under one key.
+    assert saved["dimensions"] == ["card_type"]
+    assert "entity" not in saved and "citibank_entity" not in saved
 
     async def restore_scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause(0.3)
+            await app.ensure_step("entity")
+            await app.open_more_options()
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
             assert app.query_one("#entity_name", Select).value == SELECT_BLANK
             assert app.query_one("#time_col", Select).value == SELECT_BLANK
-            assert app.query_one("#share_dims", SelectionList).selected == []
+            assert app.query_one("#dims", SelectionList).selected == []
 
     asyncio.run(restore_scenario())
 
@@ -185,11 +248,13 @@ def test_restore_session_never_restores_compliance_attestations(
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             for widget_id in (
                 "citi_competitor_receives_output",
                 "privacy_merchant_spend_scope",
             ):
                 assert app.query_one(f"#{widget_id}", Checkbox).value is False
+            assert app.form.citi_competitor is False and app.form.merchant_spend is False
             # The acknowledgement checkbox no longer exists; consent is a
             # per-run modal and cannot be restored from a session file.
             assert not app.query("#acknowledge_accuracy_first")
@@ -257,14 +322,11 @@ def test_clearing_spend_confirmation_modal_uses_selected_total(
                 )
             )
             worker.start()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(app.screen, ClearingSpendConfirmScreen)
             message = str(app.screen.query_one("#confirm_message", Static).content)
             assert "Confirm clearing-spend basis" in message
-            assert "`governed_total`" in message
+            assert '"governed_total"' in message
             await pilot.click(f"#{button_id}")
             worker.join(timeout=5)
             assert not worker.is_alive()
@@ -284,7 +346,9 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
     cancelled: list[str] = []
     monkeypatch.setattr(tui_app, "prepare_run_data", prepare)
     monkeypatch.setattr(tui_app, "setup_deferred_logging", setup_logging)
-    monkeypatch.setattr(tui_app, "action_cancelled", cancelled.append)
+    monkeypatch.setattr(
+        tui_app, "action_cancelled", lambda action, prompt: cancelled.append((action, prompt))
+    )
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
@@ -297,10 +361,7 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
                 validate_input=True,
             )
             pilot.app.run_analysis()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(pilot.app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(pilot.app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_no")
             for _ in range(50):
@@ -312,7 +373,7 @@ def test_fraud_confirmation_cancel_stops_before_loading_and_logging(
     prepare.assert_not_called()
     setup_logging.assert_not_called()
     assert not (tmp_path / "logs").exists()
-    assert cancelled == ["rate_analysis"]
+    assert cancelled == [("rate_analysis", "clearing_spend")]
 
 
 def test_fraud_confirmation_continues_run_and_marks_tui_source(
@@ -334,10 +395,7 @@ def test_fraud_confirmation_continues_run_and_marks_tui_source(
             executed = MagicMock()
             app._execute_confirmed_analysis = executed  # type: ignore[method-assign]
             app.run_analysis()
-            for _ in range(50):
-                await pilot.pause(0.1)
-                if isinstance(app.screen, ClearingSpendConfirmScreen):
-                    break
+            await _wait_for_confirm_screen(pilot)
             assert isinstance(app.screen, ClearingSpendConfirmScreen)
             await pilot.click("#btn_confirm_yes")
             for _ in range(50):
@@ -351,6 +409,60 @@ def test_fraud_confirmation_continues_run_and_marks_tui_source(
     assert request.approved_col == "approved"
     assert request.fraud_col == "fraud"
     assert request._fraud_confirmation_source == "tui_modal"
+
+
+def test_quit_while_clearing_spend_confirmation_open_exits_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D10: quitting while the worker waits on a confirmation must not hang.
+
+    The worker used to block on an Event nobody would ever set, keeping the
+    process alive after the UI exited. The scenario runs in a thread so a
+    regression fails the test instead of hanging the suite.
+    """
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "logs"))
+    prepare = MagicMock(side_effect=AssertionError("CSV loading must not start"))
+    monkeypatch.setattr(tui_app, "prepare_run_data", prepare)
+    cancelled: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui_app, "action_cancelled", lambda action, prompt: cancelled.append((action, prompt))
+    )
+    workers: list[threading.Thread] = []
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            await _configure_rate_form(pilot, tmp_path, fraud=True, approval=False)
+            before = set(threading.enumerate())
+            pilot.app.run_analysis()
+            await _wait_for_confirm_screen(pilot)
+            workers.extend(t for t in threading.enumerate() if t not in before)
+            pilot.app.action_quit()
+            for _ in range(50):
+                await pilot.pause(0.1)
+                screen = pilot.app.screen
+                if isinstance(screen, ConfirmScreen) and not isinstance(
+                    screen, ClearingSpendConfirmScreen
+                ):
+                    break
+            assert "Quit anyway" in str(
+                pilot.app.screen.query_one("#confirm_message", Static).content
+            )
+            pilot.app.screen.query_one("#btn_confirm_yes", Button).press()
+            await pilot.pause(0.2)
+
+    runner = threading.Thread(target=lambda: asyncio.run(scenario()), daemon=True)
+    runner.start()
+    runner.join(timeout=30)
+    assert not runner.is_alive(), "app did not exit: worker still blocked on a confirmation"
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "analysis worker still blocked after quit"
+    prepare.assert_not_called()
+    # The quit is the only cancel recorded; the abandoned dialog adds nothing.
+    assert cancelled == [("rate_analysis", "quit_before_run")]
 
 
 def test_approval_only_tui_run_skips_clearing_spend_confirmation(
@@ -389,7 +501,7 @@ def test_new_fraud_run_attempt_shows_confirmation_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
-    monkeypatch.setattr(tui_app, "action_cancelled", lambda _action: None)
+    monkeypatch.setattr(tui_app, "action_cancelled", lambda _action, _prompt: None)
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
@@ -402,13 +514,7 @@ def test_new_fraud_run_attempt_shows_confirmation_again(
             )
             for _attempt in range(2):
                 pilot.app.run_analysis()
-                for _ in range(50):
-                    await pilot.pause(0.1)
-                    if isinstance(
-                        pilot.app.screen,
-                        ClearingSpendConfirmScreen,
-                    ):
-                        break
+                await _wait_for_confirm_screen(pilot)
                 assert isinstance(
                     pilot.app.screen,
                     ClearingSpendConfirmScreen,
@@ -449,6 +555,232 @@ def test_validation_retry_reuses_confirmed_fraud_request() -> None:
     )
 
 
+def _mixed_validation_issues() -> list[ValidationIssue]:
+    """1 error + 2 warnings whose user-derived text looks like Rich markup."""
+    return [
+        ValidationIssue(
+            ValidationSeverity.ERROR,
+            "missing_values",
+            "Column 'amt[usd]' has 12 missing values",
+            row_indices=[4, 17, 31],
+        ),
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "outliers",
+            "Column '[bold]x' outliers [/red]",
+            row_indices=[2, 9],
+        ),
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "duplicates",
+            "5 duplicate rows detected",
+        ),
+    ]
+
+
+def _rendered_text(app: BenchmarkApp, region: Region) -> str:
+    """Return the characters actually composited on screen inside ``region``."""
+    lines = [strip.text for strip in app.screen._compositor.render_strips()]
+    return "\n".join(
+        line[region.x : region.right] for line in lines[region.y : region.bottom]
+    )
+
+
+async def _open_validation_modal(
+    pilot: Pilot, issues: list[ValidationIssue]
+) -> list[bool]:
+    results: list[bool] = []
+    pilot.app.push_screen(ValidationModal(issues), results.append)
+    for _ in range(50):
+        await pilot.pause(0.05)
+        if isinstance(pilot.app.screen, ValidationModal):
+            break
+    assert isinstance(pilot.app.screen, ValidationModal)
+    await pilot.pause()
+    return results
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24)])
+def test_validation_modal_lists_every_issue_with_text_severity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: tuple[int, int],
+) -> None:
+    """Every issue gets its own visible row with a text severity badge (F29)."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    issues = _mixed_validation_issues()
+    expected = [
+        ("ERROR", "Column 'amt[usd]' has 12 missing values"),
+        ("WARNING", "Column '[bold]x' outliers [/red]"),
+        ("WARNING", "5 duplicate rows detected"),
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=size) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            modal = app.screen
+            screen_region = Region(0, 0, *size)
+
+            header = str(modal.query_one("#validation_counts", Label).content)
+            assert header == "1 error must be fixed · 2 warnings to review"
+
+            # The modal and both buttons fit on screen.
+            container = modal.query_one("#validation_container")
+            assert screen_region.contains_region(container.region)
+            for button_id in ("btn_proceed", "btn_cancel"):
+                button = modal.query_one(f"#{button_id}", Button)
+                assert button.region.area > 0
+                assert container.region.contains_region(button.region)
+
+            list_view = modal.query_one("#issue_list", ListView)
+            items = list(list_view.query(ListItem))
+            assert len(items) == len(issues)
+            for item, (severity, message) in zip(items, expected):
+                list_view.scroll_to_widget(item, animate=False)
+                await pilot.pause()
+                assert item.region.area > 0
+                assert list_view.content_region.contains_region(item.region)
+                rendered = _rendered_text(app, item.region)
+                assert severity in rendered
+                assert message in rendered
+
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert hint.startswith("3 issues")
+            assert ("scroll to review" in hint) == (list_view.max_scroll_y > 0)
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_overflow_says_scroll_and_rows_stay_reachable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 80x24 a long list scrolls, the header says so, and End reaches the last row."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    issues = [
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "outliers",
+            f"Column 'col_{index}' has outliers",
+            row_indices=[index],
+        )
+        for index in range(12)
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(80, 24)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            modal = app.screen
+            list_view = modal.query_one("#issue_list", ListView)
+            assert list_view.max_scroll_y > 0
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert "12 issues, scroll to review" in hint
+            for button_id in ("btn_proceed", "btn_cancel"):
+                assert modal.query_one(f"#{button_id}", Button).region.area > 0
+
+            assert modal.focused is list_view
+            await pilot.press("end")
+            await pilot.pause()
+            last = list(list_view.query(ListItem))[-1]
+            assert list_view.content_region.contains_region(last.region)
+            rendered = _rendered_text(app, last.region)
+            assert "WARNING" in rendered
+            assert "Column 'col_11' has outliers" in rendered
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_renders_markup_like_text_literally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Column names with ``[``/``]`` are shown verbatim, even under NO_COLOR."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("NO_COLOR", "1")
+    issues = [
+        ValidationIssue(
+            ValidationSeverity.WARNING,
+            "bad_column",
+            "Column 'amt[usd]' and '[bold]x[/bold]' and '[/]' contain [link=x]junk",
+            row_indices=[1, 2],
+        )
+    ]
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _open_validation_modal(pilot, issues)
+            item = app.screen.query_one("#issue_list", ListView).query_one(ListItem)
+            rendered = _rendered_text(app, item.region)
+            assert "WARNING" in rendered
+            assert (
+                "Column 'amt[usd]' and '[bold]x[/bold]' and '[/]' contain [link=x]junk"
+                in rendered
+            )
+            assert "Rows: 1, 2" in rendered
+
+    asyncio.run(scenario())
+
+
+def test_validation_modal_with_errors_focuses_cancel_and_escape_cancels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> list[bool]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            results = await _open_validation_modal(pilot, _mixed_validation_issues())
+            modal = pilot.app.screen
+            assert modal.query_one("#btn_proceed", Button).disabled
+            assert modal.focused is not None
+            assert modal.focused.id == "btn_cancel"
+            hint = str(modal.query_one("#validation_hint", Label).content)
+            assert "Proceed is disabled until errors are fixed" in hint
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(pilot.app.screen, ValidationModal)
+            return results
+
+    assert asyncio.run(scenario()) == [False]
+
+
+def test_validation_modal_warnings_only_needs_explicit_proceed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stray Enter cannot proceed past warnings; clicking Proceed returns True."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    warnings_only = [
+        issue
+        for issue in _mixed_validation_issues()
+        if issue.severity == ValidationSeverity.WARNING
+    ]
+
+    async def scenario() -> list[bool]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            results = await _open_validation_modal(pilot, warnings_only)
+            modal = pilot.app.screen
+            assert not modal.query_one("#btn_proceed", Button).disabled
+            assert modal.focused is not None
+            assert modal.focused.id == "issue_list"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(pilot.app.screen, ValidationModal)
+            assert results == []
+            await pilot.click("#btn_proceed")
+            await pilot.pause()
+            assert not isinstance(pilot.app.screen, ValidationModal)
+            return results
+
+    assert asyncio.run(scenario()) == [True]
+
+
 def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> None:
     session_file = tmp_path / "session.yaml"
     session_file.write_text(
@@ -466,6 +798,7 @@ def test_restore_session_ignores_stale_values(tmp_path: Path, monkeypatch) -> No
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("entity")
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
 
@@ -496,6 +829,8 @@ def test_restore_session_ignores_valid_legacy_sensitive_paths(
         async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("entity")
+            await app.open_more_options()
             assert app.query_one("#csv_path").value == ""
             assert app.query_one("#output_file").value == ""
             assert app.query_one("#entity_col", Select).value == SELECT_BLANK
@@ -523,21 +858,24 @@ def test_preflight_blocks_invalid_launches(tmp_path: Path, monkeypatch, missing:
                 app.query_one("#csv_path").value = str(FIXTURE)
                 app.load_csv_headers(str(FIXTURE))
                 await pilot.pause()
-                app.query_one("#validate_input", Checkbox).value = False
+                app.form.validate_input = False
             if missing == "metric":
-                app.query_one("#share_metric", Select).clear()
+                app.form.metric = None
             if missing == "dims":
-                app.query_one("#share_metric", Select).value = "txn_cnt"
-                # auto-detect off and nothing selected in #share_dims
+                app.form.metric = "txn_cnt"
+                # auto-detect off and nothing selected in the dimensions list
 
             app.run_analysis()
             log_text = ""
             for _ in range(40):
                 await pilot.pause(0.25)
                 log_text = "\n".join(app.query_one("#log_output").lines)
-                if "ERROR:" in log_text:
+                # The UI reset lands on a later loop turn than the log line,
+                # so wait for both rather than racing the reset under load.
+                if "ERROR:" in log_text and app._run_state == "idle":
                     break
             # Run button must be re-enabled after a refused launch
+            await app.ensure_step("review")
             assert app.query_one("#btn_run").disabled is False
             assert app._run_state == "idle"
             return log_text
@@ -557,18 +895,24 @@ def test_successful_run_updates_status_and_results(tmp_path: Path, monkeypatch) 
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            for step in ("entity", "analysis"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
             app.query_one("#output_file").value = str(output)
             # Keep input validation on: clean fixture data produces no issues,
             # so the run proceeds and the verdict is fully_compliant.
             app.query_one("#validate_input", Checkbox).value = True
+            await pilot.pause()
 
             app.run_analysis()
             log_text = await _await_run_completion(pilot)
@@ -602,16 +946,25 @@ def test_successful_run_ignores_broken_headless_stdout(tmp_path: Path, monkeypat
             app.query_one("#csv_path").value = str(FIXTURE)
             app.load_csv_headers(str(FIXTURE))
             await pilot.pause()
+            for step in ("entity", "analysis"):
+                await app.ensure_step(step)
+            await app.open_more_options()
             app.query_one("#entity_col", Select).value = "issuer_name"
             app.load_unique_entities("issuer_name")
+            # Entity values load in a background worker; wait for the options.
+            await _wait_for_entity_values(pilot)
             app.query_one("#entity_name", Select).value = "Target"
             app.query_one("#time_col", Select).value = "year_month"
             app.query_one("#share_metric", Select).value = "txn_cnt"
-            dims = app.query_one("#share_dims", SelectionList)
+            dims = app.query_one("#dims", SelectionList)
             dims.select("card_type")
             dims.select("channel")
             app.query_one("#output_file").value = str(output)
             app.query_one("#validate_input", Checkbox).value = True
+            # Balanced CSV is off by default (owner decision 5); this test
+            # needs its console line, so opt in explicitly.
+            app.query_one("#export_csv", Checkbox).value = True
+            await pilot.pause()
 
             app.run_analysis()
             log_text = await _await_run_completion(pilot)
@@ -632,3 +985,323 @@ def test_tui_log_directory_honors_runtime_isolation(
     monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(isolated))
 
     assert tui_app._resolve_log_dir() == isolated
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Background entity value loading
+# ──────────────────────────────────────────────────────────────────────
+
+FIXTURE_ISSUERS = ["P1", "P2", "P3", "P4", "P5", "P6", "Target"]
+
+
+class _GatedEntityReader:
+    """Stand-in for ``read_unique_entity_values`` that blocks chosen columns.
+
+    Blocked reads wait on ``release`` (with a timeout so a regression that
+    reads on the UI thread fails the test instead of hanging it) and then
+    delegate to the real reader.
+    """
+
+    def __init__(self, blocked_columns: set[str]) -> None:
+        self.blocked_columns = blocked_columns
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[str] = []
+        self.timed_out = False
+        self._real = tui_app.read_unique_entity_values
+
+    def __call__(self, csv_path: str, column_name: str) -> list[str]:
+        self.calls.append(column_name)
+        if column_name in self.blocked_columns:
+            self.started.set()
+            if not self.release.wait(timeout=10):
+                self.timed_out = True
+        return self._real(csv_path, column_name)
+
+
+async def _wait_until(pilot: Pilot, predicate, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return False
+        await pilot.pause(0.02)
+    return True
+
+
+def _entity_option_values(app: BenchmarkApp) -> list[str]:
+    select = app.query_one("#entity_name", Select)
+    return [value for _, value in select._options if value != SELECT_BLANK]
+
+
+def test_entity_values_populate_after_worker_finishes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.query_one("#csv_path").value = str(FIXTURE)
+            # Header load defaults entity_col to issuer_name and starts the load.
+            app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+
+            entity = app.query_one("#entity_name", Select)
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+            entity.value = "Target"
+            assert entity.value == "Target"
+
+    asyncio.run(scenario())
+
+
+def test_entity_load_keeps_ui_responsive(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
+                assert await _wait_until(pilot, reader.started.is_set)
+
+                entity = app.query_one("#entity_name", Select)
+                assert app.entity_values_loading is True
+                assert entity.disabled is True
+                assert entity.prompt == tui_app.ENTITY_LOADING_PROMPT
+
+                # The event loop keeps serving input while the read is blocked.
+                await app.ensure_step("analysis")
+                await app.open_more_options()
+                await pilot.pause()
+                output = app.query_one("#output_file")
+                output.value = ""
+                output.focus()
+                await pilot.press("o", "u", "t")
+                assert output.value == "out"
+                app.query_one("#share_metric", Select).value = "total"
+                await pilot.pause()
+                assert app.query_one("#share_metric", Select).value == "total"
+                assert app.entity_values_loading is True
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert reader.timed_out is False
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_stale_entity_result_discarded_when_column_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
+                assert await _wait_until(pilot, reader.started.is_set)
+
+                # Switch column while the issuer_name read is still blocked.
+                app.query_one("#entity_col", Select).value = "channel"
+                assert await _wait_until(
+                    pilot, lambda: _entity_option_values(app) == ["Online", "Store"]
+                )
+                assert app.entity_values_loading is False
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            # The late issuer_name result must not overwrite the channel values.
+            assert reader.calls == ["issuer_name", "channel"]
+            assert _entity_option_values(app) == ["Online", "Store"]
+            assert app.query_one("#entity_name", Select).disabled is False
+
+    asyncio.run(scenario())
+
+
+def test_stale_entity_result_discarded_when_csv_path_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    reader = _GatedEntityReader({"issuer_name"})
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
+                assert await _wait_until(pilot, reader.started.is_set)
+                # Operator starts typing another path; no new load yet.
+                app.query_one("#csv_path").value = str(tmp_path / "other.csv")
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            entity = app.query_one("#entity_name", Select)
+            assert _entity_option_values(app) == []
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_entity_selection_survives_reload_of_matching_column(tmp_path: Path, monkeypatch) -> None:
+    """The chosen entity is kept as a pending value across an async reload."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    copy = tmp_path / "copy.csv"
+    copy.write_bytes(FIXTURE.read_bytes())
+    reader = _GatedEntityReader(set())
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
+                await _wait_for_entity_values(pilot)
+                entity = app.query_one("#entity_name", Select)
+                entity.value = "Target"
+                await pilot.pause()
+
+                # Same column, different file: the reload is blocked mid-flight.
+                reader.blocked_columns.add("issuer_name")
+                app.query_one("#csv_path").value = str(copy)
+                app.load_csv_headers(str(copy), announce=False)
+                assert await _wait_until(pilot, reader.started.is_set)
+                assert entity.value == SELECT_BLANK  # options cleared while loading
+            finally:
+                reader.release.set()
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert entity.value == "Target"
+
+            # A column without that value drops the selection, as before.
+            app.query_one("#entity_col", Select).value = "channel"
+            assert await _wait_until(
+                pilot, lambda: _entity_option_values(app) == ["Online", "Store"]
+            )
+            assert entity.value == SELECT_BLANK
+
+    asyncio.run(scenario())
+
+
+def test_session_restore_with_async_entity_load_never_restores_entity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """entity_name is deliberately never persisted or restored; the async load
+    must not resurrect a legacy saved entity once the column's values land."""
+    session_file = tmp_path / "session.yaml"
+    session_file.write_text(
+        yaml.safe_dump(
+            {"entity_col": "issuer_name", "entity_name": "Target", "time_col": "year_month"}
+        )
+    )
+    monkeypatch.setattr(tui_app, "SESSION_FILE", session_file)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause(0.3)
+            app.query_one("#csv_path").value = str(FIXTURE)
+            app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            assert app.query_one("#entity_col", Select).value == "issuer_name"
+            assert _entity_option_values(app) == FIXTURE_ISSUERS
+            assert app.query_one("#entity_name", Select).value == SELECT_BLANK
+
+    asyncio.run(scenario())
+
+
+def test_entity_load_error_is_logged_and_select_stays_usable(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+
+    def failing_reader(csv_path: str, column_name: str) -> list[str]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", failing_reader)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.query_one("#csv_path").value = str(FIXTURE)
+            app.load_csv_headers(str(FIXTURE))
+            await app.ensure_step("entity")
+            await _wait_for_entity_values(pilot)
+            await pilot.pause()
+            entity = app.query_one("#entity_name", Select)
+            log_text = "\n".join(app.query_one("#log_output").lines)
+            assert "Error loading entities: boom" in log_text
+            assert app.entity_values_loading is False
+            assert entity.disabled is False
+            assert entity.prompt == tui_app.ENTITY_SELECT_PROMPT
+
+    asyncio.run(scenario())
+
+
+def test_run_is_refused_while_chosen_entity_reloads(tmp_path: Path, monkeypatch) -> None:
+    """A chosen target entity is blank mid-reload; running then would silently
+    go peer-only, so the launch is refused until the values land."""
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    copy = tmp_path / "copy.csv"
+    copy.write_bytes(FIXTURE.read_bytes())
+    reader = _GatedEntityReader(set())
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", reader)
+
+    async def scenario() -> str:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            try:
+                await pilot.pause()
+                app.query_one("#csv_path").value = str(FIXTURE)
+                app.load_csv_headers(str(FIXTURE))
+                await app.ensure_step("entity")
+                await _wait_for_entity_values(pilot)
+                app.query_one("#entity_name", Select).value = "Target"
+                await pilot.pause()
+
+                reader.blocked_columns.add("issuer_name")
+                app.query_one("#csv_path").value = str(copy)
+                app.load_csv_headers(str(copy), announce=False)
+                assert await _wait_until(pilot, reader.started.is_set)
+                assert app.entity_selection_pending is True
+                app.run_analysis()
+                assert await _wait_until(
+                    pilot,
+                    lambda: "still loading" in "\n".join(app.query_one("#log_output").lines),
+                )
+                assert await _wait_until(pilot, lambda: app._run_state == "idle")
+                await app.ensure_step("review")
+                assert app.query_one("#btn_run").disabled is False
+                return "\n".join(app.query_one("#log_output").lines)
+            finally:
+                reader.release.set()
+
+    log_text = asyncio.run(scenario())
+    assert "Target entity values are still loading" in log_text

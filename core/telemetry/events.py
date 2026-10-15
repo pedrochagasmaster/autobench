@@ -14,12 +14,17 @@ from uuid import UUID
 
 from core.telemetry.constants import (
     ACTIONS,
+    ADVANCED_OVERRIDE_OUTCOMES,
+    CANCEL_PROMPTS,
+    DATASET_LOAD_OUTCOMES,
     FAILURE_CATEGORIES,
+    LAUNCH_BLOCK_REASONS,
     LAUNCH_CONTEXTS,
     MAX_DURATION_S,
     MAX_RECORD_BYTES,
     REFUSAL_REASONS,
     SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     SURFACES,
 )
 from core.telemetry.identity import validate_username
@@ -53,6 +58,13 @@ class UnsupportedSchemaVersion(EventValidationError):
 
 @dataclass(frozen=True)
 class ValidatedEvent:
+    """A decoded record, validated against its own schema_version's catalog.
+
+    ``props`` keeps the shape of that version: a v1 ``action_completed`` has
+    no ``publication_withheld`` and a v1 ``action_cancelled`` has no
+    ``prompt``. Aggregations read optional v2 keys with ``.get``.
+    """
+
     schema_version: int
     ts: datetime
     event: str
@@ -88,6 +100,11 @@ def _validate_app_version(app_version: str) -> str:
     return app_version
 
 
+def validate_app_version(app_version: str) -> str:
+    """Public check for operator-supplied app_version filters (reports)."""
+    return _validate_app_version(app_version)
+
+
 def _validate_duration(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EventValidationError("duration_s must be a finite number")
@@ -118,13 +135,30 @@ def _enum_prop(allowed: tuple[str, ...], label: str) -> _PropValidator:
     return validate
 
 
+def _bool_prop(label: str) -> _PropValidator:
+    def validate(value: object) -> bool:
+        # Strictly a JSON boolean: 0/1, "true" or None are rejected.
+        if not isinstance(value, bool):
+            raise EventValidationError(f"invalid {label}")
+        return value
+
+    return validate
+
+
 _ACTION_PROP = _enum_prop(ACTIONS, "action")
 
-# Closed catalog: exact prop keys and their validators, per event.
-_EVENT_SCHEMAS: dict[str, dict[str, _PropValidator]] = {
-    "session_start": {"launch_context": _enum_prop(LAUNCH_CONTEXTS, "launch_context")},
-    "session_end": {"duration_s": _validate_duration},
-    "surface_viewed": {"surface": _enum_prop(SURFACES, "surface")},
+# Frozen v1 catalog (schema_version 1). Never edit it: the reader keeps
+# decoding v1 files with exactly these rules.
+_V1_SURFACES = ("share", "rate")
+# Session lifecycle props are identical in v1 to v4 (same validator objects).
+_SESSION_START_PROPS: dict[str, _PropValidator] = {
+    "launch_context": _enum_prop(LAUNCH_CONTEXTS, "launch_context")
+}
+_SESSION_END_PROPS: dict[str, _PropValidator] = {"duration_s": _validate_duration}
+_EVENT_SCHEMAS_V1: dict[str, dict[str, _PropValidator]] = {
+    "session_start": _SESSION_START_PROPS,
+    "session_end": _SESSION_END_PROPS,
+    "surface_viewed": {"surface": _enum_prop(_V1_SURFACES, "surface")},
     "action_attempted": {"action": _ACTION_PROP},
     "action_completed": {"action": _ACTION_PROP},
     "action_cancelled": {"action": _ACTION_PROP},
@@ -138,9 +172,189 @@ _EVENT_SCHEMAS: dict[str, dict[str, _PropValidator]] = {
     },
 }
 
+# Frozen v2 catalog (schema_version 2). Never edit it: v2 files keep decoding
+# with exactly these rules. Every value is a closed enum, a strict boolean, or
+# the bounded session duration; there is no free-text field.
+_V2_LAUNCH_BLOCK_REASONS = (
+    "csv_missing",
+    "entity_loading",
+    "metric_missing",
+    "total_missing",
+    "rate_column_missing",
+    "dimensions_missing",
+    "validation_errors",
+    "data_preparation_error",
+    "initialization_error",
+)
+_V2_CANCEL_PROMPTS = (
+    "validation_review",
+    "accuracy_first_consent",
+    "clearing_spend",
+    "quit_before_run",
+    "quit_during_run",
+)
+_V2_SURFACES = ("share", "rate", "validation_review", "preset_help", "advanced")
+_EVENT_SCHEMAS_V2: dict[str, dict[str, _PropValidator]] = {
+    "session_start": _SESSION_START_PROPS,
+    "session_end": _SESSION_END_PROPS,
+    "session_restored": {},
+    "surface_viewed": {"surface": _enum_prop(_V2_SURFACES, "surface")},
+    "action_attempted": {"action": _ACTION_PROP},
+    "action_completed": {
+        "action": _ACTION_PROP,
+        "publication_withheld": _bool_prop("publication_withheld"),
+    },
+    "action_cancelled": {
+        "action": _ACTION_PROP,
+        "prompt": _enum_prop(_V2_CANCEL_PROMPTS, "prompt"),
+    },
+    "action_refused": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(REFUSAL_REASONS, "reason"),
+    },
+    "action_failed": {
+        "action": _ACTION_PROP,
+        "category": _enum_prop(FAILURE_CATEGORIES, "category"),
+    },
+    "launch_blocked": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(_V2_LAUNCH_BLOCK_REASONS, "reason"),
+    },
+    "dataset_load": {"outcome": _enum_prop(DATASET_LOAD_OUTCOMES, "outcome")},
+    "advanced_override": {
+        "outcome": _enum_prop(ADVANCED_OVERRIDE_OUTCOMES, "outcome")
+    },
+}
 
-def _normalize_props(event: str, props: Mapping[str, object]) -> dict[str, object]:
-    schema = _EVENT_SCHEMAS.get(event)
+# Frozen v3 catalog (schema_version 3). Never edit it: v3 files keep decoding
+# with exactly these rules. Same events and prop keys as v2; two closed enums
+# gained values (constants.py, "v3").
+_V3_LAUNCH_BLOCK_REASONS = (
+    "csv_missing",
+    "entity_loading",
+    "metric_missing",
+    "total_missing",
+    "rate_column_missing",
+    "dimensions_missing",
+    "validation_errors",
+    "data_preparation_error",
+    "initialization_error",
+    "entity_not_found",
+)
+_V3_CANCEL_PROMPTS = (
+    "validation_review",
+    "accuracy_first_consent",
+    "clearing_spend",
+    "quit_before_run",
+    "quit_during_run",
+    "cancel_before_run",
+    "cancel_during_run",
+)
+_V3_SURFACES = ("share", "rate", "validation_review", "preset_help", "advanced")
+_EVENT_SCHEMAS_V3: dict[str, dict[str, _PropValidator]] = {
+    "session_start": _SESSION_START_PROPS,
+    "session_end": _SESSION_END_PROPS,
+    "session_restored": {},
+    "surface_viewed": {"surface": _enum_prop(_V3_SURFACES, "surface")},
+    "action_attempted": {"action": _ACTION_PROP},
+    "action_completed": {
+        "action": _ACTION_PROP,
+        "publication_withheld": _bool_prop("publication_withheld"),
+    },
+    "action_cancelled": {
+        "action": _ACTION_PROP,
+        "prompt": _enum_prop(_V3_CANCEL_PROMPTS, "prompt"),
+    },
+    "action_refused": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(REFUSAL_REASONS, "reason"),
+    },
+    "action_failed": {
+        "action": _ACTION_PROP,
+        "category": _enum_prop(FAILURE_CATEGORIES, "category"),
+    },
+    "launch_blocked": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(_V3_LAUNCH_BLOCK_REASONS, "reason"),
+    },
+    "dataset_load": {"outcome": _enum_prop(DATASET_LOAD_OUTCOMES, "outcome")},
+    "advanced_override": {
+        "outcome": _enum_prop(ADVANCED_OVERRIDE_OUTCOMES, "outcome")
+    },
+}
+
+# Current catalog (schema_version 4). Same events and prop keys as v3; the
+# only change is launch_blocked.reason gaining citi_entity_missing
+# (constants.py, "v4").
+_EVENT_SCHEMAS_V4: dict[str, dict[str, _PropValidator]] = {
+    "session_start": _SESSION_START_PROPS,
+    "session_end": _SESSION_END_PROPS,
+    "session_restored": {},
+    "surface_viewed": {"surface": _enum_prop(SURFACES, "surface")},
+    "action_attempted": {"action": _ACTION_PROP},
+    "action_completed": {
+        "action": _ACTION_PROP,
+        "publication_withheld": _bool_prop("publication_withheld"),
+    },
+    "action_cancelled": {
+        "action": _ACTION_PROP,
+        "prompt": _enum_prop(CANCEL_PROMPTS, "prompt"),
+    },
+    "action_refused": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(REFUSAL_REASONS, "reason"),
+    },
+    "action_failed": {
+        "action": _ACTION_PROP,
+        "category": _enum_prop(FAILURE_CATEGORIES, "category"),
+    },
+    "launch_blocked": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(LAUNCH_BLOCK_REASONS, "reason"),
+    },
+    "dataset_load": {"outcome": _enum_prop(DATASET_LOAD_OUTCOMES, "outcome")},
+    "advanced_override": {
+        "outcome": _enum_prop(ADVANCED_OVERRIDE_OUTCOMES, "outcome")
+    },
+}
+
+_EVENT_SCHEMAS_BY_VERSION: dict[int, dict[str, dict[str, _PropValidator]]] = {
+    1: _EVENT_SCHEMAS_V1,
+    2: _EVENT_SCHEMAS_V2,
+    3: _EVENT_SCHEMAS_V3,
+    4: _EVENT_SCHEMAS_V4,
+}
+_EVENT_SCHEMAS = _EVENT_SCHEMAS_BY_VERSION[SCHEMA_VERSION]
+if tuple(_EVENT_SCHEMAS_BY_VERSION) != SUPPORTED_SCHEMA_VERSIONS:  # pragma: no cover
+    raise RuntimeError("telemetry catalogs must match SUPPORTED_SCHEMA_VERSIONS")
+
+# Events whose schema did not change since v1 keep being *written* as
+# schema_version 1, so an installed v1 reader still passes its shared-file
+# gate (it needs one v1-valid record) and still counts users and sessions on
+# a node that only has new records. Every other event is written at
+# SCHEMA_VERSION; a v1 reader skips each of those with a visible warning.
+# Only session lifecycle events qualify: writing attempted/refused/failed as v1
+# while completed is v2 would make an old reader's funnel inconsistent.
+LEGACY_WRITE_EVENTS = frozenset({"session_start", "session_end"})
+
+
+def record_schema_version(event: str) -> int:
+    """schema_version stamped on a newly built record of ``event``."""
+    return 1 if event in LEGACY_WRITE_EVENTS else SCHEMA_VERSION
+
+
+def event_names(schema_version: int = SCHEMA_VERSION) -> tuple[str, ...]:
+    """Event names of one supported schema version, in catalog order."""
+    return tuple(_EVENT_SCHEMAS_BY_VERSION[schema_version])
+
+
+def _normalize_props(
+    event: str,
+    props: Mapping[str, object],
+    *,
+    schema_version: int = SCHEMA_VERSION,
+) -> dict[str, object]:
+    schema = _EVENT_SCHEMAS_BY_VERSION[schema_version].get(event)
     if schema is None:
         raise EventValidationError(f"unknown event: {event}")
     props_map = _require_mapping(props, label="props")
@@ -227,7 +441,7 @@ def build_record(
     normalized_props = _normalize_props(event, props)
     ts = _format_ts(_utc_now() if now is None else now)
     payload = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": record_schema_version(event),
         "ts": ts,
         "event": event,
         "user": validated_user,
@@ -279,7 +493,7 @@ def decode_record(raw_line: bytes) -> ValidatedEvent:
     schema_version = payload["schema_version"]
     if not isinstance(schema_version, int) or isinstance(schema_version, bool):
         raise EventValidationError("schema_version must be an integer")
-    if schema_version != SCHEMA_VERSION:
+    if schema_version not in _EVENT_SCHEMAS_BY_VERSION:
         raise UnsupportedSchemaVersion(f"unsupported schema_version: {schema_version}")
 
     ts = _parse_ts(payload["ts"])
@@ -294,7 +508,9 @@ def decode_record(raw_line: bytes) -> ValidatedEvent:
 
     session_id = _require_canonical_session_id_text(payload["session_id"])
     app_version = _validate_app_version(payload["app_version"])
-    normalized_props = _normalize_props(event, payload["props"])
+    normalized_props = _normalize_props(
+        event, payload["props"], schema_version=schema_version
+    )
 
     return ValidatedEvent(
         schema_version=schema_version,

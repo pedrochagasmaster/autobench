@@ -921,7 +921,7 @@ def test_sole_4_35_publication_completes_telemetry_and_authorizes_logs(
     assert artifacts.privacy_log_authorized is True
     assert events == [
         ("attempted", ("share_analysis",)),
-        ("completed", ("share_analysis",)),
+        ("completed", ("share_analysis", False)),
     ]
 
 

@@ -32,7 +32,7 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,172}$")
 
 
 def test_constants_match_approved_design() -> None:
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 4
     assert MAX_RECORD_BYTES == 8192
     assert SHARED_GATE_SCAN_MAX_BYTES == 64 * 1024
     assert DATA_CAPACITY == 256

@@ -10,7 +10,7 @@ from typing import Any, List, Tuple
 from unittest.mock import MagicMock
 
 import pytest
-from textual.widgets import TabbedContent
+from tui.form_widgets import ModeSwitch
 
 import core.analysis_run as analysis_run
 import core.telemetry as telemetry
@@ -63,7 +63,27 @@ def _patch_tui_helpers(
     monkeypatch.setattr(
         tui_app,
         "action_cancelled",
-        lambda action: calls.append(("cancelled", (action,))),
+        lambda action, prompt: calls.append(("cancelled", (action, prompt))),
+    )
+    monkeypatch.setattr(
+        tui_app,
+        "launch_blocked",
+        lambda action, reason: calls.append(("blocked", (action, reason))),
+    )
+    monkeypatch.setattr(
+        tui_app,
+        "dataset_load",
+        lambda outcome: calls.append(("dataset", (outcome,))),
+    )
+    monkeypatch.setattr(
+        tui_app,
+        "advanced_override",
+        lambda outcome: calls.append(("advanced", (outcome,))),
+    )
+    monkeypatch.setattr(
+        tui_app,
+        "session_restored",
+        lambda: calls.append(("restored", ())),
     )
 
 
@@ -95,14 +115,16 @@ def test_tab_switch_rate_and_share_deduped(
             app = pilot.app
             await pilot.pause()
 
-            tabs = app.query_one(TabbedContent)
-            tabs.active = "rate_tab"
+            # PR 5: the Share/Rate switch on step 3 (one control, ←/→).
+            await app.ensure_step("analysis")
+            switch = app.query_one("#mode_switch", ModeSwitch)
+            switch.mode = "rate"
             await pilot.pause()
-            tabs.active = "rate_tab"
+            switch.mode = "rate"
             await pilot.pause()
-            tabs.active = "share_tab"
+            switch.mode = "share"
             await pilot.pause()
-            tabs.active = "share_tab"
+            switch.mode = "share"
             await pilot.pause()
 
             surfaces = [c for c in calls if c[0] == "surface"]
@@ -145,8 +167,59 @@ def test_validation_modal_false_emits_cancel_for_request_mode(
         saved_df=None,
         log_widget=log,
     )
-    assert ("cancelled", ("rate_analysis",)) in calls
+    assert ("cancelled", ("rate_analysis", "validation_review")) in calls
+    assert not any(c[0] == "blocked" for c in calls)
     app._reset_run_ui.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("result", "has_errors", "should_abort"),
+    [
+        (False, True, False),  # Proceed disabled: Cancel is a forced exit
+        (False, False, True),
+        (False, True, True),
+        (True, False, True),  # Proceed pressed but validation aborts
+    ],
+)
+def test_validation_modal_forced_exit_is_launch_block_not_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    result: bool,
+    has_errors: bool,
+    should_abort: bool,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    app = BenchmarkApp()
+    app._reset_run_ui = MagicMock()  # type: ignore[method-assign]
+    app.run_analysis = MagicMock()  # type: ignore[method-assign]
+    app._handle_validation_modal_result(
+        result,
+        has_errors=has_errors,
+        should_abort=should_abort,
+        request=AnalysisRunRequest(mode="share", metric="txn_cnt"),
+        saved_df=None,
+        log_widget=MagicMock(),
+    )
+    assert calls == [("blocked", ("share_analysis", "validation_errors"))]
+    app.run_analysis.assert_not_called()
+
+
+def test_validation_modal_none_result_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    app = BenchmarkApp()
+    app._reset_run_ui = MagicMock()  # type: ignore[method-assign]
+    app._handle_validation_modal_result(
+        None,
+        has_errors=True,
+        should_abort=True,
+        request=AnalysisRunRequest(mode="share", metric="txn_cnt"),
+        saved_df=None,
+        log_widget=MagicMock(),
+    )
+    assert calls == []
 
 
 def test_validation_modal_true_or_errors_do_not_cancel(
@@ -179,15 +252,23 @@ def test_validation_modal_true_or_errors_do_not_cancel(
     assert not any(c[0] == "cancelled" for c in calls)
 
 
-def test_csv_picker_cancel_and_quit_confirm_emit_no_cancel(
+@pytest.mark.parametrize(
+    ("run_state", "prompt"),
+    [("running", "quit_during_run"), ("validating", "quit_before_run")],
+)
+def test_csv_picker_cancel_and_quit_confirm_cancel_semantics(
     monkeypatch: pytest.MonkeyPatch,
+    run_state: str,
+    prompt: str,
 ) -> None:
-    """Real action_open_file / action_quit callbacks must not emit action_cancelled."""
+    """Picker cancel and declined quit emit nothing; a confirmed quit names
+    the abandoned intent (G15) with the stage it was in."""
     calls: List[Tuple[str, tuple]] = []
     _patch_tui_helpers(monkeypatch, calls)
 
     app = BenchmarkApp()
-    app._run_state = "running"
+    app._run_state = "idle"  # PR 5: the picker is not offered while a run locks the form
+    app._run_mode = "rate"
     app._save_session = MagicMock()  # type: ignore[method-assign]
     app.exit = MagicMock()  # type: ignore[method-assign]
     app.load_csv_headers = MagicMock()  # type: ignore[method-assign]
@@ -206,20 +287,136 @@ def test_csv_picker_cancel_and_quit_confirm_emit_no_cancel(
     assert callable(on_picked)
     on_picked(None)
     on_picked("")
+    assert calls == []
 
     captured.clear()
+    app._run_state = run_state
+    app.action_open_file()  # locked while a run is active: nothing opens
+    assert captured == []
     app.action_quit()
     assert len(captured) == 1
     on_confirm = captured[0][1]
     assert callable(on_confirm)
     on_confirm(False)
     on_confirm(None)
+    assert calls == []
     on_confirm(True)
     app._save_session.assert_called_once()
     app.exit.assert_called_once()
 
-    assert not any(c[0] == "cancelled" for c in calls)
-    assert not any(name == "action_cancelled" for name, _args in calls)
+    assert calls == [("cancelled", ("rate_analysis", prompt))]
+
+
+def test_fail_launch_records_only_the_closed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    app = BenchmarkApp()
+    app._run_mode = "share"
+    app.query_one = MagicMock()  # type: ignore[method-assign]
+    app.call_from_thread = lambda fn, *a, **k: None  # type: ignore[method-assign]
+    monkeypatch.setattr(tui_app, "write_log_message", lambda *_a, **_k: None)
+    monkeypatch.setattr(tui_app, "finalize_deferred_logging", lambda *_a, **_k: None)
+
+    app._fail_launch("Primary metric txn_cnt is required.", block_reason="metric_missing")
+    app._fail_launch("accuracy_first run cancelled: operator consent was not given.")
+    assert calls == [("blocked", ("share_analysis", "metric_missing"))]
+
+
+def test_dataset_load_dedupes_and_never_passes_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    app = BenchmarkApp()
+    app._emit_dataset_load("loaded", "/data/acme_peers.csv")
+    app._emit_dataset_load("loaded", "/data/acme_peers.csv")
+    app._emit_dataset_load("not_found", "/data/typo.csv")
+    app._emit_dataset_load("loaded", "/data/acme_peers.csv")
+    assert calls == [
+        ("dataset", ("loaded",)),
+        ("dataset", ("not_found",)),
+        ("dataset", ("loaded",)),
+    ]
+
+
+def test_mount_with_saved_session_emits_session_restored(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    (tmp_path / "session.yaml").write_text("validate_input: false\n", encoding="utf-8")
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    names = [c[0] for c in calls]
+    assert names.index("start") < names.index("restored")
+    assert names.count("restored") == 1
+
+
+def test_mount_without_saved_session_emits_no_restore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert not any(c[0] == "restored" for c in calls)
+
+
+def test_help_and_advanced_panel_emit_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            pilot.app.action_toggle_advanced()  # PR 5: opens Expert settings
+            await pilot.pause()
+            pilot.app.action_toggle_advanced()  # closing emits nothing
+            await pilot.pause()
+            pilot.app.action_show_help()
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    surfaces = [c[1][0] for c in calls if c[0] == "surface"]
+    assert surfaces.count("advanced") == 1
+    assert surfaces.count("preset_help") == 1
+
+
+def test_advanced_overrides_emit_closed_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: List[Tuple[str, tuple]] = []
+    _patch_tui_helpers(monkeypatch, calls)
+    app = BenchmarkApp()
+    app.notify = MagicMock()  # type: ignore[method-assign]
+    # Export with nothing to export: "empty".
+    app._collect_advanced_override_data = MagicMock(return_value={})  # type: ignore[method-assign]
+    assert app.export_advanced_overrides() is None
+    # PR 5: expert changes are written at run time; a write failure is
+    # "failed" and stops the launch (the caller reports it).
+    app.form.expert = {"adv_bounds_max_weight": "0.3"}
+    app.preset_workflow = MagicMock()
+    app.preset_workflow.load_preset_data.return_value = {"compliance_posture": "strict"}
+    app.preset_workflow.write_override_file.side_effect = OSError("/secret/dir is read-only")
+    with pytest.raises(OSError):
+        app._write_expert_override()
+    app.preset_workflow.write_override_file.side_effect = None
+    app.preset_workflow.write_override_file.return_value = "adv_override_x.yaml"
+    assert app._write_expert_override() == "adv_override_x.yaml"
+    assert calls == [("advanced", ("empty",)), ("advanced", ("failed",)), ("advanced", ("applied",))]
 
 
 def test_telemetry_service_failure_does_not_crash_lifecycle(
@@ -235,7 +432,7 @@ def test_telemetry_service_failure_does_not_crash_lifecycle(
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            pilot.app.query_one(TabbedContent).active = "rate_tab"
+            pilot.app.form.mode = "rate"
             await pilot.pause()
 
     asyncio.run(scenario())

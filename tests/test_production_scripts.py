@@ -579,15 +579,18 @@ def test_edge_deploy_profile_covers_runtime_operational_paths() -> None:
         "setup_alias.sh",
         '"tools/prod_tui/**/*.py"',
         '"scripts/**/*.py"',
+        '"tui/**/*.py"',
     ):
         assert path in profile
+    # The TUI's UI package (tui/) is compiled on the node like the rest.
+    assert 'compile_targets: "benchmark.py tui_app.py core utils scripts tools tui"' in profile
 
 
 def test_setup_remote_env_runs_wrapper_checks_and_emits_summary_contract() -> None:
     setup = (ROOT / "setup_remote_env.sh").read_text(encoding="utf-8")
 
     assert "./install.sh" in setup
-    assert "-m compileall benchmark.py tui_app.py core utils scripts tools" in setup
+    assert "-m compileall benchmark.py tui_app.py core utils scripts tools tui" in setup
     assert "-m tools.prod_tui drift" in setup
     assert '"$ROOT_DIR/bin/autobench-cli" config list' in setup
     assert '"$ROOT_DIR/bin/autobench-cli" share --help' in setup
