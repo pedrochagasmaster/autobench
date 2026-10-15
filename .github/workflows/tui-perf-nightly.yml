@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 150
     env:
       PERF_OUT: ${{ github.workspace }}/perf-results
-      PERF_DATA: ${{ runner.temp }}/tui-perf-data
 
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +46,7 @@ jobs:
           set +e
           uv run --locked --no-sync python scripts/tui_perf_probe.py \
             --rows 10000 100000 1000000 --cardinality 50 5000 --repeat 5 \
-            --data-dir "$PERF_DATA" --json-out "$PERF_OUT/nightly.json" \
+            --data-dir "$RUNNER_TEMP/tui-perf-data" --json-out "$PERF_OUT/nightly.json" \
             --budget > "$PERF_OUT/nightly.txt" 2>&1
           status=$?
           {

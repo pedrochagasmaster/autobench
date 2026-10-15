@@ -33,7 +33,6 @@ jobs:
     timeout-minutes: 45
     env:
       PERF_OUT: ${{ github.workspace }}/perf-results
-      PERF_DATA: ${{ runner.temp }}/tui-perf-data
       PROBE_ARGS: >-
         --rows 10000 --cardinality 50 5000 --repeat 1 --quiet
         --phases startup csv entity keys advanced picker log entity-large
@@ -73,10 +72,10 @@ jobs:
           mkdir -p "$PERF_OUT"
           for round in 1 2 3; do
             uv run --locked --no-sync python scripts/tui_perf_probe.py \
-              --repo "$RUNNER_TEMP/base" --data-dir "$PERF_DATA" $PROBE_ARGS \
+              --repo "$RUNNER_TEMP/base" --data-dir "$RUNNER_TEMP/tui-perf-data" $PROBE_ARGS \
               --json-out "$PERF_OUT/base_$round.json"
             uv run --locked --no-sync python scripts/tui_perf_probe.py \
-              --repo "$GITHUB_WORKSPACE" --data-dir "$PERF_DATA" $PROBE_ARGS \
+              --repo "$GITHUB_WORKSPACE" --data-dir "$RUNNER_TEMP/tui-perf-data" $PROBE_ARGS \
               --json-out "$PERF_OUT/head_$round.json"
           done
 
