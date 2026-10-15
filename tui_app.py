@@ -13,6 +13,7 @@ import logging
 import threading
 import traceback
 import glob
+import bisect
 import contextlib
 import copy
 import importlib
@@ -56,6 +57,7 @@ from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList, Suggester
 from textual.worker import get_current_worker
 from rich.text import Text
 
@@ -196,6 +198,73 @@ SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rat
 
 ENTITY_SELECT_PROMPT = "Select entity…"
 ENTITY_LOADING_PROMPT = "Loading entities…"
+ENTITY_FILTER_PLACEHOLDER = "Type to filter entities (blank = peer-only)"
+# Above this many distinct values the stock Select (one option per value,
+# opened as an overlay) gets slow: 0.28 s to open at 5,000 and 2.6 s at 100k.
+# Larger lists use the filter + capped OptionList picker instead (03 §6).
+ENTITY_SELECT_MAX = 2000
+ENTITY_MATCH_LIMIT = 200
+_ENTITY_PEER_ONLY_ID = "peer-only"
+_ENTITY_VALUE_ID_PREFIX = "v:"
+
+
+class EntityIndex:
+    """All distinct values of an entity column, searchable without a widget.
+
+    Built on the entity worker thread. Matching is a ``bisect`` prefix search
+    over the casefolded values, with a substring scan as the fallback when
+    nothing starts with the typed text. ``value_set`` is the full set used to
+    validate a typed target entity: only an exact value ever becomes one.
+    """
+
+    def __init__(self, values: List[str]) -> None:
+        self.values = values
+        self.value_set = frozenset(values)
+        pairs = sorted((value.casefold(), value) for value in values)
+        self.folded = [folded for folded, _ in pairs]
+        self.ordered = [value for _, value in pairs]
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def _prefix_range(self, needle: str) -> tuple:
+        lo = bisect.bisect_left(self.folded, needle)
+        hi = bisect.bisect_left(self.folded, needle + "\U0010ffff", lo)
+        return lo, hi
+
+    def first_with_prefix(self, needle: str) -> Optional[str]:
+        """First value (casefolded order) starting with casefolded ``needle``."""
+        lo, hi = self._prefix_range(needle)
+        return self.ordered[lo] if lo < hi else None
+
+    def matches(self, text: str, limit: int = ENTITY_MATCH_LIMIT) -> tuple:
+        """Return (up to ``limit`` matching values, total number of matches)."""
+        needle = text.casefold()
+        if not needle:
+            return self.values[:limit], len(self.values)
+        lo, hi = self._prefix_range(needle)
+        if lo < hi:
+            return self.ordered[lo:min(hi, lo + limit)], hi - lo
+        found = [value for folded, value in zip(self.folded, self.ordered) if needle in folded]
+        return found[:limit], len(found)
+
+
+class EntitySuggester(SuggestFromList):
+    """``SuggestFromList`` over an ``EntityIndex``: O(log n) prefix lookups.
+
+    The stock implementation scans its list linearly on every keystroke and
+    casefolds the whole list up front on the UI thread; the index has already
+    done that work on the worker thread.
+    """
+
+    def __init__(self, index: EntityIndex) -> None:
+        Suggester.__init__(self, case_sensitive=False)
+        self._index = index
+        self._suggestions = index.ordered
+        self._for_comparison = index.folded
+
+    async def get_suggestion(self, value: str) -> Optional[str]:
+        return self._index.first_with_prefix(value)
 
 
 def read_unique_entity_values(csv_path: str, column_name: str) -> List[str]:
@@ -916,6 +985,20 @@ class BenchmarkApp(App):
         margin-bottom: 1;
     }
 
+    #entity_picker {
+        height: auto;
+    }
+
+    #entity_matches {
+        height: 8;
+        border: round $primary 40%;
+        margin-bottom: 1;
+    }
+
+    #entity_match_count {
+        margin-bottom: 0;
+    }
+
     #csv_meta {
         color: $text-muted;
         margin-bottom: 1;
@@ -1227,6 +1310,11 @@ class BenchmarkApp(App):
                         with Vertical(classes="field-pair"):
                             yield Label("Target entity (blank = peer-only)", classes="field-label")
                             yield Select([], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True)
+                            # Replaces the Select above ENTITY_SELECT_MAX values.
+                            with Vertical(id="entity_picker", classes="hidden"):
+                                yield Input(placeholder=ENTITY_FILTER_PLACEHOLDER, id="entity_filter")
+                                yield Static("", id="entity_match_count", classes="field-hint")
+                                yield OptionList(id="entity_matches")
 
                 with Container(id="section_analysis", classes="form-section") as section:
                     section.border_title = "3 · Analysis Options"
@@ -2200,6 +2288,24 @@ class BenchmarkApp(App):
         """Handle Enter in text inputs."""
         if event.input.id == "csv_path":
             self._try_load_csv_from_path_input(event.input.value)
+        elif event.input.id == "entity_filter":
+            self.query_one("#entity_matches", OptionList).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "entity_filter" and self._entity_large:
+            self._refresh_entity_matches()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id != "entity_matches":
+            return
+        option_id = event.option.id or ""
+        entity_filter = self.query_one("#entity_filter", Input)
+        if option_id == _ENTITY_PEER_ONLY_ID:
+            entity_filter.value = ""
+        elif option_id.startswith(_ENTITY_VALUE_ID_PREFIX):
+            entity_filter.value = option_id[len(_ENTITY_VALUE_ID_PREFIX):]
+        self._refresh_entity_matches()
+        entity_filter.focus()
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
         """Handle focus leaving text inputs."""
@@ -2636,6 +2742,126 @@ class BenchmarkApp(App):
     _entity_load_key: Optional[tuple] = None
     _entity_options_key: Optional[tuple] = None
     _pending_entity_value: Any = SELECT_BLANK
+    # Large-list mode (more than ENTITY_SELECT_MAX values): the #entity_picker
+    # filter replaces the Select, the full value set lives in _entity_index,
+    # and _entity_choice is the chosen value (None = peer-only / no match).
+    _entity_large: bool = False
+    _entity_index: Optional[EntityIndex] = None
+    _entity_choice: Optional[str] = None
+
+    @property
+    def entity_choices(self) -> List[str]:
+        """Every target-entity value currently offered, in either widget."""
+        if self._entity_large and self._entity_index is not None:
+            return list(self._entity_index.values)
+        try:
+            select = self.query_one("#entity_name", Select)
+        except NoMatches:
+            return []
+        return [value for _, value in select._options if value != SELECT_BLANK]
+
+    def _current_entity_choice(self) -> Any:
+        """The chosen target entity, or SELECT_BLANK for none (either widget)."""
+        if self._entity_large:
+            return self._entity_choice if self._entity_choice is not None else SELECT_BLANK
+        try:
+            return self.query_one("#entity_name", Select).value
+        except NoMatches:
+            return SELECT_BLANK
+
+    def _set_entity_loading(self, loading: bool) -> None:
+        """Flip both entity widgets between their loading and usable states."""
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+            entity_filter = self.query_one("#entity_filter", Input)
+        except NoMatches:
+            return
+        entity_select.prompt = ENTITY_LOADING_PROMPT if loading else ENTITY_SELECT_PROMPT
+        entity_select.disabled = loading
+        entity_filter.placeholder = ENTITY_LOADING_PROMPT if loading else ENTITY_FILTER_PLACEHOLDER
+        entity_filter.disabled = loading
+
+    def _show_entity_picker(self, large: bool) -> None:
+        """Show the filter picker (large lists) or the Select (the rest)."""
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+            picker = self.query_one("#entity_picker")
+        except NoMatches:
+            return
+        focused = self.focused
+        had_focus = focused is not None and (
+            focused is entity_select or picker in focused.ancestors
+        )
+        entity_select.set_class(large, "hidden")
+        picker.set_class(not large, "hidden")
+        if had_focus:
+            (self.query_one("#entity_filter", Input) if large else entity_select).focus()
+
+    def _reset_large_entity_picker(self) -> None:
+        """Leave large-list mode; the (empty) Select is shown until a load lands."""
+        self._entity_large = False
+        self._entity_index = None
+        self._entity_choice = None
+        self._show_entity_picker(False)
+        try:
+            entity_filter = self.query_one("#entity_filter", Input)
+            matches = self.query_one("#entity_matches", OptionList)
+            count = self.query_one("#entity_match_count", Static)
+        except NoMatches:
+            return
+        entity_filter.suggester = None
+        entity_filter.value = ""
+        matches.clear_options()
+        count.update("")
+
+    def _refresh_entity_matches(self) -> None:
+        """Rebuild the capped match list for the current filter text (UI thread)."""
+        index = self._entity_index
+        try:
+            text = self.query_one("#entity_filter", Input).value
+            matches = self.query_one("#entity_matches", OptionList)
+            count = self.query_one("#entity_match_count", Static)
+        except NoMatches:
+            return
+        if index is None:
+            matches.clear_options()
+            count.update("")
+            return
+        # Privacy rule (03 §6): only an exact value becomes the target entity;
+        # free text never does, so a typo cannot turn into a peer-only run.
+        self._entity_choice = text if text in index.value_set else None
+        shown, total = index.matches(text.strip())
+        options = [Option("None: peer group only", id=_ENTITY_PEER_ONLY_ID)]
+        options.extend(
+            Option(Text(value), id=f"{_ENTITY_VALUE_ID_PREFIX}{value}") for value in shown
+        )
+        matches.set_options(options)
+        if not text.strip():
+            message = f"{len(index):,} entities. Type to filter."
+        elif self._entity_choice is not None:
+            message = f"Selected: {self._entity_choice}"
+        elif total:
+            message = f"{len(shown):,} of {total:,} matches. Choose one; typed text alone is not used."
+        else:
+            message = "No entity matches. Clear the filter for a peer-only run."
+        count.update(Text(message))
+
+    def _target_entity_for_run(self) -> tuple:
+        """Return (target entity or None, blocking message or None) for a run."""
+        if not self._entity_large:
+            value = self.query_one("#entity_name", Select).value
+            return (value if value != SELECT_BLANK else None), None
+        text = self.query_one("#entity_filter", Input).value
+        if not text.strip():
+            return None, None  # blank = peer-only, as with the Select
+        index = self._entity_index
+        if index is not None and text in index.value_set:
+            return text, None
+        column = self.query_one("#entity_col", Select).value
+        return None, (
+            f"Target entity not found in {column}. Choose a value from the list, "
+            "or clear the filter for a peer-only run."
+        )
 
     def _entity_source_key(self) -> Optional[tuple]:
         """The (csv_path, entity column) the form currently points at."""
@@ -2673,14 +2899,16 @@ class BenchmarkApp(App):
 
         # Remember the operator's choice before the options are replaced; it is
         # re-applied when this load lands if the value exists in the new column.
-        if entity_select.value != SELECT_BLANK:
-            self._pending_entity_value = entity_select.value
+        current = self._current_entity_choice()
+        if current != SELECT_BLANK:
+            self._pending_entity_value = current
         if key != self._entity_options_key:
             # Options from another file/column are meaningless for this one.
             entity_select.set_options([])
+            if self._entity_large:
+                self._reset_large_entity_picker()
             self._entity_options_key = None
-        entity_select.prompt = ENTITY_LOADING_PROMPT
-        entity_select.disabled = True
+        self._set_entity_loading(True)
         self._entity_load_key = key
         self._load_unique_entities_worker(csv_path, column_name)
 
@@ -2689,16 +2917,19 @@ class BenchmarkApp(App):
         """Read the entity column on a worker thread and hand results back."""
         worker = get_current_worker()
         values: Optional[List[str]] = None
+        index: Optional[EntityIndex] = None
         error: Optional[Exception] = None
         try:
             values = read_unique_entity_values(csv_path, column_name)
+            if len(values) > ENTITY_SELECT_MAX:
+                index = EntityIndex(values)  # sorted/casefolded off the UI thread
         except Exception as exc:  # reported on the UI thread like before
             error = exc
         if worker.is_cancelled:
             return  # superseded by a newer request (exclusive group) or exit
         try:
             self.call_from_thread(
-                self._apply_unique_entities, (csv_path, column_name), values, error
+                self._apply_unique_entities, (csv_path, column_name), values, error, index
             )
         except RuntimeError:
             pass  # App loop already gone (shutdown); nothing to update.
@@ -2708,8 +2939,13 @@ class BenchmarkApp(App):
         key: tuple,
         values: Optional[List[str]],
         error: Optional[Exception],
+        index: Optional[EntityIndex] = None,
     ) -> None:
-        """Apply a finished entity load on the UI thread, unless it is stale."""
+        """Apply a finished entity load on the UI thread, unless it is stale.
+
+        Up to ENTITY_SELECT_MAX values fill the Select. Above that, the filter
+        picker replaces it and the full value set stays in an ``EntityIndex``.
+        """
         if getattr(self, "_exit", False):
             return
         if key != self._entity_load_key:
@@ -2732,15 +2968,32 @@ class BenchmarkApp(App):
             values = values or []
             desired = self._pending_entity_value
             self._pending_entity_value = SELECT_BLANK
-            with self.batch_update():
-                entity_select.set_options([(val, val) for val in values])
-                if desired != SELECT_BLANK and desired in set(values):
-                    entity_select.value = desired
+            if len(values) > ENTITY_SELECT_MAX:
+                self._apply_large_entity_values(index or EntityIndex(values), desired)
+            else:
+                with self.batch_update():
+                    if self._entity_large:
+                        self._reset_large_entity_picker()
+                    self._show_entity_picker(False)
+                    entity_select.set_options([(val, val) for val in values])
+                    if desired != SELECT_BLANK and desired in set(values):
+                        entity_select.value = desired
             self._entity_options_key = key
         finally:
-            # Loaded, failed or dropped: the Select must be usable again.
-            entity_select.prompt = ENTITY_SELECT_PROMPT
-            entity_select.disabled = False
+            # Loaded, failed or dropped: the entity widgets must be usable again.
+            self._set_entity_loading(False)
+
+    def _apply_large_entity_values(self, index: EntityIndex, desired: Any) -> None:
+        """Switch to the filter picker for a list above ENTITY_SELECT_MAX (UI thread)."""
+        entity_filter = self.query_one("#entity_filter", Input)
+        with self.batch_update():
+            self._entity_large = True
+            self._entity_index = index
+            entity_filter.suggester = EntitySuggester(index)
+            restored = desired if desired != SELECT_BLANK and desired in index.value_set else None
+            entity_filter.value = restored or ""
+            self._refresh_entity_matches()
+            self._show_entity_picker(True)
 
     def _cancel_entity_load(self) -> None:
         """Abandon an in-flight entity load and leave the Select usable."""
@@ -2748,12 +3001,7 @@ class BenchmarkApp(App):
             return
         self._entity_load_key = None
         self.workers.cancel_group(self, "entity_values")
-        try:
-            entity_select = self.query_one("#entity_name", Select)
-        except NoMatches:
-            return
-        entity_select.prompt = ENTITY_SELECT_PROMPT
-        entity_select.disabled = False
+        self._set_entity_loading(False)
 
     @property
     def entity_values_loading(self) -> bool:
@@ -2892,8 +3140,12 @@ class BenchmarkApp(App):
                     )
                     return
 
-                entity_val = self.query_one("#entity_name").value
-                entity = entity_val if entity_val != SELECT_BLANK else None
+                entity, entity_error = self._target_entity_for_run()
+                if entity_error:
+                    # Large-list picker: typed text that is not an exact entity
+                    # must never silently become a peer-only run (03 §6).
+                    self._fail_launch(entity_error, focus_id="entity_filter")
+                    return
                 entity_col_val = self.query_one("#entity_col").value
                 entity_col = entity_col_val if entity_col_val != SELECT_BLANK else "issuer_name"
                 preset_val = self.query_one("#preset_select").value

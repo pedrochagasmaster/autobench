@@ -407,6 +407,220 @@ def test_quick_picks_are_deduplicated_across_patterns(
     assert len(picks) == len(set(picks))
 
 
+# ── 6. Large entity lists ─────────────────────────────────────────────────
+
+
+def _write_entity_csv(path: Path, entities: int, *, alt: int = 5) -> Path:
+    width = len(str(entities - 1))
+    lines = ["issuer_name,alt_entity,card_type,txn_cnt"]
+    for index in range(entities):
+        lines.append(f"ENT_{index:0{width}d},ALT_{index % alt},CREDIT,{index + 1}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+async def _load_entities(pilot, csv_path: Path) -> None:
+    app = pilot.app
+    app.query_one("#csv_path", Input).value = str(csv_path)
+    app.load_csv_headers(str(csv_path))
+    await _settle(pilot)
+
+
+def test_entity_index_prefix_substring_and_cap() -> None:
+    from tui_app import EntityIndex
+
+    values = sorted([f"ENT_{i:05d}" for i in range(5000)] + ["acme", "Acme Corp", "zeta"])
+    index = EntityIndex(values)
+    shown, total = index.matches("ent_0009", limit=200)
+    assert total == 10 and shown == [f"ENT_{i:05d}" for i in range(90, 100)]
+    shown, total = index.matches("ENT_", limit=200)
+    assert total == 5000 and len(shown) == 200
+    shown, total = index.matches("corp")  # no prefix match: substring fallback
+    assert (shown, total) == (["Acme Corp"], 1)
+    shown, total = index.matches("acme")
+    assert total == 2 and set(shown) == {"acme", "Acme Corp"}
+    assert index.matches("") == (values[:200], len(values))
+    assert index.first_with_prefix("ze") == "zeta"
+    assert index.first_with_prefix("nope") is None
+
+
+@pytest.mark.parametrize("count", [tui_app.ENTITY_SELECT_MAX, tui_app.ENTITY_SELECT_MAX + 1])
+def test_entity_chooser_switches_above_the_threshold(tmp_path: Path, count: int) -> None:
+    csv_path = _write_entity_csv(tmp_path / "entities.csv", count)
+    large = count > tui_app.ENTITY_SELECT_MAX
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load_entities(pilot, csv_path)
+            select = app.query_one("#entity_name", Select)
+            picker = app.query_one("#entity_picker")
+            assert select.has_class("hidden") is large
+            assert picker.has_class("hidden") is not large
+            assert len(app.entity_choices) == count
+            if large:
+                matches = app.query_one("#entity_matches", OptionList)
+                assert matches.option_count == 1 + tui_app.ENTITY_MATCH_LIMIT
+                assert matches.get_option_at_index(0).id == "peer-only"
+                assert len(select._options) <= 1  # the Select never holds the big list
+            else:
+                assert len([v for _, v in select._options if v != SELECT_BLANK]) == count
+            assert app._target_entity_for_run() == (None, None)  # blank = peer-only
+
+    asyncio.run(scenario())
+
+
+def test_large_entity_picker_only_accepts_exact_values(tmp_path: Path) -> None:
+    csv_path = _write_entity_csv(tmp_path / "entities.csv", 5000)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load_entities(pilot, csv_path)
+            entity_filter = app.query_one("#entity_filter", Input)
+            matches = app.query_one("#entity_matches", OptionList)
+
+            entity_filter.focus()
+            await pilot.press(*"ent_0099")
+            await pilot.pause()
+            assert matches.option_count == 1 + 1
+            # Typed text in the wrong case is not an entity: the run is blocked.
+            entity, error = app._target_entity_for_run()
+            assert entity is None and "not found in issuer_name" in error
+
+            # Accept the inline suggestion: it completes to the real value.
+            await pilot.press("right")
+            await pilot.pause()
+            assert entity_filter.value == "ENT_0099"
+            assert app._target_entity_for_run() == ("ENT_0099", None)
+
+            # Choosing from the list sets the exact value.
+            entity_filter.value = "ENT_012"
+            await pilot.pause()
+            matches.focus()
+            matches.highlighted = 3
+            await pilot.press("enter")
+            await pilot.pause()
+            assert entity_filter.value == "ENT_0122"
+            assert app._target_entity_for_run() == ("ENT_0122", None)
+
+            # The explicit peer-only option clears the choice.
+            matches.focus()
+            matches.highlighted = 0
+            await pilot.press("enter")
+            await pilot.pause()
+            assert entity_filter.value == ""
+            assert app._target_entity_for_run() == (None, None)
+
+            # A value that is no entity at all is blocked, never peer-only.
+            entity_filter.value = "NOPE"
+            await pilot.pause()
+            assert app._target_entity_for_run()[0] is None
+            assert app._target_entity_for_run()[1]
+
+    asyncio.run(scenario())
+
+
+def test_large_entity_typo_blocks_the_launch(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+
+    csv_path = _write_entity_csv(tmp_path / "entities.csv", 5000)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load_entities(pilot, csv_path)
+            app.query_one("#entity_filter", Input).value = "ENT_00x9"
+            await pilot.pause()
+            fail = MagicMock()
+            app._fail_launch = fail  # type: ignore[method-assign]
+            app.run_analysis()
+            deadline = time.monotonic() + 10
+            while not fail.called and time.monotonic() < deadline:
+                await pilot.pause(0.02)
+            assert fail.call_count == 1
+            message = fail.call_args.args[0]
+            assert "Target entity not found" in message and "ENT_00x9" not in message
+            assert fail.call_args.kwargs == {"focus_id": "entity_filter"}
+
+    asyncio.run(scenario())
+
+
+def test_large_entity_choice_survives_reload_and_small_lists_restore_the_select(
+    tmp_path: Path,
+) -> None:
+    big = _write_entity_csv(tmp_path / "big.csv", 5000)
+    bigger = _write_entity_csv(tmp_path / "bigger.csv", 6000)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load_entities(pilot, big)
+            app.query_one("#entity_filter", Input).value = "ENT_0042"
+            await pilot.pause()
+            # Another file with the same column: the choice is pending while it
+            # loads (launch blocked by the existing guard), then re-applied.
+            app.query_one("#csv_path", Input).value = str(bigger)
+            app.load_csv_headers(str(bigger))
+            await _settle(pilot)
+            assert app._target_entity_for_run() == ("ENT_0042", None)
+            assert len(app.entity_choices) == 6000
+
+            # A small column goes back to the Select.
+            app.query_one("#entity_col", Select).value = "alt_entity"
+            await _settle(pilot)
+            assert app.query_one("#entity_picker").has_class("hidden")
+            assert not app.query_one("#entity_name", Select).has_class("hidden")
+            assert app.entity_choices == [f"ALT_{i}" for i in range(5)]
+            assert app._target_entity_for_run() == (None, None)
+
+    asyncio.run(scenario())
+
+
+def test_large_entity_reload_shows_the_disabled_select_while_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    big = _write_entity_csv(tmp_path / "big.csv", 5000)
+    other = _write_entity_csv(tmp_path / "other.csv", 5000)
+    release = threading.Event()
+    real_reader = tui_app.read_unique_entity_values
+
+    def gated(csv_path: str, column: str):
+        if csv_path == str(other):
+            release.wait(timeout=10)
+        return real_reader(csv_path, column)
+
+    monkeypatch.setattr(tui_app, "read_unique_entity_values", gated)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load_entities(pilot, big)
+            app.query_one("#entity_filter", Input).value = "ENT_0007"
+            await pilot.pause()
+            app.query_one("#csv_path", Input).value = str(other)
+            app.load_csv_headers(str(other))
+            await pilot.pause()
+            try:
+                select = app.query_one("#entity_name", Select)
+                assert app.query_one("#entity_picker").has_class("hidden")
+                assert select.disabled and select.prompt == tui_app.ENTITY_LOADING_PROMPT
+                assert app.entity_selection_pending  # the existing launch block applies
+            finally:
+                release.set()
+            await _settle(pilot)
+            assert app._target_entity_for_run() == ("ENT_0007", None)
+
+    asyncio.run(scenario())
+
+
 # ── 2. focus-change cost ──────────────────────────────────────────────────
 
 
