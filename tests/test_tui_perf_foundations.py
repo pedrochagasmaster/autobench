@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import Select
+from textual.widgets import Input, Select
 
 import tui_app
 from tui_app import SELECT_BLANK, BenchmarkApp, PresetCatalog
@@ -200,3 +200,95 @@ def test_analysis_run_is_prewarmed_off_the_ui_thread_after_mount(tmp_path: Path)
         "run_blocked": True,
         "importers_on_main_thread": [False],
     }
+
+
+# ── 3. CSV path: reload only when the file changed ────────────────────────
+
+
+def _spy_notifications(app: BenchmarkApp) -> list:
+    titles: list = []
+    original = app.notify
+
+    def spy(message, *args, **kwargs):
+        titles.append(kwargs.get("title"))
+        return original(message, *args, **kwargs)
+
+    app.notify = spy  # type: ignore[method-assign]
+    return titles
+
+
+def test_csv_tab_out_reloads_only_when_the_file_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    csv_path = tmp_path / "data.csv"
+    shutil.copy(FIXTURE, csv_path)
+    header_reads: list = []
+    real_read_csv = tui_app.pd.read_csv
+
+    def counting_read_csv(path, *args, **kwargs):
+        if kwargs.get("nrows") == 0:
+            header_reads.append(str(path))
+        return real_read_csv(path, *args, **kwargs)
+
+    monkeypatch.setattr(tui_app.pd, "read_csv", counting_read_csv)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            toasts = _spy_notifications(app)
+            path_input = app.query_one("#csv_path", Input)
+            path_input.focus()
+            path_input.value = str(csv_path)
+            await pilot.press("enter")
+            await _settle(pilot)
+            assert header_reads == [str(csv_path)]
+
+            for _ in range(4):
+                path_input.focus()
+                await pilot.pause()
+                await pilot.press("tab")
+                await _settle(pilot)
+            path_input.focus()
+            await pilot.press("enter")  # Enter on the unchanged path: no-op too
+            await _settle(pilot)
+            assert header_reads == [str(csv_path)], "unchanged CSV was re-read"
+            assert toasts.count("CSV Loaded") == 1, toasts
+
+            # The same file edited on disk reloads on the next tab-out.
+            with open(csv_path, "a", encoding="utf-8") as handle:
+                handle.write("P9,2024-01,CREDIT,Online,1,10,9,0\n")
+            await pilot.press("tab")
+            await _settle(pilot)
+            assert len(header_reads) == 2
+            assert toasts.count("CSV Loaded") == 2
+
+    asyncio.run(scenario())
+
+
+def test_csv_tab_out_still_reports_a_missing_file(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            toasts = _spy_notifications(app)
+            path_input = app.query_one("#csv_path", Input)
+            path_input.focus()
+            path_input.value = str(tmp_path / "missing.csv")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert toasts == ["Invalid Path"]
+
+    asyncio.run(scenario())
+
+
+# ── 2. focus-change cost ──────────────────────────────────────────────────
+
+
+def test_no_focus_within_rule_on_large_containers() -> None:
+    import re
+
+    css = re.sub(r"/\*.*?\*/", "", BenchmarkApp.CSS, flags=re.S)
+    rules = re.findall(r"([^{}]+):focus-within", css)
+    assert rules == [], f":focus-within restyles a whole subtree on every Tab: {rules}"

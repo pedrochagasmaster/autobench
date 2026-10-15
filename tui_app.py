@@ -741,9 +741,10 @@ class BenchmarkApp(App):
         height: auto;
     }
 
-    .form-section:focus-within {
-        border: round $primary;
-    }
+    /* No :focus-within on .form-section: Textual restyles the whole subtree
+       of the outermost :focus-within ancestor on every focus change, which
+       made each Tab cost 20-350 ms (03 §2). The focused control keeps its
+       own focus style; the section border no longer brightens. */
 
     .section-title {
         text-style: bold;
@@ -1907,10 +1908,31 @@ class BenchmarkApp(App):
             return None
         return csv_path
 
+    @staticmethod
+    def _csv_signature(path: str) -> Optional[tuple]:
+        """(path as typed, realpath, mtime_ns, size) of a CSV, or None if unreadable.
+
+        One ``stat()``. The typed path is part of it because the entity loader
+        keys its results by the ``#csv_path`` text.
+        """
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return (path, os.path.realpath(path), stat.st_mtime_ns, stat.st_size)
+
     def _try_load_csv_from_path_input(self, raw_path: Optional[str] = None) -> None:
-        """Load headers when the user submits or leaves the CSV path field."""
+        """Load headers when the user submits or leaves the CSV path field.
+
+        A path whose (realpath, mtime, size) matches the last successful load
+        is a no-op: no header re-read, no widget repopulation and no second
+        "CSV loaded" toast (03 §3). A changed file reloads as before.
+        """
         if raw_path is None:
             raw_path = self.query_one("#csv_path", Input).value
+        signature = self._csv_signature(raw_path.strip()) if raw_path.strip() else None
+        if signature is not None and signature == getattr(self, "_loaded_csv_signature", None):
+            return
         csv_path = self._resolve_csv_path(raw_path)
         if csv_path:
             self.load_csv_headers(csv_path)
@@ -1970,6 +1992,7 @@ class BenchmarkApp(App):
             entity_col_value = self.query_one("#entity_col", Select).value
             if entity_col_value != SELECT_BLANK:
                 self.load_unique_entities(entity_col_value)
+            self._loaded_csv_signature = self._csv_signature(file_path)
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -1979,6 +2002,7 @@ class BenchmarkApp(App):
                 )
 
         except Exception as e:
+            self._loaded_csv_signature = None
             if not headers_read:
                 self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
