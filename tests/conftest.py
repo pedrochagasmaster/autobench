@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,19 @@ def _opt_out_telemetry_outside_telemetry_tests(
     if not is_telemetry_test_path(Path(str(request.path))):
         monkeypatch.setenv("AUTOBENCH_TELEMETRY", "0")
     monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "cli_logs"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tui_session_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep every test off the real ``~/.benchmark_tui/session.yaml``.
+
+    Tests that did not patch ``SESSION_FILE`` read and wrote the operator's
+    real session, so a session left by one test was restored by another and
+    moved its focus and scroll. Tests that patch it themselves still win.
+    """
+    tui_app = sys.modules.get("tui_app")
+    if tui_app is not None:
+        monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "tui_session.yaml")
 
 
 @pytest.fixture
