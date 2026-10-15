@@ -618,7 +618,11 @@ def test_everything_is_reachable_at_80x24() -> None:
                 if any(not node.display for node in widget.ancestors_with_self if node is not app):
                     continue  # Inactive tab or hidden by a mode switch.
                 widget.scroll_visible(animate=False, immediate=True)
-                await pilot.pause()
+                # Layout can take more than one frame to settle under load.
+                for _ in range(20):
+                    await pilot.pause()
+                    if widget.region.area > 0 and screen.contains_region(widget.region):
+                        break
                 assert widget.region.area > 0, widget
                 assert screen.contains_region(widget.region), widget
                 checked += 1
