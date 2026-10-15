@@ -7,7 +7,7 @@ is one widget that re-renders only when its context changes, and its keys
 stay clickable (``on_click`` maps the clicked cell to the key's action).
 
 Contexts are adapted to today's bindings. There are no step keys (owner
-decision 7: step jumps will be command-palette entries).
+decision 7: step jumps are command-palette entries, ``tui.commands``).
 """
 
 from __future__ import annotations
@@ -34,6 +34,9 @@ _EXPORT = KeyHint("F9", "Export advanced", "app.export_advanced")
 _PRESETS = KeyHint("F1", "Preset guide", "app.show_help")
 _CLEAR = KeyHint("^L", "Clear log", "app.clear_log")
 _QUIT = KeyHint("^Q", "Quit", "app.quit")
+_RESULTS = KeyHint("^T", "Results", "app.toggle_results")
+_CANCEL = KeyHint("^G", "Cancel run", "app.cancel_run")
+_COPY = KeyHint("^Y", "Copy path", "app.copy_path")
 # Modal hints are display-only; each modal binds its own Escape action.
 _ESC_CANCEL = KeyHint("Esc", "Cancel")
 
@@ -43,16 +46,25 @@ COMMANDS = KeyHint("^P", "Commands", "app.command_palette")
 # "Enter", "Space" and arrow keys are written as tokens and drawn as glyphs
 # (or as words in ASCII mode) by ``display_key``.
 CONTEXTS: Dict[str, Tuple[KeyHint, ...]] = {
-    "field": (_RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR, _EXPORT),
-    "select": (KeyHint("Enter", "Open"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
-    "list": (KeyHint("Space", "Toggle"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _PRESETS, _QUIT),
+    "field": (_RUN, _OPEN, _ADVANCED, _RESULTS, _QUIT, _PRESETS, _CLEAR, _EXPORT),
+    "select": (KeyHint("Enter", "Open"), _RUN, _OPEN, _ADVANCED, _RESULTS, _QUIT, _PRESETS, _CLEAR),
+    "list": (KeyHint("Space", "Toggle"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _RESULTS, _QUIT, _PRESETS),
     # Single-choice list (the large-entity matches): Enter picks one row.
-    "choose": (KeyHint("Enter", "Choose"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _PRESETS, _QUIT),
-    "toggle": (KeyHint("Space", "Toggle"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
-    "button": (KeyHint("Enter", "Press"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
-    "tabs": (KeyHint("Left/Right", "Switch mode"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT),
-    "results": (KeyHint("^R", "Run again", "app.run_analysis"), _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
-    "running": (_CLEAR, _PRESETS, _QUIT),
+    "choose": (KeyHint("Enter", "Choose"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _RESULTS, _QUIT, _PRESETS),
+    "toggle": (KeyHint("Space", "Toggle"), _RUN, _OPEN, _ADVANCED, _RESULTS, _QUIT, _PRESETS, _CLEAR),
+    "button": (KeyHint("Enter", "Press"), _RUN, _OPEN, _ADVANCED, _RESULTS, _QUIT, _PRESETS, _CLEAR),
+    "tabs": (KeyHint("Left/Right", "Switch mode"), _RUN, _OPEN, _ADVANCED, _RESULTS, _QUIT, _PRESETS),
+    "results": (
+        _COPY,
+        KeyHint("^R", "Run again", "app.run_analysis"),
+        _RESULTS,
+        _OPEN,
+        _ADVANCED,
+        _QUIT,
+        _PRESETS,
+        _CLEAR,
+    ),
+    "running": (_CANCEL, _RESULTS, _QUIT, _CLEAR, _PRESETS),
     "confirm": (KeyHint("Tab", "Move"), KeyHint("Enter", "Choose"), _ESC_CANCEL),
     "validation": (
         KeyHint("Up/Down", "Read issues"),

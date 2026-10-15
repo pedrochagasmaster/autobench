@@ -55,6 +55,7 @@ $ab-border-modal: thick;   /* modal frame                                 */
 $ab-modal-sm: 60;
 $ab-modal-md: 76;          /* fits 80 columns with a 2-column margin       */
 $ab-modal-lg: 110;         /* CSV picker: two panes and full paths         */
+$ab-results-column: 42;    /* status/results column at 110+ columns (01)  */
 $ab-list-rows: 6;
 """
 
@@ -134,14 +135,53 @@ Input.-textual-compact:focus, Select.-textual-compact:focus > SelectCurrent {
 BoxCheckbox.-on > .toggle--label { text-style: bold; }
 Button.-textual-compact { min-width: 10; }
 
-/* ═══ Main layout (current two-pane layout, restyled) ════════════════════ */
+/* ═══ Layout shell (01 §3.1): rail · step body | results · action bar ═══ */
 #app_body { height: 1fr; }
 
-#config_pane {
-    width: 58%;
+StepRail { background: $ab-panel-raised; color: $ab-text; padding: 0 1; }
+StepRail > .rail--current   { text-style: bold reverse; }
+StepRail > .rail--done      { color: $ab-success; }
+StepRail > .rail--attention { color: $ab-warning; text-style: bold; }
+StepRail > .rail--restored  { color: $ab-info; }
+StepRail > .rail--pending   { color: $ab-muted; }
+
+#setup_pane { width: 1fr; height: 1fr; }
+.step {
+    height: 1fr;
     padding: $ab-gutter-pane;
     scrollbar-gutter: stable;
 }
+.step-title { text-style: bold; color: $ab-accent; }
+/* Toasts sit just above the action bar: they never cover the rail, the
+   action bar or the top of the results card (verdict and path, T1). */
+ToastRack { margin: 0 0 2 0; }
+#review_summary { height: auto; margin: 0 0 $ab-space-1 0; }
+
+/* The status/results pane: a right-hand column at 110+ columns, a full-width
+   view toggled by ^T below that (it then replaces the step body). */
+#activity_pane {
+    display: none;
+    padding: $ab-gutter-pane;
+    overflow-y: auto;
+}
+Screen.-wide #activity_pane { display: block; width: $ab-results-column; }
+Screen.-narrow.-show-results #activity_pane { display: block; width: 1fr; }
+Screen.-narrow.-show-results #setup_pane { display: none; }
+/* Below 110 columns an outcome card replaces the idle status panel, so the
+   verdict, the report path and Copy fit at 80x24 (heuristic T1). */
+Screen.-narrow.-has-outcome #run_status { display: none; }
+
+ActionBar { height: 1; background: $ab-panel-raised; }
+ActionBar #action_badge { width: auto; }
+ActionBar #action_message {
+    width: 1fr;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    color: $ab-text;
+}
+ActionBar #action_key { width: auto; height: 1; padding: 0 1; text-style: bold; color: $ab-accent; }
+ActionBar #action_key.-dim { color: $ab-muted; text-style: none; }
 .form-section {
     height: auto;
     padding: $ab-space-0;
@@ -179,22 +219,21 @@ TabbedContent { height: auto; }
 #entity_picker { height: auto; }
 #entity_matches { height: $ab-list-rows; }
 
-/* Collapsible declarations and advanced settings: no decorative border.
-   Warning colour is reserved for warnings (02 §1.4). */
+/* Advanced settings collapsible: no decorative border. The compliance
+   declarations are an always-open titled panel on step 4. Warning colour is
+   reserved for warnings (02 §1.4). */
 #compliance_declarations, #advanced_opt { margin: 0 0 $ab-space-1 0; }
 #compliance_form, #advanced_form { height: auto; }
 .adv-group-title { text-style: bold; color: $ab-accent; margin: $ab-space-1 0 0 0; }
 .adv-field-label { color: $ab-text; }
 
-#activity_pane {
-    width: 1fr;
-    min-width: 30;
-    padding: $ab-gutter-pane;
-}
 #run_status { margin: 0 0 $ab-space-1 0; }
 #last_run { margin: 0 0 $ab-space-1 0; }
 #results_badges { height: auto; }
-#results_panel { height: auto; max-height: 12; overflow-y: auto; }
+#results_panel { height: auto; }
+#results_copy { height: auto; }
+#results_path { height: auto; }
+#btn_copy_path { margin: $ab-space-1 0 0 0; }
 #log_output { height: 1fr; min-height: 6; }
 
 /* ═══ Modals: one frame rule, no per-screen CSS (02 §1.1) ═══════════════ */
@@ -261,6 +300,12 @@ App:nocolor .field-hint, App:nocolor #csv_meta,
 App:nocolor .subsection-title, App:nocolor #validation_hint { color: $ab-text; text-style: italic; }
 App:nocolor .ab-panel, App:nocolor .ab-list, App:nocolor .multi-select { border-title-color: $ab-text; }
 App:nocolor KeyBar > .keybar--key { color: $ab-text; text-style: bold reverse; }
+App:nocolor StepRail > .rail--done,
+App:nocolor StepRail > .rail--restored,
+App:nocolor StepRail > .rail--pending { color: $ab-text; }
+App:nocolor StepRail > .rail--attention { color: $ab-text; text-style: bold; }
+App:nocolor ActionBar #action_key { color: $ab-text; text-style: bold reverse; }
+App:nocolor ActionBar #action_key.-dim { text-style: none; }
 App:nocolor Input:focus, App:nocolor Select:focus > SelectCurrent { text-style: bold reverse; }
 App:nocolor Checkbox:focus > .toggle--label { text-style: bold reverse; }
 App:nocolor Button:focus { text-style: bold reverse; }
@@ -282,6 +327,7 @@ App:ansi Select:focus > SelectCurrent { background: ansi_blue; color: ansi_brigh
 App:ansi KeyBar { background: ansi_black; color: ansi_bright_white; }
 App:ansi KeyBar > .keybar--key { color: ansi_bright_cyan; text-style: bold; }
 App:ansi KeyBar > .keybar--label { color: ansi_bright_white; }
+App:ansi StepRail, App:ansi ActionBar { background: ansi_black; color: ansi_bright_white; }
 
 /* Stock Footer under textual-ansi resolves descriptions to #000000 on
    #000000 in Textual 7.5 (02 §1.5). The app uses KeyBar, but any screen that

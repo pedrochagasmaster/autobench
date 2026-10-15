@@ -1,7 +1,9 @@
 """Privacy-Compliant Peer Benchmark Tool — Textual TUI.
 
-Production layout: a scrollable configuration pane on the left and a live
-activity pane (run status, last-run summary, execution log) on the right.
+Layout shell (TUI redesign 01 §3): a non-gated step rail (Data, Entity,
+Analysis & mode, Privacy & compliance, Review & run), one step body at a time,
+a status/results column at 110+ columns (a Ctrl+T view below that), and an
+action bar that always shows readiness and the run key.
 All analysis execution flows through the shared ``core.analysis_run`` seam,
 so behaviour stays identical to the CLI.
 """
@@ -17,6 +19,7 @@ import bisect
 import contextlib
 import collections
 import copy
+from functools import partial
 import importlib
 import io
 import pandas as pd
@@ -36,6 +39,7 @@ os.environ.setdefault("TEXTUAL_FPS", "20")
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.markup import escape as escape_markup
 from textual.widgets import (
     Header,
@@ -98,7 +102,11 @@ try:
     )
     from core.data_loader import ValidationIssue, ValidationSeverity
     from core import labels
+    from tui.actionbar import ActionBar
+    from tui.commands import AutobenchCommands
     from tui.keybar import KeyBar
+    from tui.rail import ATTENTION, DONE, PENDING, RESTORED, STEP_BY_ID, STEPS, StepRail
+    from tui.readiness import LaunchBlocker, launch_blockers
     from tui.status import glyph as status_glyph, status_text
     from tui.styles import AUTOBENCH_TCSS
     from tui.widgets import BoxCheckbox, BoxSelectionList, StatusBadge
@@ -982,6 +990,11 @@ SESSION_COLUMN_SELECT_IDS = frozenset({
 SESSION_TAB_KEY = "analysis_mode"
 _SESSION_TABS = {"share": "share_tab", "rate": "rate_tab"}
 
+# Layout shell breakpoint: the status/results column needs 42 columns and the
+# form at least 66, so below 110 columns results become a Ctrl+T view.
+WIDE_LAYOUT_MIN_COLUMNS = 110
+RESULTS_COLUMN_WIDTH = 42
+
 # Owner decision 1: plain-language names for core's run phases.
 _RUN_STAGE_LABELS = {
     "configuration": "Checking configuration",
@@ -1047,6 +1060,14 @@ def _preset_display(preset: Optional[str]) -> str:
     return preset if label.primary == labels.UNRECOGNISED else label.primary
 
 
+def _step_body(step_id: str) -> VerticalScroll:
+    """One step's scrolling body. Only step 1 is displayed at first, so the
+    hidden steps are never laid out (or tab-sorted) until they are shown."""
+    body = VerticalScroll(id=STEP_BY_ID[step_id].container_id, classes="step", can_focus=False)
+    body.display = step_id == STEPS[0].id
+    return body
+
+
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
 
@@ -1064,6 +1085,11 @@ class BenchmarkApp(App):
         Binding("ctrl+a", "toggle_advanced", "Advanced", show=False),
         Binding("ctrl+e", "export_advanced", "Export advanced", show=False),
         Binding("ctrl+l", "clear_log", "Clear log"),
+        # Layout shell (01 §4.1): no stock widget binds these, and none is a
+        # tmux (^B) or GNU screen (^A) prefix, so they work from any field.
+        Binding("ctrl+g", "cancel_run", "Cancel run", priority=True),
+        Binding("ctrl+t", "toggle_results", "Results", priority=True),
+        Binding("ctrl+y", "copy_path", "Copy path", priority=True),
         # Release tooling exits with Escape then Ctrl+C (edge_deploy.yaml
         # tui_exit: ctrl_c). Textual 7.5 binds Ctrl+C to copy (Input, Screen)
         # and only *hints* at quitting, so the app owns it: copy when there is
@@ -1099,292 +1125,339 @@ class BenchmarkApp(App):
         self._pending_session_lists: Dict[str, List[Any]] = {}
         # D2: the preset an applied advanced-override file was written for.
         self._advanced_config_preset: Optional[str] = None
+        # Layout shell (PR 4). Steps whose fields hold values restored from
+        # the last session (rail ↺); cleared when a run starts.
+        self._current_step = STEPS[0].id
+        self._restored_steps: set = set()
+        self._blockers: Tuple[LaunchBlocker, ...] = ()
+        self._shell_refresh_pending = False
+        # Who asked for the cancel ("button" for ^G, "quit" for Quit). The
+        # visible Cancel records telemetry where the cancel took effect.
+        self._cancel_origin: Optional[str] = None
+        # Path ^Y copies (report, or the log after a withheld/failed run).
+        self._copy_path: Optional[str] = None
+        self._outcome_message = ""
+        self._setup_focus: Any = None
 
     # One token stylesheet for every screen (tui/styles.py, 02 §1).
     CSS = AUTOBENCH_TCSS
+
+    # Results column at 110+ columns, a Ctrl+T view below (01 §3.1).
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (WIDE_LAYOUT_MIN_COLUMNS, "-wide")]
+    # Owner decision 7: step jumps are palette entries ("Go to step: …").
+    COMMANDS = App.COMMANDS | {AutobenchCommands}
 
     # Release tooling matches the title (edge_deploy.yaml tui_chrome_regex).
     TITLE = "Privacy-Compliant Peer Benchmark"
     SUB_TITLE = ""
 
     def compose(self) -> ComposeResult:
-        """Create child widgets for the app."""
+        """Create child widgets for the app.
+
+        Layout shell (Phase 2 PR 4, 01 §3.1): header, step rail, the five
+        step bodies (all mounted, only the current one displayed), the
+        status/results column (a right-hand column at 110+ columns, a ``^T``
+        view below that), the action bar and the key bar. Every form widget
+        keeps its id and behaviour from the single-page layout.
+        """
         # No clock: it would repaint the header (and push bytes over SSH)
         # every second for the lifetime of the app.
         yield Header(show_clock=False)
+        yield StepRail(id="step_rail")
 
         with Horizontal(id="app_body"):
-            # ═══════════════════════════════════════════════════════════
-            # LEFT — CONFIGURATION
-            # ═══════════════════════════════════════════════════════════
-            with VerticalScroll(id="config_pane"):
-                with Container(id="section_data", classes="form-section"):
-                    yield Label("1 · Data source", classes="ab-section")
-                    yield Label("CSV file path", classes="field-label")
-                    with Horizontal(classes="ab-row"):
-                        yield Button("Browse…", id="btn_browse_csv", variant="default", compact=True)
-                        yield Input(placeholder="path/to/data.csv", id="csv_path", classes="file-input", compact=True)
-                    yield Static("No file loaded.", id="csv_meta")
+            with Vertical(id="setup_pane"):
+                # ── 1 · Data ───────────────────────────────────────────────
+                with _step_body("data"):
+                    yield Label("1 · Data — which file?", classes="step-title")
+                    with Container(id="section_data", classes="form-section"):
+                        yield Label("CSV file path", classes="field-label")
+                        with Horizontal(classes="ab-row"):
+                            yield Button("Browse…", id="btn_browse_csv", variant="default", compact=True)
+                            yield Input(placeholder="path/to/data.csv", id="csv_path", classes="file-input", compact=True)
+                        yield Static("No file loaded.", id="csv_meta")
 
-                with Container(id="section_entity", classes="form-section"):
-                    yield Label("2 · Entity", classes="ab-section")
-                    with Horizontal(classes="input-group"):
-                        with Vertical(classes="field-pair"):
-                            yield Label("Entity ID column", classes="field-label")
-                            yield Select([], prompt="Select column…", id="entity_col", compact=True)
-                        with Vertical(classes="field-pair"):
-                            yield Label("Target entity", classes="field-label")
-                            yield Select(
-                                [], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True, compact=True
-                            )
-                            # Replaces the Select above ENTITY_SELECT_MAX values.
-                            with Vertical(id="entity_picker", classes="hidden"):
-                                yield Input(placeholder=ENTITY_FILTER_PLACEHOLDER, id="entity_filter", compact=True)
-                                yield Static("", id="entity_match_count", classes="field-hint")
-                                yield OptionList(id="entity_matches", classes="ab-list")
-
-                with Container(id="section_analysis", classes="form-section"):
-                    yield Label("3 · Analysis options", classes="ab-section")
-                    with Horizontal(classes="input-group"):
-                        with Vertical(classes="field-pair"):
-                            yield Label("Time period column", classes="field-label")
-                            yield Select([], prompt="Select column…", id="time_col", allow_blank=True, compact=True)
-                        with Vertical(classes="field-pair"):
-                            yield Label("Output file name", classes="field-label")
-                            yield Input(placeholder="Leave blank to name it automatically", id="output_file", compact=True)
-
-                    yield Label("Optimization preset", classes="field-label")
-                    with Horizontal(classes="ab-row"):
-                        yield Select([], prompt="Select preset…", id="preset_select", compact=True)
-                        yield Button("Preset guide", id="btn_preset_help", variant="default", compact=True)
-                    yield Static("", id="preset_blurb", classes="field-hint")
-
-                    with Vertical(classes="ab-checks"):
-                        yield BoxCheckbox("Show how the weighting changed results", value=True, id="analyze_distortion", compact=True)
-                        yield BoxCheckbox("Compare presets", id="compare_presets", compact=True)
-                        yield BoxCheckbox("Validate input", id="validate_input", value=True, compact=True)
-                        yield BoxCheckbox("Add calculated metrics to the balanced CSV", id="include_calculated", compact=True)
-                    with Horizontal(classes="input-group"):
-                        with Vertical(classes="field-pair"):
-                            yield Label("Output format", classes="field-label")
-                            yield Select(
-                                [
-                                    (labels.text_for(labels.OUTPUT_FORMAT, "analysis"), "analysis"),
-                                    (labels.text_for(labels.OUTPUT_FORMAT, "publication"), "publication"),
-                                    (labels.text_for(labels.OUTPUT_FORMAT, "both"), "both"),
-                                ],
-                                id="output_format",
-                                value="analysis",
-                                allow_blank=False,
-                                compact=True,
-                            )
-                    yield Label(
-                        "Privacy release mode",
-                        classes="field-label",
-                        id="privacy_release_mode_label",
-                    )
-                    yield Select(
-                        list(_PRIVACY_RELEASE_MODE_OPTIONS),
-                        id="privacy_release_mode",
-                        value=PrivacyReleaseMode.COMPLETE_OUTPUT.value,
-                        allow_blank=False,
-                        compact=True,
-                    )
-                    yield Static(
-                        "Verified safe coverage publishes only verified safe units. "
-                        "Missing units are privacy-suppressed. "
-                        "Coverage is not a maximum claim.",
-                        id="privacy_release_mode_hint",
-                        classes="field-hint",
-                    )
-                    with Vertical(classes="ab-checks"):
-                        yield BoxCheckbox(
-                            "Privacy rule sweep: try every applicable rule",
-                            id="privacy_rule_sweep_mode",
-                            value=False,
-                            compact=True,
-                        )
-                        yield BoxCheckbox(
-                            "Anonymized aggregated merchant-spend context (enables 4/35)",
-                            id="privacy_merchant_spend_scope",
-                            compact=True,
-                        )
-
-                # ───────────────────────────────────────────────────────
-                # COMPLIANCE DECLARATIONS (collapsed by default)
-                # ───────────────────────────────────────────────────────
-                with Collapsible(title="Compliance declarations", id="compliance_declarations", collapsed=True):
-                    with Vertical(id="compliance_form"):
-                        yield Label("Citi privacy overlay", classes="adv-group-title")
-                        yield BoxCheckbox(
-                            "A Citi competitor receives the output",
-                            id="citi_competitor_receives_output",
-                            compact=True,
-                        )
-                        yield Label("Citibank entity name", classes="field-label")
-                        yield Input(
-                            placeholder="Exact Citibank entity name (required for Citi overlay)",
-                            id="citibank_entity_name",
-                            compact=True,
-                        )
-
-                # ───────────────────────────────────────────────────────
-                # ADVANCED OPTIMIZATION (collapsed by default)
-                # ───────────────────────────────────────────────────────
-                with Collapsible(title="Advanced optimization (F8)", id="advanced_opt", collapsed=True):
-                    with Vertical(id="advanced_form"):
-                        yield Label("Linear programming", classes="adv-group-title")
+                # ── 2 · Entity ─────────────────────────────────────────────
+                with _step_body("entity"):
+                    yield Label("2 · Entity — who is benchmarked?", classes="step-title")
+                    with Container(id="section_entity", classes="form-section"):
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Tolerance (pp)", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance", compact=True)
+                                yield Label("Entity ID column", classes="field-label")
+                                yield Select([], prompt="Select column…", id="entity_col", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Max iterations", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations", compact=True)
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Lambda penalty", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Volume weighting exponent", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent", compact=True)
-                        with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox(
-                                "Enable volume-weighted penalties", id="adv_lp_volume_weighted_penalties", compact=True
-                            )
-
-                        yield Label("Constraints", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Volume preservation", classes="adv-field-label")
-                                yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation", compact=True)
-
-                        yield Label("Weight bounds", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Min weight", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Max weight", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight", compact=True)
-
-                        yield Label("Subset search", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            yield BoxCheckbox("Enable subset search", id="adv_subset_enabled", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Strategy", classes="adv-field-label")
-                                yield Input(placeholder="greedy / random", id="adv_subset_strategy", compact=True)
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Max attempts", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Max slack threshold", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold", compact=True)
-                        with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox("Trigger on slack", id="adv_subset_trigger_on_slack", compact=True)
-                            yield BoxCheckbox("Prefer slacks first", id="adv_subset_prefer_slacks_first", compact=True)
-
-                        yield Label("Bayesian optimization (fallback)", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Max iterations", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations", compact=True)
-                            with Vertical(classes="field-pair"):
-                                yield Label("Learning rate", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate", compact=True)
-
-                        yield Label("Analysis settings", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Best-in-class percentile", classes="adv-field-label")
-                                yield Input(
-                                    placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile", compact=True
+                                yield Label("Target entity", classes="field-label")
+                                yield Select(
+                                    [], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True, compact=True
                                 )
-
-                        yield Label("Output settings", classes="adv-group-title")
-                        with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox(
-                                "Include privacy validation", id="adv_output_privacy_validation", compact=True
-                            )
-                        # D5: debug sheets have one control, the "Debug sheets"
-                        # checkbox on the Share/Rate tab (the ``debug`` request
-                        # field, which wins over the preset as on the CLI).
-                        yield Label("Debug sheets are set on the Share/Rate tab.", classes="ab-hint")
-
-                        with Horizontal(classes="ab-row ab-checks"):
-                            yield Button("Apply overrides", id="btn_apply_advanced", variant="primary", compact=True)
-                            yield Button("Export settings (F9)", id="btn_export_advanced", variant="default", compact=True)
-                        yield Label(
-                            "Applied values override the preset for the next runs.", classes="subsection-title"
+                                # Replaces the Select above ENTITY_SELECT_MAX values.
+                                with Vertical(id="entity_picker", classes="hidden"):
+                                    yield Input(placeholder=ENTITY_FILTER_PLACEHOLDER, id="entity_filter", compact=True)
+                                    yield Static("", id="entity_match_count", classes="field-hint")
+                                    yield OptionList(id="entity_matches", classes="ab-list")
+                        yield Static(
+                            "Blank target = peer-only benchmark. Chosen fresh every run; never restored.",
+                            classes="field-hint",
                         )
 
-                # ───────────────────────────────────────────────────────
-                # ANALYSIS MODE TABS
-                # ───────────────────────────────────────────────────────
-                with Container(id="section_mode", classes="form-section"):
-                    yield Label("4 · Analysis mode", classes="ab-section")
-                    with TabbedContent(initial="share_tab"):
-                        with TabPane("Share analysis", id="share_tab"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Primary metric column", classes="field-label")
-                                yield Select([], prompt="Select column…", id="share_metric", compact=True)
-
-                            with Vertical(classes="field-pair"):
-                                yield Label("Secondary metrics", classes="field-label")
-                                yield BoxSelectionList(id="share_secondary", classes="multi-select")
-
-                            yield Label("Dimension options", classes="subsection-title")
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox("Auto-detect dimensions", value=False, id="share_auto_dim", compact=True)
-                                yield BoxCheckbox("Debug sheets", value=True, id="share_debug", compact=True)
-                                # Owner decision 5: off by default, as for rate and the CLI.
-                                yield BoxCheckbox(
-                                    "Export balanced CSV", value=False, id="share_export_csv", compact=True
-                                )
-
-                            yield Label("Dimensions", id="share_dims_label", classes="field-label")
-                            yield BoxSelectionList(id="share_dims", classes="multi-select")
-
-                        with TabPane("Rate analysis", id="rate_tab"):
-                            with Vertical(classes="field-pair"):
-                                yield Label("Total column (denominator)", classes="field-label")
-                                yield Select([], prompt="Select column…", id="rate_total", compact=True)
-                            with Horizontal(classes="split-inputs"):
+                # ── 3 · Analysis & mode ────────────────────────────────────
+                with _step_body("analysis"):
+                    yield Label("3 · Analysis & mode", classes="step-title")
+                    with Container(id="section_mode", classes="form-section"):
+                        with TabbedContent(initial="share_tab"):
+                            with TabPane("Share analysis", id="share_tab"):
                                 with Vertical(classes="field-pair"):
-                                    yield Label("Approved column", classes="field-label")
-                                    yield Select(
-                                        [], prompt="Select column…", id="rate_approved", allow_blank=True, compact=True
-                                    )
+                                    yield Label("Primary metric column", classes="field-label")
+                                    yield Select([], prompt="Select column…", id="share_metric", compact=True)
+
                                 with Vertical(classes="field-pair"):
-                                    yield Label("Fraud column", classes="field-label")
-                                    yield Select(
-                                        [], prompt="Select column…", id="rate_fraud", allow_blank=True, compact=True
+                                    yield Label("Secondary metrics", classes="field-label")
+                                    yield BoxSelectionList(id="share_secondary", classes="multi-select")
+
+                                yield Label("Dimension options", classes="subsection-title")
+                                with Vertical(classes="ab-checks"):
+                                    yield BoxCheckbox("Auto-detect dimensions", value=False, id="share_auto_dim", compact=True)
+                                    yield BoxCheckbox("Debug sheets", value=True, id="share_debug", compact=True)
+                                    # Owner decision 5: off by default, as for rate and the CLI.
+                                    yield BoxCheckbox(
+                                        "Export balanced CSV", value=False, id="share_export_csv", compact=True
                                     )
 
-                            with Vertical(classes="field-pair"):
-                                yield Label("Secondary metrics", classes="field-label")
-                                yield BoxSelectionList(id="rate_secondary", classes="multi-select")
+                                yield Label("Dimensions", id="share_dims_label", classes="field-label")
+                                yield BoxSelectionList(id="share_dims", classes="multi-select")
 
-                            yield Label("Dimension options", classes="subsection-title")
-                            with Vertical(classes="ab-checks"):
-                                yield BoxCheckbox("Auto-detect dimensions", value=False, id="rate_auto_dim", compact=True)
-                                yield BoxCheckbox("Debug sheets", value=True, id="rate_debug", compact=True)
-                                yield BoxCheckbox("Export balanced CSV", value=False, id="rate_export_csv", compact=True)
-                                yield BoxCheckbox(
-                                    "Show fraud in basis points (publication workbook)",
-                                    value=True,
-                                    id="fraud_in_bps",
+                            with TabPane("Rate analysis", id="rate_tab"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Total column (denominator)", classes="field-label")
+                                    yield Select([], prompt="Select column…", id="rate_total", compact=True)
+                                with Horizontal(classes="split-inputs"):
+                                    with Vertical(classes="field-pair"):
+                                        yield Label("Approved column", classes="field-label")
+                                        yield Select(
+                                            [], prompt="Select column…", id="rate_approved", allow_blank=True, compact=True
+                                        )
+                                    with Vertical(classes="field-pair"):
+                                        yield Label("Fraud column", classes="field-label")
+                                        yield Select(
+                                            [], prompt="Select column…", id="rate_fraud", allow_blank=True, compact=True
+                                        )
+
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Secondary metrics", classes="field-label")
+                                    yield BoxSelectionList(id="rate_secondary", classes="multi-select")
+
+                                yield Label("Dimension options", classes="subsection-title")
+                                with Vertical(classes="ab-checks"):
+                                    yield BoxCheckbox("Auto-detect dimensions", value=False, id="rate_auto_dim", compact=True)
+                                    yield BoxCheckbox("Debug sheets", value=True, id="rate_debug", compact=True)
+                                    yield BoxCheckbox("Export balanced CSV", value=False, id="rate_export_csv", compact=True)
+                                    yield BoxCheckbox(
+                                        "Show fraud in basis points (publication workbook)",
+                                        value=True,
+                                        id="fraud_in_bps",
+                                        compact=True,
+                                    )
+
+                                yield Label("Dimensions", id="rate_dims_label", classes="field-label")
+                                yield BoxSelectionList(id="rate_dims", classes="multi-select")
+
+                    with Container(id="section_analysis", classes="form-section"):
+                        yield Label("Options", classes="ab-section")
+                        with Horizontal(classes="input-group"):
+                            with Vertical(classes="field-pair"):
+                                yield Label("Time period column", classes="field-label")
+                                yield Select([], prompt="Select column…", id="time_col", allow_blank=True, compact=True)
+                            with Vertical(classes="field-pair"):
+                                yield Label("Output file name", classes="field-label")
+                                yield Input(placeholder="Leave blank to name it automatically", id="output_file", compact=True)
+
+                        with Vertical(classes="ab-checks"):
+                            yield BoxCheckbox("Show how the weighting changed results", value=True, id="analyze_distortion", compact=True)
+                            yield BoxCheckbox("Compare presets", id="compare_presets", compact=True)
+                            yield BoxCheckbox("Validate input", id="validate_input", value=True, compact=True)
+                            yield BoxCheckbox("Add calculated metrics to the balanced CSV", id="include_calculated", compact=True)
+                        with Horizontal(classes="input-group"):
+                            with Vertical(classes="field-pair"):
+                                yield Label("Output format", classes="field-label")
+                                yield Select(
+                                    [
+                                        (labels.text_for(labels.OUTPUT_FORMAT, "analysis"), "analysis"),
+                                        (labels.text_for(labels.OUTPUT_FORMAT, "publication"), "publication"),
+                                        (labels.text_for(labels.OUTPUT_FORMAT, "both"), "both"),
+                                    ],
+                                    id="output_format",
+                                    value="analysis",
+                                    allow_blank=False,
                                     compact=True,
                                 )
 
-                            yield Label("Dimensions", id="rate_dims_label", classes="field-label")
-                            yield BoxSelectionList(id="rate_dims", classes="multi-select")
+                    # ───────────────────────────────────────────────────
+                    # ADVANCED OPTIMIZATION (collapsed by default; PR 5
+                    # moves it to the Expert settings screen)
+                    # ───────────────────────────────────────────────────
+                    with Collapsible(title="Advanced optimization (F8)", id="advanced_opt", collapsed=True):
+                        with Vertical(id="advanced_form"):
+                            yield Label("Linear programming", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Tolerance (pp)", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Max iterations", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations", compact=True)
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Lambda penalty", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Volume weighting exponent", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent", compact=True)
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox(
+                                    "Enable volume-weighted penalties", id="adv_lp_volume_weighted_penalties", compact=True
+                                )
 
-                yield Button("▶  Run Analysis", id="btn_run", variant="primary", compact=True)
+                            yield Label("Constraints", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Volume preservation", classes="adv-field-label")
+                                    yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation", compact=True)
+
+                            yield Label("Weight bounds", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Min weight", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Max weight", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight", compact=True)
+
+                            yield Label("Subset search", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                yield BoxCheckbox("Enable subset search", id="adv_subset_enabled", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Strategy", classes="adv-field-label")
+                                    yield Input(placeholder="greedy / random", id="adv_subset_strategy", compact=True)
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Max attempts", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Max slack threshold", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold", compact=True)
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox("Trigger on slack", id="adv_subset_trigger_on_slack", compact=True)
+                                yield BoxCheckbox("Prefer slacks first", id="adv_subset_prefer_slacks_first", compact=True)
+
+                            yield Label("Bayesian optimization (fallback)", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Max iterations", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations", compact=True)
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Learning rate", classes="adv-field-label")
+                                    yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate", compact=True)
+
+                            yield Label("Analysis settings", classes="adv-group-title")
+                            with Horizontal(classes="input-group"):
+                                with Vertical(classes="field-pair"):
+                                    yield Label("Best-in-class percentile", classes="adv-field-label")
+                                    yield Input(
+                                        placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile", compact=True
+                                    )
+
+                            yield Label("Output settings", classes="adv-group-title")
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox(
+                                    "Include privacy validation", id="adv_output_privacy_validation", compact=True
+                                )
+                            # D5: debug sheets have one control, the "Debug sheets"
+                            # checkbox on the Share/Rate tab (the ``debug`` request
+                            # field, which wins over the preset as on the CLI).
+                            yield Label("Debug sheets are set on the Share/Rate tab.", classes="ab-hint")
+
+                            with Horizontal(classes="ab-row ab-checks"):
+                                yield Button("Apply overrides", id="btn_apply_advanced", variant="primary", compact=True)
+                                yield Button("Export settings (F9)", id="btn_export_advanced", variant="default", compact=True)
+                            yield Label(
+                                "Applied values override the preset for the next runs.", classes="subsection-title"
+                            )
+
+                # ── 4 · Privacy & compliance ───────────────────────────────
+                with _step_body("privacy"):
+                    yield Label("4 · Privacy & compliance", classes="step-title")
+                    with Container(id="section_privacy", classes="form-section"):
+                        yield Label("Optimization preset", classes="field-label")
+                        with Horizontal(classes="ab-row"):
+                            yield Select([], prompt="Select preset…", id="preset_select", compact=True)
+                            yield Button("Preset guide", id="btn_preset_help", variant="default", compact=True)
+                        yield Static("", id="preset_blurb", classes="field-hint")
+                        yield Label(
+                            "Privacy release mode",
+                            classes="field-label",
+                            id="privacy_release_mode_label",
+                        )
+                        yield Select(
+                            list(_PRIVACY_RELEASE_MODE_OPTIONS),
+                            id="privacy_release_mode",
+                            value=PrivacyReleaseMode.COMPLETE_OUTPUT.value,
+                            allow_blank=False,
+                            compact=True,
+                        )
+                        yield Static(
+                            "Verified safe coverage publishes only verified safe units. "
+                            "Missing units are privacy-suppressed. "
+                            "Coverage is not a maximum claim.",
+                            id="privacy_release_mode_hint",
+                            classes="field-hint",
+                        )
+                        with Vertical(classes="ab-checks"):
+                            yield BoxCheckbox(
+                                "Privacy rule sweep: try every applicable rule",
+                                id="privacy_rule_sweep_mode",
+                                value=False,
+                                compact=True,
+                            )
+
+                    # Compliance declarations: always visible on this step
+                    # (never collapsed), checked before every run and never
+                    # saved between sessions.
+                    declarations = Vertical(id="compliance_declarations", classes="ab-panel")
+                    declarations.border_title = "Compliance declarations"
+                    with declarations:
+                        yield Static(
+                            "Check before every run. Never saved between sessions.",
+                            classes="field-hint",
+                        )
+                        with Vertical(id="compliance_form"):
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox(
+                                    "Anonymized aggregated merchant-spend context (enables 4/35)",
+                                    id="privacy_merchant_spend_scope",
+                                    compact=True,
+                                )
+                            yield Label("Citi privacy overlay", classes="adv-group-title")
+                            yield BoxCheckbox(
+                                "A Citi competitor receives the output",
+                                id="citi_competitor_receives_output",
+                                compact=True,
+                            )
+                            yield Label("Citibank entity name", classes="field-label")
+                            yield Input(
+                                placeholder="Exact Citibank entity name (required for Citi overlay)",
+                                id="citibank_entity_name",
+                                compact=True,
+                            )
+
+                # ── 5 · Review & run ───────────────────────────────────────
+                with _step_body("review"):
+                    yield Label("5 · Review & run", classes="step-title")
+                    yield Button("▶  Run Analysis", id="btn_run", variant="primary", compact=True)
+                    yield Static("", id="review_summary")
 
             # ═══════════════════════════════════════════════════════════
-            # RIGHT — ACTIVITY
+            # STATUS / RESULTS — a right-hand column at 110+ columns, the
+            # ^T view below that (01 §3.3)
             # ═══════════════════════════════════════════════════════════
             with Vertical(id="activity_pane"):
                 status = Vertical(id="run_status", classes="ab-panel")
@@ -1400,6 +1473,12 @@ class BenchmarkApp(App):
                         yield StatusBadge("success", id="results_badge")
                         yield StatusBadge("compliant", id="results_verdict_badge", classes="hidden")
                     yield Static("No runs yet.", id="results_panel")
+                    # The path to copy, whole and selectable even when the
+                    # terminal blocks clipboard writes (OSC 52) over SSH.
+                    with Vertical(id="results_copy", classes="hidden"):
+                        yield Static("", id="results_path_label", classes="field-label")
+                        yield Static("", id="results_path", classes="ab-path")
+                        yield Button("Copy report path ^Y", id="btn_copy_path", compact=True)
 
                 # highlight=False: per-line regex highlighting is CPU-costly on
                 # busy logs. max_lines bounds memory and re-render cost on
@@ -1408,6 +1487,7 @@ class BenchmarkApp(App):
                 log.border_title = "Execution log"
                 yield log
 
+        yield ActionBar(id="action_bar")
         yield KeyBar("field", id="key_bar")
 
     # ──────────────────────────────────────────────────────────────────
@@ -1438,14 +1518,14 @@ class BenchmarkApp(App):
         self._tui_bootstrapping = False
         self.call_after_refresh(self._finalize_privacy_release_mode_bootstrap)
 
+        # Layout shell: only step 1 is displayed; every step stays mounted.
+        # No launch toast (01 §5.3): the key bar and action bar show the keys.
+        self._main_screen = self.screen
+        self._show_step(STEPS[0].id, focus=False)
+        self._refresh_shell()
+
         # Set initial focus
         self.query_one("#csv_path").focus()
-        self.notify(
-            "Ctrl+O open CSV · Ctrl+R run · F8 advanced · F9 export advanced · Ctrl+L clear log · F1 preset guide",
-            title="Keyboard shortcuts",
-            severity="information",
-            timeout=6,
-        )
         # Session starts once the TUI is mounted and usable.
         start_session("tui")
         self._telemetry_session_started = True
@@ -1509,6 +1589,20 @@ class BenchmarkApp(App):
         could proceed is the operator's choice, recorded as
         action_cancelled(validation_review). A None result records nothing.
         """
+        if self.cancel_requested and self._cancel_origin == "button":
+            # ^G while the review was open: the visible cancel, not a review
+            # decision (and never a forced block).
+            self._record_visible_cancel("cancel_before_run")
+            finalize_deferred_logging(
+                logging.getLogger(),
+                privacy_authorized=False,
+            )
+            write_log_message(log_widget, "Run cancelled before the engine started. Nothing was written.")
+            self._end_run_ui(
+                "cancelled",
+                _outcome_markup(labels.RUN_CANCELLED_BEFORE_START, code="RunCancelled"),
+            )
+            return
         if result and not has_errors and not should_abort:
             self.run_analysis(confirmed=True, saved_request=request, saved_df=saved_df)
             return
@@ -1597,6 +1691,7 @@ class BenchmarkApp(App):
         if tab is not None:
             try:
                 self.query_one(TabbedContent).active = tab
+                self._mark_restored("section_mode")
             except NoMatches:
                 pass
         for widget_id in SESSION_SELECT_IDS:
@@ -1618,6 +1713,7 @@ class BenchmarkApp(App):
                 select.value = value
             except Exception:
                 continue  # Stored value no longer valid for this dataset/presets.
+            self._mark_restored(widget_id)
         for widget_id in SESSION_CHECKBOX_IDS:
             if widget_id not in session:
                 continue
@@ -1625,6 +1721,7 @@ class BenchmarkApp(App):
                 self.query_one(f"#{widget_id}", Checkbox).value = bool(session[widget_id])
             except NoMatches:
                 continue
+            self._mark_restored(widget_id)
         # Restore release mode after the sweep checkbox so locking preserves the
         # operator's prior sweep preference from the session.
         if "privacy_release_mode" in session:
@@ -1655,6 +1752,7 @@ class BenchmarkApp(App):
                 self.query_one(f"#{widget_id}", Select).value = value
             except Exception:
                 continue  # Widget gone, or the value is no longer an option.
+            self._mark_restored(widget_id)
         for widget_id, values in lists.items():
             try:
                 s_list = self.query_one(f"#{widget_id}", SelectionList)
@@ -1663,6 +1761,7 @@ class BenchmarkApp(App):
             for value in values:
                 if value in available:
                     s_list.select(value)
+                    self._mark_restored(widget_id)
 
     def _restore_privacy_release_mode(self, value: Any) -> None:
         """Restore a session release mode; unknown values fall back safely."""
@@ -1674,6 +1773,7 @@ class BenchmarkApp(App):
             try:
                 select.value = value
                 self._restored_privacy_release_mode = str(value)
+                self._mark_restored("privacy_release_mode")
             except Exception:
                 select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
                 self._restored_privacy_release_mode = (
@@ -1704,6 +1804,540 @@ class BenchmarkApp(App):
         self._apply_privacy_release_mode_coupling(
             self._privacy_release_mode_value_from_widget()
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Layout shell: steps, rail, results view, action bar (PR 4, 01 §3)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _step_of(self, widget: Any) -> Optional[str]:
+        """The step whose body holds ``widget``, or None (rail, results, bars)."""
+        for node in widget.ancestors_with_self:
+            node_id = node.id or ""
+            if node_id.startswith("step_") and node_id[5:] in STEP_BY_ID:
+                return node_id[5:]
+        return None
+
+    def _step_of_id(self, widget_id: str) -> Optional[str]:
+        try:
+            return self._step_of(self.query_one(f"#{widget_id}"))
+        except NoMatches:
+            return None
+
+    def _mark_restored(self, widget_id: str) -> None:
+        step = self._step_of_id(widget_id)
+        if step is not None:
+            self._restored_steps.add(step)
+
+    def _step_focus_chain(self, step_id: str) -> List[Any]:
+        try:
+            container = self.query_one(f"#{STEP_BY_ID[step_id].container_id}")
+        except NoMatches:
+            return []
+        main = getattr(self, "_main_screen", None) or self.screen
+        in_chain = {widget for widget in main.focus_chain if container in widget.ancestors}
+        # DOM order: a step that was just displayed has no layout yet, and
+        # Textual's layout-sorted chain would put margin-topped containers
+        # first. Once laid out, both orders agree in these vertical forms.
+        return [widget for widget in container.walk_children() if widget in in_chain]
+
+    def _step_entry_widget(self, step_id: str) -> Any:
+        """First blocker in the step (01 §4.3 rule 3), else its first stop."""
+        for blocker in self._blockers:
+            if self._step_of_id(blocker.focus_id) == step_id:
+                try:
+                    widget = self.query_one(f"#{blocker.focus_id}")
+                except NoMatches:
+                    continue
+                if widget.focusable and widget.display:
+                    return widget
+        chain = self._step_focus_chain(step_id)
+        return chain[0] if chain else None
+
+    def _show_step(self, step_id: str, *, focus: Any = True) -> None:
+        """Display one step body; the others stay mounted with ``display: none``.
+
+        ``focus=True`` moves focus to the step's entry widget unless focus is
+        already inside it; ``"last"`` focuses its last stop; ``False`` leaves
+        focus alone (the caller focuses something itself).
+        """
+        if step_id not in STEP_BY_ID:
+            return
+        changed = step_id != self._current_step
+        self._current_step = step_id
+        for step in STEPS:
+            try:
+                self.query_one(f"#{step.container_id}").display = step.id == step_id
+            except NoMatches:
+                continue
+        self._set_results_view(False)
+        if changed:
+            # A step that was just displayed has no layout yet, so the focus
+            # scroll inside it happens after the next refresh.
+            self.call_after_refresh(self._scroll_focus_into_view)
+        if focus:
+            focused = self.focused
+            if focus == "last":
+                chain = self._step_focus_chain(step_id)
+                target = chain[-1] if chain else None
+            elif focused is not None and self._step_of(focused) == step_id:
+                target = None
+            else:
+                target = self._step_entry_widget(step_id)
+            if target is not None:
+                target.focus()
+        self._schedule_shell_refresh()
+
+    def _scroll_focus_into_view(self) -> None:
+        focused = self.focused
+        if focused is not None and self._step_of(focused) == self._current_step:
+            focused.scroll_visible(animate=False)
+
+    def action_go_to_step(self, step_id: str) -> None:
+        """Palette "Go to step: …" and rail clicks: show the step, focus its entry."""
+        if isinstance(self.screen, ModalScreen) or step_id not in STEP_BY_ID:
+            return
+        self._show_step(step_id)
+        target = self._step_entry_widget(step_id)
+        if target is not None:
+            target.focus()
+
+    def on_step_rail_step_clicked(self, event: StepRail.StepClicked) -> None:
+        self.action_go_to_step(event.step_id)
+
+    def _focus_field(self, widget_id: str) -> None:
+        """Show the step holding ``widget_id`` (closing the results view) and focus it."""
+        try:
+            widget = self.query_one(f"#{widget_id}")
+        except NoMatches:
+            return
+        step = self._step_of(widget)
+        if step is not None:
+            self._show_step(step, focus=False)
+        widget.focus()
+
+    # Tab flows from the last stop of a step into the next step, Shift+Tab
+    # from the first stop into the previous one; Review wraps to Data (01 §4.3).
+    def action_focus_next(self) -> None:
+        if not self._flow_between_steps(+1):
+            super().action_focus_next()
+
+    def action_focus_previous(self) -> None:
+        if not self._flow_between_steps(-1):
+            super().action_focus_previous()
+
+    def _flow_between_steps(self, direction: int) -> bool:
+        main = getattr(self, "_main_screen", None)
+        if main is None or self.screen is not main or self._results_view_open():
+            return False
+        focused = self.focused
+        if focused is None or self._step_of(focused) != self._current_step:
+            return False
+        chain = self._step_focus_chain(self._current_step)
+        if not chain:
+            return False
+        edge = chain[-1] if direction > 0 else chain[0]
+        if focused is not edge:
+            return False
+        ids = [step.id for step in STEPS]
+        target = ids[(ids.index(self._current_step) + direction) % len(ids)]
+        if direction > 0:
+            self._show_step(target, focus=False)
+            new_chain = self._step_focus_chain(target)
+            if new_chain:
+                new_chain[0].focus()
+        else:
+            self._show_step(target, focus="last")
+        return True
+
+    # ── Results column (wide) / ^T view (narrow) ──────────────────────
+
+    def _is_wide(self) -> bool:
+        return self.size.width >= WIDE_LAYOUT_MIN_COLUMNS
+
+    def _results_view_open(self) -> bool:
+        main = getattr(self, "_main_screen", None)
+        return bool(main is not None and not self._is_wide() and main.has_class("-show-results"))
+
+    def _set_results_view(self, show: bool) -> None:
+        main = getattr(self, "_main_screen", None)
+        if main is None or main.has_class("-show-results") == show:
+            return
+        if show:
+            focused = self.focused
+            if focused is not None and self._step_of(focused) is not None:
+                self._setup_focus = focused
+        main.set_class(show, "-show-results")
+        self._update_key_bar()
+
+    def _open_results_view(self, *, focus_copy: bool) -> None:
+        """Narrow layout only: swap the step body for the status/results view."""
+        if self._is_wide():
+            return
+        self._set_results_view(True)
+        target = self._copy_button_if_shown() if focus_copy else None
+        if target is not None:
+            target.focus()
+        elif self.focused is not None and self._step_of(self.focused) is not None:
+            # Keys must never reach a field that is no longer displayed.
+            self.screen.set_focus(None)
+
+    def _set_has_outcome(self, value: bool) -> None:
+        main = getattr(self, "_main_screen", None)
+        if main is not None:
+            main.set_class(value, "-has-outcome")
+
+    def _copy_button_if_shown(self) -> Any:
+        try:
+            button = self.query_one("#btn_copy_path", Button)
+            box = self.query_one("#results_copy")
+        except NoMatches:
+            return None
+        return button if box.display and not box.has_class("hidden") else None
+
+    def _restore_setup_focus(self) -> None:
+        widget = getattr(self, "_setup_focus", None)
+        self._setup_focus = None
+        if widget is not None and widget.is_attached and self._step_of(widget) == self._current_step:
+            widget.focus()
+            return
+        target = self._step_entry_widget(self._current_step)
+        if target is not None:
+            target.focus()
+
+    def action_toggle_results(self) -> None:
+        """Ctrl+T: <110 swaps setup and results; ≥110 moves focus into the column and back."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        focused = self.focused
+        in_results = focused is not None and any(
+            node.id == "activity_pane" for node in focused.ancestors_with_self
+        )
+        if self._is_wide():
+            if in_results:
+                self._restore_setup_focus()
+                return
+            if focused is not None and self._step_of(focused) is not None:
+                self._setup_focus = focused
+            target = self._copy_button_if_shown() or self.query_one("#log_output", Log)
+            target.focus()
+            return
+        if self._results_view_open():
+            self._set_results_view(False)
+            self._restore_setup_focus()
+        else:
+            self._open_results_view(focus_copy=True)
+
+    # ── Copy path (01 §7.3) ──────────────────────────────────────────
+
+    def action_copy_path(self) -> None:
+        """Ctrl+Y: copy the report path (or the log path) via OSC 52.
+
+        Terminals may block clipboard writes over SSH, so the full path is
+        always shown, whole and selectable, in the results view as well.
+        """
+        path = self._copy_path
+        if not path:
+            self.notify("No report path yet: run an analysis first.", title="Copy path", timeout=3)
+            return
+        try:
+            self.copy_to_clipboard(path)
+        except Exception:
+            logging.getLogger(__name__).debug("copy_to_clipboard failed", exc_info=True)
+        self.notify(
+            "Path sent to the clipboard. If your terminal blocks that (common over "
+            f"SSH), select it in Results instead:\n{path}",
+            title="Path copied",
+            timeout=4,
+            markup=False,
+        )
+        if not self._is_wide() and not self._results_view_open():
+            self._open_results_view(focus_copy=True)
+
+    def _set_copy_path(self, path: Optional[str], label: str) -> None:
+        self._copy_path = path or None
+        try:
+            box = self.query_one("#results_copy")
+            self.query_one("#results_path_label", Static).update(Content(f"{label} · Ctrl+Y copies this path"))
+            self.query_one("#results_path", Static).update(Content(path or ""))
+            self.query_one("#btn_copy_path", Button).label = (
+                "Copy report path ^Y" if label.startswith("Report") else "Copy log path ^Y"
+            )
+        except NoMatches:
+            return
+        box.set_class(not path, "hidden")
+
+    # ── Readiness: the launch guards, on the UI thread ────────────────
+
+    def _schedule_shell_refresh(self) -> None:
+        """Coalesce rail/action bar/Review updates into one per refresh."""
+        if self._shell_refresh_pending or getattr(self, "_exit", False):
+            return
+        self._shell_refresh_pending = True
+        self.call_after_refresh(self._refresh_shell)
+
+    def _readiness_blockers(self) -> Tuple[LaunchBlocker, ...]:
+        """``launch_blockers`` over a side-effect-free snapshot of the form."""
+        try:
+            inputs = self._collect_run_inputs(resolve_config=False)
+        except Exception:
+            return self._blockers
+        return launch_blockers(inputs)
+
+    def _refresh_shell(self) -> None:
+        self._shell_refresh_pending = False
+        if getattr(self, "_exit", False):
+            return
+        self._blockers = self._readiness_blockers()
+        self._refresh_rail()
+        self._refresh_action_bar()
+        self._refresh_review()
+
+    def _blocked_steps(self) -> set:
+        return {self._step_of_id(b.focus_id) for b in self._blockers}
+
+    def _rail_states(self) -> Dict[str, str]:
+        blocked = self._blocked_steps()
+        loaded = getattr(self, "_loaded_csv_signature", None) is not None
+        states: Dict[str, str] = {}
+        for step in STEPS:
+            if not loaded and step.id in ("entity", "analysis"):
+                # Nothing to choose before a file is loaded (01 §5.1).
+                states[step.id] = PENDING
+            elif step.id in blocked or (step.id == "review" and self._blockers):
+                states[step.id] = ATTENTION
+            elif step.id in self._restored_steps:
+                states[step.id] = RESTORED
+            elif step.id in ("data", "entity", "analysis"):
+                states[step.id] = DONE if loaded else PENDING
+            else:
+                states[step.id] = DONE
+        return states
+
+    def _refresh_rail(self) -> None:
+        try:
+            rail = self.query_one("#step_rail", StepRail)
+        except NoMatches:
+            return
+        rail.set_states(self._current_step, self._rail_states())
+
+    def _run_label(self) -> str:
+        mode = self._run_mode if self._run_state in ("running", "validating") and self._run_mode else self._analysis_mode()
+        if mode == "privacy-sweep" or (mode in ("share", "rate") and self._privacy_sweep_enabled()):
+            base = self._analysis_mode() if mode == "privacy-sweep" else mode
+            return f"{base} privacy sweep"
+        return f"{mode} analysis"
+
+    def _ready_summary(self) -> str:
+        entity, _ = self._target_entity_for_run() if self._entity_widgets_ready() else (None, None)
+        parts = [self._run_label(), entity or "peer-only"]
+        try:
+            prefix = "share" if self._analysis_mode() == "share" else "rate"
+            if self.query_one(f"#{prefix}_auto_dim", Checkbox).value:
+                parts.append("auto dims")
+            else:
+                count = len(self.query_one(f"#{prefix}_dims", SelectionList).selected)
+                parts.append(f"{count} dim{'s' if count != 1 else ''}")
+        except NoMatches:
+            pass
+        return " · ".join(parts)
+
+    def _entity_widgets_ready(self) -> bool:
+        try:
+            self.query_one("#entity_name", Select)
+            self.query_one("#entity_filter", Input)
+        except NoMatches:
+            return False
+        return True
+
+    def _refresh_action_bar(self) -> None:
+        """One row: readiness or run stage or outcome, plus the key that acts on it."""
+        try:
+            bar = self.query_one("#action_bar", ActionBar)
+        except NoMatches:
+            return
+        state = getattr(self, "_run_state", "idle")
+        run_key = f"^R Run {self._run_label()}"
+        if state in ("validating", "running"):
+            if self.cancel_requested and self._cancel_origin == "button":
+                bar.set_state(
+                    "cancelled", "Cancelling: the run stops at its next safe point; nothing is written."
+                )
+                return
+            if state == "validating":
+                if isinstance(self.screen, ModalScreen):
+                    bar.set_state("awaiting", "Answer the dialog to continue, or cancel the run.", "^G Cancel run", "app.cancel_run")
+                else:
+                    bar.set_state("running", "Checking inputs and loading data", "^G Cancel run", "app.cancel_run")
+                return
+            stage = _RUN_STAGE_LABELS.get(self._run_stage or "", "Starting the engine")
+            elapsed = ""
+            if self._run_started_at is not None:
+                elapsed = f" · {time.monotonic() - self._run_started_at:.0f} s"
+            if self._run_stage == "output":
+                bar.set_state("running", f"{stage}{elapsed}", "Cancel unavailable: writing outputs")
+            else:
+                bar.set_state("running", f"{stage}{elapsed}", "^G Cancel run", "app.cancel_run")
+            return
+        if state in ("success", "error", "blocked", "cancelled"):
+            badge = self._current_run_badge().state
+            message = self._outcome_message or labels.text_for(labels.RUN_STATUS, state)
+            if self._copy_path and state == "success":
+                bar.set_state(badge, message, "^Y Copy path", "app.copy_path")
+            else:
+                bar.set_state(badge, message, run_key, "app.run_analysis")
+            return
+        if self._blockers:
+            first = self._blockers[0]
+            more = f" (+{len(self._blockers) - 1} more)" if len(self._blockers) > 1 else ""
+            bar.set_state("notready", f"{first.message}{more}", run_key, "app.run_analysis", dim_key=True)
+            return
+        bar.set_state("ready", self._ready_summary(), run_key, "app.run_analysis")
+
+    def _refresh_review(self) -> None:
+        """Step 5: a read-only summary of the current form, blockers first."""
+        try:
+            review = self.query_one("#review_summary", Static)
+        except NoMatches:
+            return
+        text = Text()
+        label = self._run_label()
+        if self._blockers:
+            count = len(self._blockers)
+            noun = "thing" if count == 1 else "things"
+            text.append(f"{status_glyph('notready')} {count} {noun} to fix before this {label} can run\n", style="bold")
+            for blocker in self._blockers:
+                step = STEP_BY_ID.get(self._step_of_id(blocker.focus_id) or "")
+                where = f"  (step {step.number} {step.title})" if step else ""
+                text.append(f"  {status_glyph('notready')} {blocker.message}{where}\n")
+            text.append("  Ctrl+R jumps to the first one.\n")
+        else:
+            text.append(f"{status_glyph('ready')} Ready to run {label}\n", style="bold")
+        text.append("\n")
+        for name, value in self._review_lines():
+            text.append(f"{name:<10}", style="bold")
+            text.append(f"{value}\n")
+        if self._restored_steps:
+            steps = ", ".join(step.title for step in STEPS if step.id in self._restored_steps)
+            text.append(f"\n↺ Restored from the last session: {steps}\n")
+        review.update(text)
+
+    def _review_lines(self) -> List[Tuple[str, str]]:
+        def select_text(widget_id: str) -> str:
+            try:
+                value = self.query_one(f"#{widget_id}", Select).value
+            except NoMatches:
+                return "—"
+            return "—" if value == SELECT_BLANK or value is None else str(value)
+
+        def checked(widget_id: str) -> bool:
+            try:
+                return bool(self.query_one(f"#{widget_id}", Checkbox).value)
+            except NoMatches:
+                return False
+
+        def on_off(widget_id: str) -> str:
+            return "on" if checked(widget_id) else "off"
+
+        lines: List[Tuple[str, str]] = []
+        try:
+            csv_text = self.query_one("#csv_path", Input).value.strip()
+        except NoMatches:
+            csv_text = ""
+        columns = len(getattr(self, "csv_columns", []) or [])
+        loaded = getattr(self, "_loaded_csv_signature", None) is not None
+        lines.append(("Data", f"{csv_text} · {columns} columns" if loaded and csv_text else (csv_text or "no file loaded")))
+        entity = None
+        if self._entity_widgets_ready():
+            entity, _ = self._target_entity_for_run()
+        lines.append(("Entity", f"{select_text('entity_col')} → {entity or 'peer-only benchmark'}"))
+        mode = self._analysis_mode()
+        prefix = "share" if mode == "share" else "rate"
+        try:
+            dims_list = list(self.query_one(f"#{prefix}_dims", SelectionList).selected)
+        except NoMatches:
+            dims_list = []
+        dims = "auto-detect" if checked(f"{prefix}_auto_dim") else (", ".join(map(str, dims_list)) or "none")
+        if mode == "share":
+            lines.append(("Analysis", f"Share · metric {select_text('share_metric')} · dims {dims}"))
+        else:
+            lines.append((
+                "Analysis",
+                f"Rate · total {select_text('rate_total')} · approved {select_text('rate_approved')} · "
+                f"fraud {select_text('rate_fraud')} · dims {dims}",
+            ))
+        preset = select_text("preset_select")
+        posture = "—"
+        try:
+            data = self.preset_workflow.load_preset_data(preset) if preset != "—" else None
+            if isinstance(data, dict) and data.get("compliance_posture"):
+                posture = labels.text_for(labels.POSTURE, data["compliance_posture"])
+        except Exception:
+            pass
+        release = (
+            labels.text_for(labels.RELEASE_MODE, self._privacy_release_mode_value_from_widget())
+            if mode == "share"
+            else "not used for rate"
+        )
+        preset_text = _preset_display(None if preset == "—" else preset)
+        if posture != "—" and posture not in preset_text:
+            preset_text = f"{preset_text} · posture {posture}"
+        lines.append((
+            "Privacy",
+            f"{preset_text} · {release} · rule sweep {on_off('privacy_rule_sweep_mode')}",
+        ))
+        citi = "Yes" if checked("citi_competitor_receives_output") else "No"
+        lines.append((
+            "Declared",
+            f"merchant spend: {'Yes' if checked('privacy_merchant_spend_scope') else 'No'} · Citi competitor: {citi}",
+        ))
+        lines.append((
+            "Checks",
+            f"input validation {on_off('validate_input')} · impact {on_off('analyze_distortion')} · "
+            f"preset comparison {on_off('compare_presets')}",
+        ))
+        try:
+            output = self.query_one("#output_file", Input).value.strip()
+        except NoMatches:
+            output = ""
+        output_format = select_text("output_format")
+        format_text = labels.text_for(labels.OUTPUT_FORMAT, output_format) if output_format != "—" else "—"
+        lines.append(("Output", f"{format_text} → {output or 'named automatically'}"))
+        return lines
+
+    # ── Cancel (owner decision 1; 01 §7.2) ────────────────────────────
+
+    def action_cancel_run(self) -> None:
+        """Ctrl+G / action bar: stop the run at its next safe point.
+
+        Available until output writing starts. Cancelling a consent or
+        clearing-spend dialog, or the validation review, through ^G is the
+        same as its Cancel button, except that it is recorded as the
+        visible cancel (``cancel_before_run``).
+        """
+        if self._run_state not in ("validating", "running"):
+            return
+        if self._run_stage == "output":
+            self.notify(
+                "Cancel unavailable: the run is writing outputs and finishes under the normal privacy rules.",
+                title=status_text("running"),
+                timeout=4,
+            )
+            return
+        if self.cancel_requested:
+            return
+        self._cancel_origin = "button"
+        self.request_cancel()
+        screen = self.screen
+        if isinstance(screen, ConfirmScreen) and screen.confirm_label != "Quit":
+            screen.dismiss(False)
+        elif isinstance(screen, ValidationModal):
+            screen.dismiss(False)
+        self._refresh_action_bar()
+
+    def _record_visible_cancel(self, prompt: str) -> None:
+        """Telemetry for ^G, recorded where the cancel took effect (worker-safe)."""
+        if self._cancel_origin == "button":
+            action_cancelled(self._telemetry_action(), prompt)
 
     # ──────────────────────────────────────────────────────────────────
     # Run status / results panels
@@ -1752,6 +2386,7 @@ class BenchmarkApp(App):
         text = "\n".join(lines)
         key = (badge, text)
         if key == self._last_status_text:
+            self._refresh_action_bar()  # Elapsed time and cancel state move on.
             return  # Nothing changed; skip the repaint.
         try:
             self.query_one("#run_status_badge", StatusBadge).set_status(badge.state, badge.detail)
@@ -1759,6 +2394,7 @@ class BenchmarkApp(App):
             self._last_status_text = key
         except NoMatches:
             pass
+        self._refresh_action_bar()
         self._update_key_bar()
 
     # ── Key bar context (tui.keybar) ──────────────────────────────────────
@@ -1794,6 +2430,12 @@ class BenchmarkApp(App):
         bar.set_context(self._key_bar_context())
 
     def on_descendant_focus(self, event: Any) -> None:
+        # Focus decides the visible step: a field focused in another step
+        # (a launch blocker, a restored focus, a test) brings its step up, and
+        # a setup field focused while the <110 results view is open closes it.
+        step = self._step_of(event.widget)
+        if step is not None and (step != self._current_step or self._results_view_open()):
+            self._show_step(step, focus=False)
         self._mark_field_pair(event.widget, True)
         self._update_key_bar()
 
@@ -1851,6 +2493,8 @@ class BenchmarkApp(App):
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
             self._elapsed_timer = None
+        self._set_copy_path(None, "")
+        self._set_has_outcome(False)
         self._refresh_run_status()
         self._save_session()
 
@@ -1866,8 +2510,21 @@ class BenchmarkApp(App):
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
         self._elapsed_timer = self.set_interval(1.0, self._refresh_run_status)
+        # Restored-value markers clear once a run uses them (01 §7.3).
+        self._restored_steps.clear()
         self._refresh_run_status()
+        self._schedule_shell_refresh()
         self._save_session()
+        # <110 columns: the status view opens when the run starts (01 §4.3 rule 5).
+        self._open_results_view(focus_copy=False)
+
+    _OUTCOME_MESSAGES = {
+        "success": "The run finished and the report was written.",
+        "withheld": "Privacy rules withheld publication · see Results",
+        "blocked": "The run was blocked · see Results",
+        "error": "The run failed · see Results",
+        "cancelled": "Nothing was written.",
+    }
 
     def _end_run_ui(
         self,
@@ -1875,16 +2532,25 @@ class BenchmarkApp(App):
         summary_markup: str,
         badge: Optional[str] = None,
         verdict: Optional[str] = None,
+        *,
+        copy_path: Optional[str] = None,
+        copy_label: str = "Report",
+        message: str = "",
     ) -> None:
         """Restore UI after a run and publish the last-run summary (app thread only).
 
         ``state`` is the app run state (success/error/blocked). ``badge``
         overrides its status-language badge (``withheld`` for a privacy
         denial) and ``verdict`` adds a second badge (``compliant`` or
-        ``warning``) next to DONE.
+        ``warning``) next to DONE. ``copy_path`` is the whole path ^Y copies
+        and the results view shows (the report, or a log); ``message`` is the
+        action bar's one-line outcome.
         """
         self._run_state = state
         self._outcome_badge = badge
+        self._outcome_message = message or self._OUTCOME_MESSAGES.get(badge or state, "")
+        self._set_copy_path(copy_path, copy_label)
+        self._set_has_outcome(True)
         self._run_stage = None
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
@@ -1911,6 +2577,11 @@ class BenchmarkApp(App):
             verdict_badge.set_class(not verdict, "hidden")
         except NoMatches:
             pass
+        self._schedule_shell_refresh()
+        # <110 columns: results open when the run ends, focus on Copy path
+        # (01 §4.3 rule 5); at 110+ focus stays and the action bar announces it.
+        if self.focused is None or self._results_view_open() or self._step_of(self.focused) is None:
+            self._open_results_view(focus_copy=True)
 
     def _reset_run_ui(self) -> None:
         """Re-enable the run controls after an aborted launch (app thread only)."""
@@ -1923,7 +2594,10 @@ class BenchmarkApp(App):
         btn = self.query_one("#btn_run", Button)
         btn.disabled = False
         btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
+        self._outcome_message = ""
+        self._set_has_outcome(False)
         self._refresh_run_status()
+        self._schedule_shell_refresh()
 
     def _telemetry_action(self) -> str:
         """Telemetry action of the current launch (closed: share/rate_analysis)."""
@@ -1969,12 +2643,9 @@ class BenchmarkApp(App):
         )
         self.call_from_thread(self._reset_run_ui)
         if focus_id:
-            def _focus() -> None:
-                try:
-                    self.query_one(f"#{focus_id}").focus()
-                except NoMatches:
-                    pass
-            self.call_from_thread(_focus)
+            # Ctrl+R from any step: show the blocker's step and focus it; the
+            # action bar names it (the same launch_blockers result).
+            self.call_from_thread(self._focus_field, focus_id)
 
     def _confirm_accuracy_first_consent(self) -> bool:
         """Ask for explicit per-run consent to the accuracy_first posture.
@@ -2284,6 +2955,7 @@ class BenchmarkApp(App):
             if entity_col_value != SELECT_BLANK:
                 self.load_unique_entities(entity_col_value)
             self._loaded_csv_signature = self._csv_signature(file_path)
+            self._schedule_shell_refresh()
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -2375,6 +3047,10 @@ class BenchmarkApp(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "entity_filter" and self._entity_large:
             self._refresh_entity_matches()
+        self._schedule_shell_refresh()
+
+    def on_selection_list_selected_changed(self, event: SelectionList.SelectedChanged) -> None:
+        self._schedule_shell_refresh()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_list.id != "entity_matches":
@@ -2743,6 +3419,7 @@ class BenchmarkApp(App):
                     # Owner decision 1: stop the run at its next safe
                     # checkpoint instead of letting the engine finish (and
                     # keep the process alive) after the UI is gone.
+                    self._cancel_origin = "quit"
                     self.request_cancel()
                     self._abandon_pending_confirmations()
                     self._save_session()
@@ -2906,6 +3583,7 @@ class BenchmarkApp(App):
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox toggles."""
+        self._schedule_shell_refresh()
         if event.checkbox.id == "share_auto_dim":
             if event.value:
                 self.query_one("#share_dims").add_class("hidden")
@@ -3180,6 +3858,7 @@ class BenchmarkApp(App):
         finally:
             # Loaded, failed or dropped: the entity widgets must be usable again.
             self._set_entity_loading(False)
+            self._schedule_shell_refresh()
 
     def _apply_large_entity_values(self, index: EntityIndex, desired: Any) -> None:
         """Switch to the filter picker for a list above ENTITY_SELECT_MAX (UI thread)."""
@@ -3217,6 +3896,7 @@ class BenchmarkApp(App):
             # A queued Changed message can land after exit() while the DOM is
             # being unmounted; reacting to it would query dead widgets.
             return
+        self._schedule_shell_refresh()
         if event.select.id == "entity_col":
             # Act on the widget's current value, not the message's: repopulating
             # the column options posts a transient BLANK Changed that is already
@@ -3263,6 +3943,7 @@ class BenchmarkApp(App):
                 self._privacy_release_mode_value_from_widget()
             )
         self._refresh_run_status()
+        self._schedule_shell_refresh()
         self._emit_surface_if_changed(self._analysis_mode())
 
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
@@ -3271,10 +3952,20 @@ class BenchmarkApp(App):
             surface_viewed("advanced")
 
     def action_toggle_advanced(self) -> None:
-        """Toggle the advanced optimization collapsible (Ctrl+A)."""
+        """Toggle the advanced optimization collapsible (F8; step 3)."""
         collapsible = self.query_one("#advanced_opt")
         collapsible.collapsed = not collapsible.collapsed
         if not collapsible.collapsed:
+            # The panel lives in step 3: show it and put focus on its title,
+            # so keys never go to a field on a hidden step.
+            if not isinstance(self.screen, ModalScreen):
+                self._show_step("analysis", focus=False)
+                try:
+                    title = collapsible.query_one(CollapsibleTitle)
+                    title.focus()
+                    self.call_after_refresh(collapsible.scroll_visible, animate=False, top=True)
+                except NoMatches:
+                    pass
             preset_val = self.query_one("#preset_select").value
             if preset_val and preset_val != SELECT_BLANK:
                 self.update_advanced_parameters(preset_val)
@@ -3331,8 +4022,13 @@ class BenchmarkApp(App):
     # Analysis execution
     # ──────────────────────────────────────────────────────────────────
 
-    def _collect_run_inputs(self) -> RunInputs:
-        """Read every form value a run attempt needs (UI thread only, D7)."""
+    def _collect_run_inputs(self, *, resolve_config: bool = True) -> RunInputs:
+        """Read every form value a run attempt needs (UI thread only, D7).
+
+        ``resolve_config=False`` is the readiness snapshot for the action
+        bar, rail and Review step: the same values, without the D2 override
+        invalidation or the posture lookup (no side effects, no file reads).
+        """
 
         def select_value(widget_id: str) -> Any:
             value = self.query_one(f"#{widget_id}", Select).value
@@ -3343,12 +4039,13 @@ class BenchmarkApp(App):
 
         preset_value = select_value("preset_select")
         preset = str(preset_value) if preset_value is not None else None
-        # D2: an override written for another preset is never sent with this one.
-        self._invalidate_stale_advanced_override(preset)
+        if resolve_config:
+            # D2: an override written for another preset is never sent with this one.
+            self._invalidate_stale_advanced_override(preset)
         config = getattr(self, "advanced_config_path", None) or None
         posture = (
             self._effective_compliance_posture(preset, config)
-            if (preset or config)
+            if resolve_config and (preset or config)
             else None
         )
         mode = self._analysis_mode()
@@ -3422,6 +4119,7 @@ class BenchmarkApp(App):
             )
             return
         self._cancel_event.clear()
+        self._cancel_origin = None
         self._run_action = "share_analysis" if inputs.mode == "share" else "rate_analysis"
         log_widget.clear()
         started = datetime.now().strftime("%H:%M:%S")
@@ -3455,6 +4153,7 @@ class BenchmarkApp(App):
 
     def _stop_cancelled_launch(self, log_widget: Log) -> None:
         """End a run attempt cancelled before the engine started (worker thread)."""
+        self._record_visible_cancel("cancel_before_run")
         finalize_deferred_logging(
             logging.getLogger(),
             privacy_authorized=False,
@@ -3483,29 +4182,19 @@ class BenchmarkApp(App):
     def _launch_run_worker(self, inputs: RunInputs, log_widget: Log) -> None:
         """Preflight, prompts and input validation for one attempt (worker thread).
 
-        Reads only ``inputs``; launch checks keep today's order and messages.
+        Reads only ``inputs``. The launch guards are ``tui.readiness``'s
+        ``launch_blockers`` (the same function the action bar uses), checked
+        before any consent or attestation is asked, so a run that cannot
+        start never asks for one.
         """
         action = "share_analysis" if inputs.mode == "share" else "rate_analysis"
         try:
-            if not inputs.csv_path:
+            blockers = launch_blockers(inputs)
+            if blockers:
+                blocker = blockers[0]
                 self._fail_launch(
-                    "CSV path is required.", focus_id="csv_path", block_reason="csv_missing"
+                    blocker.message, focus_id=blocker.focus_id, block_reason=blocker.reason
                 )
-                return
-            if inputs.entity_selection_pending:
-                # The operator's target entity is cleared while the values
-                # reload and is re-applied when they land; launching now
-                # would silently run peer-only instead.
-                self._fail_launch(
-                    "Target entity values are still loading; wait for the list to finish.",
-                    focus_id="entity_name",
-                    block_reason="entity_loading",
-                )
-                return
-            if inputs.entity_error:
-                # Large-list picker: typed text that is not an exact entity
-                # must never silently become a peer-only run (03 §6).
-                self._fail_launch(inputs.entity_error, focus_id="entity_filter")
                 return
 
             values: Dict[str, Any] = {
@@ -3553,28 +4242,12 @@ class BenchmarkApp(App):
 
             if inputs.mode == "share":
                 values["metric"] = inputs.metric
-                if not values["metric"]:
-                    self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric", block_reason="metric_missing")
-                    return
             else:
                 values["total_col"] = inputs.total_col
-                if not values["total_col"]:
-                    self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total", block_reason="total_missing")
-                    return
                 values["approved_col"] = inputs.approved_col
                 values["fraud_col"] = inputs.fraud_col
-                if not values["approved_col"] and not values["fraud_col"]:
-                    self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved", block_reason="rate_column_missing")
-                    return
             values["secondary_metrics"] = list(inputs.secondary_metrics) or None
             values["auto"] = inputs.auto
-            if not inputs.auto and not inputs.dimensions:
-                self._fail_launch(
-                    "Select at least one dimension or enable auto-detect.",
-                    focus_id=f"{'share' if inputs.mode == 'share' else 'rate'}_dims",
-                    block_reason="dimensions_missing",
-                )
-                return
             values["dimensions"] = list(inputs.dimensions) if inputs.dimensions and not inputs.auto else None
             values["debug"] = inputs.debug
             values["export_balanced_csv"] = inputs.export_balanced_csv
@@ -3843,10 +4516,14 @@ class BenchmarkApp(App):
                 if quarantine_path:
                     details.append(_summary_field("Internal run log (do not share)", str(quarantine_path)))
                 self.call_from_thread(
-                    self._end_run_ui,
-                    "blocked",
-                    _outcome_markup(headline, details, code=f"{reason} · {verdict}"),
-                    badge="withheld",
+                    partial(
+                        self._end_run_ui,
+                        "blocked",
+                        _outcome_markup(headline, details, code=f"{reason} · {verdict}"),
+                        badge="withheld",
+                        copy_path=str(quarantine_path) if quarantine_path else None,
+                        copy_label="Internal run log (do not share)",
+                    )
                 )
                 self.call_from_thread(
                     self.notify,
@@ -3860,15 +4537,22 @@ class BenchmarkApp(App):
                 verdict_state = labels.VERDICT_STATUS.get(verdict)
                 if verdict_state not in ("compliant", "warning"):
                     verdict_state = None
+                verdict_text = labels.text_for(labels.COMPLIANCE_VERDICT, verdict)
+                first_report = report_paths[0] if report_paths else None
                 self.call_from_thread(
-                    self._end_run_ui,
-                    "success",
-                    _outcome_markup(
-                        labels.Label("The run finished and the report was written."),
-                        details,
-                        code=verdict,
-                    ),
-                    verdict=verdict_state,
+                    partial(
+                        self._end_run_ui,
+                        "success",
+                        _outcome_markup(
+                            labels.Label("The run finished and the report was written."),
+                            details,
+                            code=verdict,
+                        ),
+                        verdict=verdict_state,
+                        copy_path=first_report,
+                        copy_label="Report",
+                        message=" · ".join(part for part in (verdict_text, first_report) if part),
+                    )
                 )
                 self.call_from_thread(
                     self.notify,
@@ -3882,8 +4566,10 @@ class BenchmarkApp(App):
         # propagates, and by then execute_run has imported the module.
         except _analysis_run().RunCancelled:
             # Core stopped before output writing started: nothing was written.
-            # The deferred log is finalised unauthorised; the canceller (Quit)
-            # has already recorded action_cancelled.
+            # The deferred log is finalised unauthorised. Quit recorded
+            # action_cancelled when it was confirmed; the visible Cancel is
+            # recorded here, where it took effect (after action_attempted).
+            self._record_visible_cancel("cancel_during_run")
             log_path = self._quarantine_run_logging(logger, log_widget)
             write_log_message(log_widget, "Run cancelled before any output was written.")
             self._call_ui_if_running(
@@ -3896,9 +4582,13 @@ class BenchmarkApp(App):
             self.call_from_thread(log_widget.write, f"Run blocked: {exc}\n")
             label = labels.blocked_label(str(exc))
             self.call_from_thread(
-                self._end_run_ui,
-                "blocked",
-                _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunBlocked"),
+                partial(
+                    self._end_run_ui,
+                    "blocked",
+                    _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunBlocked"),
+                    copy_path=log_path,
+                    copy_label="Internal run log (do not share)",
+                )
             )
             self.call_from_thread(
                 self.notify, label.primary, title=status_text("blocked"), severity="error", timeout=10, markup=False
@@ -3908,9 +4598,13 @@ class BenchmarkApp(App):
             self.call_from_thread(log_widget.write, f"Run failed: {exc}\n")
             label = labels.aborted_label(str(exc))
             self.call_from_thread(
-                self._end_run_ui,
-                "error",
-                _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunAborted"),
+                partial(
+                    self._end_run_ui,
+                    "error",
+                    _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunAborted"),
+                    copy_path=log_path,
+                    copy_label="Internal run log (do not share)",
+                )
             )
             self.call_from_thread(
                 self.notify, label.primary, title=status_text("error"), severity="error", timeout=10, markup=False
@@ -3921,14 +4615,18 @@ class BenchmarkApp(App):
             self.call_from_thread(log_widget.write, traceback.format_exc())
             label = labels.UNEXPECTED_ERROR
             self.call_from_thread(
-                self._end_run_ui,
-                "error",
-                _outcome_markup(
-                    label,
-                    _log_details(log_path),
-                    why=f"An unexpected error ({type(exc).__name__}) stopped the run. The input file was not changed.",
-                    code=f"{type(exc).__name__}: {exc}",
-                ),
+                partial(
+                    self._end_run_ui,
+                    "error",
+                    _outcome_markup(
+                        label,
+                        _log_details(log_path),
+                        why=f"An unexpected error ({type(exc).__name__}) stopped the run. The input file was not changed.",
+                        code=f"{type(exc).__name__}: {exc}",
+                    ),
+                    copy_path=log_path,
+                    copy_label="Internal run log (do not share)",
+                )
             )
 
     def _quarantine_run_logging(

@@ -345,12 +345,16 @@ def test_hidden_verified_value_never_reaches_rate_request() -> None:
     asyncio.run(scenario())
 
 
-def test_privacy_release_mode_label_lives_in_analysis_options() -> None:
+def test_privacy_release_mode_label_lives_in_privacy_step() -> None:
+    """PR 4: release mode and rule sweep sit on step 4, Privacy & compliance."""
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
-            section = app.query_one("#section_analysis")
+            assert not app.query_one("#section_analysis").query("#privacy_release_mode")
+            assert app._step_of(app.query_one("#privacy_release_mode")) == "privacy"
+            section = app.query_one("#section_privacy")
             assert section.query_one("#privacy_release_mode", Select)
             assert section.query_one("#privacy_release_mode_label", Label)
             assert section.query_one("#privacy_rule_sweep_mode", Checkbox)

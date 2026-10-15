@@ -544,7 +544,12 @@ def test_large_entity_typo_blocks_the_launch(tmp_path: Path) -> None:
             assert fail.call_count == 1
             message = fail.call_args.args[0]
             assert "Target entity not found" in message and "ENT_00x9" not in message
-            assert fail.call_args.kwargs == {"focus_id": "entity_filter"}
+            # Schema v3: the no-match block now records a closed reason
+            # (it recorded nothing before); the typed text never does.
+            assert fail.call_args.kwargs == {
+                "focus_id": "entity_filter",
+                "block_reason": "entity_not_found",
+            }
 
     asyncio.run(scenario())
 

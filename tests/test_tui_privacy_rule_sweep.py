@@ -51,13 +51,28 @@ def test_tui_privacy_sweep_mode_is_off_by_default() -> None:
 
 
 def test_tui_citi_controls_live_in_compliance_declarations_group() -> None:
+    """PR 4: the declarations are an always-visible group on step 4.
+
+    Until PR 4 they sat in a collapsed Collapsible; now nothing can hide them
+    while step 4 is shown (01 §2.2), and none of them is in Advanced.
+    """
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
-            compliance = pilot.app.query_one(
-                "#compliance_declarations", Collapsible
-            )
+            app = pilot.app
+            compliance = app.query_one("#compliance_declarations")
 
-            assert compliance.collapsed
+            assert not isinstance(compliance, Collapsible)
+            assert app._step_of(compliance) == "privacy"
+            app.action_go_to_step("privacy")
+            await pilot.pause()
+            for widget_id in (
+                "privacy_merchant_spend_scope",
+                "citi_competitor_receives_output",
+                "citibank_entity_name",
+            ):
+                widget = compliance.query_one(f"#{widget_id}")
+                assert widget.region.area > 0, widget_id
             assert compliance.query_one(
                 "#citi_competitor_receives_output",
                 Checkbox,
@@ -67,6 +82,7 @@ def test_tui_citi_controls_live_in_compliance_declarations_group() -> None:
             advanced = pilot.app.query_one("#advanced_opt", Collapsible)
             assert not advanced.query("#citi_competitor_receives_output")
             assert not advanced.query("#citibank_entity_name")
+            assert not advanced.query("#privacy_merchant_spend_scope")
 
     asyncio.run(scenario())
 

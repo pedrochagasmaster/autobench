@@ -843,3 +843,74 @@ def test_reader_fallback_warning_names_reason_without_leaking(
     assert "secret_peer_analyst" not in warnings[0]
     assert encode_user_token("secret_peer_analyst") not in warnings[0]
     assert "csv_missing" not in warnings[0]
+
+
+def test_tui_v3_emissions_record_only_closed_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema v3 end to end: the large-entity no-match block and the visible
+    Cancel reach the real writer as closed values only; the typed entity
+    text, the file and its columns never do."""
+    import time as _time
+
+    from textual.widgets import Checkbox, Input, Select, SelectionList, TabbedContent
+
+    captured: list[bytes] = []
+    _inject_service(writer=captured.append, storage_root=tmp_path / "ads", environ={})
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.chdir(tmp_path)
+    secret_csv = tmp_path / "Acme_Secret_Bank_entities.csv"
+    rows = ["issuer_name,card_type,txn_cnt,total,fraud"]
+    rows += [f"SecretBank_{i:05d},CREDIT,{i + 1},{i + 10},1" for i in range(2500)]
+    secret_csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    async def until(pilot, predicate, timeout: float = 20.0) -> None:
+        deadline = _time.monotonic() + timeout
+        while not predicate():
+            assert _time.monotonic() < deadline
+            await pilot.pause(0.05)
+
+    async def scenario() -> None:
+        async with tui_app.BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.query_one("#csv_path", Input).value = str(secret_csv)
+            app.load_csv_headers(str(secret_csv), announce=False)
+            await until(pilot, lambda: app._entity_large and not app.entity_values_loading)
+            app.query_one("#validate_input", Checkbox).value = False
+            app.query_one("#share_metric", Select).value = "txn_cnt"
+            app.query_one("#share_dims", SelectionList).select("card_type")
+            app.query_one("#entity_filter", Input).value = "SecretBank_0000x"
+            await pilot.pause()
+            app.run_analysis()
+            await until(pilot, lambda: app.focused is not None and app.focused.id == "entity_filter")
+            await until(pilot, lambda: app._run_state == "idle")
+            # Visible Cancel at the clearing-spend dialog (rate + fraud).
+            app.query_one("#entity_filter", Input).value = ""
+            app.query_one(TabbedContent).active = "rate_tab"
+            await pilot.pause()
+            app.query_one("#rate_total", Select).value = "total"
+            app.query_one("#rate_fraud", Select).value = "fraud"
+            app.query_one("#rate_dims", SelectionList).select("card_type")
+            await pilot.pause()
+            app.run_analysis()
+            await until(pilot, lambda: isinstance(app.screen, tui_app.ClearingSpendConfirmScreen))
+            await pilot.press("ctrl+g")
+            await until(pilot, lambda: app._run_state == "cancelled")
+
+    asyncio.run(scenario())
+    telemetry._reset_for_tests()
+
+    decoded = [decode_record(raw) for raw in captured]
+    by_event = [(e.event, dict(e.props)) for e in decoded]
+    assert ("launch_blocked", {"action": "share_analysis", "reason": "entity_not_found"}) in by_event
+    assert ("action_cancelled", {"action": "rate_analysis", "prompt": "cancel_before_run"}) in by_event
+    assert not any(e == "action_cancelled" and p.get("prompt") == "clearing_spend" for e, p in by_event)
+    assert {e.schema_version for e in decoded if e.event not in ("session_start", "session_end")} == {3}
+    for raw in captured:
+        text = raw.decode("utf-8")
+        assert frozenset(json.loads(text)) == ENVELOPE_KEYS
+        for marker in (str(tmp_path), "Acme", "Secret", "0000x", "issuer", "txn_cnt",
+                       "card_type", "not found"):
+            assert marker not in text, marker

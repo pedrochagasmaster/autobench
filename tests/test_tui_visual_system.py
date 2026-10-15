@@ -138,8 +138,12 @@ def test_no_color_marks_filled_states_with_reverse_video(monkeypatch: pytest.Mon
             # Twelve states, twelve distinct texts: no state relies on colour.
             assert len(texts) == len(EXPECTED_STATES)
 
-            # Checkboxes and lists also read without colour.
+            # Checkboxes and lists also read without colour. (PR 4: the
+            # checkbox lives on step 3, so show that step first.)
+            app.action_go_to_step("analysis")
             validate = app.query_one("#validate_input", Checkbox)
+            validate.scroll_visible(animate=False, immediate=True)
+            await pilot.pause()
             assert "[x]" in _rendered_text(app, validate.region)
 
     asyncio.run(scenario())
@@ -172,6 +176,9 @@ def test_checkboxes_and_selection_lists_draw_box_marks() -> None:
             assert isinstance(app.query_one("#citi_competitor_receives_output"), BoxCheckbox)
             assert isinstance(app.query_one("#privacy_merchant_spend_scope"), BoxCheckbox)
 
+            # PR 4: both checkboxes and the lists live on step 3.
+            app.action_go_to_step("analysis")
+            await pilot.pause()
             on = app.query_one("#validate_input", Checkbox)
             off = app.query_one("#compare_presets", Checkbox)
             for widget in (on, off):
@@ -623,31 +630,42 @@ def test_widgets_are_compact() -> None:
 
 
 def test_everything_is_reachable_at_80x24() -> None:
-    """Every focusable form widget can be scrolled into view at 80x24."""
+    """Every focusable form widget can be shown and scrolled into view at 80x24.
+
+    PR 4: each widget is reached by going to its step through the rail
+    (palette "Go to step"), then scrolling inside that step body. The rail,
+    action bar and key bar stay on screen on every step.
+    """
 
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(80, 24)) as pilot:
             app = pilot.app
             await pilot.pause()
             app.query_one("#advanced_opt").collapsed = False
-            app.query_one("#compliance_declarations").collapsed = False
             await pilot.pause()
             screen = Region(0, 0, 80, 24)
-            pane = app.query_one("#config_pane")
             checked = 0
-            for widget in pane.query("Input, Select, Checkbox, Button, SelectionList"):
-                if any(not node.display for node in widget.ancestors_with_self if node is not app):
-                    continue  # Inactive tab or hidden by a mode switch.
-                # Layout can take more than one frame to settle under load, and
-                # a late focus scroll can move the pane; re-request the scroll.
-                for _ in range(20):
-                    widget.scroll_visible(animate=False, immediate=True)
-                    await pilot.pause()
-                    if widget.region.area > 0 and screen.contains_region(widget.region):
-                        break
-                assert widget.region.area > 0, widget
-                assert screen.contains_region(widget.region), widget
-                checked += 1
+            for step in tui_app.STEPS:
+                app.action_go_to_step(step.id)
+                await pilot.pause()
+                body = app.query_one(f"#{step.container_id}")
+                for chrome in ("#step_rail", "#action_bar", "#key_bar"):
+                    region = app.query_one(chrome).region
+                    assert region.area > 0 and screen.contains_region(region), (step.id, chrome)
+                for widget in body.query("Input, Select, Checkbox, Button, SelectionList"):
+                    if any(not node.display for node in widget.ancestors_with_self if node is not body):
+                        continue  # Inactive tab or hidden by a mode switch.
+                    # Layout can take more than one frame to settle under
+                    # load, and a late focus scroll can move the step body.
+                    for _ in range(20):
+                        widget.scroll_visible(animate=False, immediate=True)
+                        await pilot.pause()
+                        if widget.region.area > 0 and body.region.contains_region(widget.region):
+                            break
+                    assert widget.region.area > 0, widget
+                    assert body.region.contains_region(widget.region), widget
+                    assert screen.contains_region(widget.region), widget
+                    checked += 1
             assert checked > 30
 
     asyncio.run(scenario())
