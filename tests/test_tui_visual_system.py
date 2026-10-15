@@ -617,9 +617,10 @@ def test_everything_is_reachable_at_80x24() -> None:
             for widget in pane.query("Input, Select, Checkbox, Button, SelectionList"):
                 if any(not node.display for node in widget.ancestors_with_self if node is not app):
                     continue  # Inactive tab or hidden by a mode switch.
-                widget.scroll_visible(animate=False, immediate=True)
-                # Layout can take more than one frame to settle under load.
+                # Layout can take more than one frame to settle under load, and
+                # a late focus scroll can move the pane; re-request the scroll.
                 for _ in range(20):
+                    widget.scroll_visible(animate=False, immediate=True)
                     await pilot.pause()
                     if widget.region.area > 0 and screen.contains_region(widget.region):
                         break
