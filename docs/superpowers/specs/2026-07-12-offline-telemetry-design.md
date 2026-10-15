@@ -84,7 +84,10 @@ events by design.
 Each JSONL line is a compact UTF-8 object followed by exactly one LF. The
 envelope contains only:
 
-- `schema_version`: integer `1`
+- `schema_version`: integer `1` (amended: schema v2 is now current; v1 stays
+  readable, and `session_start`/`session_end` are still written as v1. See
+  `docs/research/tui-redesign-phase0/05-telemetry-friction.md` §8 for the v2
+  catalog and the compatibility rules)
 - `ts`: strict UTC ISO-8601 timestamp ending in `Z`
 - `event`: a catalogued name
 - `user`: validated NSS username

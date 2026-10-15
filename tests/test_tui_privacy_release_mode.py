@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import yaml
-from textual.widgets import Checkbox, Label, Select, Static, TabbedContent
+from textual.widgets import Checkbox, Label, Select, Static
 
 import tui_app
 from core.contracts import (
@@ -39,11 +39,21 @@ def _isolated_tui_session(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
 
 
+def _shown(app: BenchmarkApp, widget_id: str) -> bool:
+    """Displayed within its step body (PR 5 hides by display, not a class)."""
+    widget = app.query_one(f"#{widget_id}")
+    body = app.query_one("#step_privacy")
+    return not widget.has_class("hidden") and all(
+        node.display for node in widget.ancestors_with_self if node is not body and node is not app
+    ) and body in widget.ancestors
+
+
 def test_privacy_release_mode_defaults_to_complete_output() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             select = app.query_one("#privacy_release_mode", Select)
             assert select.value == PrivacyReleaseMode.COMPLETE_OUTPUT.value
 
@@ -55,6 +65,7 @@ def test_privacy_release_mode_shows_both_visible_labels() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             select = app.query_one("#privacy_release_mode", Select)
             labels = {label for label, _value in select._options}
             values = {value for _label, value in select._options}
@@ -63,12 +74,15 @@ def test_privacy_release_mode_shows_both_visible_labels() -> None:
                 PrivacyReleaseMode.COMPLETE_OUTPUT.value,
                 PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value,
             }
+            # 01 E.7: the hint describes the selected mode only.
             hint = app.query_one("#privacy_release_mode_hint", Static)
-            assert str(hint.render()) == (
-                "Verified safe coverage publishes only verified safe units. "
-                "Missing units are privacy-suppressed. "
-                "Coverage is not a maximum claim."
-            )
+            assert str(hint.render()) == "Writes every output the privacy rules allow."
+            select.value = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
+            await pilot.pause()
+            text = str(hint.render())
+            assert "Publishes only units verified safe" in text
+            assert "missing units are privacy-suppressed" in text
+            assert "Coverage is not a maximum claim." in text
 
     asyncio.run(scenario())
 
@@ -78,8 +92,8 @@ def test_privacy_release_mode_visible_for_share_analysis() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
-            tabs = app.query_one(TabbedContent)
-            tabs.active = "share_tab"
+            await app.ensure_step("privacy")
+            app.form.mode = "share"
             await pilot.pause()
             assert app._analysis_mode() == "share"
             for widget_id in (
@@ -87,7 +101,8 @@ def test_privacy_release_mode_visible_for_share_analysis() -> None:
                 "privacy_release_mode",
                 "privacy_release_mode_hint",
             ):
-                assert not app.query_one(f"#{widget_id}").has_class("hidden")
+                assert _shown(app, widget_id)
+            assert not _shown(app, "release_mode_rate_note")
 
     asyncio.run(scenario())
 
@@ -97,8 +112,8 @@ def test_privacy_release_mode_hidden_for_rate_analysis() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
-            tabs = app.query_one(TabbedContent)
-            tabs.active = "rate_tab"
+            await app.ensure_step("privacy")
+            app.form.mode = "rate"
             await pilot.pause()
             assert app._analysis_mode() == "rate"
             for widget_id in (
@@ -106,7 +121,9 @@ def test_privacy_release_mode_hidden_for_rate_analysis() -> None:
                 "privacy_release_mode",
                 "privacy_release_mode_hint",
             ):
-                assert app.query_one(f"#{widget_id}").has_class("hidden")
+                assert not _shown(app, widget_id)
+            # The row says why instead (01 §2.2).
+            assert _shown(app, "release_mode_rate_note")
 
     asyncio.run(scenario())
 
@@ -116,6 +133,7 @@ def test_verified_safe_coverage_enables_and_locks_rule_sweep() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             assert sweep.value is False
             assert sweep.disabled is False
@@ -136,6 +154,7 @@ def test_return_to_complete_output_restores_sweep_control() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
             release = app.query_one("#privacy_release_mode", Select)
 
@@ -180,11 +199,13 @@ def test_yaml_refresh_updates_privacy_release_mode_selection(tmp_path: Path) -> 
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             select = app.query_one("#privacy_release_mode", Select)
             assert select.value == PrivacyReleaseMode.COMPLETE_OUTPUT.value
 
-            app.advanced_config_path = str(config_path)
-            app._refresh_privacy_release_mode_from_config()
+            # PR 5: no override file sits around between runs; the resolver
+            # still reads one (preset + config) exactly as before.
+            app._refresh_privacy_release_mode_from_config(str(config_path))
             await pilot.pause()
 
             assert select.value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
@@ -200,6 +221,7 @@ def test_preset_refresh_shows_resolved_complete_output() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             select = app.query_one("#privacy_release_mode", Select)
             select.value = PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             await pilot.pause()
@@ -220,6 +242,7 @@ def test_session_save_and_restore_privacy_release_mode(tmp_path: Path, monkeypat
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             app.query_one("#privacy_release_mode", Select).value = (
                 PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
@@ -237,6 +260,7 @@ def test_session_save_and_restore_privacy_release_mode(tmp_path: Path, monkeypat
             await pilot.pause(0.3)
             # Allow call_after_refresh bootstrap finalizer to re-assert session.
             await pilot.pause()
+            await app.ensure_step("privacy")
             select = app.query_one("#privacy_release_mode", Select)
             assert select.value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             sweep = app.query_one("#privacy_rule_sweep_mode", Checkbox)
@@ -270,6 +294,7 @@ def test_session_restore_rejects_stale_privacy_release_mode(
             # Re-apply after notify patch so the warning is captured.
             app._restore_privacy_release_mode("not-a-real-mode")
             await pilot.pause()
+            await app.ensure_step("privacy")
             assert (
                 app.query_one("#privacy_release_mode", Select).value
                 == PrivacyReleaseMode.COMPLETE_OUTPUT.value
@@ -284,6 +309,7 @@ def test_from_widget_values_builds_privacy_release_mode_enum() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             app.query_one("#privacy_release_mode", Select).value = (
                 PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
@@ -293,7 +319,7 @@ def test_from_widget_values_builds_privacy_release_mode_enum() -> None:
                 "csv": "data.csv",
                 "metric": "txn_cnt",
                 "per_dimension_weights": False,
-                **app._privacy_values_from_widgets(),
+                **app._privacy_values(),
             }
             request = AnalysisRunRequest.from_widget_values("share", values)
             assert (
@@ -314,22 +340,22 @@ def test_hidden_verified_value_never_reaches_rate_request() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             app.query_one("#privacy_release_mode", Select).value = (
                 PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
             await pilot.pause()
 
-            tabs = app.query_one(TabbedContent)
-            tabs.active = "rate_tab"
+            app.form.mode = "rate"
             await pilot.pause()
             assert app._analysis_mode() == "rate"
-            assert app.query_one("#privacy_release_mode").has_class("hidden")
+            assert not _shown(app, "privacy_release_mode")
             # Widget still holds verified safe coverage, but rate request construction must not.
             assert (
                 app.query_one("#privacy_release_mode", Select).value
                 == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
-            values = app._privacy_values_from_widgets()
+            values = app._privacy_values()
             assert values["privacy_release_mode"] is None
             request = AnalysisRunRequest.from_widget_values(
                 "rate",
@@ -345,12 +371,18 @@ def test_hidden_verified_value_never_reaches_rate_request() -> None:
     asyncio.run(scenario())
 
 
-def test_privacy_release_mode_label_lives_in_analysis_options() -> None:
+def test_privacy_release_mode_label_lives_in_privacy_step() -> None:
+    """PR 4: release mode and rule sweep sit on step 4, Privacy & compliance."""
+
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
-            section = app.query_one("#section_analysis")
+            await app.ensure_step("privacy")
+            await app.ensure_step("analysis")
+            assert not app.query_one("#step_analysis").query("#privacy_release_mode")
+            assert app._step_of(app.query_one("#privacy_release_mode")) == "privacy"
+            section = app.query_one("#section_privacy")
             assert section.query_one("#privacy_release_mode", Select)
             assert section.query_one("#privacy_release_mode_label", Label)
             assert section.query_one("#privacy_rule_sweep_mode", Checkbox)
@@ -421,6 +453,7 @@ def test_tui_maximize_executes_through_shared_executor(
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             app.query_one("#privacy_release_mode", Select).value = (
                 PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
             )
@@ -561,10 +594,9 @@ def test_tui_empty_release_set_denial(tmp_path: Path) -> None:
         for call in log.write.call_args_list
         if call.args
     )
-    notify_messages = [
-        str(call.args[0]) for call in app.notify.call_args_list if call.args
-    ]
-    assert any("publication withheld" in msg.lower() for msg in notify_messages)
+    # PR 5: the outcome is not toasted; the action bar shows the withheld badge.
+    assert app._end_run_ui.call_args.kwargs["badge"] == "withheld"
+    app.notify.assert_not_called()
 
 
 def test_tui_no_suppressed_marker_in_widgets_or_notices(
@@ -575,6 +607,7 @@ def test_tui_no_suppressed_marker_in_widgets_or_notices(
         async with BenchmarkApp().run_test(size=(140, 55)) as pilot:
             app = pilot.app
             await pilot.pause()
+            await app.ensure_step("privacy")
             notices: list[str] = []
             original_notify = app.notify
 

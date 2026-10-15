@@ -333,22 +333,85 @@ Analyst handbook: [docs/autobench-onboarding.html](docs/autobench-onboarding.htm
 
 ## TUI Workflow
 
-The TUI (`tui_app.py`) is best for first-time users:
+The TUI (`tui_app.py`) is best for first-time users. It walks five steps
+(Data, Entity, Analysis & mode, Privacy & compliance, Review & run); Tab flows
+from one step into the next and `Ctrl+P` lists "Go to step: …":
 
-1. Enter a CSV path or use Browse (searches current directory and `data/`).
-2. Press Enter or tab away from the path field to load headers.
-3. Choose entity column and target entity (or run peer-only).
-4. Pick a preset.
-5. Configure Share or Rate tab.
-6. Click Run Analysis and watch logs.
+1. Enter a CSV path and press Enter, or press `Ctrl+O` to browse. Focus then
+   moves to the next empty field (Entity column, else Target entity).
+2. Choose the target entity (blank runs peer-only).
+3. Pick Share or Rate (`←`/`→`), the metric or rate columns, and dimensions.
+   Metric and Total list numeric columns first; text columns stay selectable
+   below the line. One dimensions list serves both modes and hides columns
+   that already have a role.
+4. Check the preset, release mode and the declarations.
+5. Press `Ctrl+R`. When something is missing, `Ctrl+R` jumps to it, and the
+   Review step lists every blocker (Enter jumps to that field).
 
-Keyboard shortcuts:
+TUI defaults and rules worth knowing:
+
+- **More options** on step 3 holds the time column, secondary metrics, output
+  format and file, input validation, impact analysis, preset comparison and
+  the balanced CSV. Its title says how many differ from the defaults.
+- **Export balanced CSV** is off by default for both modes, as it is on the
+  CLI (`--export-balanced-csv`). Tick it for each run that needs the CSV.
+- The Rate **Total column** has no default. It is the clearing-spend basis for
+  fraud analysis, so you always choose it explicitly.
+- **Expert settings** (`F8`) hold the optimizer tuning, as changes on top of
+  the current preset; a blank field inherits the preset. There is no Apply
+  button: at run time the changes are written once to an
+  `adv_override_*.yaml` file in the launch folder (it stays there), with the
+  current preset's posture. The Posture line on step 4 says
+  `from preset + N expert changes`. Changing the preset while you have expert
+  changes asks first and defaults to **Keep current preset**. `F9` exports the
+  settings to `exported_<preset>_overrides.yaml` and shows the full path.
+- **Debug sheets** have one control, on the Expert settings screen.
+- The accuracy_first consent dialog follows the effective posture. Consent
+  and clearing-spend dialogs open with **Cancel** focused, on every run.
+- **Privacy rule sweep mode** is locked on only while Verified safe coverage
+  is selected for a share run. In rate mode it is unlocked and the run uses
+  exactly the value shown.
+- The **Citibank entity** of the Citi competitor declaration is picked from the
+  entity column's values (a filter above 2,000 values), not typed.
+- Session restore remembers the mode, the preset, the release mode and rule
+  sweep, the More options values and your column choices (entity column,
+  metric, rate columns, dimensions, secondary metrics). Column choices are
+  applied after you load a CSV that has those columns. Restored values show
+  `↺`, and **Clear restored values** on the Review step resets them. The CSV
+  path, output filename, target entity, compliance declarations, Citibank
+  entity, consent and expert settings are never restored.
+- While a run is active the form is locked, and a line under the rail says
+  so. Quitting while an analysis runs stops it at the next safe checkpoint,
+  before any output is written. A run that has already started writing
+  outputs finishes first. A cancelled run shows `■ CANCELLED` and writes
+  nothing.
+- **Show run log** (in the results column) shows the log across the whole
+  window; `Ctrl+T` goes back.
+
+Keyboard shortcuts (the key bar at the bottom shows the ones that apply to
+the focused field):
 
 - `Ctrl+O` open/select file
-- `Ctrl+R` run analysis
-- `F1` preset help
-- `Ctrl+A` toggle advanced panel
-- `Ctrl+E` export advanced overrides
+- `Ctrl+R` run analysis (or jump to the first thing to fix)
+- `Ctrl+P` command palette, including "Go to step: …"
+- `Ctrl+T` results view (below 110 columns) or results column focus
+- `Ctrl+Y` copy the report path
+- `Ctrl+G` cancel the run (until output writing starts)
+- `F1` help: keys and the preset guide
+- `F8` Expert settings
+- `F9` export the expert settings to a file
+- `Ctrl+L` clear the run log
+- `Ctrl+Q` or `Ctrl+C` quit (asks first while a run is active; `Ctrl+C`
+  copies instead when text is selected)
+
+`F8` and `F9` replace `Ctrl+A` and `Ctrl+E`, which a focused text field
+uses for Home/End. The old keys still work outside text fields.
+
+Status words always come with a glyph (for example `◐ WITHHELD`,
+`⊘ BLOCKED`, `✗ FAILED`), so the TUI reads the same with `NO_COLOR=1` or a
+16-colour terminal. Set `AUTOBENCH_GLYPHS=ascii` if your terminal font lacks
+these glyphs; the TUI also switches to ASCII on the Linux console and when the
+terminal is not UTF-8.
 
 ## CLI Cookbook
 
@@ -437,7 +500,30 @@ py benchmark.py telemetry summary --user alice --days 14
 
 `--dir` names the telemetry **parent** whose direct child is `users/`. Reports
 prefer shared `users/*.jsonl` when present; otherwise they fall back to the
-current user's private file.
+current user's private file. That fallback is never silent: a `WARNING:` on
+stderr names the reason (for example `owner_mismatch=5` when files were copied
+from another host, which the owner check deliberately rejects). Run reports on
+the node that wrote the files.
+
+Breakdown reports (read-only; same `--days` and `--dir`, plus `--user`,
+`--context {cli_share,cli_rate,tui}` and `--app-version V`):
+
+```powershell
+py benchmark.py telemetry funnel       # per-action run intents -> blocked / cancelled / attempted -> outcomes
+py benchmark.py telemetry refusals     # refusals by reason
+py benchmark.py telemetry failures     # failures by category
+py benchmark.py telemetry blocks       # pre-run launch blocks by reason, cancels by prompt
+py benchmark.py telemetry surfaces     # surface views and launch contexts
+py benchmark.py telemetry durations    # session duration distribution
+py benchmark.py telemetry friction --context tui   # everything above plus derived TUI friction
+```
+
+`summary` "Actions" counts run intents (one per attempt or pre-run stop), not
+every action event. Events are versioned (`schema_version` 1 and 2 are both
+read). Every recorded value is a closed enum, a boolean, or the session
+duration. See
+[docs/research/tui-redesign-phase0/05-telemetry-friction.md §8](docs/research/tui-redesign-phase0/05-telemetry-friction.md#8-implemented-in-this-pass)
+for the catalog and how the funnel is defined.
 
 ## Programmatic use (Python API)
 

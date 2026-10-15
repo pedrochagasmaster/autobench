@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -18,6 +18,7 @@ from core.telemetry.constants import (
     MAX_RECORD_BYTES,
     OUTCOMES,
     SHARED_GATE_SCAN_MAX_BYTES,
+    SUPPORTED_SCHEMA_VERSIONS,
     SURFACES,
     shared_dir_override,
 )
@@ -43,6 +44,7 @@ from core.telemetry.identity import (
     resolve_identity,
     validate_username,
 )
+from core.telemetry.report import is_run_intent
 from core.telemetry.writer import paths_for
 
 _READ_CHUNK = 4096
@@ -50,21 +52,26 @@ _READ_CHUNK = 4096
 # None on platforms missing any safe-open flag; reads then fail closed.
 _OPEN_FLAGS = combine_open_flags(("O_RDONLY", "O_CLOEXEC", "O_NONBLOCK", "O_NOFOLLOW"))
 
-_ACTION_EVENTS = frozenset(
-    {
-        "action_attempted",
-        "action_completed",
-        "action_cancelled",
-        "action_refused",
-        "action_failed",
-    }
-)
 _OUTCOME_EVENTS = {
     "action_completed": "completed",
     "action_cancelled": "cancelled",
     "action_refused": "refused",
     "action_failed": "failed",
 }
+
+# Why a shared users/*.jsonl file was not read (closed; counts only are shown).
+SHARED_REJECTION_REASONS = (
+    "unreadable",  # symlink, hard link, non-regular file, or open failed
+    "no_valid_record",  # no schema-valid record within the gate scan budget
+    "name_mismatch",  # filename is not the token of its first record's user
+    "unknown_user",  # that user does not resolve through NSS on this host
+    "owner_mismatch",  # file owner UID differs from that user's UID (copies)
+)
+
+# Why a report fell back to the caller's own private file.
+FALLBACK_NO_SHARED_DIR = "no_shared_dir"
+FALLBACK_NO_SHARED_FILES = "no_shared_files"
+FALLBACK_ALL_SHARED_REJECTED = "all_shared_rejected"
 
 
 class SourceKind(Enum):
@@ -76,6 +83,11 @@ class SourceKind(Enum):
 class SourceSelection:
     kind: SourceKind
     paths: tuple[TelemetryPath, ...]
+    # Set only when kind is PRIVATE: why the shared profile was not used.
+    fallback_reason: str | None = None
+    # Shared files that failed the gate, counted by SHARED_REJECTION_REASONS.
+    rejected: Mapping[str, int] = field(default_factory=dict)
+    users_dir: TelemetryPath | None = None
 
 
 @dataclass(frozen=True)
@@ -89,8 +101,19 @@ class WhoRow:
 @dataclass(frozen=True)
 class Summary:
     surfaces: Mapping[str, int]
+    # Run intents per action (see is_run_intent), not raw action_* events.
     actions: Mapping[str, int]
     outcomes: Mapping[str, int]
+
+
+@dataclass
+class _SkipCounts:
+    unsupported_schema: int = 0
+    invalid: int = 0
+
+    def add(self, other: "_SkipCounts") -> None:
+        self.unsupported_schema += other.unsupported_schema
+        self.invalid += other.invalid
 
 
 def _validate_days(days: int | None) -> int | None:
@@ -200,6 +223,8 @@ class TelemetryReader:
             # EventValidationError subclasses ValueError, preserving the
             # reader's documented raise type.
             self._now = require_aware_utc(now)
+        # Source used by the most recent iter_events call (for report headers).
+        self.last_selection: SourceSelection | None = None
 
     def select_sources(self, *, user: str | None = None) -> SourceSelection:
         token: str | None = None
@@ -207,47 +232,73 @@ class TelemetryReader:
             token = encode_user_token(user)
 
         users_dir = self._shared_parent / "users"
-        qualifying = self._qualifying_shared_paths(users_dir)
+        dir_ok = existing_ancestors_are_real_dirs(users_dir)
+        candidates = _list_shared_jsonl(users_dir) if dir_ok else ()
+        qualifying: list[TelemetryPath] = []
+        rejected: dict[str, int] = {}
+        for path in candidates:
+            reason = self._shared_path_rejection(path)
+            if reason is None:
+                qualifying.append(path)
+            else:
+                rejected[reason] = rejected.get(reason, 0) + 1
 
         if qualifying:
             if token is not None:
                 wanted = users_dir / f"{token}.jsonl"
                 if wanted in qualifying:
-                    return SourceSelection(kind=SourceKind.SHARED, paths=(wanted,))
+                    return SourceSelection(
+                        kind=SourceKind.SHARED,
+                        paths=(wanted,),
+                        rejected=rejected,
+                        users_dir=users_dir,
+                    )
                 # Fleet has expected event files; stay shared-only (no private leak).
-                return SourceSelection(kind=SourceKind.SHARED, paths=())
-            return SourceSelection(kind=SourceKind.SHARED, paths=qualifying)
+                return SourceSelection(
+                    kind=SourceKind.SHARED,
+                    paths=(),
+                    rejected=rejected,
+                    users_dir=users_dir,
+                )
+            return SourceSelection(
+                kind=SourceKind.SHARED,
+                paths=tuple(qualifying),
+                rejected=rejected,
+                users_dir=users_dir,
+            )
 
+        if not dir_ok or not os.path.isdir(users_dir):
+            fallback = FALLBACK_NO_SHARED_DIR
+        elif not candidates:
+            fallback = FALLBACK_NO_SHARED_FILES
+        else:
+            fallback = FALLBACK_ALL_SHARED_REJECTED
         paths = paths_for(
             self._identity,
             self._shared_parent,
             storage_root=self._storage_root,
         )
-        return SourceSelection(kind=SourceKind.PRIVATE, paths=(paths.private_file,))
+        return SourceSelection(
+            kind=SourceKind.PRIVATE,
+            paths=(paths.private_file,),
+            fallback_reason=fallback,
+            rejected=rejected,
+            users_dir=users_dir,
+        )
 
-    def _qualifying_shared_paths(self, users_dir: TelemetryPath) -> tuple[TelemetryPath, ...]:
-        if not existing_ancestors_are_real_dirs(users_dir):
-            return ()
-        qualified: list[TelemetryPath] = []
-        for path in _list_shared_jsonl(users_dir):
-            if self._shared_path_qualifies(path):
-                qualified.append(path)
-        return tuple(qualified)
-
-    def _shared_path_qualifies(self, path: TelemetryPath) -> bool:
-        """True when path is a safe expected shared event file (owner/token gate)."""
+    def _shared_path_rejection(self, path: TelemetryPath) -> str | None:
+        """None when path is a safe expected shared event file (owner/token
+        gate); otherwise the SHARED_REJECTION_REASONS value explaining why."""
         opened = _safe_open_regular(path)
         if opened is None:
-            return False
+            return "unreadable"
         fd, st = opened
         try:
             scan = _LineScanState(max_read_bytes=SHARED_GATE_SCAN_MAX_BYTES)
-            first = self._first_schema_valid_event(
-                fd, warn_unsupported=False, scan=scan
-            )
+            first = self._first_schema_valid_event(fd, scan=scan)
             if first is None:
-                return False
-            return self._accept_shared_file(path, first, st.st_uid)
+                return "no_valid_record"
+            return self._shared_file_rejection(path, first, st.st_uid)
         finally:
             close_quietly(fd)
 
@@ -255,14 +306,65 @@ class TelemetryReader:
         self,
         fd: int,
         *,
-        warn_unsupported: bool,
         scan: _LineScanState | None = None,
     ) -> ValidatedEvent | None:
         for raw_line in _iter_raw_lines(fd, scan=scan):
-            event = self._try_decode_line(raw_line, warn_unsupported=warn_unsupported)
+            event = self._try_decode_line(raw_line, _SkipCounts())
             if event is not None:
                 return event
         return None
+
+    def _warn_selection(self, selection: SourceSelection) -> None:
+        """Make a private fallback or skipped shared files explicit.
+
+        Only the directory the operator chose, closed reason names and counts
+        are printed: never a rejected file's name or contents.
+        """
+        rejected_total = sum(selection.rejected.values())
+        detail = ", ".join(
+            f"{reason}={selection.rejected[reason]}"
+            for reason in SHARED_REJECTION_REASONS
+            if selection.rejected.get(reason)
+        )
+        where = selection.users_dir
+        if selection.kind is SourceKind.PRIVATE:
+            if selection.fallback_reason == FALLBACK_ALL_SHARED_REJECTED:
+                self._warn(
+                    f"no shared telemetry file in {where} passed the owner/name "
+                    f"check ({rejected_total} rejected: {detail}); reporting only "
+                    "your own private telemetry file. Files copied from another "
+                    "host fail the owner check: run the report on the node that "
+                    "wrote them."
+                )
+            elif selection.fallback_reason == FALLBACK_NO_SHARED_FILES:
+                self._warn(
+                    f"no shared telemetry files in {where}; reporting only your "
+                    "own private telemetry file."
+                )
+            else:
+                self._warn(
+                    f"shared telemetry directory {where} not found or not a real "
+                    "directory; reporting only your own private telemetry file."
+                )
+        elif rejected_total:
+            self._warn(
+                f"skipped {rejected_total} shared telemetry file(s) in {where} that "
+                f"failed the owner/name check ({detail}). Files copied from "
+                "another host fail the owner check."
+            )
+
+    def _warn_skips(self, skips: _SkipCounts) -> None:
+        if skips.unsupported_schema:
+            supported = ", ".join(str(v) for v in SUPPORTED_SCHEMA_VERSIONS)
+            self._warn(
+                f"skipped {skips.unsupported_schema} record(s) with an unsupported "
+                f"schema_version (this reader supports {supported}); upgrade "
+                "Autobench to read them."
+            )
+        if skips.invalid:
+            self._warn(
+                f"skipped {skips.invalid} record(s) that failed schema validation."
+            )
 
     def iter_events(
         self,
@@ -287,6 +389,9 @@ class TelemetryReader:
         upper = self._now + timedelta(seconds=FUTURE_SKEW_S)
 
         selection = self.select_sources(user=user)
+        self.last_selection = selection
+        self._warn_selection(selection)
+        skips = _SkipCounts()
         for path in selection.paths:
             yield from self._iter_path(
                 path,
@@ -294,7 +399,9 @@ class TelemetryReader:
                 lower=lower,
                 upper=upper,
                 user_filter=user_filter,
+                skips=skips,
             )
+        self._warn_skips(skips)
 
     def who(self, *, days: int | None = DEFAULT_DAYS) -> list[WhoRow]:
         sessions: dict[str, set[str]] = {}
@@ -338,7 +445,9 @@ class TelemetryReader:
                 surface = event.props.get("surface")
                 if isinstance(surface, str) and surface in surfaces:
                     surfaces[surface] += 1
-            if event.event in _ACTION_EVENTS:
+            # One count per run intent; outcomes after an attempt are not
+            # counted again (the v1 report counted every action_* event).
+            if is_run_intent(event):
                 action = event.props.get("action")
                 if isinstance(action, str) and action in actions:
                     actions[action] += 1
@@ -355,11 +464,17 @@ class TelemetryReader:
         lower: datetime | None,
         upper: datetime,
         user_filter: str | None,
+        skips: _SkipCounts | None = None,
     ) -> Iterator[ValidatedEvent]:
+        if skips is None:
+            skips = _SkipCounts()
         opened = _safe_open_regular(path)
         if opened is None:
             return
         fd, st = opened
+        # Lines skipped before a shared file passes its gate are only reported
+        # once the file is accepted, so a rejected file contributes nothing.
+        pending = _SkipCounts()
         try:
             if kind is SourceKind.PRIVATE and st.st_uid != self._identity.uid:
                 return
@@ -376,16 +491,19 @@ class TelemetryReader:
             )
 
             for raw_line in _iter_raw_lines(fd, scan=scan):
-                event = self._try_decode_line(raw_line, warn_unsupported=True)
+                event = self._try_decode_line(
+                    raw_line, pending if kind is SourceKind.SHARED and not gated else skips
+                )
                 if event is None:
                     continue
 
                 if kind is SourceKind.SHARED:
                     if not gated:
-                        if not self._accept_shared_file(path, event, file_uid):
+                        if self._shared_file_rejection(path, event, file_uid) is not None:
                             return
                         accepted_user = event.user
                         gated = True
+                        skips.add(pending)
                         if scan is not None:
                             scan.lift_budget()
                     elif event.user != accepted_user:
@@ -405,33 +523,37 @@ class TelemetryReader:
         finally:
             close_quietly(fd)
 
-    def _accept_shared_file(
+    def _shared_file_rejection(
         self, path: TelemetryPath, first: ValidatedEvent, file_uid: int
-    ) -> bool:
+    ) -> str | None:
+        """Owner/token gate: None to accept, else a SHARED_REJECTION_REASONS value."""
         try:
             expected_name = f"{encode_user_token(first.user)}.jsonl"
         except ValueError:
-            return False
+            return "name_mismatch"
         if path.name != expected_name:
-            return False
+            return "name_mismatch"
         try:
             owner_uid = lookup_uid(first.user)
         except Exception:
-            return False
-        return owner_uid == file_uid
+            return "unknown_user"
+        if owner_uid != file_uid:
+            return "owner_mismatch"
+        return None
 
     def _try_decode_line(
-        self, raw_line: bytes, *, warn_unsupported: bool
+        self, raw_line: bytes, skips: _SkipCounts
     ) -> ValidatedEvent | None:
         try:
             return decode_record(raw_line)
-        except UnsupportedSchemaVersion as exc:
-            if warn_unsupported:
-                self._warn(str(exc))
+        except UnsupportedSchemaVersion:
+            skips.unsupported_schema += 1
             return None
         except EventValidationError:
+            skips.invalid += 1
             return None
         except Exception:
+            skips.invalid += 1
             return None
 
 

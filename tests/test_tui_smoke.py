@@ -21,14 +21,24 @@ async def _run_tui_share_smoke(output: Path) -> str:
         app.query_one("#csv_path").value = str(FIXTURE)
         app._try_load_csv_from_path_input()
         await pilot.pause()
+        # PR 5: steps mount on first show; More options holds the output fields.
+        for step in ("entity", "analysis"):
+            await app.ensure_step(step)
+        await app.open_more_options()
 
         app.query_one("#entity_col", Select).value = "issuer_name"
         app.load_unique_entities("issuer_name")
+        # Entity values load in a background worker; wait for the options.
+        for _ in range(200):
+            if not app.entity_values_loading:
+                break
+            await pilot.pause(0.05)
+        await pilot.pause()
         app.query_one("#entity_name", Select).value = "Target"
         app.query_one("#time_col", Select).value = "year_month"
         app.query_one("#share_metric", Select).value = "txn_cnt"
-        app.query_one("#share_auto_dim").value = False
-        share_dims = app.query_one("#share_dims", SelectionList)
+        app.query_one("#auto_dim").value = False
+        share_dims = app.query_one("#dims", SelectionList)
         share_dims.select("card_type")
         share_dims.select("channel")
         app.query_one("#output_file").value = str(output)
@@ -41,7 +51,7 @@ async def _run_tui_share_smoke(output: Path) -> str:
             log_text = "\n".join(app.query_one("#log_output").lines)
             if "Analysis completed successfully" in log_text:
                 break
-            if "Execution Blocked:" in log_text or "Execution Error:" in log_text:
+            if "Run blocked:" in log_text or "Run failed:" in log_text:
                 break
         return log_text
 
