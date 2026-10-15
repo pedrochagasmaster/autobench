@@ -680,6 +680,46 @@ def test_v2_events_reject_any_extra_key(event: str) -> None:
             _build_v2(event, props)
 
 
+# Schema v3 (TUI layout shell): the visible Cancel prompts and the
+# large-entity no-match block. Same closed-enum rules; near misses and data
+# values (the typed entity text above all) are rejected.
+_V3_NEW_VALUES = (
+    ("action_cancelled", "prompt", "cancel_before_run"),
+    ("action_cancelled", "prompt", "cancel_during_run"),
+    ("launch_blocked", "reason", "entity_not_found"),
+)
+
+
+@pytest.mark.parametrize(("event", "key", "value"), _V3_NEW_VALUES)
+def test_v3_values_are_closed_and_reject_near_misses(event: str, key: str, value: str) -> None:
+    props = dict(_V2_VALID_PROPS[event])
+    props[key] = value
+    raw = _build_v2(event, props)
+    decoded = decode_record(raw)
+    assert decoded.schema_version == constants.SCHEMA_VERSION == 3
+    assert dict(decoded.props) == props
+    near_misses = (
+        value.upper(),
+        f" {value}",
+        f"{value} ",
+        value.replace("_", "-"),
+        f"{value}:ENT_00x9",
+        "ENT_00x9",
+        "Target entity not found in issuer_name.",
+        "cancel_requested",
+    )
+    for hostile in near_misses + _HOSTILE_VALUES:
+        bad = dict(props)
+        bad[key] = hostile
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, bad)
+    for extra in ("entity", "typed", "message", "stage", "elapsed_s"):
+        bad = dict(props)
+        bad[extra] = value
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, bad)
+
+
 def test_new_vocabularies_hold_no_data_or_config_names() -> None:
     vocab = set().union(
         constants.LAUNCH_BLOCK_REASONS,

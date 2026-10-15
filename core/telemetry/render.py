@@ -165,7 +165,7 @@ def format_funnel(rows: Sequence[FunnelRow]) -> str:
             "WITHHELD",
             "REFUSED",
             "FAILED",
-            "QUIT_IN_RUN",
+            "CANCEL_IN_RUN",
             "OPEN",
             "SUCCESS",
             "PER_ATTEMPT",
@@ -175,7 +175,8 @@ def format_funnel(rows: Sequence[FunnelRow]) -> str:
     unflagged = sum(row.unflagged for row in rows)
     lines.append("")
     lines.append(
-        "BLOCKED and CANCELLED happen before any attempt; WITHHELD is the part of "
+        "BLOCKED and CANCELLED happen before any attempt; CANCEL_IN_RUN counts "
+        "Quit or Cancel after the attempt started; WITHHELD is the part of "
         "COMPLETED whose publication a strict posture withheld."
     )
     lines.append(

@@ -150,7 +150,7 @@ _ACTION_PROP = _enum_prop(ACTIONS, "action")
 # Frozen v1 catalog (schema_version 1). Never edit it: the reader keeps
 # decoding v1 files with exactly these rules.
 _V1_SURFACES = ("share", "rate")
-# Session lifecycle props are identical in v1 and v2 (same validator objects).
+# Session lifecycle props are identical in v1, v2 and v3 (same validator objects).
 _SESSION_START_PROPS: dict[str, _PropValidator] = {
     "launch_context": _enum_prop(LAUNCH_CONTEXTS, "launch_context")
 }
@@ -172,10 +172,63 @@ _EVENT_SCHEMAS_V1: dict[str, dict[str, _PropValidator]] = {
     },
 }
 
-# Current catalog (schema_version 2): exact prop keys and validators, per
-# event. Every value is a closed enum, a strict boolean, or the bounded
-# session duration; there is no free-text field.
+# Frozen v2 catalog (schema_version 2). Never edit it: v2 files keep decoding
+# with exactly these rules. Every value is a closed enum, a strict boolean, or
+# the bounded session duration; there is no free-text field.
+_V2_LAUNCH_BLOCK_REASONS = (
+    "csv_missing",
+    "entity_loading",
+    "metric_missing",
+    "total_missing",
+    "rate_column_missing",
+    "dimensions_missing",
+    "validation_errors",
+    "data_preparation_error",
+    "initialization_error",
+)
+_V2_CANCEL_PROMPTS = (
+    "validation_review",
+    "accuracy_first_consent",
+    "clearing_spend",
+    "quit_before_run",
+    "quit_during_run",
+)
+_V2_SURFACES = ("share", "rate", "validation_review", "preset_help", "advanced")
 _EVENT_SCHEMAS_V2: dict[str, dict[str, _PropValidator]] = {
+    "session_start": _SESSION_START_PROPS,
+    "session_end": _SESSION_END_PROPS,
+    "session_restored": {},
+    "surface_viewed": {"surface": _enum_prop(_V2_SURFACES, "surface")},
+    "action_attempted": {"action": _ACTION_PROP},
+    "action_completed": {
+        "action": _ACTION_PROP,
+        "publication_withheld": _bool_prop("publication_withheld"),
+    },
+    "action_cancelled": {
+        "action": _ACTION_PROP,
+        "prompt": _enum_prop(_V2_CANCEL_PROMPTS, "prompt"),
+    },
+    "action_refused": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(REFUSAL_REASONS, "reason"),
+    },
+    "action_failed": {
+        "action": _ACTION_PROP,
+        "category": _enum_prop(FAILURE_CATEGORIES, "category"),
+    },
+    "launch_blocked": {
+        "action": _ACTION_PROP,
+        "reason": _enum_prop(_V2_LAUNCH_BLOCK_REASONS, "reason"),
+    },
+    "dataset_load": {"outcome": _enum_prop(DATASET_LOAD_OUTCOMES, "outcome")},
+    "advanced_override": {
+        "outcome": _enum_prop(ADVANCED_OVERRIDE_OUTCOMES, "outcome")
+    },
+}
+
+# Current catalog (schema_version 3). Same events and prop keys as v2; the
+# only change is two closed enums with added values (constants.py, "v3").
+_EVENT_SCHEMAS_V3: dict[str, dict[str, _PropValidator]] = {
     "session_start": _SESSION_START_PROPS,
     "session_end": _SESSION_END_PROPS,
     "session_restored": {},
@@ -210,6 +263,7 @@ _EVENT_SCHEMAS_V2: dict[str, dict[str, _PropValidator]] = {
 _EVENT_SCHEMAS_BY_VERSION: dict[int, dict[str, dict[str, _PropValidator]]] = {
     1: _EVENT_SCHEMAS_V1,
     2: _EVENT_SCHEMAS_V2,
+    3: _EVENT_SCHEMAS_V3,
 }
 _EVENT_SCHEMAS = _EVENT_SCHEMAS_BY_VERSION[SCHEMA_VERSION]
 if tuple(_EVENT_SCHEMAS_BY_VERSION) != SUPPORTED_SCHEMA_VERSIONS:  # pragma: no cover

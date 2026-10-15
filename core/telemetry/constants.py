@@ -13,8 +13,10 @@ from typing import Mapping
 # drops a same-version record that carries an unknown key, value or event.
 # session_start/session_end are unchanged since v1 and are still written as
 # version 1 (events.LEGACY_WRITE_EVENTS) so v1 readers keep their file gate.
-SCHEMA_VERSION = 2
-SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+# v3 (TUI layout shell) only adds closed enum values: the visible Cancel
+# prompts and the large-entity no-match launch block.
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
 MAX_RECORD_BYTES = 8192
 SHARED_GATE_SCAN_MAX_BYTES = 64 * 1024
 DATA_CAPACITY = 256
@@ -55,6 +57,8 @@ LAUNCH_BLOCK_REASONS = (
     "validation_errors",
     "data_preparation_error",
     "initialization_error",
+    # v3: the large-entity filter holds text that is not an exact entity.
+    "entity_not_found",
 )
 # v2: which prompt the operator declined or left. Every prompt except those in
 # IN_RUN_CANCEL_PROMPTS is answered before action_attempted.
@@ -64,8 +68,13 @@ CANCEL_PROMPTS = (
     "clearing_spend",
     "quit_before_run",
     "quit_during_run",
+    # v3: the visible Cancel (action bar ^G), recorded where the cancel took
+    # effect: before action_attempted, or after it (core stopped at a phase
+    # boundary with RunCancelled, before any output was written).
+    "cancel_before_run",
+    "cancel_during_run",
 )
-IN_RUN_CANCEL_PROMPTS = frozenset({"quit_during_run"})
+IN_RUN_CANCEL_PROMPTS = frozenset({"quit_during_run", "cancel_during_run"})
 # v2: outcome of a TUI CSV load (dataset_load).
 DATASET_LOAD_OUTCOMES = ("loaded", "not_found", "header_read_failed", "entity_list_failed")
 # v2: outcome of an advanced-override panel action (advanced_override).

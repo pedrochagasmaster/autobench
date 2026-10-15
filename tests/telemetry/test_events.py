@@ -345,7 +345,7 @@ def test_decode_rejects_invalid_uuid() -> None:
         decode_record(line)
 
 
-@pytest.mark.parametrize("version", [0, 3, 99])
+@pytest.mark.parametrize("version", [0, 4, 99])
 def test_decode_rejects_unsupported_schema_version(version: int) -> None:
     raw = _build("session_start", {"launch_context": "tui"})
     payload = json.loads(raw.decode("utf-8"))
@@ -355,12 +355,12 @@ def test_decode_rejects_unsupported_schema_version(version: int) -> None:
         decode_record(line)
 
 
-def test_writer_emits_current_schema_version_two() -> None:
-    # A v1 reader rejects schema_version != 1 with a warning instead of
-    # silently mis-reading v2 props; this bump is what makes that safe.
-    assert SCHEMA_VERSION == 2
+def test_writer_emits_current_schema_version_three() -> None:
+    # A v1 or v2 reader rejects any other schema_version with a warning
+    # instead of silently dropping v3-only values; this bump makes that safe.
+    assert SCHEMA_VERSION == 3
     payload = json.loads(_build("action_attempted", {"action": "share_analysis"}))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
 
 
 def test_session_lifecycle_records_stay_v1_decodable() -> None:
@@ -374,6 +374,7 @@ def test_session_lifecycle_records_stay_v1_decodable() -> None:
         payload = json.loads(_build(event, props))
         assert payload["schema_version"] == 1
         assert events_module._EVENT_SCHEMAS_V1[event] is events_module._EVENT_SCHEMAS_V2[event]
+        assert events_module._EVENT_SCHEMAS_V2[event] is events_module._EVENT_SCHEMAS_V3[event]
     for event in set(events_module.event_names()) - LEGACY_WRITE_EVENTS:
         assert record_schema_version(event) == SCHEMA_VERSION
 
@@ -421,6 +422,65 @@ def test_decode_accepts_frozen_v1_records(event: str, props: dict[str, object]) 
 def test_decode_v1_record_uses_frozen_v1_catalog(event: str, props: dict[str, object]) -> None:
     with pytest.raises(EventValidationError):
         decode_record(_legacy_v1_line(event, props))
+
+
+def _legacy_line(version: int, event: str, props: dict[str, object]) -> bytes:
+    payload = json.loads(_legacy_v1_line(event, props))
+    payload["schema_version"] = version
+    return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+V3_ONLY_VALUES = [
+    ("action_cancelled", {"action": "share_analysis", "prompt": "cancel_before_run"}),
+    ("action_cancelled", {"action": "rate_analysis", "prompt": "cancel_during_run"}),
+    ("launch_blocked", {"action": "share_analysis", "reason": "entity_not_found"}),
+]
+
+
+@pytest.mark.parametrize(("event", "props"), V3_ONLY_VALUES)
+def test_v3_values_decode_only_in_a_v3_record(event: str, props: dict[str, object]) -> None:
+    """v3 only adds enum values; the frozen v2 catalog still rejects them."""
+    decoded = decode_record(_build(event, props))
+    assert decoded.schema_version == 3
+    assert dict(decoded.props) == props
+    assert decode_record(_legacy_line(3, event, props)).props == props
+    with pytest.raises(EventValidationError):
+        decode_record(_legacy_line(2, event, props))
+    with pytest.raises(EventValidationError):
+        decode_record(_legacy_line(1, event, props))
+
+
+@pytest.mark.parametrize(
+    ("event", "props"),
+    [
+        ("launch_blocked", {"action": "share_analysis", "reason": "csv_missing"}),
+        ("action_cancelled", {"action": "share_analysis", "prompt": "quit_during_run"}),
+        ("action_completed", {"action": "share_analysis", "publication_withheld": False}),
+        ("surface_viewed", {"surface": "advanced"}),
+        ("session_restored", {}),
+        ("dataset_load", {"outcome": "loaded"}),
+    ],
+)
+def test_frozen_v2_records_still_decode(event: str, props: dict[str, object]) -> None:
+    decoded = decode_record(_legacy_line(2, event, props))
+    assert decoded.schema_version == 2
+    assert dict(decoded.props) == props
+
+
+def test_v2_catalog_is_frozen_at_its_shipped_values() -> None:
+    """The v2 enums keep exactly the values v2 shipped with (05 §8.1)."""
+    assert events_module._V2_CANCEL_PROMPTS == (
+        "validation_review",
+        "accuracy_first_consent",
+        "clearing_spend",
+        "quit_before_run",
+        "quit_during_run",
+    )
+    assert "entity_not_found" not in events_module._V2_LAUNCH_BLOCK_REASONS
+    assert len(events_module._V2_LAUNCH_BLOCK_REASONS) == 9
+    assert set(events_module.event_names(2)) == set(events_module.event_names(3))
+    for event in events_module.event_names(3):
+        assert set(events_module._EVENT_SCHEMAS_V2[event]) == set(events_module._EVENT_SCHEMAS_V3[event])
 
 
 def test_decode_rejects_malformed_utf8() -> None:

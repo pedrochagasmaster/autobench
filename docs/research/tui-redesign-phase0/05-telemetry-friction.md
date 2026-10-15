@@ -955,3 +955,35 @@ and only then compare. M1 computed on v1 data (attempted + cancelled) and on v2
 data (blocked + pre-attempt cancels + attempted) is **not** the same quantity.
 The v2 denominator also includes `_fail_launch` presses that v1 never saw. For
 a v1-comparable figure, subtract `BLOCKED` from `INTENTS`.
+
+### 8.10 Schema v3 (Phase 2 PR 4, TUI layout shell)
+
+v3 adds three closed enum values and nothing else: no new event, no new key.
+
+| event | prop | new value | when |
+|---|---|---|---|
+| `action_cancelled` | `prompt` | `cancel_before_run` | the visible Cancel (`^G`, action bar) stopped the attempt before `action_attempted` (file read, consent or clearing-spend dialog, validation review) |
+| `action_cancelled` | `prompt` | `cancel_during_run` | the visible Cancel took effect after `action_attempted`: core stopped at a phase boundary with `RunCancelled`, before any output was written. In `IN_RUN_CANCEL_PROMPTS`, like `quit_during_run` |
+| `launch_blocked` | `reason` | `entity_not_found` | the large-entity filter (above 2,000 values) holds text that is not an exact entity; until v3 this block recorded nothing |
+
+Two cancel values instead of one keep the §8.2 funnel exact: a single value
+could not say whether an attempt had been recorded. Cancel telemetry is
+recorded where the cancel *took effect*, not when the key was pressed, so a
+Cancel that arrives after output writing started (the run then finishes
+normally) records nothing extra and every attempt still ends exactly once.
+The typed entity text is never recorded.
+
+Versioning follows §8.4 exactly. `SCHEMA_VERSION = 3`,
+`SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)`. `_EVENT_SCHEMAS_V2` is now frozen
+(its enums are literal tuples in `events.py`), and `_EVENT_SCHEMAS_V3` is
+current. `session_start`/`session_end` are still written as v1; every other
+event is written as v3.
+
+| reader | data | behaviour |
+|---|---|---|
+| new (v3) | v1, v2 or mixed v1+v2+v3 files | Reads everything, each record against its own catalog (`test_new_reader_reads_mixed_v1_v2_and_v3_file`). v3-only values inside a v1 or v2 record are rejected (`test_v3_values_decode_only_in_a_v3_record`). |
+| installed v2 | mixed v2 + v3 | No crash. v1/v2 records and every `session_start`/`session_end` are read; each v3 record is skipped with the counted warning `skipped N record(s) with an unsupported schema_version (this reader supports 1, 2); upgrade Autobench to read them.` (checked by running the v2 package from `74e9025` against a v3 store) |
+| installed v1 | v3 records | As for v2 records in §8.4: skipped with `unsupported schema_version: 3`, sessions still counted. |
+
+The funnel column `QUIT_IN_RUN` is renamed `CANCEL_IN_RUN`, because it now
+counts both in-run prompts.

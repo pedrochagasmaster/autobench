@@ -33,6 +33,7 @@ LaunchBlockReason = Literal[
     "validation_errors",
     "data_preparation_error",
     "initialization_error",
+    "entity_not_found",
 ]
 CancelPrompt = Literal[
     "validation_review",
@@ -40,6 +41,8 @@ CancelPrompt = Literal[
     "clearing_spend",
     "quit_before_run",
     "quit_during_run",
+    "cancel_before_run",
+    "cancel_during_run",
 ]
 DatasetLoadOutcome = Literal["loaded", "not_found", "header_read_failed", "entity_list_failed"]
 AdvancedOverrideOutcome = Literal["applied", "empty", "failed", "exported", "export_failed"]
