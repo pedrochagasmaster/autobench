@@ -264,3 +264,39 @@ def test_background_step_mount_waits_for_quiet_input() -> None:
 
     deferred, mounted = asyncio.run(scenario())
     assert deferred and mounted
+
+
+def test_cancelling_the_validation_review_puts_focus_back(monkeypatch: pytest.MonkeyPatch, engine_calls) -> None:
+    """Escape on the validation dialog returns to the field that had focus.
+
+    Found by tui_journeys.py J4b in PR 6: the main screen resumed with the
+    focus the run lock had disabled, so nothing was focused and Tab started
+    from the top of the step.
+    """
+    from core.data_loader import ValidationIssue, ValidationSeverity
+
+    issues = [ValidationIssue(ValidationSeverity.ERROR, "negative_values", "Column 'txn_cnt' has 1 negative value")]
+    monkeypatch.setattr(tui_app, "build_run_config", lambda *a, **k: {})
+    monkeypatch.setattr(tui_app, "prepare_run_data", lambda *a, **k: (None, None, "issuer_name", None))
+    monkeypatch.setattr(tui_app, "resolve_dimensions", lambda *a, **k: ["card_type"])
+    monkeypatch.setattr(tui_app, "validate_analysis_input", lambda **k: (issues, True))
+
+    async def scenario() -> Tuple[str, str]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load(pilot)
+            app.form.update(entity="Target", metric="txn_cnt", dimensions=("card_type",), validate_input=True)
+            await app.ensure_step("analysis")
+            app._focus_field("dims")
+            assert await _until(pilot, lambda: getattr(app.focused, "id", None) == "dims")
+            await pilot.press("ctrl+r")
+            assert await _until(pilot, lambda: isinstance(app.screen, tui_app.ValidationModal))
+            await pilot.press("escape")
+            assert await _until(pilot, lambda: app._run_state == "idle" and app.focused is not None)
+            await pilot.pause()
+            return getattr(app.focused, "id", ""), app._current_step
+
+    focused, step = asyncio.run(scenario())
+    assert (focused, step) == ("dims", "analysis")
+    assert engine_calls == []

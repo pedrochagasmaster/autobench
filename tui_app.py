@@ -3014,8 +3014,23 @@ class BenchmarkApp(App):
             if self._results_view_open():
                 # <110: Results stay open; ^T goes back to this field.
                 self._setup_focus = widget
-            elif self.focused is None and self._step_of(widget) == self._current_step:
-                widget.focus()
+            else:
+                if self.focused is None and self._step_of(widget) == self._current_step:
+                    widget.focus()
+                # Unlocked from a dialog's dismiss callback (e.g. Cancel on the
+                # validation review): the main screen resumes after this with
+                # the focus it remembered, which the lock had disabled, so it
+                # came back with nothing focused (PR 6). Check again after it.
+                self.call_after_refresh(self._restore_unlocked_focus, widget)
+
+    def _restore_unlocked_focus(self, widget: Any) -> None:
+        if (
+            self.screen is getattr(self, "_main_screen", None)
+            and self.focused is None
+            and widget.is_attached
+            and self._step_of(widget) == self._current_step
+        ):
+            widget.focus()
 
     def _set_run_button(self, label: str, disabled: bool) -> None:
         try:
