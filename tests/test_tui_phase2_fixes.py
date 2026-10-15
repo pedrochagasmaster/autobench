@@ -410,13 +410,23 @@ def _worker_side_widget(max_ui_thread: int) -> tuple[MagicMock, MagicMock]:
     return log_widget, app
 
 
-def test_log_handler_posts_one_wake_and_drains_in_one_write() -> None:
+def test_log_handler_posts_one_wake_and_drains_in_chunks() -> None:
+    """D6 + PR 4: emitters post one wake; each drain writes at most CHUNK_LINES.
+
+    Until PR 4 a wake drained everything in a single Log.write, which for a
+    2,000-line burst stalled the UI for one long frame. The drain now writes
+    one 500-line chunk and re-arms itself with a short UI-thread timer (not a
+    re-posted message, which Textual would process back to back), so the
+    burst spreads over several event-loop turns. Emitters still post exactly
+    one wake per burst and never wait for the UI.
+    """
     log_widget, app = _worker_side_widget(threading.get_ident() + 1)
     handler = LogHandler(log_widget)
+    assert handler.CHUNK_LINES == 500
     handler.setFormatter(logging.Formatter("%(message)s"))
 
     def emit_many() -> None:
-        for i in range(500):
+        for i in range(1200):
             handler.emit(logging.LogRecord("t", logging.INFO, "", 0, f"line {i}", (), None))
 
     worker = threading.Thread(target=emit_many)
@@ -425,13 +435,23 @@ def test_log_handler_posts_one_wake_and_drains_in_one_write() -> None:
     assert not worker.is_alive()
     app.call_from_thread.assert_not_called()
     assert log_widget.call_later.call_count == 1  # one wake until the UI drains
+    writes: list[str] = []
+    log_widget.write.side_effect = writes.append
     drain = log_widget.call_later.call_args.args[0]
+    for rearms in (1, 2):
+        drain()
+        # A partial drain re-arms itself; an emit in between posts nothing.
+        assert log_widget.set_timer.call_count == rearms
+        delay, drain = log_widget.set_timer.call_args.args
+        assert 0 < delay <= 0.05
+        handler.emit(logging.LogRecord("t", logging.INFO, "", 0, f"mid {rearms}", (), None))
+        assert log_widget.call_later.call_count == 1
     drain()
-    log_widget.write.assert_called_once()
-    written = log_widget.write.call_args.args[0]
-    assert written.count("\n") == 500
-    assert written.startswith("line 0\n") and written.endswith("line 499\n")
-    # After a drain the next record posts a new wake.
+    assert log_widget.set_timer.call_count == 2  # fully drained: not re-armed
+    assert [chunk.count("\n") for chunk in writes] == [500, 500, 202]
+    joined = "".join(writes)
+    assert joined.startswith("line 0\n") and "line 1199\nmid 1\nmid 2\n" in joined
+    # After a full drain the next record posts a new wake.
     handler.emit(logging.LogRecord("t", logging.INFO, "", 0, "again", (), None))
     assert log_widget.call_later.call_count == 2
 

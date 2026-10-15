@@ -315,20 +315,30 @@ class LogHandler(logging.Handler):
 
     Records go into a bounded, thread-safe buffer. The first record after a
     drain posts one wake (``Log.call_later``, which is thread-safe and never
-    waits for the UI); the drain then writes everything pending in a single
-    ``Log.write`` on the UI thread. An emitting worker therefore never blocks
-    on the UI, and if the UI stalls the buffer keeps only the newest
-    ``max_pending`` lines plus a count of the ones it dropped. The full record
-    is the deferred log file on disk, not this view.
+    waits for the UI). Each wake writes at most ``CHUNK_LINES`` pending lines
+    in one ``Log.write`` on the UI thread and, if more are waiting, re-arms
+    itself with a short timer, so a burst is spread over several event-loop
+    turns instead of one long write that stalls input. (A re-posted message
+    would not do: Textual processes a pump's queued messages back to back,
+    so the chunks would still form one long stall.) An emitting worker therefore never blocks on the
+    UI, and if the UI stalls the buffer keeps only the newest ``max_pending``
+    lines plus a count of the ones it dropped. The full record is the
+    deferred log file on disk, not this view.
     """
 
     MAX_PENDING = 2000  # matches the Log widget's max_lines
+    # One Log.write of 500 lines stays well under 50 ms on the reference VM
+    # (scripts/tui_perf_probe.py log phase); 2,000 lines in one write did not.
+    CHUNK_LINES = 500
+    # Gap between chunks: lets keys, timers and paints run in between.
+    CHUNK_DELAY_S = 0.005
 
-    def __init__(self, log_widget: Log, max_pending: int = MAX_PENDING):
+    def __init__(self, log_widget: Log, max_pending: int = MAX_PENDING, chunk_lines: int = CHUNK_LINES):
         super().__init__()
         self.log_widget = log_widget
         self._pending: "collections.deque[str]" = collections.deque(maxlen=max_pending)
         self._dropped = 0
+        self._chunk_lines = max(1, int(chunk_lines))
         self._buffer_lock = threading.Lock()
         self._wake_posted = False
 
@@ -356,6 +366,9 @@ class LogHandler(logging.Handler):
         if getattr(app, "_thread_id", None) == threading.get_ident():
             self._flush()
             return
+        self._post_wake()
+
+    def _post_wake(self) -> None:
         try:
             posted = bool(self.log_widget.call_later(self._flush))
         except Exception:
@@ -366,18 +379,28 @@ class LogHandler(logging.Handler):
                 self._wake_posted = False
 
     def _flush(self) -> None:
-        """Drain the buffer into one Log.write (app thread only)."""
+        """Write one chunk of the buffer (app thread only); re-arm if more wait."""
         with self._buffer_lock:
-            pending = list(self._pending)
-            self._pending.clear()
+            take = min(self._chunk_lines, len(self._pending))
+            pending = [self._pending.popleft() for _ in range(take)]
             dropped, self._dropped = self._dropped, 0
-            self._wake_posted = False
+            more = bool(self._pending)
+            # Still "posted" while lines remain: emitters must not post a
+            # second wake; this drain posts the next one itself.
+            self._wake_posted = more
         if dropped:
             pending.insert(
                 0, f"… {dropped} earlier log lines not shown (full log on disk)\n"
             )
         if pending:
             self.log_widget.write("".join(pending))
+        if more:
+            try:
+                self.log_widget.set_timer(self.CHUNK_DELAY_S, self._flush)
+            except Exception:
+                # Widget is gone (app closing): the next record may try again.
+                with self._buffer_lock:
+                    self._wake_posted = False
 
 
 PRESETS_DIR = Path(__file__).resolve().parent / "presets"
