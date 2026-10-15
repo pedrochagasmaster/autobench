@@ -302,3 +302,25 @@ def test_cancelling_the_validation_review_puts_focus_back(monkeypatch: pytest.Mo
     focused, step = asyncio.run(scenario())
     assert (focused, step) == ("dims", "analysis")
     assert engine_calls == []
+
+
+def test_action_bar_update_after_teardown_is_a_no_op() -> None:
+    """A run worker can finish after quit and refresh the action bar while the
+    app tears down; that must not raise NoMatches out of the worker."""
+    from textual.app import App, ComposeResult
+
+    class _Host(App):
+        def compose(self) -> ComposeResult:
+            yield ActionBar(id="action_bar")
+
+    async def scenario() -> str:
+        async with _Host().run_test() as pilot:
+            await pilot.pause()
+            bar = pilot.app.query_one(ActionBar)
+            await bar.query_one("#action_badge").remove()
+            bar.set_state("success", "Done")  # must not raise
+            await bar.remove_children()
+            bar.set_state("error", "Failed")  # must not raise
+            return "ok"
+
+    assert asyncio.run(scenario()) == "ok"

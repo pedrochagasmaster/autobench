@@ -662,11 +662,18 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
         self.quick_picks = picks
         self._quick_loaded = True
         self._refresh_quick_picks()
+        # As when the list was ready at open: start on the quick picks, unless
+        # the operator has already pressed a key. ``focus()`` is deferred, so
+        # the browse-list focus queued in ``on_mount`` may not have landed yet;
+        # decide after the next refresh, once it has.
+        self.call_after_refresh(self._focus_quick_if_untouched)
+
+    def _focus_quick_if_untouched(self) -> None:
+        if not self.is_mounted or self._operator_moved:
+            return
         quick = self.query_one("#picker_quick_list", OptionList)
         browse = self.query_one("#picker_browse_list", OptionList)
-        # As when the list was ready at open: start on the quick picks, unless
-        # the operator has already pressed a key.
-        if quick.option_count and not self._operator_moved and self.focused in (None, browse):
+        if quick.option_count and self.focused in (None, browse):
             quick.focus()
 
     def _filter_text(self) -> str:

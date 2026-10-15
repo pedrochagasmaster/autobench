@@ -15,6 +15,7 @@ from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from tui.widgets import StatusBadge
@@ -58,11 +59,19 @@ class ActionBar(Horizontal):
         key = (state, detail, message, key_text, key_action, dim_key)
         if key == self._last:
             return
+        try:
+            badge = self.query_one("#action_badge", StatusBadge)
+            message_widget = self.query_one("#action_message", Static)
+            action_key = self.query_one("#action_key", ActionKey)
+        except NoMatches:
+            # The app is tearing down (a run worker finished after quit):
+            # the parts are gone and there is nothing left to show.
+            self._last = None
+            return
         self._last = key
-        self.query_one("#action_badge", StatusBadge).set_status(state, detail)
+        badge.set_status(state, detail)
         # Literal text: entity, file and column names come from the data.
-        self.query_one("#action_message", Static).update(Content(message))
-        action_key = self.query_one("#action_key", ActionKey)
+        message_widget.update(Content(message))
         action_key.update(Content(key_text))
         action_key.action = key_action
         action_key.set_class(dim_key, "-dim")
