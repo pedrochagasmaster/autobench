@@ -524,6 +524,9 @@ def test_toasts_move_off_a_focused_field_in_the_top_right_and_loads_are_not_toas
             await pilot.pause()
             assert rack.has_class("-bottom")
             app.query_one("#csv_path").focus()
+            # Let that focus event land first, as it would before any real
+            # jump; otherwise it can arrive after the jump and switch back.
+            await pilot.pause()
             app._focus_field("btn_run")
             assert await _until(
                 pilot,
