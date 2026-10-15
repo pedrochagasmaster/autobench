@@ -127,8 +127,9 @@ Input.-textual-compact:focus, Select.-textual-compact:focus > SelectCurrent {
     text-style: bold;
 }
 /* Focus marker that survives NO_COLOR: the focused pair's label turns
-   reverse-video. Scoped to the 2-widget .field-pair, never a section (03 §2). */
-.field-pair:focus-within > .field-label { text-style: bold reverse; }
+   reverse-video. BenchmarkApp._mark_field_pair sets -pair-focus on focus and
+   blur; no :focus-within, which restyles a whole subtree on every Tab (03 §2). */
+.field-pair > .field-label.-pair-focus { text-style: bold reverse; }
 
 BoxCheckbox.-on > .toggle--label { text-style: bold; }
 Button.-textual-compact { min-width: 10; }
@@ -150,6 +151,9 @@ Button.-textual-compact { min-width: 10; }
 .subsection-title { color: $ab-muted; text-style: italic; margin: $ab-space-1 0 0 0; }
 .field-label { color: $ab-text; margin: $ab-space-1 0 0 0; }
 .field-hint, #csv_meta { color: $ab-muted; }
+/* Inline error under a field (02 §4.1): danger text; the ✗ glyph carries it
+   under NO_COLOR. */
+.field-hint.-error { color: $ab-danger; }
 .field-pair { height: auto; }
 
 /* Fields stack one per row below 110 columns (02 §4.2). Rows that really
@@ -169,6 +173,11 @@ TabbedContent { height: auto; }
     background: $ab-panel;
 }
 .multi-select:focus { border: $ab-border-focus $ab-focus; }
+
+/* Large-entity filter picker (03 §6): replaces the Select above 2,000
+   values. #entity_matches is an .ab-list (round -> heavy on focus). */
+#entity_picker { height: auto; }
+#entity_matches { height: $ab-list-rows; }
 
 /* Collapsible declarations and advanced settings: no decorative border.
    Warning colour is reserved for warnings (02 §1.4). */
@@ -215,12 +224,13 @@ TabbedContent { height: auto; }
 
 #picker_container { width: $ab-modal-lg; height: 80%; }
 #picker_title { text-style: bold; text-align: center; width: 100%; }
+#picker_filter { margin: 0 0 $ab-space-1 0; }
 #picker_body { height: 1fr; }
 #picker_quick { width: 40%; margin: 0 $ab-space-1 0 0; }
 #picker_tree_pane { width: 1fr; }
 .picker-subtitle { text-style: bold; color: $ab-accent; }
 .picker-hint { color: $ab-muted; }
-#picker_quick_list, #picker_tree { height: 1fr; }
+#picker_quick_list, #picker_browse_list { height: 1fr; }
 #btn_picker_cancel { width: 100%; }
 
 #confirm_container { width: $ab-modal-sm; height: auto; }
@@ -258,8 +268,10 @@ App:nocolor CollapsibleTitle:focus { text-style: bold reverse; }
 App:nocolor Tab.-active { text-style: bold reverse; }
 App:nocolor ListView:focus > ListItem.-highlight { text-style: bold reverse; }
 App:nocolor .multi-select:focus > .option-list--option-highlighted,
+App:nocolor .ab-list:focus > .option-list--option-highlighted,
 App:nocolor #issue_list:focus > .issue-item.-highlight { text-style: bold reverse; }
 App:nocolor .issue-error, App:nocolor .issue-warning { color: $ab-text; }
+App:nocolor .field-hint.-error { color: $ab-text; text-style: bold; }
 
 /* ═══ textual-ansi: 16 colours, alpha collapses; full-strength pairs ═════ */
 App:ansi StatusBadge.-withheld { background: ansi_yellow; color: ansi_black; text-style: bold; }

@@ -13,8 +13,11 @@ import logging
 import threading
 import traceback
 import glob
+import bisect
 import contextlib
 import collections
+import copy
+import importlib
 import io
 import pandas as pd
 from dataclasses import dataclass
@@ -47,33 +50,25 @@ from textual.widgets import (
     Static,
     ListView,
     ListItem,
+    OptionList,
     SelectionList,
     Markdown,
     Collapsible,
-    DirectoryTree,
     Tabs,
 )
 from textual.widgets._collapsible import CollapsibleTitle
+from textual.widgets.option_list import Option
 from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.suggester import SuggestFromList, Suggester
 from textual.worker import get_current_worker
 from rich.text import Text
 
 # Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
 try:
-    from core.analysis_run import (
-        RunAborted,
-        RunBlocked,
-        RunCancelled,
-        build_run_config,
-        prepare_run_data,
-        resolve_dimensions,
-        validate_analysis_input,
-        execute_run,
-    )
     from core.contracts import (
         AnalysisArtifacts,
         AnalysisRunRequest,
@@ -111,6 +106,59 @@ except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
     sys.exit(1)
+
+# ``core.analysis_run`` pulls in the whole engine (scipy.stats through
+# core.privacy_coverage_solver, about 0.8 s), and the TUI needs none of it
+# until a run starts. It is imported on first use instead, and pre-warmed on a
+# thread worker after the first paint (``BenchmarkApp._prewarm_analysis_run``).
+_ANALYSIS_RUN: Any = None
+_ANALYSIS_RUN_LOCK = threading.Lock()
+
+
+def _analysis_run() -> Any:
+    """Return ``core.analysis_run``, importing it on first use (thread-safe).
+
+    Deliberate deferred import, allow-listed in
+    ``tests/telemetry/test_no_inline_imports.py``. The lock makes a run that
+    starts while the pre-warm import is still in progress wait for it, so the
+    module is never imported twice.
+    """
+    global _ANALYSIS_RUN
+    with _ANALYSIS_RUN_LOCK:
+        if _ANALYSIS_RUN is None:
+            _ANALYSIS_RUN = importlib.import_module("core.analysis_run")
+    return _ANALYSIS_RUN
+
+
+# Thin module-level wrappers keep ``tui_app.prepare_run_data`` and friends as
+# patchable attributes (tests monkeypatch them) without importing the engine.
+def build_run_config(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().build_run_config(*args, **kwargs)
+
+
+def prepare_run_data(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().prepare_run_data(*args, **kwargs)
+
+
+def resolve_dimensions(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().resolve_dimensions(*args, **kwargs)
+
+
+def validate_analysis_input(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().validate_analysis_input(*args, **kwargs)
+
+
+def execute_run(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().execute_run(*args, **kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    # ``tui_app.RunBlocked`` / ``RunAborted`` / ``RunCancelled`` keep
+    # resolving (PEP 562) without importing the engine at module load.
+    if name in ("RunBlocked", "RunAborted", "RunCancelled"):
+        return getattr(_analysis_run(), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Textual >= 0.89 renamed the Select no-selection sentinel from BLANK to NULL;
 # Select.BLANK now resolves to Widget.BLANK (False), so compare against the
@@ -161,6 +209,73 @@ SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rat
 
 ENTITY_SELECT_PROMPT = "None: peer group only"
 ENTITY_LOADING_PROMPT = "Loading entities…"
+ENTITY_FILTER_PLACEHOLDER = "Type to filter entities…"
+# Above this many distinct values the stock Select (one option per value,
+# opened as an overlay) gets slow: 0.28 s to open at 5,000 and 2.6 s at 100k.
+# Larger lists use the filter + capped OptionList picker instead (03 §6).
+ENTITY_SELECT_MAX = 2000
+ENTITY_MATCH_LIMIT = 200
+_ENTITY_PEER_ONLY_ID = "peer-only"
+_ENTITY_VALUE_ID_PREFIX = "v:"
+
+
+class EntityIndex:
+    """All distinct values of an entity column, searchable without a widget.
+
+    Built on the entity worker thread. Matching is a ``bisect`` prefix search
+    over the casefolded values, with a substring scan as the fallback when
+    nothing starts with the typed text. ``value_set`` is the full set used to
+    validate a typed target entity: only an exact value ever becomes one.
+    """
+
+    def __init__(self, values: List[str]) -> None:
+        self.values = values
+        self.value_set = frozenset(values)
+        pairs = sorted((value.casefold(), value) for value in values)
+        self.folded = [folded for folded, _ in pairs]
+        self.ordered = [value for _, value in pairs]
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def _prefix_range(self, needle: str) -> tuple:
+        lo = bisect.bisect_left(self.folded, needle)
+        hi = bisect.bisect_left(self.folded, needle + "\U0010ffff", lo)
+        return lo, hi
+
+    def first_with_prefix(self, needle: str) -> Optional[str]:
+        """First value (casefolded order) starting with casefolded ``needle``."""
+        lo, hi = self._prefix_range(needle)
+        return self.ordered[lo] if lo < hi else None
+
+    def matches(self, text: str, limit: int = ENTITY_MATCH_LIMIT) -> tuple:
+        """Return (up to ``limit`` matching values, total number of matches)."""
+        needle = text.casefold()
+        if not needle:
+            return self.values[:limit], len(self.values)
+        lo, hi = self._prefix_range(needle)
+        if lo < hi:
+            return self.ordered[lo:min(hi, lo + limit)], hi - lo
+        found = [value for folded, value in zip(self.folded, self.ordered) if needle in folded]
+        return found[:limit], len(found)
+
+
+class EntitySuggester(SuggestFromList):
+    """``SuggestFromList`` over an ``EntityIndex``: O(log n) prefix lookups.
+
+    The stock implementation scans its list linearly on every keystroke and
+    casefolds the whole list up front on the UI thread; the index has already
+    done that work on the worker thread.
+    """
+
+    def __init__(self, index: EntityIndex) -> None:
+        Suggester.__init__(self, case_sensitive=False)
+        self._index = index
+        self._suggestions = index.ordered
+        self._for_comparison = index.folded
+
+    async def get_suggestion(self, value: str) -> Optional[str]:
+        return self._index.first_with_prefix(value)
 
 
 def read_unique_entity_values(csv_path: str, column_name: str) -> List[str]:
@@ -265,50 +380,151 @@ class LogHandler(logging.Handler):
             self.log_widget.write("".join(pending))
 
 
-class FileListItem(ListItem):
-    """Custom ListItem that stores the file path."""
-    def __init__(self, file_path: str) -> None:
-        super().__init__(Label(file_path))
-        self.file_path = file_path
+PRESETS_DIR = Path(__file__).resolve().parent / "presets"
 
 
-class CsvDirectoryTree(DirectoryTree):
-    """Directory tree limited to directories and CSV files."""
+def _preset_dir_signature(preset_dir: Path) -> tuple:
+    """Cheap fingerprint of the preset files: one ``scandir`` plus a stat each.
 
-    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
-        keep = []
-        for path in paths:
-            name = path.name
-            if name.startswith(".") or name == "__pycache__":
+    Any added, removed or edited ``*.yaml``/``*.yml`` file changes it, so a
+    cached parse is never served for presets that changed on disk.
+    """
+    try:
+        entries = []
+        with os.scandir(preset_dir) as scan:
+            for entry in scan:
+                if entry.name.endswith((".yaml", ".yml")):
+                    stat = entry.stat()
+                    entries.append((entry.name, stat.st_mtime_ns, stat.st_size))
+        return tuple(sorted(entries))
+    except OSError:
+        return ()
+
+
+def _file_signature(path: Optional[str]) -> Optional[tuple]:
+    """(path, mtime_ns, size) of a config file, or None when unset/missing."""
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (path, None, None)
+    return (path, stat.st_mtime_ns, stat.st_size)
+
+
+class PresetCatalog:
+    """Parse the preset directory once, for display purposes only.
+
+    The TUI used to parse every preset file four times at startup and again on
+    every Advanced expand (each ``ConfigManager`` builds its own
+    ``PresetManager``). The catalog keeps one ``PresetWorkflow`` and a memo of
+    resolved preset configs, both invalidated when a preset file changes.
+
+    Display only: the run path still builds a fresh ``ConfigManager`` inside
+    ``build_run_config``, exactly like the CLI, so what runs never comes from
+    this cache.
+    """
+
+    def __init__(self, preset_dir: Path = PRESETS_DIR) -> None:
+        self._preset_dir = preset_dir
+        self._signature: Optional[tuple] = None
+        self._workflow: Optional[PresetWorkflow] = None
+        self._resolved: Dict[str, Dict[str, Any]] = {}
+        self._release_modes: Dict[tuple, str] = {}
+
+    def _revalidate(self) -> None:
+        signature = _preset_dir_signature(self._preset_dir)
+        if self._workflow is None or signature != self._signature:
+            self._workflow = PresetWorkflow()
+            self._signature = signature
+            self._resolved.clear()
+            self._release_modes.clear()
+
+    @property
+    def workflow(self) -> PresetWorkflow:
+        self._revalidate()
+        assert self._workflow is not None
+        return self._workflow
+
+    def resolved_config(self, preset: str) -> Dict[str, Any]:
+        """``ConfigManager(preset=preset).config``, memoised; callers get a copy."""
+        self._revalidate()
+        if preset not in self._resolved:
+            self._resolved[preset] = ConfigManager(preset=preset).config
+        return copy.deepcopy(self._resolved[preset])
+
+    def resolved_release_mode(self, preset: Optional[str], config_file: Optional[str]) -> str:
+        """Effective ``privacy_release_mode`` value for (preset, override file)."""
+        self._revalidate()
+        key = (preset, _file_signature(config_file))
+        if key not in self._release_modes:
+            resolved = ConfigManager(config_file=config_file, preset=preset).resolve()
+            self._release_modes[key] = resolved.privacy_release_mode.value
+        return self._release_modes[key]
+
+
+QUICK_PICK_PATTERNS = ("*.csv", "data/*.csv", "tests/fixtures/*.csv")
+# Quick picks shown at once; the filter box reaches the rest (03 §4).
+QUICK_PICK_LIMIT = 50
+
+
+def _is_browsable_entry(name: str, is_dir: bool) -> bool:
+    """The picker's file filter: directories and ``*.csv``, no hidden entries."""
+    if name.startswith(".") or name == "__pycache__":
+        return False
+    return is_dir or name.lower().endswith(".csv")
+
+
+def scan_csv_directory(directory: str) -> List[tuple]:
+    """List one directory for the CSV picker as ``(name, is_dir)`` pairs.
+
+    Runs on a thread worker: one ``os.scandir`` and no widget access.
+    ``DirEntry.is_dir()`` follows symlinks like the old ``Path.is_dir()``
+    filter, but needs no extra ``stat`` for regular entries (it uses
+    ``d_type``). Directories come first, then files, each sorted
+    case-insensitively, as ``DirectoryTree`` ordered them.
+    """
+    entries: List[tuple] = []
+    with os.scandir(directory) as scan:
+        for entry in scan:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
                 continue
-            if path.is_dir() or path.suffix.lower() == ".csv":
-                keep.append(path)
-        return keep
+            if _is_browsable_entry(entry.name, is_dir):
+                entries.append((entry.name, is_dir))
+    entries.sort(key=lambda item: (not item[1], item[0].lower()))
+    return entries
 
 
 class CsvPickerScreen(ModalScreen[Optional[str]]):
-    """Modal CSV picker: quick picks from known data folders plus a full tree."""
+    """Modal CSV picker: capped quick picks plus a flat, per-directory browser.
+
+    Both lists are ``OptionList``s, which render only the visible lines, so a
+    folder with thousands of CSVs costs a handful of widgets instead of one
+    widget per file. The directory listing runs on a thread worker. Enter
+    picks a file or opens a directory (``..`` goes up); Escape cancels.
+    """
 
     BINDINGS = [("escape", "cancel_picker", "Cancel")]
 
     def __init__(self, quick_picks: List[str]) -> None:
         super().__init__()
         self.quick_picks = quick_picks
+        self._browse_dir: Optional[str] = None
+        self._browse_entries: List[tuple] = []
 
     def compose(self) -> ComposeResult:
         with Container(id="picker_container", classes="ab-modal"):
             yield Label("Open a CSV file", id="picker_title")
+            yield Input(placeholder="Filter by name…", id="picker_filter", compact=True)
             with Horizontal(id="picker_body"):
                 with Vertical(id="picker_quick"):
-                    yield Label("Quick picks", classes="picker-subtitle")
-                    yield ListView(
-                        *[FileListItem(path) for path in self.quick_picks],
-                        id="picker_quick_list",
-                        classes="ab-list",
-                    )
+                    yield Label("Quick picks", id="picker_quick_title", classes="picker-subtitle")
+                    yield OptionList(id="picker_quick_list", classes="ab-list")
                 with Vertical(id="picker_tree_pane"):
-                    yield Label("Browse workspace", classes="picker-subtitle")
-                    yield CsvDirectoryTree(os.getcwd(), id="picker_tree", classes="ab-list")
+                    yield Label("Browse workspace", id="picker_browse_title", classes="picker-subtitle")
+                    yield OptionList(id="picker_browse_list", classes="ab-list")
             yield Label(
                 "Enter opens the file · Esc cancels",
                 classes="picker-hint",
@@ -316,12 +532,108 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
             yield Button("Cancel", id="btn_picker_cancel", variant="default", compact=True)
         yield KeyBar("picker")
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if isinstance(event.item, FileListItem):
-            self.dismiss(event.item.file_path)
+    def on_mount(self) -> None:
+        self._refresh_quick_picks()
+        # Browse starts in the caller's working directory, never a fixed root.
+        self._browse(os.getcwd())
+        quick = self.query_one("#picker_quick_list", OptionList)
+        (quick if quick.option_count else self.query_one("#picker_browse_list", OptionList)).focus()
 
-    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        self.dismiss(str(event.path))
+    def _filter_text(self) -> str:
+        try:
+            return self.query_one("#picker_filter", Input).value.strip().casefold()
+        except NoMatches:
+            return ""
+
+    def _refresh_quick_picks(self) -> None:
+        needle = self._filter_text()
+        matches = [path for path in self.quick_picks if needle in path.casefold()] if needle else self.quick_picks
+        shown = matches[:QUICK_PICK_LIMIT]
+        quick = self.query_one("#picker_quick_list", OptionList)
+        quick.set_options(Option(Text(path), id=path) for path in shown)
+        # Like the old ListView: Enter right away picks the first entry.
+        quick.highlighted = 0 if shown else None
+        title = "Quick picks"
+        if len(matches) > len(shown):
+            title = f"Quick picks ({len(shown)} of {len(matches):,})"
+        self.query_one("#picker_quick_title", Label).update(title)
+
+    def _browse(self, directory: str) -> None:
+        self._browse_dir = directory
+        self.query_one("#picker_browse_title", Label).update(Text(f"Browse {directory}"))
+        self._scan_worker(directory)
+
+    @work(thread=True, exclusive=True, group="picker_browse", exit_on_error=False)
+    def _scan_worker(self, directory: str) -> None:
+        worker = get_current_worker()
+        try:
+            entries = scan_csv_directory(directory)
+        except OSError:
+            entries = []
+        if worker.is_cancelled:
+            return
+        try:
+            self.app.call_from_thread(self._apply_browse, directory, entries)
+        except RuntimeError:
+            pass  # App already gone.
+
+    def _apply_browse(self, directory: str, entries: List[tuple]) -> None:
+        if directory != self._browse_dir or not self.is_mounted:
+            return  # A newer directory request owns the list.
+        self._browse_entries = entries
+        self._render_browse()
+
+    def _render_browse(self) -> None:
+        directory = self._browse_dir
+        if directory is None:
+            return
+        needle = self._filter_text()
+        options: List[Option] = []
+        parent = os.path.dirname(os.path.abspath(directory))
+        if parent and parent != os.path.abspath(directory):
+            options.append(Option(Text(".."), id=f"d:{parent}"))
+        for name, is_dir in self._browse_entries:
+            if needle and needle not in name.casefold():
+                continue
+            path = os.path.join(directory, name)
+            if is_dir:
+                options.append(Option(Text(f"▸ {name}/"), id=f"d:{path}"))
+            else:
+                options.append(Option(Text(name), id=f"f:{path}"))
+        browse = self.query_one("#picker_browse_list", OptionList)
+        browse.set_options(options)
+        browse.highlighted = 0 if options else None
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "picker_filter":
+            event.stop()
+            self._refresh_quick_picks()
+            self._render_browse()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "picker_filter":
+            event.stop()
+            for list_id in ("#picker_quick_list", "#picker_browse_list"):
+                option_list = self.query_one(list_id, OptionList)
+                if option_list.option_count:
+                    option_list.focus()
+                    break
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        # The app reloads the CSV when #csv_path blurs; keep the filter's
+        # blur from reaching that handler.
+        event.stop()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        option_id = event.option.id or ""
+        if event.option_list.id == "picker_quick_list":
+            self.dismiss(option_id)
+        elif option_id.startswith("f:"):
+            self.dismiss(option_id[2:])
+        elif option_id.startswith("d:"):
+            self.query_one("#picker_filter", Input).value = ""
+            self._browse(option_id[2:])
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_picker_cancel":
@@ -669,6 +981,9 @@ class RunInputs:
     csv_path: str
     entity_selection_pending: bool
     entity: Optional[str]
+    # Large-list picker: why the typed target entity cannot be used (03 §6),
+    # resolved with ``entity`` on the UI thread by _target_entity_for_run().
+    entity_error: Optional[str]
     entity_col: str
     preset: Optional[str]
     config: Optional[str]
@@ -743,6 +1058,11 @@ class BenchmarkApp(App):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        # Set before the first stylesheet pass: assigning it in on_mount
+        # restyled the whole widget tree a second time (03 §1.3).
+        self.theme = "tokyo-night"
+        # One parse of presets/*.yaml for display (see PresetCatalog).
+        self._preset_catalog = PresetCatalog()
         # Confirmations the analysis worker is blocked on (see _await_confirmation).
         self._confirmation_lock = threading.Lock()
         self._pending_confirmations: set[threading.Event] = set()
@@ -794,6 +1114,11 @@ class BenchmarkApp(App):
                             yield Select(
                                 [], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True, compact=True
                             )
+                            # Replaces the Select above ENTITY_SELECT_MAX values.
+                            with Vertical(id="entity_picker", classes="hidden"):
+                                yield Input(placeholder=ENTITY_FILTER_PLACEHOLDER, id="entity_filter", compact=True)
+                                yield Static("", id="entity_match_count", classes="field-hint")
+                                yield OptionList(id="entity_matches", classes="ab-list")
 
                 with Container(id="section_analysis", classes="form-section"):
                     yield Label("3 · Analysis options", classes="ab-section")
@@ -1068,7 +1393,6 @@ class BenchmarkApp(App):
 
     def on_mount(self) -> None:
         """Event handler called when widget is added to the app."""
-        self.theme = "tokyo-night"
         self._run_state = "idle"
         self._run_started_at: Optional[float] = None
         self._run_mode: Optional[str] = None
@@ -1105,6 +1429,20 @@ class BenchmarkApp(App):
         if getattr(self, "_telemetry_session_restored", False):
             session_restored()
         self._emit_surface_if_changed(self._analysis_mode())
+        # Pay the deferred engine import off the UI thread once the first
+        # frame is up, so the first Run does not wait for it (03 §1.4).
+        self.call_after_refresh(self._prewarm_analysis_run)
+
+    def _prewarm_analysis_run(self) -> None:
+        if getattr(self, "_exit", False):
+            return
+        self.run_worker(
+            _analysis_run,
+            thread=True,
+            group="prewarm",
+            exit_on_error=False,
+            description="pre-warm core.analysis_run",
+        )
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
@@ -1413,6 +1751,8 @@ class BenchmarkApp(App):
                 context = "select"
             elif isinstance(focused, SelectionList):
                 context = "list"
+            elif isinstance(focused, OptionList):
+                context = "choose"
             elif isinstance(focused, Checkbox):
                 context = "toggle"
             elif isinstance(focused, (Button, CollapsibleTitle)):
@@ -1431,9 +1771,27 @@ class BenchmarkApp(App):
         bar.set_context(self._key_bar_context())
 
     def on_descendant_focus(self, event: Any) -> None:
+        self._mark_field_pair(event.widget, True)
         self._update_key_bar()
 
+    @staticmethod
+    def _mark_field_pair(widget: Any, focused: bool) -> None:
+        """Reverse-video the label of the focused field's pair (02 §4.4).
+
+        Replaces ``.field-pair:focus-within``: Textual restyles the whole
+        subtree of a ``:focus-within`` ancestor on every focus change (03 §2),
+        while this restyles one label. Survives NO_COLOR like the rule did.
+        """
+        for node in widget.ancestors_with_self:
+            if node.has_class("form-section"):
+                return
+            if node.has_class("field-pair"):
+                for label in node.query_children(".field-label"):
+                    label.set_class(focused, "-pair-focus")
+                return
+
     def on_descendant_blur(self, event: Any) -> None:
+        self._mark_field_pair(event.widget, False)
         self._update_key_bar()
 
     def action_copy_or_quit(self) -> None:
@@ -1767,14 +2125,27 @@ class BenchmarkApp(App):
     # ──────────────────────────────────────────────────────────────────
 
     def _quick_pick_files(self) -> List[str]:
-        """CSV files from the working directory and known data folders."""
-        patterns = ("*.csv", "data/*.csv", "tests/fixtures/*.csv")
-        seen: List[str] = []
-        for pattern in patterns:
-            for match in sorted(glob.glob(pattern)):
+        """CSV files from the working directory and known data folders.
+
+        De-duplicated with a set (the old list check was O(F²)) and sorted
+        newest first, so the capped quick-pick list shows recent files.
+        """
+        seen: set = set()
+        matches: List[str] = []
+        for pattern in QUICK_PICK_PATTERNS:
+            for match in glob.glob(pattern):
                 if match not in seen:
-                    seen.append(match)
-        return seen
+                    seen.add(match)
+                    matches.append(match)
+
+        def newest_first(path: str) -> tuple:
+            try:
+                return (-os.stat(path).st_mtime_ns, path)
+            except OSError:
+                return (0, path)
+
+        matches.sort(key=newest_first)
+        return matches
 
     def _resolve_csv_path(self, raw_path: str, *, quiet: bool = False) -> Optional[str]:
         """Normalize and validate a CSV path from manual entry or browse.
@@ -1801,10 +2172,31 @@ class BenchmarkApp(App):
             return None
         return csv_path
 
+    @staticmethod
+    def _csv_signature(path: str) -> Optional[tuple]:
+        """(path as typed, realpath, mtime_ns, size) of a CSV, or None if unreadable.
+
+        One ``stat()``. The typed path is part of it because the entity loader
+        keys its results by the ``#csv_path`` text.
+        """
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return (path, os.path.realpath(path), stat.st_mtime_ns, stat.st_size)
+
     def _try_load_csv_from_path_input(self, raw_path: Optional[str] = None) -> None:
-        """Load headers when the user submits or leaves the CSV path field."""
+        """Load headers when the user submits or leaves the CSV path field.
+
+        A path whose (realpath, mtime, size) matches the last successful load
+        is a no-op: no header re-read, no widget repopulation and no second
+        "CSV loaded" toast (03 §3). A changed file reloads as before.
+        """
         if raw_path is None:
             raw_path = self.query_one("#csv_path", Input).value
+        signature = self._csv_signature(raw_path.strip()) if raw_path.strip() else None
+        if signature is not None and signature == getattr(self, "_loaded_csv_signature", None):
+            return
         csv_path = self._resolve_csv_path(raw_path)
         if csv_path:
             self.load_csv_headers(csv_path)
@@ -1868,6 +2260,7 @@ class BenchmarkApp(App):
             entity_col_value = self.query_one("#entity_col", Select).value
             if entity_col_value != SELECT_BLANK:
                 self.load_unique_entities(entity_col_value)
+            self._loaded_csv_signature = self._csv_signature(file_path)
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
@@ -1878,6 +2271,7 @@ class BenchmarkApp(App):
                 )
 
         except Exception as e:
+            self._loaded_csv_signature = None
             if not headers_read:
                 self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
@@ -1952,6 +2346,24 @@ class BenchmarkApp(App):
         """Handle Enter in text inputs."""
         if event.input.id == "csv_path":
             self._try_load_csv_from_path_input(event.input.value)
+        elif event.input.id == "entity_filter":
+            self.query_one("#entity_matches", OptionList).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "entity_filter" and self._entity_large:
+            self._refresh_entity_matches()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id != "entity_matches":
+            return
+        option_id = event.option.id or ""
+        entity_filter = self.query_one("#entity_filter", Input)
+        if option_id == _ENTITY_PEER_ONLY_ID:
+            entity_filter.value = ""
+        elif option_id.startswith(_ENTITY_VALUE_ID_PREFIX):
+            entity_filter.value = option_id[len(_ENTITY_VALUE_ID_PREFIX):]
+        self._refresh_entity_matches()
+        entity_filter.focus()
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
         """Handle focus leaving text inputs."""
@@ -1972,9 +2384,20 @@ class BenchmarkApp(App):
     # Presets / advanced overrides
     # ──────────────────────────────────────────────────────────────────
 
+    @property
+    def preset_workflow(self) -> PresetWorkflow:
+        """The shared preset workflow (cached, re-parsed when presets change)."""
+        override = self.__dict__.get("_preset_workflow_override")
+        if override is not None:
+            return override
+        return self._preset_catalog.workflow
+
+    @preset_workflow.setter
+    def preset_workflow(self, value: PresetWorkflow) -> None:
+        self.__dict__["_preset_workflow_override"] = value
+
     def load_presets(self):
         """Load available presets through the shared preset workflow."""
-        self.preset_workflow = PresetWorkflow()
         presets = self.preset_workflow.list_presets()
         options = [(preset, preset) for preset in presets] or [("standard", "standard")]
         self.query_one("#preset_select").set_options(options)
@@ -2067,15 +2490,12 @@ class BenchmarkApp(App):
         return self._override_builder.read_field(data, spec)
 
     def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
-        if not hasattr(self, 'preset_workflow'):
-            self.preset_workflow = PresetWorkflow()
-
         raw_data = self.preset_workflow.load_preset_data(preset_name)
         if not raw_data:
             return {}
 
         try:
-            return ConfigManager(preset=preset_name).config
+            return self._preset_catalog.resolved_config(preset_name)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Falling back to raw preset data for advanced parameters: %s",
@@ -2131,15 +2551,11 @@ class BenchmarkApp(App):
         posture = "strict"
         preset_val = self.query_one("#preset_select").value
         if preset_val and preset_val != SELECT_BLANK:
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             preset_data = self.preset_workflow.load_preset_data(str(preset_val))
             if isinstance(preset_data, dict):
                 posture = preset_data.get("compliance_posture", posture)
 
         try:
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
             self.advanced_config_path = str(tmp_path)
             self._advanced_config_preset = (
@@ -2445,11 +2861,7 @@ class BenchmarkApp(App):
         preset = None if preset_val == SELECT_BLANK else str(preset_val)
         config_file = getattr(self, "advanced_config_path", None)
         try:
-            resolved = ConfigManager(
-                config_file=config_file,
-                preset=preset,
-            ).resolve()
-            mode_value = resolved.privacy_release_mode.value
+            mode_value = self._preset_catalog.resolved_release_mode(preset, config_file)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Could not resolve privacy_release_mode from configuration: %s",
@@ -2494,6 +2906,133 @@ class BenchmarkApp(App):
     _entity_load_key: Optional[tuple] = None
     _entity_options_key: Optional[tuple] = None
     _pending_entity_value: Any = SELECT_BLANK
+    # Large-list mode (more than ENTITY_SELECT_MAX values): the #entity_picker
+    # filter replaces the Select, the full value set lives in _entity_index,
+    # and _entity_choice is the chosen value (None = peer-only / no match).
+    _entity_large: bool = False
+    _entity_index: Optional[EntityIndex] = None
+    _entity_choice: Optional[str] = None
+
+    @property
+    def entity_choices(self) -> List[str]:
+        """Every target-entity value currently offered, in either widget."""
+        if self._entity_large and self._entity_index is not None:
+            return list(self._entity_index.values)
+        try:
+            select = self.query_one("#entity_name", Select)
+        except NoMatches:
+            return []
+        return [value for _, value in select._options if value != SELECT_BLANK]
+
+    def _current_entity_choice(self) -> Any:
+        """The chosen target entity, or SELECT_BLANK for none (either widget)."""
+        if self._entity_large:
+            return self._entity_choice if self._entity_choice is not None else SELECT_BLANK
+        try:
+            return self.query_one("#entity_name", Select).value
+        except NoMatches:
+            return SELECT_BLANK
+
+    def _set_entity_loading(self, loading: bool) -> None:
+        """Flip both entity widgets between their loading and usable states."""
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+            entity_filter = self.query_one("#entity_filter", Input)
+        except NoMatches:
+            return
+        entity_select.prompt = ENTITY_LOADING_PROMPT if loading else ENTITY_SELECT_PROMPT
+        entity_select.disabled = loading
+        entity_filter.placeholder = ENTITY_LOADING_PROMPT if loading else ENTITY_FILTER_PLACEHOLDER
+        entity_filter.disabled = loading
+
+    def _show_entity_picker(self, large: bool) -> None:
+        """Show the filter picker (large lists) or the Select (the rest)."""
+        try:
+            entity_select = self.query_one("#entity_name", Select)
+            picker = self.query_one("#entity_picker")
+        except NoMatches:
+            return
+        focused = self.focused
+        had_focus = focused is not None and (
+            focused is entity_select or picker in focused.ancestors
+        )
+        entity_select.set_class(large, "hidden")
+        picker.set_class(not large, "hidden")
+        if had_focus:
+            (self.query_one("#entity_filter", Input) if large else entity_select).focus()
+
+    def _reset_large_entity_picker(self) -> None:
+        """Leave large-list mode; the (empty) Select is shown until a load lands."""
+        self._entity_large = False
+        self._entity_index = None
+        self._entity_choice = None
+        self._show_entity_picker(False)
+        try:
+            entity_filter = self.query_one("#entity_filter", Input)
+            matches = self.query_one("#entity_matches", OptionList)
+            count = self.query_one("#entity_match_count", Static)
+        except NoMatches:
+            return
+        entity_filter.suggester = None
+        entity_filter.value = ""
+        matches.clear_options()
+        count.update("")
+        count.remove_class("-error")
+
+    def _refresh_entity_matches(self) -> None:
+        """Rebuild the capped match list for the current filter text (UI thread)."""
+        index = self._entity_index
+        try:
+            text = self.query_one("#entity_filter", Input).value
+            matches = self.query_one("#entity_matches", OptionList)
+            count = self.query_one("#entity_match_count", Static)
+        except NoMatches:
+            return
+        if index is None:
+            matches.clear_options()
+            count.update("")
+            return
+        # Privacy rule (03 §6): only an exact value becomes the target entity;
+        # free text never does, so a typo cannot turn into a peer-only run.
+        self._entity_choice = text if text in index.value_set else None
+        shown, total = index.matches(text.strip())
+        options = [Option(ENTITY_SELECT_PROMPT, id=_ENTITY_PEER_ONLY_ID)]
+        options.extend(
+            Option(Text(value), id=f"{_ENTITY_VALUE_ID_PREFIX}{value}") for value in shown
+        )
+        matches.set_options(options)
+        typed = text.strip()
+        count.update(Text(self._entity_match_message(typed, len(index), len(shown), total)))
+        count.set_class(bool(typed) and not total, "-error")
+
+    def _entity_match_message(self, typed: str, size: int, shown: int, total: int) -> str:
+        """One-line hint under the entity filter (02 §4.1, §5.1 copy rules)."""
+        if self._entity_choice is not None:
+            return f"{status_glyph('success')} Target entity: {self._entity_choice}"
+        if not typed:
+            return f"{size:,} entities. Leave blank to compare with the peer group only."
+        if not total:
+            return f"{status_glyph('error')} No match. Pick from the list, or clear the filter for peer group only."
+        noun = "match" if total == 1 else "matches"
+        counted = f"{total:,} {noun}" if shown >= total else f"Showing {shown:,} of {total:,} {noun}"
+        return f"{counted}. Pick one: typed text must match exactly."
+
+    def _target_entity_for_run(self) -> tuple:
+        """Return (target entity or None, blocking message or None) for a run."""
+        if not self._entity_large:
+            value = self.query_one("#entity_name", Select).value
+            return (value if value != SELECT_BLANK else None), None
+        text = self.query_one("#entity_filter", Input).value
+        if not text.strip():
+            return None, None  # blank = peer-only, as with the Select
+        index = self._entity_index
+        if index is not None and text in index.value_set:
+            return text, None
+        column = self.query_one("#entity_col", Select).value
+        return None, (
+            f"Target entity not found in {column}. Pick a value from the list, "
+            "or clear the filter to compare with the peer group only."
+        )
 
     def _entity_source_key(self) -> Optional[tuple]:
         """The (csv_path, entity column) the form currently points at."""
@@ -2535,14 +3074,16 @@ class BenchmarkApp(App):
 
         # Remember the operator's choice before the options are replaced; it is
         # re-applied when this load lands if the value exists in the new column.
-        if entity_select.value != SELECT_BLANK:
-            self._pending_entity_value = entity_select.value
+        current = self._current_entity_choice()
+        if current != SELECT_BLANK:
+            self._pending_entity_value = current
         if key != self._entity_options_key:
             # Options from another file/column are meaningless for this one.
             entity_select.set_options([])
+            if self._entity_large:
+                self._reset_large_entity_picker()
             self._entity_options_key = None
-        entity_select.prompt = ENTITY_LOADING_PROMPT
-        entity_select.disabled = True
+        self._set_entity_loading(True)
         self._entity_load_key = key
         self._load_unique_entities_worker(csv_path, column_name)
 
@@ -2551,16 +3092,19 @@ class BenchmarkApp(App):
         """Read the entity column on a worker thread and hand results back."""
         worker = get_current_worker()
         values: Optional[List[str]] = None
+        index: Optional[EntityIndex] = None
         error: Optional[Exception] = None
         try:
             values = read_unique_entity_values(csv_path, column_name)
+            if len(values) > ENTITY_SELECT_MAX:
+                index = EntityIndex(values)  # sorted/casefolded off the UI thread
         except Exception as exc:  # reported on the UI thread like before
             error = exc
         if worker.is_cancelled:
             return  # superseded by a newer request (exclusive group) or exit
         try:
             self.call_from_thread(
-                self._apply_unique_entities, (csv_path, column_name), values, error
+                self._apply_unique_entities, (csv_path, column_name), values, error, index
             )
         except RuntimeError:
             pass  # App loop already gone (shutdown); nothing to update.
@@ -2570,8 +3114,13 @@ class BenchmarkApp(App):
         key: tuple,
         values: Optional[List[str]],
         error: Optional[Exception],
+        index: Optional[EntityIndex] = None,
     ) -> None:
-        """Apply a finished entity load on the UI thread, unless it is stale."""
+        """Apply a finished entity load on the UI thread, unless it is stale.
+
+        Up to ENTITY_SELECT_MAX values fill the Select. Above that, the filter
+        picker replaces it and the full value set stays in an ``EntityIndex``.
+        """
         if getattr(self, "_exit", False):
             return
         if key != self._entity_load_key:
@@ -2594,15 +3143,32 @@ class BenchmarkApp(App):
             values = values or []
             desired = self._pending_entity_value
             self._pending_entity_value = SELECT_BLANK
-            with self.batch_update():
-                entity_select.set_options([(val, val) for val in values])
-                if desired != SELECT_BLANK and desired in set(values):
-                    entity_select.value = desired
+            if len(values) > ENTITY_SELECT_MAX:
+                self._apply_large_entity_values(index or EntityIndex(values), desired)
+            else:
+                with self.batch_update():
+                    if self._entity_large:
+                        self._reset_large_entity_picker()
+                    self._show_entity_picker(False)
+                    entity_select.set_options([(val, val) for val in values])
+                    if desired != SELECT_BLANK and desired in set(values):
+                        entity_select.value = desired
             self._entity_options_key = key
         finally:
-            # Loaded, failed or dropped: the Select must be usable again.
-            entity_select.prompt = ENTITY_SELECT_PROMPT
-            entity_select.disabled = False
+            # Loaded, failed or dropped: the entity widgets must be usable again.
+            self._set_entity_loading(False)
+
+    def _apply_large_entity_values(self, index: EntityIndex, desired: Any) -> None:
+        """Switch to the filter picker for a list above ENTITY_SELECT_MAX (UI thread)."""
+        entity_filter = self.query_one("#entity_filter", Input)
+        with self.batch_update():
+            self._entity_large = True
+            self._entity_index = index
+            entity_filter.suggester = EntitySuggester(index)
+            restored = desired if desired != SELECT_BLANK and desired in index.value_set else None
+            entity_filter.value = restored or ""
+            self._refresh_entity_matches()
+            self._show_entity_picker(True)
 
     def _cancel_entity_load(self) -> None:
         """Abandon an in-flight entity load and leave the Select usable."""
@@ -2610,12 +3176,7 @@ class BenchmarkApp(App):
             return
         self._entity_load_key = None
         self.workers.cancel_group(self, "entity_values")
-        try:
-            entity_select = self.query_one("#entity_name", Select)
-        except NoMatches:
-            return
-        entity_select.prompt = ENTITY_SELECT_PROMPT
-        entity_select.disabled = False
+        self._set_entity_loading(False)
 
     @property
     def entity_values_loading(self) -> bool:
@@ -2723,8 +3284,6 @@ class BenchmarkApp(App):
             tmp_path = Path(self.advanced_config_path)
             with open(tmp_path, 'r', encoding='utf-8') as f:
                 content = yaml.safe_load(f) or {}
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
             self.notify(
                 f"Advanced settings exported to {export_path}",
@@ -2771,11 +3330,14 @@ class BenchmarkApp(App):
         )
         mode = self._analysis_mode()
         output_format = select_value("output_format") or "analysis"
+        # Either entity widget (Select, or the filter above ENTITY_SELECT_MAX).
+        entity, entity_error = self._target_entity_for_run()
         common: Dict[str, Any] = {
             "mode": mode,
             "csv_path": self.query_one("#csv_path", Input).value,
             "entity_selection_pending": self.entity_selection_pending,
-            "entity": select_value("entity_name"),
+            "entity": entity,
+            "entity_error": entity_error,
             "entity_col": select_value("entity_col") or "issuer_name",
             "preset": preset,
             "config": config,
@@ -2916,6 +3478,11 @@ class BenchmarkApp(App):
                     focus_id="entity_name",
                     block_reason="entity_loading",
                 )
+                return
+            if inputs.entity_error:
+                # Large-list picker: typed text that is not an exact entity
+                # must never silently become a peer-only run (03 §6).
+                self._fail_launch(inputs.entity_error, focus_id="entity_filter")
                 return
 
             values: Dict[str, Any] = {
@@ -3288,7 +3855,9 @@ class BenchmarkApp(App):
                     timeout=10,
                     markup=False,
                 )
-        except RunCancelled:
+        # ``except`` expressions are evaluated only while an exception
+        # propagates, and by then execute_run has imported the module.
+        except _analysis_run().RunCancelled:
             # Core stopped before output writing started: nothing was written.
             # The deferred log is finalised unauthorised; the canceller (Quit)
             # has already recorded action_cancelled.
@@ -3299,7 +3868,7 @@ class BenchmarkApp(App):
                 "cancelled",
                 _outcome_markup(labels.RUN_CANCELLED, _log_details(log_path), code="RunCancelled"),
             )
-        except RunBlocked as exc:
+        except _analysis_run().RunBlocked as exc:
             log_path = self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Run blocked: {exc}\n")
             label = labels.blocked_label(str(exc))
@@ -3311,7 +3880,7 @@ class BenchmarkApp(App):
             self.call_from_thread(
                 self.notify, label.primary, title=status_text("blocked"), severity="error", timeout=10, markup=False
             )
-        except RunAborted as exc:
+        except _analysis_run().RunAborted as exc:
             log_path = self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Run failed: {exc}\n")
             label = labels.aborted_label(str(exc))

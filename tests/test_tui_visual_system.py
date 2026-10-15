@@ -576,6 +576,27 @@ def test_one_stylesheet_and_no_screen_css() -> None:
             assert not obj.__dict__.get("CSS"), name
 
 
+def test_focused_field_pair_label_is_marked_without_focus_within() -> None:
+    """02 §4.4 focus marker, kept without ``:focus-within`` (03 §2)."""
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            entity_col = app.query_one("#entity_col", Select)
+            label = entity_col.parent.query_children(".field-label").first()
+            entity_col.focus()
+            await pilot.pause()
+            assert label.has_class("-pair-focus")
+            assert label.styles.text_style.reverse
+            app.query_one("#csv_path", Input).focus()
+            await pilot.pause()
+            assert not label.has_class("-pair-focus")
+            assert not label.styles.text_style.reverse
+
+    asyncio.run(scenario())
+
+
 def test_stylesheet_has_no_literal_colours_outside_ansi_overrides() -> None:
     css = re.sub(r"/\*.*?\*/", "", AUTOBENCH_TCSS, flags=re.S)
     for line in css.splitlines():

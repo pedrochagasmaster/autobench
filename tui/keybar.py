@@ -46,6 +46,8 @@ CONTEXTS: Dict[str, Tuple[KeyHint, ...]] = {
     "field": (_RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR, _EXPORT),
     "select": (KeyHint("Enter", "Open"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
     "list": (KeyHint("Space", "Toggle"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _PRESETS, _QUIT),
+    # Single-choice list (the large-entity matches): Enter picks one row.
+    "choose": (KeyHint("Enter", "Choose"), KeyHint("Up/Down", "Move"), _RUN, _ADVANCED, _PRESETS, _QUIT),
     "toggle": (KeyHint("Space", "Toggle"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
     "button": (KeyHint("Enter", "Press"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT, _CLEAR),
     "tabs": (KeyHint("Left/Right", "Switch mode"), _RUN, _OPEN, _ADVANCED, _PRESETS, _QUIT),
@@ -60,14 +62,14 @@ CONTEXTS: Dict[str, Tuple[KeyHint, ...]] = {
     "picker": (
         KeyHint("Up/Down", "Move"),
         KeyHint("Enter", "Open"),
-        KeyHint("Tab", "List/tree"),
+        KeyHint("Tab", "Filter/lists"),
         _ESC_CANCEL,
     ),
     "help": (KeyHint("Up/Down", "Scroll"), KeyHint("Esc", "Close")),
 }
 
 # Contexts that show "^P Commands" on the right (the main screen).
-_COMMAND_CONTEXTS = frozenset({"field", "select", "list", "toggle", "button", "tabs", "results", "running"})
+_COMMAND_CONTEXTS = frozenset({"field", "select", "list", "choose", "toggle", "button", "tabs", "results", "running"})
 
 _GLYPH_KEYS = {"Enter": "↵", "Space": "␣", "Up/Down": "↑↓", "Left/Right": "←→"}
 
