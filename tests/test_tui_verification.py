@@ -292,8 +292,10 @@ def test_cancelling_the_validation_review_puts_focus_back(monkeypatch: pytest.Mo
             assert await _until(pilot, lambda: getattr(app.focused, "id", None) == "dims")
             await pilot.press("ctrl+r")
             assert await _until(pilot, lambda: isinstance(app.screen, tui_app.ValidationModal))
+            await pilot.pause()  # the dialog has mounted and taken focus
             await pilot.press("escape")
-            assert await _until(pilot, lambda: app._run_state == "idle" and app.focused is not None)
+            restored = await _until(pilot, lambda: app._run_state == "idle" and app.focused is not None)
+            assert restored, (app._run_state, type(app.screen).__name__, app.focused)
             await pilot.pause()
             return getattr(app.focused, "id", ""), app._current_step
 

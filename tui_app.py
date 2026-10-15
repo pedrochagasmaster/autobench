@@ -3019,18 +3019,25 @@ class BenchmarkApp(App):
                     widget.focus()
                 # Unlocked from a dialog's dismiss callback (e.g. Cancel on the
                 # validation review): the main screen resumes after this with
-                # the focus it remembered, which the lock had disabled, so it
-                # came back with nothing focused (PR 6). Check again after it.
-                self.call_after_refresh(self._restore_unlocked_focus, widget)
+                # the focus it remembered, which the lock had disabled. It came
+                # back with nothing focused, or Textual's auto-focus showed
+                # step 1 (PR 6). Check again once it has resumed.
+                self.call_after_refresh(self._restore_unlocked_focus, widget, time.monotonic())
 
-    def _restore_unlocked_focus(self, widget: Any) -> None:
-        if (
-            self.screen is getattr(self, "_main_screen", None)
-            and self.focused is None
-            and widget.is_attached
-            and self._step_of(widget) == self._current_step
-        ):
-            widget.focus()
+    def _restore_unlocked_focus(self, widget: Any, unlocked_at: float, tries: int = 20) -> None:
+        if getattr(self, "_exit", False) or not widget.is_attached:
+            return
+        if self.screen is not getattr(self, "_main_screen", None):
+            # The dialog is still on top (its dismissal is in flight): retry
+            # after the next refresh rather than give up.
+            if tries > 0:
+                self.call_after_refresh(self._restore_unlocked_focus, widget, unlocked_at, tries - 1)
+            return
+        if self.focused is widget or self._last_input_at > unlocked_at:
+            return  # Restored already, or the operator has moved on.
+        step = self._step_of(widget)
+        if step is not None and widget.id:
+            self._show_step(step, focus=widget.id)
 
     def _set_run_button(self, label: str, disabled: bool) -> None:
         try:

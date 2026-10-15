@@ -319,8 +319,13 @@ async def unexpected_error(pilot: Pilot) -> None:
 
 
 async def results_view(pilot: Pilot) -> None:
+    """The results with focus in them: below 110 columns the run already
+    opened the results view (^T would close it); at 110+ ^T moves focus into
+    the results column."""
     await success(pilot)
-    await pilot.press("ctrl+t")
+    app = pilot.app
+    if app._is_wide() or not app._results_view_open():
+        await pilot.press("ctrl+t")
     await settle(pilot)
 
 
