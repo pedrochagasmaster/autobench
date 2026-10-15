@@ -1772,7 +1772,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
           <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
           <tbody>
             <tr>
-              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td><code>output.include_debug_sheets</code><br>TUI: Debug sheets (Share/Rate tab)</td>
               <td>Adds analysis-only debug sheets with unweighted metrics to the workbook.</td>
               <td>A richer internal workbook. Debug sheets are analysis-grade material and are removed or redacted when a publication candidate is sanitized.</td>
             </tr>
@@ -1970,7 +1970,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
           <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
           <tbody>
             <tr>
-              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td><code>output.include_debug_sheets</code><br>TUI: Debug sheets (Share/Rate tab)</td>
               <td>Adiciona ao workbook abas de depuração somente de análise, com métricas sem ponderação.</td>
               <td>Um workbook interno mais rico. Abas de depuração são material analysis-grade e são removidas ou redigidas quando um candidato de publication é sanitizado.</td>
             </tr>
@@ -2297,7 +2297,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
             <tr><td><strong>Browse…</strong> button</td><td>Opens the CSV picker modal (<code>Ctrl+O</code>): quick picks from the working directory, <code>data/</code>, and <code>tests/fixtures/</code>, plus a browsable tree of the workspace filtered to directories and CSV files.</td><td>—</td><td><code>--csv</code></td></tr>
             <tr><td><strong>CSV file path</strong> input</td><td>Type or paste a path; the header row loads when you press <code>Enter</code> or move focus away. A path that does not exist raises an <em>Invalid Path</em> error and writes a line to the log.</td><td>Empty — never restored between sessions</td><td><code>--csv</code></td></tr>
             <tr><td>File summary (read-only)</td><td>After a load: filename, column count, file size, and a preview of the first column names. Every column select and multi-select below is populated from this header, keeping still-valid selections.</td><td><em>No file loaded.</em></td><td>—</td></tr>
-            <tr><td>Smart defaults</td><td>When the columns exist, the app preselects Entity ID column <code>issuer_name</code>, share primary metric <code>txn_cnt</code>, rate total <code>txn_cnt</code>, and rate approved <code>app_cnt</code>. Override any of them freely.</td><td>—</td><td>—</td></tr>
+            <tr><td>Smart defaults</td><td>When the columns exist, the app preselects Entity ID column <code>issuer_name</code>, share primary metric <code>txn_cnt</code>, and rate approved <code>app_cnt</code>. The rate Total column is never preselected: it is the clearing-spend basis, so you always choose it. Override any of them freely.</td><td>—</td><td>—</td></tr>
           </tbody>
         </table></div>
 
@@ -2416,7 +2416,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         </table></div>
 
         <h2>Advanced Optimization Parameters</h2>
-        <p>A collapsed panel (<code>Ctrl+A</code> toggles it) whose fields mirror the selected preset's YAML. This page covers the panel's <em>behavior</em>; for what each field changes inside the engine — Tolerance (pp), Max Iterations, Lambda Penalty, Volume Weighting Exponent, Enable Volume-Weighted Penalties, Volume Preservation, Min/Max Weight, the Subset Search group, the Bayesian Optimization (Fallback) group, Best-in-Class Percentile, Include Debug Sheets, Include Privacy Validation — see the <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a> page, which documents every field in depth.</p>
+        <p>A collapsed panel (<code>Ctrl+A</code> toggles it) whose fields mirror the selected preset's YAML. This page covers the panel's <em>behavior</em>; for what each field changes inside the engine — Tolerance (pp), Max Iterations, Lambda Penalty, Volume Weighting Exponent, Enable Volume-Weighted Penalties, Volume Preservation, Min/Max Weight, the Subset Search group, the Bayesian Optimization (Fallback) group, Best-in-Class Percentile, Include Privacy Validation — see the <a href="#advanced-optimization" data-page-link="advanced-optimization">Advanced Parameters</a> page, which documents every field in depth.</p>
         <div class="tui-mock">
           <div class="tui-screen" role="img" aria-label="Mockup of the expanded Advanced Optimization Parameters panel">
             <div class="tui-box"><span class="tui-box-title">▾ Advanced Optimization Parameters</span>
@@ -2457,7 +2457,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
                 <div><span class="tui-check">fraud</span></div>
               </div>
               <div class="tui-italic">Dimension options</div>
-              <div class="tui-row"><span class="tui-check">Auto-detect dimensions</span> <span class="tui-check on">Debug sheets</span> <span class="tui-check on">Export balanced CSV</span></div>
+              <div class="tui-row"><span class="tui-check">Auto-detect dimensions</span> <span class="tui-check on">Debug sheets</span> <span class="tui-check">Export balanced CSV</span></div>
               <span class="tui-label">Manual dimension selection</span>
               <div class="tui-list">
                 <div><span class="tui-check on">card_type</span></div>
@@ -2475,7 +2475,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
             <tr><td><strong>Secondary metrics (optional)</strong></td><td>Extra metrics that receive the final weights as supporting context. The chosen primary is excluded from this list.</td><td>No secondary metrics are calculated.</td><td>None selected</td><td><code>--secondary-metrics</code></td></tr>
             <tr><td><strong>Auto-detect dimensions</strong></td><td>The manual list is hidden and all available dimensions are auto-detected.</td><td>You must tick at least one manual dimension, or the run fails with <em>Select at least one dimension or enable auto-detect.</em></td><td>OFF</td><td><code>--auto</code></td></tr>
             <tr><td><strong>Debug sheets</strong></td><td>The workbook includes debug sheets with unweighted metrics.</td><td>A leaner workbook.</td><td>ON</td><td><code>--debug</code></td></tr>
-            <tr><td><strong>Export balanced CSV</strong></td><td>Writes a <code>*_balanced.csv</code> next to the report, for BI tools or pipelines.</td><td>Workbook only.</td><td>ON</td><td><code>--export-balanced-csv</code></td></tr>
+            <tr><td><strong>Export balanced CSV</strong></td><td>Writes a <code>*_balanced.csv</code> next to the report, for BI tools or pipelines.</td><td>Workbook only.</td><td>OFF</td><td><code>--export-balanced-csv</code></td></tr>
             <tr><td><strong>Manual dimension selection</strong></td><td>The requested cuts. Each ticked dimension adds privacy constraints, so start with what the request needs. Hidden while auto-detect is on.</td><td>—</td><td>None selected</td><td><code>--dimensions</code></td></tr>
           </tbody>
         </table></div>
@@ -2533,13 +2533,13 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <div class="table-wrap"><table>
           <thead><tr><th>Control</th><th>ON / selected</th><th>OFF / blank</th><th>Default</th><th>CLI equivalent</th></tr></thead>
           <tbody>
-            <tr><td><strong>Total column (denominator)</strong></td><td>The governed denominator for the rates. Required: without it the run fails with <em>Total column is required for rate analysis.</em></td><td>—</td><td><code>txn_cnt</code> when present</td><td><code>--total-col</code></td></tr>
+            <tr><td><strong>Total column (denominator)</strong></td><td>The governed denominator for the rates. Required: without it the run fails with <em>Total column is required for rate analysis.</em></td><td>—</td><td>None: always choose it explicitly (it is the clearing-spend basis)</td><td><code>--total-col</code></td></tr>
             <tr><td><strong>Approved column</strong></td><td>Numerator for the approval rate. At least one of Approved / Fraud is required, or the run fails with <em>At least one rate column (approved or fraud) is required.</em></td><td>Only the fraud rate is analyzed.</td><td><code>app_cnt</code> when present</td><td><code>--approved-col</code></td></tr>
             <tr><td><strong>Fraud column</strong></td><td>Numerator for the fraud rate.</td><td>Only the approval rate is analyzed.</td><td>Blank</td><td><code>--fraud-col</code></td></tr>
             <tr><td><strong>Secondary metrics (optional)</strong></td><td>Same behavior as on the Share tab; the chosen total column is excluded from this list.</td><td>No secondary metrics are calculated.</td><td>None selected</td><td><code>--secondary-metrics</code></td></tr>
             <tr><td><strong>Auto-detect dimensions</strong></td><td>Same behavior as on the Share tab: the manual list is hidden and all dimensions are auto-detected.</td><td>At least one manual dimension is required.</td><td>OFF</td><td><code>--auto</code></td></tr>
             <tr><td><strong>Debug sheets</strong></td><td>The workbook includes debug sheets with unweighted metrics.</td><td>A leaner workbook.</td><td>ON</td><td><code>--debug</code></td></tr>
-            <tr><td><strong>Export balanced CSV</strong></td><td>Writes a <code>*_balanced.csv</code> next to the report.</td><td>Workbook only.</td><td>OFF (unlike the Share tab)</td><td><code>--export-balanced-csv</code></td></tr>
+            <tr><td><strong>Export balanced CSV</strong></td><td>Writes a <code>*_balanced.csv</code> next to the report.</td><td>Workbook only.</td><td>OFF</td><td><code>--export-balanced-csv</code></td></tr>
             <tr><td><strong>Fraud in BPS</strong></td><td>Fraud rates are converted to basis points in publication format.</td><td>Fraud is reported as a plain rate.</td><td>ON</td><td><code>--fraud-in-bps</code> / <code>--no-fraud-in-bps</code></td></tr>
             <tr><td><strong>Manual dimension selection</strong></td><td>Same behavior as on the Share tab.</td><td>—</td><td>None selected</td><td><code>--dimensions</code></td></tr>
           </tbody>
@@ -2635,7 +2635,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <h2>What the TUI remembers</h2>
         <p>Widget choices are saved to <code>~/.benchmark_tui/session.yaml</code> when a run starts and when the app quits, and restored on the next launch. Stored values that no longer fit the loaded CSV or preset list are ignored.</p>
         <ul class="checks">
-          <li>Restored: the column selects (entity, time period, preset, output format, share metric, rate columns), the ordinary option checkboxes (Analyze impact, Compare presets, Validate input, Include calc. metrics, Auto-detect dimensions, Debug sheets, Export balanced CSV, Fraud in BPS, Privacy rule sweep mode), and the multi-select lists (dimensions and secondary metrics).</li>
+          <li>Restored: the active Share/Rate tab, the preset and output format, and the column selects (entity column, time period, share metric, rate columns). Column choices are applied after you load a CSV that has those columns; one missing from the file is skipped. Also restored: the ordinary option checkboxes (Analyze impact, Compare presets, Validate input, Include calc. metrics, Auto-detect dimensions, Debug sheets, Export balanced CSV, Fraud in BPS, Privacy rule sweep mode), and the multi-select lists (dimensions and secondary metrics).</li>
           <li>Never restored: the CSV path and target entity — the dataset must be chosen afresh in every session — the output filename, and the Citibank entity name.</li>
           <li>Never restored, by design: the per-run compliance declarations — the accuracy-first acknowledgement, the merchant-spend 4/35 declaration, and the Citi-competitor declaration. Each is a statement of fact about one deliverable and must be made deliberately, every time.</li>
         </ul>
@@ -2744,7 +2744,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
             <tr><td>Botão <strong>Browse…</strong></td><td>Abre o modal seletor de CSV (<code>Ctrl+O</code>): escolhas rápidas do diretório de trabalho, de <code>data/</code> e de <code>tests/fixtures/</code>, mais uma árvore navegável do workspace filtrada para diretórios e arquivos CSV.</td><td>—</td><td><code>--csv</code></td></tr>
             <tr><td>Campo <strong>CSV file path</strong></td><td>Digite ou cole um caminho; a linha de cabeçalho carrega quando você pressiona <code>Enter</code> ou tira o foco do campo. Um caminho inexistente gera o erro <em>Invalid Path</em> e grava uma linha no log.</td><td>Vazio — nunca restaurado entre sessões</td><td><code>--csv</code></td></tr>
             <tr><td>Resumo do arquivo (somente leitura)</td><td>Após o carregamento: nome do arquivo, número de colunas, tamanho e uma prévia dos primeiros nomes de coluna. Todos os seletores de coluna e listas abaixo são preenchidos a partir desse cabeçalho, mantendo seleções ainda válidas.</td><td><em>No file loaded.</em></td><td>—</td></tr>
-            <tr><td>Defaults inteligentes</td><td>Quando as colunas existem, o app pré-seleciona Entity ID column <code>issuer_name</code>, métrica primária de share <code>txn_cnt</code>, total de rate <code>txn_cnt</code> e aprovadas de rate <code>app_cnt</code>. Você pode trocar qualquer uma delas.</td><td>—</td><td>—</td></tr>
+            <tr><td>Defaults inteligentes</td><td>Quando as colunas existem, o app pré-seleciona Entity ID column <code>issuer_name</code>, métrica primária de share <code>txn_cnt</code> e aprovadas de rate <code>app_cnt</code>. A Total column de rate nunca é pré-selecionada: ela é a base de clearing spend, então você sempre a escolhe. Você pode trocar qualquer uma delas.</td><td>—</td><td>—</td></tr>
           </tbody>
         </table></div>
 
@@ -2863,7 +2863,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         </table></div>
 
         <h2>Parâmetros avançados de otimização</h2>
-        <p>Um painel recolhido (<code>Ctrl+A</code> alterna) cujos campos espelham o YAML do preset selecionado. Esta página cobre o <em>comportamento</em> do painel; para o que cada campo muda dentro do engine — Tolerance (pp), Max Iterations, Lambda Penalty, Volume Weighting Exponent, Enable Volume-Weighted Penalties, Volume Preservation, Min/Max Weight, o grupo Subset Search, o grupo Bayesian Optimization (Fallback), Best-in-Class Percentile, Include Debug Sheets, Include Privacy Validation — veja a página <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a>, que documenta cada campo em profundidade.</p>
+        <p>Um painel recolhido (<code>Ctrl+A</code> alterna) cujos campos espelham o YAML do preset selecionado. Esta página cobre o <em>comportamento</em> do painel; para o que cada campo muda dentro do engine — Tolerance (pp), Max Iterations, Lambda Penalty, Volume Weighting Exponent, Enable Volume-Weighted Penalties, Volume Preservation, Min/Max Weight, o grupo Subset Search, o grupo Bayesian Optimization (Fallback), Best-in-Class Percentile, Include Privacy Validation — veja a página <a href="#advanced-optimization" data-page-link="advanced-optimization">Parâmetros avançados</a>, que documenta cada campo em profundidade.</p>
         <div class="tui-mock">
           <div class="tui-screen" role="img" aria-label="Mockup do painel Advanced Optimization Parameters expandido">
             <div class="tui-box"><span class="tui-box-title">▾ Advanced Optimization Parameters</span>
@@ -2904,7 +2904,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
                 <div><span class="tui-check">fraud</span></div>
               </div>
               <div class="tui-italic">Dimension options</div>
-              <div class="tui-row"><span class="tui-check">Auto-detect dimensions</span> <span class="tui-check on">Debug sheets</span> <span class="tui-check on">Export balanced CSV</span></div>
+              <div class="tui-row"><span class="tui-check">Auto-detect dimensions</span> <span class="tui-check on">Debug sheets</span> <span class="tui-check">Export balanced CSV</span></div>
               <span class="tui-label">Manual dimension selection</span>
               <div class="tui-list">
                 <div><span class="tui-check on">card_type</span></div>
@@ -2922,7 +2922,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
             <tr><td><strong>Secondary metrics (optional)</strong></td><td>Métricas extras que recebem os pesos finais como contexto. A primária escolhida é excluída desta lista.</td><td>Nenhuma métrica secundária é calculada.</td><td>Nenhuma selecionada</td><td><code>--secondary-metrics</code></td></tr>
             <tr><td><strong>Auto-detect dimensions</strong></td><td>A lista manual é escondida e todas as dimensões disponíveis são autodetectadas.</td><td>Você deve marcar ao menos uma dimensão manual, ou a execução falha com <em>Select at least one dimension or enable auto-detect.</em></td><td>Desligado</td><td><code>--auto</code></td></tr>
             <tr><td><strong>Debug sheets</strong></td><td>O workbook inclui abas de debug com métricas não ponderadas.</td><td>Um workbook mais enxuto.</td><td>Ligado</td><td><code>--debug</code></td></tr>
-            <tr><td><strong>Export balanced CSV</strong></td><td>Grava um <code>*_balanced.csv</code> ao lado do relatório, para ferramentas de BI ou pipelines.</td><td>Apenas o workbook.</td><td>Ligado</td><td><code>--export-balanced-csv</code></td></tr>
+            <tr><td><strong>Export balanced CSV</strong></td><td>Grava um <code>*_balanced.csv</code> ao lado do relatório, para ferramentas de BI ou pipelines.</td><td>Apenas o workbook.</td><td>Desligado</td><td><code>--export-balanced-csv</code></td></tr>
             <tr><td><strong>Manual dimension selection</strong></td><td>Os cortes solicitados. Cada dimensão marcada adiciona restrições de privacidade, então comece pelo que a solicitação pede. Escondida enquanto a autodetecção está ligada.</td><td>—</td><td>Nenhuma selecionada</td><td><code>--dimensions</code></td></tr>
           </tbody>
         </table></div>
@@ -2980,13 +2980,13 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <div class="table-wrap"><table>
           <thead><tr><th>Controle</th><th>Ligado / selecionado</th><th>Desligado / em branco</th><th>Padrão</th><th>Equivalente na CLI</th></tr></thead>
           <tbody>
-            <tr><td><strong>Total column (denominator)</strong></td><td>O denominador governado das taxas. Obrigatória: sem ela a execução falha com <em>Total column is required for rate analysis.</em></td><td>—</td><td><code>txn_cnt</code> quando presente</td><td><code>--total-col</code></td></tr>
+            <tr><td><strong>Total column (denominator)</strong></td><td>O denominador governado das taxas. Obrigatória: sem ela a execução falha com <em>Total column is required for rate analysis.</em></td><td>—</td><td>Nenhum: sempre escolha explicitamente (é a base de clearing spend)</td><td><code>--total-col</code></td></tr>
             <tr><td><strong>Approved column</strong></td><td>Numerador da taxa de aprovação. Ao menos uma entre Approved / Fraud é obrigatória, ou a execução falha com <em>At least one rate column (approved or fraud) is required.</em></td><td>Somente a taxa de fraude é analisada.</td><td><code>app_cnt</code> quando presente</td><td><code>--approved-col</code></td></tr>
             <tr><td><strong>Fraud column</strong></td><td>Numerador da taxa de fraude.</td><td>Somente a taxa de aprovação é analisada.</td><td>Em branco</td><td><code>--fraud-col</code></td></tr>
             <tr><td><strong>Secondary metrics (optional)</strong></td><td>Mesmo comportamento da aba Share; a coluna de total escolhida é excluída desta lista.</td><td>Nenhuma métrica secundária é calculada.</td><td>Nenhuma selecionada</td><td><code>--secondary-metrics</code></td></tr>
             <tr><td><strong>Auto-detect dimensions</strong></td><td>Mesmo comportamento da aba Share: a lista manual é escondida e todas as dimensões são autodetectadas.</td><td>Ao menos uma dimensão manual é obrigatória.</td><td>Desligado</td><td><code>--auto</code></td></tr>
             <tr><td><strong>Debug sheets</strong></td><td>O workbook inclui abas de debug com métricas não ponderadas.</td><td>Um workbook mais enxuto.</td><td>Ligado</td><td><code>--debug</code></td></tr>
-            <tr><td><strong>Export balanced CSV</strong></td><td>Grava um <code>*_balanced.csv</code> ao lado do relatório.</td><td>Apenas o workbook.</td><td>Desligado (diferente da aba Share)</td><td><code>--export-balanced-csv</code></td></tr>
+            <tr><td><strong>Export balanced CSV</strong></td><td>Grava um <code>*_balanced.csv</code> ao lado do relatório.</td><td>Apenas o workbook.</td><td>Desligado</td><td><code>--export-balanced-csv</code></td></tr>
             <tr><td><strong>Fraud in BPS</strong></td><td>As taxas de fraude são convertidas para basis points no formato de publicação.</td><td>A fraude é reportada como taxa simples.</td><td>Ligado</td><td><code>--fraud-in-bps</code> / <code>--no-fraud-in-bps</code></td></tr>
             <tr><td><strong>Manual dimension selection</strong></td><td>Mesmo comportamento da aba Share.</td><td>—</td><td>Nenhuma selecionada</td><td><code>--dimensions</code></td></tr>
           </tbody>
@@ -3082,7 +3082,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
         <h2>O que o TUI lembra</h2>
         <p>As escolhas nos widgets são salvas em <code>~/.benchmark_tui/session.yaml</code> quando uma execução começa e quando o app fecha, e restauradas no próximo lançamento. Valores guardados que não combinam mais com o CSV ou a lista de presets são ignorados.</p>
         <ul class="checks">
-          <li>Restaurados: os seletores de coluna (entidade, período, preset, formato de saída, métrica de share, colunas de rate), os checkboxes comuns (Analyze impact, Compare presets, Validate input, Include calc. metrics, Auto-detect dimensions, Debug sheets, Export balanced CSV, Fraud in BPS, Privacy rule sweep mode) e as listas de múltipla seleção (dimensões e métricas secundárias).</li>
+          <li>Restaurados: a aba Share/Rate ativa, o preset e o formato de saída, e os seletores de coluna (coluna de entidade, período, métrica de share, colunas de rate). As escolhas de coluna são aplicadas depois que você carrega um CSV que tenha essas colunas; uma que falte no arquivo é ignorada. Também restaurados: os checkboxes comuns (Analyze impact, Compare presets, Validate input, Include calc. metrics, Auto-detect dimensions, Debug sheets, Export balanced CSV, Fraud in BPS, Privacy rule sweep mode) e as listas de múltipla seleção (dimensões e métricas secundárias).</li>
           <li>Nunca restaurados: o caminho do CSV e a entidade-alvo — o dataset deve ser escolhido de novo em cada sessão — o nome do arquivo de saída e o nome da entidade Citibank.</li>
           <li>Nunca restaurados, por design: as declarações de conformidade por execução — a confirmação de accuracy-first, a declaração 4/35 de merchant spend e a declaração de concorrente Citi. Cada uma é uma afirmação de fato sobre uma entrega específica e deve ser feita deliberadamente, todas as vezes.</li>
         </ul>

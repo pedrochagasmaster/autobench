@@ -293,6 +293,19 @@ DATA_CHECK_FAILED = Label(
     "Open the CSV in a spreadsheet, check the columns named above, then reload it.",
 )
 
+# A cancelled run (Quit, or a cancel request) writes no output at all.
+RUN_CANCELLED_BEFORE_START = Label(
+    "Run cancelled · nothing was written",
+    "The run was stopped before the analysis started.",
+    "Run again when you are ready.",
+)
+
+RUN_CANCELLED = Label(
+    "Run cancelled · nothing was written",
+    "The run stopped at a safe checkpoint, before any output was written.",
+    "Run again when you are ready.",
+)
+
 
 def label_for(kind: str, code: Optional[object]) -> Label:
     """Return the label for ``(kind, code)``; unknown codes get a safe fallback."""

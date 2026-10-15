@@ -14,10 +14,12 @@ import threading
 import traceback
 import glob
 import contextlib
+import collections
 import io
 import pandas as pd
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 import yaml
 
 # Remote-friendly renderer defaults (must be set before Textual is imported).
@@ -65,6 +67,7 @@ try:
     from core.analysis_run import (
         RunAborted,
         RunBlocked,
+        RunCancelled,
         build_run_config,
         prepare_run_data,
         resolve_dimensions,
@@ -186,29 +189,40 @@ def write_log_message(log_widget: Log, message: str) -> None:
     if getattr(app, "_thread_id", None) == threading.get_ident():
         log_widget.write(text)
     else:
-        app.call_from_thread(log_widget.write, text)
+        try:
+            app.call_from_thread(log_widget.write, text)
+        except RuntimeError:
+            pass  # App loop already gone (e.g. a run cancelled by Quit).
 
 
 class LogHandler(logging.Handler):
     """Logging handler that batches records into a Textual Log widget.
 
-    Analysis runs can emit hundreds of records in quick succession. Posting
-    each one individually via ``call_from_thread`` wakes the app loop and
-    repaints the Log per record, which causes visible lag and flicker over
-    slow links (SSH/VPN). Instead, records accumulate in a buffer and at most
-    one flush callback is in flight at any time; each flush drains the whole
-    buffer into a single ``Log.write`` call.
+    Records go into a bounded, thread-safe buffer. The first record after a
+    drain posts one wake (``Log.call_later``, which is thread-safe and never
+    waits for the UI); the drain then writes everything pending in a single
+    ``Log.write`` on the UI thread. An emitting worker therefore never blocks
+    on the UI, and if the UI stalls the buffer keeps only the newest
+    ``max_pending`` lines plus a count of the ones it dropped. The full record
+    is the deferred log file on disk, not this view.
     """
 
-    def __init__(self, log_widget: Log):
+    MAX_PENDING = 2000  # matches the Log widget's max_lines
+
+    def __init__(self, log_widget: Log, max_pending: int = MAX_PENDING):
         super().__init__()
         self.log_widget = log_widget
-        self._buffer: List[str] = []
+        self._pending: "collections.deque[str]" = collections.deque(maxlen=max_pending)
+        self._dropped = 0
         self._buffer_lock = threading.Lock()
-        self._flush_scheduled = False
+        self._wake_posted = False
 
     def emit(self, record):
-        msg = self.format(record)
+        try:
+            msg = self.format(record)
+        except Exception:
+            self.handleError(record)
+            return
         try:
             app = self.log_widget.app
         except Exception:
@@ -218,25 +232,35 @@ class LogHandler(logging.Handler):
             return
         text = msg if msg.endswith("\n") else f"{msg}\n"
         with self._buffer_lock:
-            self._buffer.append(text)
-            if self._flush_scheduled:
+            if len(self._pending) == self._pending.maxlen:
+                self._dropped += 1
+            self._pending.append(text)
+            if self._wake_posted:
                 return
-            self._flush_scheduled = True
+            self._wake_posted = True
         if getattr(app, "_thread_id", None) == threading.get_ident():
             self._flush()
-        else:
-            try:
-                app.call_from_thread(self._flush)
-            except Exception:
-                # App is shutting down; drop the pending flush.
-                with self._buffer_lock:
-                    self._flush_scheduled = False
+            return
+        try:
+            posted = bool(self.log_widget.call_later(self._flush))
+        except Exception:
+            posted = False
+        if not posted:
+            # App is shutting down; the next record may try again.
+            with self._buffer_lock:
+                self._wake_posted = False
 
     def _flush(self) -> None:
         """Drain the buffer into one Log.write (app thread only)."""
         with self._buffer_lock:
-            pending, self._buffer = self._buffer, []
-            self._flush_scheduled = False
+            pending = list(self._pending)
+            self._pending.clear()
+            dropped, self._dropped = self._dropped, 0
+            self._wake_posted = False
+        if dropped:
+            pending.insert(
+                0, f"… {dropped} earlier log lines not shown (full log on disk)\n"
+            )
         if pending:
             self.log_widget.write("".join(pending))
 
@@ -325,6 +349,11 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button(self.confirm_label, id="btn_confirm_yes", variant="error", compact=True)
                 yield Button("Cancel", id="btn_confirm_no", variant="default", compact=True)
         yield KeyBar("confirm")
+
+    def on_mount(self) -> None:
+        # D3: a single stray Enter must never consent, attest or quit.
+        # Affirming takes a deliberate move to the confirm button.
+        self.query_one("#btn_confirm_no", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn_confirm_yes")
@@ -602,6 +631,68 @@ _PRIVACY_RELEASE_MODE_VALUES = frozenset(
     value for _, value in _PRIVACY_RELEASE_MODE_OPTIONS
 )
 
+# D5: advanced fields whose value is owned by a Share/Rate tab control.
+TUI_TAB_OWNED_ADVANCED_FIELDS = frozenset({"adv_output_debug_sheets"})
+
+# D4: session keys that name CSV columns. They are applied only after a CSV
+# header load, and only where the column exists in that file.
+SESSION_COLUMN_SELECT_IDS = frozenset({
+    "entity_col",
+    "time_col",
+    "share_metric",
+    "rate_total",
+    "rate_approved",
+    "rate_fraud",
+})
+SESSION_TAB_KEY = "analysis_mode"
+_SESSION_TABS = {"share": "share_tab", "rate": "rate_tab"}
+
+# Owner decision 1: plain-language names for core's run phases.
+_RUN_STAGE_LABELS = {
+    "configuration": "Checking configuration",
+    "input": "Loading data",
+    "analysis": "Optimizing and checking privacy",
+    "output": "Writing outputs",
+}
+
+
+@dataclass(frozen=True)
+class RunInputs:
+    """Every form value one run attempt needs, read on the UI thread (D7).
+
+    The analysis worker reads only this snapshot, never a widget. Consent and
+    the clearing-spend attestation are not part of it: they are still asked
+    per run attempt, from the worker, after the snapshot is taken.
+    """
+
+    mode: str
+    csv_path: str
+    entity_selection_pending: bool
+    entity: Optional[str]
+    entity_col: str
+    preset: Optional[str]
+    config: Optional[str]
+    # Effective posture of preset + override file, as core will resolve it.
+    compliance_posture: Optional[str]
+    output: Optional[str]
+    time_col: Optional[str]
+    validate_input: bool
+    analyze_distortion: bool
+    compare_presets: bool
+    include_calculated: bool
+    output_format: str
+    privacy_values: Tuple[Tuple[str, Any], ...]
+    metric: Optional[str] = None
+    total_col: Optional[str] = None
+    approved_col: Optional[str] = None
+    fraud_col: Optional[str] = None
+    secondary_metrics: Tuple[str, ...] = ()
+    auto: bool = False
+    dimensions: Tuple[str, ...] = ()
+    debug: bool = True
+    export_balanced_csv: bool = False
+    fraud_in_bps: bool = True
+
 
 class RunBadge(NamedTuple):
     """Status-language state (tui.status) plus an optional detail word."""
@@ -642,7 +733,13 @@ class BenchmarkApp(App):
         Binding("ctrl+c", "copy_or_quit", "Quit", show=False, priority=True),
     ]
 
-    ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = ADVANCED_FIELD_SPECS
+    # D5: output.include_debug_sheets is driven only by the tab-level "Debug
+    # sheets" checkbox (request field ``debug``). The shared spec stays in
+    # utils.config_overrides for other adapters; the TUI has no second,
+    # silently overridden control for it.
+    ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = [
+        spec for spec in ADVANCED_FIELD_SPECS if spec.widget_id not in TUI_TAB_OWNED_ADVANCED_FIELDS
+    ]
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -650,6 +747,15 @@ class BenchmarkApp(App):
         self._confirmation_lock = threading.Lock()
         self._pending_confirmations: set[threading.Event] = set()
         self._confirmations_abandoned = False
+        # Owner decision 1: set by request_cancel(); core checks it at phase
+        # boundaries and before output writing starts (never during it).
+        self._cancel_event = threading.Event()
+        self._run_stage: Optional[str] = None
+        # D4: restored column choices wait here for the first CSV header load.
+        self._pending_session_selects: Dict[str, Any] = {}
+        self._pending_session_lists: Dict[str, List[Any]] = {}
+        # D2: the preset an applied advanced-override file was written for.
+        self._advanced_config_preset: Optional[str] = None
 
     # One token stylesheet for every screen (tui/styles.py, 02 §1).
     CSS = AUTOBENCH_TCSS
@@ -850,10 +956,13 @@ class BenchmarkApp(App):
 
                         yield Label("Output settings", classes="adv-group-title")
                         with Vertical(classes="ab-checks"):
-                            yield BoxCheckbox("Include debug sheets", id="adv_output_debug_sheets", compact=True)
                             yield BoxCheckbox(
                                 "Include privacy validation", id="adv_output_privacy_validation", compact=True
                             )
+                        # D5: debug sheets have one control, the "Debug sheets"
+                        # checkbox on the Share/Rate tab (the ``debug`` request
+                        # field, which wins over the preset as on the CLI).
+                        yield Label("Debug sheets are set on the Share/Rate tab.", classes="ab-hint")
 
                         with Horizontal(classes="ab-row ab-checks"):
                             yield Button("Apply overrides", id="btn_apply_advanced", variant="primary", compact=True)
@@ -881,7 +990,10 @@ class BenchmarkApp(App):
                             with Vertical(classes="ab-checks"):
                                 yield BoxCheckbox("Auto-detect dimensions", value=False, id="share_auto_dim", compact=True)
                                 yield BoxCheckbox("Debug sheets", value=True, id="share_debug", compact=True)
-                                yield BoxCheckbox("Export balanced CSV", value=True, id="share_export_csv", compact=True)
+                                # Owner decision 5: off by default, as for rate and the CLI.
+                                yield BoxCheckbox(
+                                    "Export balanced CSV", value=False, id="share_export_csv", compact=True
+                                )
 
                             yield Label("Dimensions", id="share_dims_label", classes="field-label")
                             yield BoxSelectionList(id="share_dims", classes="multi-select")
@@ -1079,6 +1191,16 @@ class BenchmarkApp(App):
                 session[widget_id] = list(self.query_one(f"#{widget_id}", SelectionList).selected)
             except NoMatches:
                 continue
+        # Column choices restored from the last session but never applied
+        # (no CSV loaded since) are kept, so a quit before loading a file
+        # does not erase them.
+        for widget_id, value in self._pending_session_selects.items():
+            if session.get(widget_id) is None:
+                session[widget_id] = value
+        for widget_id, values in self._pending_session_lists.items():
+            if not session.get(widget_id):
+                session[widget_id] = list(values)
+        session[SESSION_TAB_KEY] = self._analysis_mode()
         return session
 
     def _save_session(self) -> None:
@@ -1110,11 +1232,22 @@ class BenchmarkApp(App):
         # Legacy sessions may contain governed dataset/output paths and entity
         # selections. Never restore those values; the operator must choose the
         # dataset afresh for each process.
+        tab = _SESSION_TABS.get(str(session.get(SESSION_TAB_KEY)))
+        if tab is not None:
+            try:
+                self.query_one(TabbedContent).active = tab
+            except NoMatches:
+                pass
         for widget_id in SESSION_SELECT_IDS:
             if widget_id == "privacy_release_mode":
                 continue  # Restored after checkboxes so sweep coupling sees prior value.
             value = session.get(widget_id)
             if value is None:
+                continue
+            if widget_id in SESSION_COLUMN_SELECT_IDS:
+                # D4: no CSV is loaded yet, so these Selects have no options.
+                # Keep the choice until a header load offers the column.
+                self._pending_session_selects[widget_id] = value
                 continue
             try:
                 select = self.query_one(f"#{widget_id}", Select)
@@ -1137,16 +1270,35 @@ class BenchmarkApp(App):
             self._restore_privacy_release_mode(session.get("privacy_release_mode"))
         for widget_id in SESSION_SELECTION_LIST_IDS:
             values = session.get(widget_id)
-            if not isinstance(values, list):
+            if not isinstance(values, list) or not values:
                 continue
+            # D4: dims and secondary metrics are column names too; they are
+            # applied by the first header load (see _apply_pending_session_columns).
+            self._pending_session_lists[widget_id] = list(values)
+
+    def _apply_pending_session_columns(self, cols: List[str]) -> None:
+        """Apply restored column choices once a CSV header load offers them.
+
+        Runs inside ``load_csv_headers``' batch update, after the options are
+        set and before smart defaults. A stored column missing from this file
+        is dropped silently. Pending choices are used by the first header load
+        only; a later file never resurrects them.
+        """
+        selects, self._pending_session_selects = self._pending_session_selects, {}
+        lists, self._pending_session_lists = self._pending_session_lists, {}
+        available = set(cols)
+        for widget_id, value in selects.items():
+            if value not in available:
+                continue
+            try:
+                self.query_one(f"#{widget_id}", Select).value = value
+            except Exception:
+                continue  # Widget gone, or the value is no longer an option.
+        for widget_id, values in lists.items():
             try:
                 s_list = self.query_one(f"#{widget_id}", SelectionList)
             except NoMatches:
                 continue
-            available = {
-                s_list.get_option_at_index(index).value
-                for index in range(s_list.option_count)
-            }
             for value in values:
                 if value in available:
                     s_list.select(value)
@@ -1206,6 +1358,7 @@ class BenchmarkApp(App):
         "success": RunBadge("success"),
         "error": RunBadge("error"),
         "blocked": RunBadge("blocked"),
+        "cancelled": RunBadge("cancelled"),
     }
 
     def _current_run_badge(self) -> "RunBadge":
@@ -1232,6 +1385,9 @@ class BenchmarkApp(App):
         if self._run_started_at is not None and self._run_state == "running":
             elapsed = time.monotonic() - self._run_started_at
             lines.append(f"[$text-muted]Elapsed[/] {elapsed:.0f} s")
+            stage = _RUN_STAGE_LABELS.get(self._run_stage or "")
+            if stage:
+                lines.append(f"[$text-muted]Stage[/]   {escape_markup(stage)}")
         text = "\n".join(lines)
         key = (badge, text)
         if key == self._last_status_text:
@@ -1263,7 +1419,7 @@ class BenchmarkApp(App):
                 context = "button"
             elif isinstance(focused, Tabs):
                 context = "tabs"
-        if context == "field" and getattr(self, "_run_state", "idle") in ("success", "error", "blocked"):
+        if context == "field" and getattr(self, "_run_state", "idle") in ("success", "error", "blocked", "cancelled"):
             return "results"
         return context
 
@@ -1321,6 +1477,7 @@ class BenchmarkApp(App):
         """Switch UI into the running state (app thread only)."""
         self._run_state = "running"
         self._run_started_at = time.monotonic()
+        self._run_stage = None
         self._run_mode = "privacy-sweep" if self._privacy_sweep_enabled() else self._analysis_mode()
         btn = self.query_one("#btn_run", Button)
         btn.disabled = True
@@ -1347,6 +1504,7 @@ class BenchmarkApp(App):
         """
         self._run_state = state
         self._outcome_badge = badge
+        self._run_stage = None
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
             self._elapsed_timer = None
@@ -1388,6 +1546,11 @@ class BenchmarkApp(App):
 
     def _telemetry_action(self) -> str:
         """Telemetry action of the current launch (closed: share/rate_analysis)."""
+        action = getattr(self, "_run_action", None)
+        if action in ("share_analysis", "rate_analysis"):
+            # Set from the RunInputs snapshot, so worker threads never query
+            # the tabs (D7).
+            return action
         mode = getattr(self, "_run_mode", None)
         if mode not in ("share", "rate"):
             try:
@@ -1417,7 +1580,8 @@ class BenchmarkApp(App):
             logging.getLogger(),
             privacy_authorized=False,
         )
-        log_widget = self.query_one("#log_output", Log)
+        # Resolved on the UI thread at mount; workers must not query the DOM.
+        log_widget = getattr(self, "_log_widget", None) or self.query_one("#log_output", Log)
         write_log_message(log_widget, f"ERROR: {message}")
         self.call_from_thread(
             self.notify, message, title=status_text(title_state), severity="error", markup=False
@@ -1501,12 +1665,33 @@ class BenchmarkApp(App):
         """
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            artifacts = execute_run(request, logger)
-        output = "\n".join(part.strip() for part in (stdout.getvalue(), stderr.getvalue()) if part.strip())
-        if output:
-            self.call_from_thread(log_widget.write, output + "\n")
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                # Owner decision 1: core stops at its next phase boundary once
+                # request_cancel() is called, never after output has started.
+                artifacts = execute_run(
+                    request,
+                    logger,
+                    cancel_requested=self._cancel_event.is_set,
+                    on_stage=self._report_run_stage,
+                )
+        finally:
+            output = "\n".join(part.strip() for part in (stdout.getvalue(), stderr.getvalue()) if part.strip())
+            if output:
+                write_log_message(log_widget, output)
         return artifacts
+
+    def _report_run_stage(self, stage: str) -> None:
+        """Engine stage callback (worker thread): never waits for the UI."""
+        try:
+            self.call_later(self._set_run_stage, stage)
+        except Exception:
+            pass  # Progress display only; the run must not depend on it.
+
+    def _set_run_stage(self, stage: Optional[str]) -> None:
+        """Show the engine stage in the run-status text (app thread only)."""
+        self._run_stage = stage
+        self._refresh_run_status()
 
     @staticmethod
     def _safe_coverage_summary_facts(artifacts: AnalysisArtifacts) -> Optional[Dict[str, Any]]:
@@ -1591,12 +1776,19 @@ class BenchmarkApp(App):
                     seen.append(match)
         return seen
 
-    def _resolve_csv_path(self, raw_path: str) -> Optional[str]:
-        """Normalize and validate a CSV path from manual entry or browse."""
+    def _resolve_csv_path(self, raw_path: str, *, quiet: bool = False) -> Optional[str]:
+        """Normalize and validate a CSV path from manual entry or browse.
+
+        ``quiet`` skips the not-found notice, log line and telemetry; callers
+        that only need the same normalization as the header load (entity
+        loading, D8) use it so one bad path is reported once.
+        """
         csv_path = raw_path.strip()
         if not csv_path:
             return None
         if not os.path.isfile(csv_path):
+            if quiet:
+                return None
             self._emit_dataset_load("not_found", csv_path)
             self.notify(
                 f"Not found: {csv_path}. Check the folder, or press Ctrl+O to browse.",
@@ -1652,11 +1844,15 @@ class BenchmarkApp(App):
                         [(label, value, value in previously_selected) for label, value in selection_options]
                     )
 
-                # Fill smart defaults for selects that are still empty
+                # D4: restored session column choices win over smart defaults.
+                self._apply_pending_session_columns(cols)
+
+                # Fill smart defaults for selects that are still empty. The
+                # rate Total column has none (owner decision 4): it is the
+                # clearing-spend basis and must always be an explicit choice.
                 defaults = {
                     "entity_col": "issuer_name",
                     "share_metric": "txn_cnt",
-                    "rate_total": "txn_cnt",
                     "rate_approved": "app_cnt",
                 }
                 for select_id, column in defaults.items():
@@ -1946,6 +2142,9 @@ class BenchmarkApp(App):
                 self.preset_workflow = PresetWorkflow()
             tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
             self.advanced_config_path = str(tmp_path)
+            self._advanced_config_preset = (
+                str(preset_val) if preset_val and preset_val != SELECT_BLANK else None
+            )
             # Optimization override files usually omit privacy_release_mode; only
             # refresh the Select when the loaded YAML declares the field.
             if self._config_file_declares_privacy_release_mode(str(tmp_path)):
@@ -1969,9 +2168,74 @@ class BenchmarkApp(App):
                 markup=False,
             )
 
+    def _invalidate_stale_advanced_override(self, preset: Optional[str]) -> bool:
+        """Drop an applied override file written for a different preset (D2).
+
+        The file carries the old preset's ``compliance_posture`` and values;
+        sending it with the new preset would run the old posture and skip
+        the new preset's consent. The file itself stays in the launch folder
+        (owner decision 2); it is simply no longer sent. Returns True when an
+        override was dropped.
+        """
+        if not getattr(self, "advanced_config_path", None):
+            return False
+        if self._advanced_config_preset == preset:
+            return False
+        self.advanced_config_path = None
+        self._advanced_config_preset = None
+        self.notify(
+            "The preset changed, so the advanced overrides applied for the "
+            "previous preset will not be used. Review the values and press "
+            "Apply overrides again to use them with this preset.",
+            title="Advanced overrides cleared",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+        return True
+
+    def _effective_compliance_posture(
+        self, preset: Optional[str], config_path: Optional[str]
+    ) -> Optional[str]:
+        """The posture core will run with for this preset and override file.
+
+        With an override file, the posture comes from resolving preset + file
+        exactly as ``build_run_config`` does (the file declares the posture
+        it was written with). Without one, it is the preset's posture.
+        """
+        if not hasattr(self, "preset_workflow"):
+            self.preset_workflow = PresetWorkflow()
+        if config_path:
+            try:
+                posture = ConfigManager(config_file=config_path, preset=preset).config.get(
+                    "compliance_posture"
+                )
+                if posture:
+                    return str(posture)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Could not resolve the effective compliance posture of the "
+                    "advanced override; falling back to the declared values",
+                    exc_info=True,
+                )
+            try:
+                with open(config_path, encoding="utf-8") as handle:
+                    declared = yaml.safe_load(handle) or {}
+                if isinstance(declared, dict) and declared.get("compliance_posture"):
+                    return str(declared["compliance_posture"])
+            except Exception:
+                pass
+        if preset:
+            preset_data = self.preset_workflow.load_preset_data(preset)
+            if isinstance(preset_data, dict):
+                posture = preset_data.get("compliance_posture")
+                return str(posture) if posture else None
+        return None
+
     def setup_logging_capture(self):
         """Redirect logging to the TUI Log widget."""
-        log_widget = self.query_one("#log_output")
+        log_widget = self.query_one("#log_output", Log)
+        self._log_widget = log_widget
         handler = LogHandler(log_widget)
         handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
@@ -2037,6 +2301,10 @@ class BenchmarkApp(App):
                         action_cancelled(self._telemetry_action(), "quit_during_run")
                     elif self._run_state == "validating":
                         action_cancelled(self._telemetry_action(), "quit_before_run")
+                    # Owner decision 1: stop the run at its next safe
+                    # checkpoint instead of letting the engine finish (and
+                    # keep the process alive) after the UI is gone.
+                    self.request_cancel()
                     self._abandon_pending_confirmations()
                     self._save_session()
                     self.exit()
@@ -2132,12 +2400,21 @@ class BenchmarkApp(App):
                 widget.remove_class("hidden")
 
     def _apply_privacy_release_mode_coupling(self, mode_value: str) -> None:
-        """Enable and lock rule sweep while Verified Safe Coverage is selected."""
+        """Enable and lock rule sweep while Verified Safe Coverage is active.
+
+        Owner decision 6: the lock applies only while VSC is selected *and*
+        the Share tab is active. Rate requests never carry a release mode, so
+        on the Rate tab the checkbox is unlocked, shows the operator's own
+        value again, and the request sends exactly that value.
+        """
         try:
             sweep = self.query_one("#privacy_rule_sweep_mode", Checkbox)
         except NoMatches:
             return
-        if mode_value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value:
+        if (
+            mode_value == PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE.value
+            and self._analysis_mode() == "share"
+        ):
             if getattr(self, "_privacy_sweep_before_lock", None) is None:
                 self._privacy_sweep_before_lock = bool(sweep.value)
             sweep.value = True
@@ -2221,10 +2498,11 @@ class BenchmarkApp(App):
     def _entity_source_key(self) -> Optional[tuple]:
         """The (csv_path, entity column) the form currently points at."""
         try:
-            csv_path = self.query_one("#csv_path", Input).value
+            raw_path = self.query_one("#csv_path", Input).value
             column = self.query_one("#entity_col", Select).value
         except NoMatches:
             return None
+        csv_path = self._resolve_csv_path(raw_path, quiet=True)
         if not csv_path or column == SELECT_BLANK:
             return None
         return (csv_path, column)
@@ -2239,12 +2517,15 @@ class BenchmarkApp(App):
         do not read the file twice.
         """
         try:
-            csv_path = self.query_one("#csv_path", Input).value
+            raw_path = self.query_one("#csv_path", Input).value
             entity_select = self.query_one("#entity_name", Select)
         except NoMatches:
             # Deferred Select.Changed arriving while the app tears down.
             return
-        if not csv_path or not os.path.exists(csv_path):
+        # D8: the same normalization as the header load, so a path with
+        # surrounding spaces loads entities as well as headers.
+        csv_path = self._resolve_csv_path(raw_path, quiet=True)
+        if not csv_path:
             return
         key = (csv_path, column_name)
         if key == self._entity_load_key:
@@ -2370,6 +2651,7 @@ class BenchmarkApp(App):
 
         elif event.select.id == "preset_select":
             if event.value != SELECT_BLANK:
+                self._invalidate_stale_advanced_override(str(event.value))
                 self.update_advanced_parameters(event.value)
                 self._update_preset_blurb(str(event.value))
                 if not getattr(self, "_tui_bootstrapping", False):
@@ -2391,6 +2673,11 @@ class BenchmarkApp(App):
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         """Keep the status panel's mode line current; emit surface on real changes."""
         self._sync_privacy_release_mode_visibility()
+        if not getattr(self, "_tui_bootstrapping", False):
+            # Owner decision 6: the VSC sweep lock follows the active tab.
+            self._apply_privacy_release_mode_coupling(
+                self._privacy_release_mode_value_from_widget()
+            )
         self._refresh_run_status()
         self._emit_surface_if_changed(self._analysis_mode())
 
@@ -2462,271 +2749,386 @@ class BenchmarkApp(App):
     # Analysis execution
     # ──────────────────────────────────────────────────────────────────
 
-    @work(thread=True)
-    def run_analysis(self, confirmed: bool = False, saved_request: AnalysisRunRequest | None = None, saved_df: pd.DataFrame | None = None) -> None:
-        """Execute the analysis in a background thread via the shared run seam."""
-        log_widget = self.query_one("#log_output")
+    def _collect_run_inputs(self) -> RunInputs:
+        """Read every form value a run attempt needs (UI thread only, D7)."""
 
-        if not confirmed and not saved_request:
-            if hasattr(self.query_one("#btn_run"), "disabled") and self.query_one("#btn_run").disabled:
+        def select_value(widget_id: str) -> Any:
+            value = self.query_one(f"#{widget_id}", Select).value
+            return None if value == SELECT_BLANK else value
+
+        def checked(widget_id: str, default: bool = False) -> bool:
+            return bool(getattr(self.query_one(f"#{widget_id}"), "value", default))
+
+        preset_value = select_value("preset_select")
+        preset = str(preset_value) if preset_value is not None else None
+        # D2: an override written for another preset is never sent with this one.
+        self._invalidate_stale_advanced_override(preset)
+        config = getattr(self, "advanced_config_path", None) or None
+        posture = (
+            self._effective_compliance_posture(preset, config)
+            if (preset or config)
+            else None
+        )
+        mode = self._analysis_mode()
+        output_format = select_value("output_format") or "analysis"
+        common: Dict[str, Any] = {
+            "mode": mode,
+            "csv_path": self.query_one("#csv_path", Input).value,
+            "entity_selection_pending": self.entity_selection_pending,
+            "entity": select_value("entity_name"),
+            "entity_col": select_value("entity_col") or "issuer_name",
+            "preset": preset,
+            "config": config,
+            "compliance_posture": posture,
+            "output": self.query_one("#output_file", Input).value or None,
+            "time_col": select_value("time_col"),
+            "validate_input": checked("validate_input", True),
+            "analyze_distortion": checked("analyze_distortion"),
+            "compare_presets": checked("compare_presets"),
+            "include_calculated": checked("include_calculated"),
+            "output_format": str(output_format),
+            "privacy_values": tuple(self._privacy_values_from_widgets().items()),
+        }
+        prefix = "share" if mode == "share" else "rate"
+        per_mode: Dict[str, Any] = {
+            "secondary_metrics": tuple(
+                self.query_one(f"#{prefix}_secondary", SelectionList).selected
+            ),
+            "auto": checked(f"{prefix}_auto_dim"),
+            "dimensions": tuple(self.query_one(f"#{prefix}_dims", SelectionList).selected),
+            "debug": checked(f"{prefix}_debug"),
+            "export_balanced_csv": checked(f"{prefix}_export_csv"),
+        }
+        if mode == "share":
+            per_mode["metric"] = select_value("share_metric")
+        else:
+            per_mode["total_col"] = select_value("rate_total")
+            per_mode["approved_col"] = select_value("rate_approved")
+            per_mode["fraud_col"] = select_value("rate_fraud")
+            per_mode["fraud_in_bps"] = checked("fraud_in_bps", True)
+        return RunInputs(**common, **per_mode)
+
+    def run_analysis(
+        self,
+        confirmed: bool = False,
+        saved_request: AnalysisRunRequest | None = None,
+        saved_df: pd.DataFrame | None = None,
+    ) -> None:
+        """Start a run attempt (UI thread) via the shared run seam.
+
+        A fresh attempt snapshots the form into ``RunInputs`` here, before the
+        worker starts (D7); the worker never reads a widget. A confirmed
+        attempt (after the validation modal) reuses the request it built.
+        """
+        log_widget = self.query_one("#log_output", Log)
+        if confirmed and saved_request is not None:
+            self._run_confirmed_worker(saved_request, saved_df, log_widget)
+            return
+        if self.query_one("#btn_run", Button).disabled:
+            return
+        try:
+            inputs = self._collect_run_inputs()
+        except Exception as exc:
+            launch_blocked(self._telemetry_action(), "initialization_error")
+            log_widget.write(f"Run could not start: {exc}\n")
+            self._end_run_ui(
+                "error",
+                _outcome_markup(labels.START_FAILED, why=str(exc), code=type(exc).__name__),
+            )
+            return
+        self._cancel_event.clear()
+        self._run_action = "share_analysis" if inputs.mode == "share" else "rate_analysis"
+        log_widget.clear()
+        started = datetime.now().strftime("%H:%M:%S")
+        mode_text = labels.text_for(labels.ANALYSIS_MODE, inputs.mode)
+        log_widget.write(f"Run started · {mode_text} · {started}\n")
+        self._begin_validation_ui()
+        self._launch_run_worker(inputs, log_widget)
+
+    def request_cancel(self) -> None:
+        """Ask the current run to stop at its next safe checkpoint.
+
+        Before the engine starts, the worker stops before opening a dialog or
+        calling the engine. Inside the engine, core stops at the next phase
+        boundary and never once output writing has started, so a cancelled
+        run writes nothing. A run already writing outputs finishes normally.
+        Telemetry is recorded by whoever asks for the cancel (Quit records
+        ``quit_during_run``/``quit_before_run``).
+        """
+        self._cancel_event.set()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def _call_ui_if_running(self, callback: Any, *args: Any) -> None:
+        """``call_from_thread`` that tolerates an app that has already exited."""
+        try:
+            self.call_from_thread(callback, *args)
+        except RuntimeError:
+            pass  # Quit already tore the app down; nothing left to update.
+
+    def _stop_cancelled_launch(self, log_widget: Log) -> None:
+        """End a run attempt cancelled before the engine started (worker thread)."""
+        finalize_deferred_logging(
+            logging.getLogger(),
+            privacy_authorized=False,
+        )
+        write_log_message(log_widget, "Run cancelled before the engine started. Nothing was written.")
+        self._call_ui_if_running(
+            self._end_run_ui,
+            "cancelled",
+            _outcome_markup(labels.RUN_CANCELLED_BEFORE_START, code="RunCancelled"),
+        )
+
+    @work(thread=True, group="run_analysis")
+    def _run_confirmed_worker(
+        self,
+        request: AnalysisRunRequest,
+        saved_df: Any,
+        log_widget: Log,
+    ) -> None:
+        """Execute a confirmed request in a background thread."""
+        # Restart the run clock so the elapsed time reflects execution,
+        # not how long a validation modal sat open.
+        self.call_from_thread(self._begin_run_ui)
+        self._execute_confirmed_analysis(request, saved_df, log_widget)
+
+    @work(thread=True, group="run_analysis")
+    def _launch_run_worker(self, inputs: RunInputs, log_widget: Log) -> None:
+        """Preflight, prompts and input validation for one attempt (worker thread).
+
+        Reads only ``inputs``; launch checks keep today's order and messages.
+        """
+        action = "share_analysis" if inputs.mode == "share" else "rate_analysis"
+        try:
+            if not inputs.csv_path:
+                self._fail_launch(
+                    "CSV path is required.", focus_id="csv_path", block_reason="csv_missing"
+                )
+                return
+            if inputs.entity_selection_pending:
+                # The operator's target entity is cleared while the values
+                # reload and is re-applied when they land; launching now
+                # would silently run peer-only instead.
+                self._fail_launch(
+                    "Target entity values are still loading; wait for the list to finish.",
+                    focus_id="entity_name",
+                    block_reason="entity_loading",
+                )
                 return
 
-            self.call_from_thread(log_widget.clear)
-            started = datetime.now().strftime("%H:%M:%S")
-            mode_text = labels.text_for(labels.ANALYSIS_MODE, self._analysis_mode())
-            self.call_from_thread(log_widget.write, f"Run started · {mode_text} · {started}\n")
-            self.call_from_thread(self._begin_validation_ui)
-
-            try:
-                csv_path = self.query_one("#csv_path").value
-                if not csv_path:
+            values: Dict[str, Any] = {
+                "csv": inputs.csv_path,
+                "entity": inputs.entity,
+                "entity_col": inputs.entity_col,
+                "preset": inputs.preset,
+                "config": inputs.config,
+                "output": inputs.output,
+                "time_col": inputs.time_col,
+                "log_level": "INFO",
+                "validate_input": inputs.validate_input,
+                "analyze_distortion": inputs.analyze_distortion,
+                "compare_presets": inputs.compare_presets,
+                "include_calculated": inputs.include_calculated,
+                "output_format": inputs.output_format,
+                **dict(inputs.privacy_values),
+            }
+            posture = inputs.compliance_posture
+            if inputs.preset and not inputs.config:
+                # Unchanged: without an override the preset posture is sent.
+                values["compliance_posture"] = posture
+            # D2: consent follows the *effective* posture, including when an
+            # override file sets it; core would otherwise block the run with
+            # no way to consent.
+            if posture == 'best_effort':
+                write_log_message(log_widget, "WARNING: best_effort posture may complete with labeled non-compliant outputs.")
+            if posture == 'accuracy_first':
+                if self.cancel_requested:
+                    self._stop_cancelled_launch(log_widget)
+                    return
+                if not self._confirm_accuracy_first_consent():
+                    if self._confirmations_abandoned:
+                        return  # App is quitting; the quit is already recorded.
+                    if self.cancel_requested:
+                        self._stop_cancelled_launch(log_widget)
+                        return
+                    action_cancelled(action, "accuracy_first_consent")
                     self._fail_launch(
-                        "CSV path is required.", focus_id="csv_path", block_reason="csv_missing"
+                        "Run cancelled: consent was not given. Nothing was written.",
+                        title_state="cancelled",
                     )
                     return
-                if self.entity_selection_pending:
-                    # The operator's target entity is cleared while the values
-                    # reload and is re-applied when they land; launching now
-                    # would silently run peer-only instead.
-                    self._fail_launch(
-                        "Target entity values are still loading; wait for the list to finish.",
-                        focus_id="entity_name",
-                        block_reason="entity_loading",
-                    )
+                values["acknowledge_accuracy_first"] = True
+
+            if inputs.mode == "share":
+                values["metric"] = inputs.metric
+                if not values["metric"]:
+                    self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric", block_reason="metric_missing")
                     return
+            else:
+                values["total_col"] = inputs.total_col
+                if not values["total_col"]:
+                    self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total", block_reason="total_missing")
+                    return
+                values["approved_col"] = inputs.approved_col
+                values["fraud_col"] = inputs.fraud_col
+                if not values["approved_col"] and not values["fraud_col"]:
+                    self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved", block_reason="rate_column_missing")
+                    return
+            values["secondary_metrics"] = list(inputs.secondary_metrics) or None
+            values["auto"] = inputs.auto
+            if not inputs.auto and not inputs.dimensions:
+                self._fail_launch(
+                    "Select at least one dimension or enable auto-detect.",
+                    focus_id=f"{'share' if inputs.mode == 'share' else 'rate'}_dims",
+                    block_reason="dimensions_missing",
+                )
+                return
+            values["dimensions"] = list(inputs.dimensions) if inputs.dimensions and not inputs.auto else None
+            values["debug"] = inputs.debug
+            values["export_balanced_csv"] = inputs.export_balanced_csv
+            if inputs.mode == "share":
+                # Share analysis uses one global weight vector. Maximum Safe
+                # Coverage also requires global weights; keep this explicit.
+                values["per_dimension_weights"] = False
+                assert values["per_dimension_weights"] is False, (
+                    "share analysis requires global weights "
+                    "(per_dimension_weights must be False)"
+                )
+            else:
+                values["fraud_in_bps"] = inputs.fraud_in_bps
 
-                entity_val = self.query_one("#entity_name").value
-                entity = entity_val if entity_val != SELECT_BLANK else None
-                entity_col_val = self.query_one("#entity_col").value
-                entity_col = entity_col_val if entity_col_val != SELECT_BLANK else "issuer_name"
-                preset_val = self.query_one("#preset_select").value
-                preset = preset_val if preset_val != SELECT_BLANK else None
-                output_file = self.query_one("#output_file").value or None
-                time_col_val = self.query_one("#time_col").value
-                time_col = time_col_val if time_col_val != SELECT_BLANK else None
+            request = AnalysisRunRequest.from_widget_values(inputs.mode, values)
+            if request.fraud_col:
+                assert request.total_col is not None
+                if self.cancel_requested:
+                    self._stop_cancelled_launch(log_widget)
+                    return
+                if not self._confirm_clearing_spend_basis(request.total_col):
+                    if self._confirmations_abandoned:
+                        return  # App is quitting; the quit is already recorded.
+                    if self.cancel_requested:
+                        self._stop_cancelled_launch(log_widget)
+                        return
+                    action_cancelled("rate_analysis", "clearing_spend")
+                    write_log_message(log_widget, "Analysis cancelled by user.")
+                    self.call_from_thread(self._reset_run_ui)
+                    return
+                request._fraud_confirmation_source = "tui_modal"
 
-                mode = self._analysis_mode()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            log_dir = _resolve_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = str(
+                log_dir / f"benchmark_log_{timestamp}.txt"
+            )
+            setup_deferred_logging(
+                log_level="INFO",
+                log_file=log_file,
+                console_output=False,
+            )
 
-                values: Dict[str, Any] = {
-                    "csv": csv_path,
-                    "entity": entity,
-                    "entity_col": entity_col,
-                    "preset": preset,
-                    "config": self.advanced_config_path if getattr(self, 'advanced_config_path', None) else None,
-                    "output": output_file,
-                    "time_col": time_col,
-                    "log_level": "INFO",
-                    "validate_input": getattr(self.query_one("#validate_input"), 'value', True),
-                    "analyze_distortion": getattr(self.query_one("#analyze_distortion"), 'value', False),
-                    "compare_presets": getattr(self.query_one("#compare_presets"), 'value', False),
-                    "include_calculated": getattr(self.query_one("#include_calculated"), 'value', False),
-                    "output_format": getattr(self.query_one("#output_format"), 'value', 'analysis'),
-                    **self._privacy_values_from_widgets(),
-                }
-                if preset and not values["config"]:
-                    posture = None
-                    if not hasattr(self, 'preset_workflow'):
-                        self.preset_workflow = PresetWorkflow()
-                    preset_data = self.preset_workflow.load_preset_data(preset)
-                    posture = preset_data.get('compliance_posture') if isinstance(preset_data, dict) else None
-                    values["compliance_posture"] = posture
-                    if posture == 'best_effort':
-                        self.call_from_thread(log_widget.write, "WARNING: best_effort posture may complete with labeled non-compliant outputs.\n")
-                    if posture == 'accuracy_first':
-                        if not self._confirm_accuracy_first_consent():
-                            if self._confirmations_abandoned:
-                                return  # App is quitting; the quit is already recorded.
-                            action_cancelled(self._telemetry_action(), "accuracy_first_consent")
-                            self._fail_launch(
-                                "Run cancelled: consent was not given. Nothing was written.",
-                                title_state="cancelled",
+            logging.getLogger("benchmark").handlers.clear()
+            logging.getLogger("core").handlers.clear()
+            handler = LogHandler(log_widget)
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logging.getLogger().addHandler(handler)
+
+            df = None
+            if request.validate_input and request.csv and os.path.exists(request.csv):
+                write_log_message(log_widget, "Loading data for validation...")
+                try:
+                    ns = request.to_namespace()
+                    config = build_run_config(ns, extra_overrides={'fraud_in_bps': request.fraud_in_bps} if request.is_rate else None)
+                    loader, df, resolved_entity_col, resolved_time_col = prepare_run_data(
+                        ns,
+                        config,
+                        logging.getLogger("benchmark"),
+                        preferred_entity_col=request.entity_col,
+                    )
+                    dimensions = resolve_dimensions(ns, config, loader, df, logging.getLogger("benchmark"))
+                    issues, should_abort = validate_analysis_input(
+                        df=df,
+                        config=config,
+                        data_loader=loader,
+                        analysis_type=request.mode,
+                        entity_col=resolved_entity_col,
+                        time_col=resolved_time_col,
+                        target_entity=request.entity,
+                        dimensions=dimensions,
+                        metric_col=request.metric,
+                        total_col=request.total_col,
+                        numerator_cols=request.numerator_cols,
+                    )
+                    request.prepared_dataset = PreparedDataset(
+                        df=df,
+                        entity_col=resolved_entity_col,
+                        time_col=resolved_time_col,
+                        data_loader=loader,
+                        validation_issues=issues if issues is not None else [],
+                    )
+                    if self.cancel_requested:
+                        # Cancelled while the file was read: no dialog, no engine.
+                        self._stop_cancelled_launch(log_widget)
+                        return
+                    if issues:
+                        has_errors = any(issue.severity == ValidationSeverity.ERROR for issue in issues)
+
+                        def on_modal_closed(result: bool) -> None:
+                            # Runs on the app thread (screen-dismiss callback).
+                            self._handle_validation_modal_result(
+                                result,
+                                has_errors=has_errors,
+                                should_abort=should_abort,
+                                request=request,
+                                saved_df=df,
+                                log_widget=log_widget,
                             )
-                            return
-                        values["acknowledge_accuracy_first"] = True
 
-                if mode == "share":
-                    metric_val = self.query_one("#share_metric").value
-                    values["metric"] = metric_val if metric_val != SELECT_BLANK else None
-                    if not values["metric"]:
-                        self._fail_launch("Primary metric is required for share analysis.", focus_id="share_metric", block_reason="metric_missing")
+                        # Timestamp for the time-in-review metric (G12).
+                        surface_viewed("validation_review")
+                        self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
                         return
-                    sec_metrics = self.query_one("#share_secondary", SelectionList).selected
-                    values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
-                    values["auto"] = self.query_one("#share_auto_dim").value
-                    dims = self.query_one("#share_dims", SelectionList).selected
-                    if not values["auto"] and not dims:
-                        self._fail_launch(
-                            "Select at least one dimension or enable auto-detect.",
-                            focus_id="share_dims",
-                            block_reason="dimensions_missing",
-                        )
-                        return
-                    values["dimensions"] = list(dims) if dims and not values["auto"] else None
-                    values["debug"] = self.query_one("#share_debug").value
-                    values["export_balanced_csv"] = self.query_one("#share_export_csv").value
-                    # Share analysis uses one global weight vector. Maximum Safe
-                    # Coverage also requires global weights; keep this explicit.
-                    values["per_dimension_weights"] = False
-                    assert values["per_dimension_weights"] is False, (
-                        "share analysis requires global weights "
-                        "(per_dimension_weights must be False)"
+                except Exception as exc:
+                    launch_blocked(
+                        "share_analysis" if request.is_share else "rate_analysis",
+                        "data_preparation_error",
                     )
-                else:
-                    total_val = self.query_one("#rate_total").value
-                    values["total_col"] = total_val if total_val != SELECT_BLANK else None
-                    if not values["total_col"]:
-                        self._fail_launch("Total column is required for rate analysis.", focus_id="rate_total", block_reason="total_missing")
-                        return
-                    approved = self.query_one("#rate_approved").value
-                    values["approved_col"] = approved if approved != SELECT_BLANK else None
-                    fraud = self.query_one("#rate_fraud").value
-                    values["fraud_col"] = fraud if fraud != SELECT_BLANK else None
-                    if not values["approved_col"] and not values["fraud_col"]:
-                        self._fail_launch("At least one rate column (approved or fraud) is required.", focus_id="rate_approved", block_reason="rate_column_missing")
-                        return
-                    sec_metrics = self.query_one("#rate_secondary", SelectionList).selected
-                    values["secondary_metrics"] = list(sec_metrics) if sec_metrics else None
-                    values["auto"] = self.query_one("#rate_auto_dim").value
-                    dims = self.query_one("#rate_dims", SelectionList).selected
-                    if not values["auto"] and not dims:
-                        self._fail_launch(
-                            "Select at least one dimension or enable auto-detect.",
-                            focus_id="rate_dims",
-                            block_reason="dimensions_missing",
-                        )
-                        return
-                    values["dimensions"] = list(dims) if dims and not values["auto"] else None
-                    values["debug"] = self.query_one("#rate_debug").value
-                    values["export_balanced_csv"] = self.query_one("#rate_export_csv").value
-                    values["fraud_in_bps"] = getattr(self.query_one("#fraud_in_bps"), 'value', True)
+                    finalize_deferred_logging(
+                        logging.getLogger(),
+                        privacy_authorized=False,
+                    )
+                    write_log_message(log_widget, f"Data check failed: {exc}")
+                    self.call_from_thread(
+                        self.notify,
+                        "The data check couldn't finish. Details are in Last run.",
+                        title=status_text("error"),
+                        severity="error",
+                    )
+                    self.call_from_thread(
+                        self._end_run_ui,
+                        "error",
+                        _outcome_markup(labels.DATA_CHECK_FAILED, why=str(exc), code=type(exc).__name__),
+                    )
+                    return
 
-                request = AnalysisRunRequest.from_widget_values(mode, values)
-                if request.fraud_col:
-                    assert request.total_col is not None
-                    if not self._confirm_clearing_spend_basis(request.total_col):
-                        if self._confirmations_abandoned:
-                            return  # App is quitting; the quit is already recorded.
-                        action_cancelled("rate_analysis", "clearing_spend")
-                        write_log_message(log_widget, "Analysis cancelled by user.")
-                        self.call_from_thread(self._reset_run_ui)
-                        return
-                    request._fraud_confirmation_source = "tui_modal"
+            self.call_from_thread(self.run_analysis, True, request, df)
+            return
 
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                log_dir = _resolve_log_dir()
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_file = str(
-                    log_dir / f"benchmark_log_{timestamp}.txt"
-                )
-                setup_deferred_logging(
-                    log_level="INFO",
-                    log_file=log_file,
-                    console_output=False,
-                )
-
-                logging.getLogger("benchmark").handlers.clear()
-                logging.getLogger("core").handlers.clear()
-                handler = LogHandler(log_widget)
-                handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-                logging.getLogger().addHandler(handler)
-
-                df = None
-                if request.validate_input and request.csv and os.path.exists(request.csv):
-                    self.call_from_thread(log_widget.write, "Loading data for validation...\n")
-                    try:
-                        ns = request.to_namespace()
-                        config = build_run_config(ns, extra_overrides={'fraud_in_bps': request.fraud_in_bps} if request.is_rate else None)
-                        loader, df, resolved_entity_col, resolved_time_col = prepare_run_data(
-                            ns,
-                            config,
-                            logging.getLogger("benchmark"),
-                            preferred_entity_col=request.entity_col,
-                        )
-                        dimensions = resolve_dimensions(ns, config, loader, df, logging.getLogger("benchmark"))
-                        issues, should_abort = validate_analysis_input(
-                            df=df,
-                            config=config,
-                            data_loader=loader,
-                            analysis_type=request.mode,
-                            entity_col=resolved_entity_col,
-                            time_col=resolved_time_col,
-                            target_entity=request.entity,
-                            dimensions=dimensions,
-                            metric_col=request.metric,
-                            total_col=request.total_col,
-                            numerator_cols=request.numerator_cols,
-                        )
-                        request.prepared_dataset = PreparedDataset(
-                            df=df,
-                            entity_col=resolved_entity_col,
-                            time_col=resolved_time_col,
-                            data_loader=loader,
-                            validation_issues=issues if issues is not None else [],
-                        )
-                        if issues:
-                            has_errors = any(issue.severity == ValidationSeverity.ERROR for issue in issues)
-
-                            def on_modal_closed(result: bool) -> None:
-                                # Runs on the app thread (screen-dismiss callback).
-                                self._handle_validation_modal_result(
-                                    result,
-                                    has_errors=has_errors,
-                                    should_abort=should_abort,
-                                    request=request,
-                                    saved_df=df,
-                                    log_widget=log_widget,
-                                )
-
-                            # Timestamp for the time-in-review metric (G12).
-                            surface_viewed("validation_review")
-                            self.call_from_thread(self.push_screen, ValidationModal(issues), on_modal_closed)
-                            return
-                    except Exception as exc:
-                        launch_blocked(
-                            "share_analysis" if request.is_share else "rate_analysis",
-                            "data_preparation_error",
-                        )
-                        finalize_deferred_logging(
-                            logging.getLogger(),
-                            privacy_authorized=False,
-                        )
-                        self.call_from_thread(log_widget.write, f"Data check failed: {exc}\n")
-                        self.call_from_thread(
-                            self.notify,
-                            "The data check couldn't finish. Details are in Last run.",
-                            title=status_text("error"),
-                            severity="error",
-                        )
-                        self.call_from_thread(
-                            self._end_run_ui,
-                            "error",
-                            _outcome_markup(labels.DATA_CHECK_FAILED, why=str(exc), code=type(exc).__name__),
-                        )
-                        return
-
-                self.call_from_thread(self.run_analysis, True, request, df)
-                return
-
-            except Exception as exc:
-                launch_blocked(self._telemetry_action(), "initialization_error")
-                finalize_deferred_logging(
-                    logging.getLogger(),
-                    privacy_authorized=False,
-                )
-                self.call_from_thread(log_widget.write, f"Run could not start: {exc}\n")
-                self.call_from_thread(
-                    self._end_run_ui,
-                    "error",
-                    _outcome_markup(labels.START_FAILED, why=str(exc), code=type(exc).__name__),
-                )
-                return
-
-        if confirmed and saved_request:
-            request = saved_request
-            # Restart the run clock so the elapsed time reflects execution,
-            # not how long a validation modal sat open.
-            self.call_from_thread(self._begin_run_ui)
-            self._execute_confirmed_analysis(request, saved_df, log_widget)
+        except Exception as exc:
+            launch_blocked(action, "initialization_error")
+            finalize_deferred_logging(
+                logging.getLogger(),
+                privacy_authorized=False,
+            )
+            write_log_message(log_widget, f"Run could not start: {exc}")
+            self.call_from_thread(
+                self._end_run_ui,
+                "error",
+                _outcome_markup(labels.START_FAILED, why=str(exc), code=type(exc).__name__),
+            )
+            return
 
     def _execute_confirmed_analysis(
         self,
@@ -2886,6 +3288,17 @@ class BenchmarkApp(App):
                     timeout=10,
                     markup=False,
                 )
+        except RunCancelled:
+            # Core stopped before output writing started: nothing was written.
+            # The deferred log is finalised unauthorised; the canceller (Quit)
+            # has already recorded action_cancelled.
+            log_path = self._quarantine_run_logging(logger, log_widget)
+            write_log_message(log_widget, "Run cancelled before any output was written.")
+            self._call_ui_if_running(
+                self._end_run_ui,
+                "cancelled",
+                _outcome_markup(labels.RUN_CANCELLED, _log_details(log_path), code="RunCancelled"),
+            )
         except RunBlocked as exc:
             log_path = self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Run blocked: {exc}\n")
@@ -2941,7 +3354,7 @@ class BenchmarkApp(App):
             privacy_authorized=False,
         )
         if quarantine_path:
-            self.call_from_thread(
+            self._call_ui_if_running(
                 log_widget.write,
                 f"Internal run log (do not share):\n{quarantine_path}\n",
             )
