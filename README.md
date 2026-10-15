@@ -342,6 +342,31 @@ The TUI (`tui_app.py`) is best for first-time users:
 5. Configure Share or Rate tab.
 6. Click Run Analysis and watch logs.
 
+TUI defaults and rules worth knowing:
+
+- **Export balanced CSV** is off by default on both the Share and Rate tabs,
+  as it is on the CLI (`--export-balanced-csv`). Tick it for each run that
+  needs the CSV.
+- The Rate **Total column** has no default. It is the clearing-spend basis for
+  fraud analysis, so you always choose it explicitly.
+- **Debug sheets** are set only by the checkbox on the Share/Rate tab; the
+  Advanced panel has no separate debug-sheets control.
+- Changing the preset clears any applied advanced overrides, with a notice;
+  press **Apply Overrides** again to use them with the new preset. The
+  accuracy_first consent dialog follows the effective posture, overrides
+  included. Consent and clearing-spend dialogs open with **Cancel** focused.
+- **Privacy rule sweep mode** is locked on only while Verified safe coverage
+  is selected on the Share tab. On the Rate tab it is unlocked and the run
+  uses exactly the value shown.
+- Session restore remembers the Share/Rate tab and your column choices
+  (entity column, metric, rate columns, dimensions, secondary metrics). They
+  are applied after you load a CSV that has those columns. The CSV path,
+  output filename, target entity and compliance declarations are never
+  restored.
+- Quitting while an analysis runs stops it at the next safe checkpoint, before
+  any output is written. A run that has already started writing outputs
+  finishes first.
+
 Keyboard shortcuts:
 
 - `Ctrl+O` open/select file

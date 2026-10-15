@@ -1396,7 +1396,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
           <thead><tr><th>Parameter</th><th>Engine behavior</th><th>Effect on the output</th></tr></thead>
           <tbody>
             <tr>
-              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td><code>output.include_debug_sheets</code><br>TUI: Debug sheets (Share/Rate tab)</td>
               <td>Adds analysis-only debug sheets with unweighted metrics to the workbook.</td>
               <td>A richer internal workbook. Debug sheets are analysis-grade material and are removed or redacted when a publication candidate is sanitized.</td>
             </tr>
@@ -1594,7 +1594,7 @@ autobench-cli share --csv dados.csv --metric txn_cnt \
           <thead><tr><th>Parâmetro</th><th>Comportamento do engine</th><th>Efeito na saída</th></tr></thead>
           <tbody>
             <tr>
-              <td><code>output.include_debug_sheets</code><br>TUI: Include Debug Sheets</td>
+              <td><code>output.include_debug_sheets</code><br>TUI: Debug sheets (Share/Rate tab)</td>
               <td>Adiciona ao workbook abas de depuração somente de análise, com métricas sem ponderação.</td>
               <td>Um workbook interno mais rico. Abas de depuração são material analysis-grade e são removidas ou redigidas quando um candidato de publication é sanitizado.</td>
             </tr>
