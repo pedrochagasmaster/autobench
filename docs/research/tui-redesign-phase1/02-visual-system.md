@@ -178,6 +178,32 @@ class BenchmarkApp(App):
   user's choice (03 T6). Persisting the theme in the session file is 01's
   decision (§8.1).
 
+**Phase 2 PR 3 (as built).** The stylesheet ships as the Python module
+`tui/styles.py` (`AUTOBENCH_TCSS`, assigned to `BenchmarkApp.CSS`), the
+"Fallback" above, not as `tui/styles/autobench.tcss`. Only `*.py` globs reach
+edge nodes (`edge_deploy.yaml` `runtime_paths`), so a `.tcss` file would need
+a new glob plus `package-data` and would fail at startup if either were
+missed. The rules are the same, because TCSS variables stay file-scoped
+within the one string. The cost is editor TCSS support and `textual run --dev`
+live reload. The packaging change is: `"tui/**/*.py"` in `runtime_paths`,
+`tui` in `compile_targets` (and in the matching `compileall` lines of
+`setup_remote_env.sh`, `tools/prod_tui/harness.py` and
+`tools/dev/local_check.ps1`), and `tui*` in the `pyproject.toml`
+`packages.find` include. Deploying it remains a Release Operator step.
+
+Other as-built differences, all inside this PR's scope:
+
+- The validation modal is `width: 90%; max-width: $ab-modal-lg` (110), not
+  `$ab-modal-md`. At 76 columns long issue messages wrapped mid-phrase.
+- `ToggleButton` and `SelectionList` subclasses are `BoxCheckbox` and
+  `BoxSelectionList` in `tui/widgets.py`.
+- The key bar (`tui/keybar.py`) maps clicks by cell range, not `@click`
+  markup: a link style would override the key colour roles.
+- Advanced and Export moved from `Ctrl+A`/`Ctrl+E` (taken by a focused
+  `Input` for Home/End) to `F8`/`F9`; the old keys stay as hidden aliases.
+  Textual 7.5 binds `Ctrl+C` to copy and only hints at quitting, so the app
+  owns it: copy when text is selected, otherwise quit like `Ctrl+Q`.
+
 ### 1.4 Coverage of the Phase 0 CSS audit
 
 Every hard-coded or ad-hoc value from 03 §3, mapped to its replacement:

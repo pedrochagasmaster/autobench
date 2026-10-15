@@ -342,13 +342,26 @@ The TUI (`tui_app.py`) is best for first-time users:
 5. Configure Share or Rate tab.
 6. Click Run Analysis and watch logs.
 
-Keyboard shortcuts:
+Keyboard shortcuts (the key bar at the bottom shows the ones that apply to
+the focused field):
 
 - `Ctrl+O` open/select file
 - `Ctrl+R` run analysis
-- `F1` preset help
-- `Ctrl+A` toggle advanced panel
-- `Ctrl+E` export advanced overrides
+- `F1` preset guide
+- `F8` show or hide the advanced optimization panel
+- `F9` export the advanced overrides to a file
+- `Ctrl+L` clear the execution log
+- `Ctrl+Q` or `Ctrl+C` quit (asks first while a run is active; `Ctrl+C`
+  copies instead when text is selected)
+
+`F8` and `F9` replace `Ctrl+A` and `Ctrl+E`, which a focused text field
+uses for Home/End. The old keys still work outside text fields.
+
+Status words always come with a glyph (for example `◐ WITHHELD`,
+`⊘ BLOCKED`, `✗ FAILED`), so the TUI reads the same with `NO_COLOR=1` or a
+16-colour terminal. Set `AUTOBENCH_GLYPHS=ascii` if your terminal font lacks
+these glyphs; the TUI also switches to ASCII on the Linux console and when the
+terminal is not UTF-8.
 
 ## CLI Cookbook
 

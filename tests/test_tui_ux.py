@@ -309,7 +309,7 @@ def test_clearing_spend_confirmation_modal_uses_selected_total(
             assert isinstance(app.screen, ClearingSpendConfirmScreen)
             message = str(app.screen.query_one("#confirm_message", Static).content)
             assert "Confirm clearing-spend basis" in message
-            assert "`governed_total`" in message
+            assert '"governed_total"' in message
             await pilot.click(f"#{button_id}")
             worker.join(timeout=5)
             assert not worker.is_alive()
@@ -606,8 +606,8 @@ def test_validation_modal_lists_every_issue_with_text_severity(
             modal = app.screen
             screen_region = Region(0, 0, *size)
 
-            header = [str(label.content) for label in modal.query(".field-pair Label")]
-            assert header == ["Errors: 1", "  Warnings: 2"]
+            header = str(modal.query_one("#validation_counts", Label).content)
+            assert header == "1 error must be fixed · 2 warnings to review"
 
             # The modal and both buttons fit on screen.
             container = modal.query_one("#validation_container")

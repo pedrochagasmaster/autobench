@@ -47,7 +47,7 @@ async def _run_tui_share_smoke(output: Path) -> str:
             log_text = "\n".join(app.query_one("#log_output").lines)
             if "Analysis completed successfully" in log_text:
                 break
-            if "Execution Blocked:" in log_text or "Execution Error:" in log_text:
+            if "Run blocked:" in log_text or "Run failed:" in log_text:
                 break
         return log_text
 

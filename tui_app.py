@@ -17,7 +17,7 @@ import contextlib
 import io
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 import yaml
 
 # Remote-friendly renderer defaults (must be set before Textual is imported).
@@ -29,10 +29,11 @@ os.environ.setdefault("TEXTUAL_ANIMATIONS", "none")
 os.environ.setdefault("TEXTUAL_FPS", "20")
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.markup import escape as escape_markup
 from textual.widgets import (
     Header,
-    Footer,
     Input,
     Button,
     Select,
@@ -48,7 +49,9 @@ from textual.widgets import (
     Markdown,
     Collapsible,
     DirectoryTree,
+    Tabs,
 )
+from textual.widgets._collapsible import CollapsibleTitle
 from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
@@ -96,6 +99,11 @@ try:
         ConfigOverrideBuilder,
     )
     from core.data_loader import ValidationIssue, ValidationSeverity
+    from core import labels
+    from tui.keybar import KeyBar
+    from tui.status import glyph as status_glyph, status_text
+    from tui.styles import AUTOBENCH_TCSS
+    from tui.widgets import BoxCheckbox, BoxSelectionList, StatusBadge
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
@@ -148,7 +156,7 @@ SESSION_CHECKBOX_IDS = (
 )
 SESSION_SELECTION_LIST_IDS = ("share_dims", "share_secondary", "rate_dims", "rate_secondary")
 
-ENTITY_SELECT_PROMPT = "Select entity…"
+ENTITY_SELECT_PROMPT = "None: peer group only"
 ENTITY_LOADING_PROMPT = "Loading entities…"
 
 
@@ -264,23 +272,25 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
         self.quick_picks = quick_picks
 
     def compose(self) -> ComposeResult:
-        with Container(id="picker_container"):
-            yield Label("Select a CSV file", id="picker_title")
+        with Container(id="picker_container", classes="ab-modal"):
+            yield Label("Open a CSV file", id="picker_title")
             with Horizontal(id="picker_body"):
                 with Vertical(id="picker_quick"):
                     yield Label("Quick picks", classes="picker-subtitle")
                     yield ListView(
                         *[FileListItem(path) for path in self.quick_picks],
                         id="picker_quick_list",
+                        classes="ab-list",
                     )
                 with Vertical(id="picker_tree_pane"):
                     yield Label("Browse workspace", classes="picker-subtitle")
-                    yield CsvDirectoryTree(os.getcwd(), id="picker_tree")
+                    yield CsvDirectoryTree(os.getcwd(), id="picker_tree", classes="ab-list")
             yield Label(
-                "Enter to select · Escape to cancel",
+                "Enter opens the file · Esc cancels",
                 classes="picker-hint",
             )
-            yield Button("Cancel", id="btn_picker_cancel", variant="default")
+            yield Button("Cancel", id="btn_picker_cancel", variant="default", compact=True)
+        yield KeyBar("picker")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, FileListItem):
@@ -308,17 +318,36 @@ class ConfirmScreen(ModalScreen[bool]):
         self.confirm_label = confirm_label
 
     def compose(self) -> ComposeResult:
-        with Container(id="confirm_container"):
-            yield Label(self.message, id="confirm_message")
+        with Container(id="confirm_container", classes="ab-modal"):
+            # Literal text: messages can carry column names from the CSV.
+            yield Label(Text(self.message), id="confirm_message")
             with Horizontal(id="confirm_buttons"):
-                yield Button(self.confirm_label, id="btn_confirm_yes", variant="error")
-                yield Button("Cancel", id="btn_confirm_no", variant="default")
+                yield Button(self.confirm_label, id="btn_confirm_yes", variant="error", compact=True)
+                yield Button("Cancel", id="btn_confirm_no", variant="default", compact=True)
+        yield KeyBar("confirm")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "btn_confirm_yes")
 
     def action_cancel_confirm(self) -> None:
         self.dismiss(False)
+
+    def on_screen_resume(self) -> None:
+        _refresh_app_status(self.app)
+
+    def on_unmount(self) -> None:
+        _refresh_app_status(self.app)
+
+
+def _refresh_app_status(app: Any) -> None:
+    """Let the run-status badge show WAITING FOR YOU while a dialog is open."""
+    refresh = getattr(app, "_refresh_run_status", None)
+    if refresh is None or not getattr(app, "is_running", False):
+        return
+    try:
+        app.call_later(refresh)
+    except Exception:
+        pass  # App is shutting down.
 
 
 class ClearingSpendConfirmScreen(ConfirmScreen):
@@ -327,8 +356,9 @@ class ClearingSpendConfirmScreen(ConfirmScreen):
     def __init__(self, total_col: str) -> None:
         super().__init__(
             "Confirm clearing-spend basis\n\n"
-            f"Fraud analysis requires Total column `{total_col}` to contain "
+            f'Fraud analysis requires Total column "{total_col}" to contain '
             "clearing-spend amounts. Continue?",
+            confirm_label="Yes, it is clearing spend",
         )
 
 
@@ -337,37 +367,12 @@ class PresetHelpScreen(ModalScreen):
 
     BINDINGS = [("escape", "close_help", "Close")]
 
-    CSS = """
-    PresetHelpScreen {
-        align: center middle;
-        background: rgba(0,0,0,0.7);
-    }
-
-    #help_container {
-        width: 70%;
-        max-width: 100;
-        height: 80%;
-        border: round $primary;
-        background: $surface;
-        padding: 1 2;
-    }
-
-    #help_text {
-        height: 1fr;
-        margin-top: 1;
-        margin-bottom: 1;
-        overflow-y: auto;
-    }
-
-    #btn_close_help {
-        width: 100%;
-        dock: bottom;
-    }
-    """
+    # Styled by tui.styles (TCSS variables are file-scoped, so screens carry
+    # no CSS of their own).
 
     def compose(self) -> ComposeResult:
-        with Container(id="help_container"):
-            yield Label("Preset Guide", classes="section-title")
+        with Container(id="help_container", classes="ab-modal"):
+            yield Label("Preset guide", classes="section-title")
             yield Markdown(
                 """
 ### compliance_strict
@@ -399,10 +404,16 @@ class PresetHelpScreen(ModalScreen):
 - **Intent:** "This dataset is difficult, just give me numbers."
 - **Best For:** Data exploration, difficult datasets.
 - **Trade-off:** Lower rank preservation, higher weight bounds.
+
+### Keyboard
+- **Ctrl+R** run · **Ctrl+O** open a CSV · **Ctrl+L** clear the log
+- **F8** show or hide Advanced optimization · **F9** export the advanced settings
+- **F1** this guide · **Ctrl+P** commands · **Ctrl+Q** or **Ctrl+C** quit
                 """,
                 id="help_text"
             )
-            yield Button("Close", id="btn_close_help", variant="primary")
+            yield Button("Close", id="btn_close_help", variant="primary", compact=True)
+        yield KeyBar("help")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_close_help":
@@ -424,40 +435,61 @@ class ValidationModal(ModalScreen):
     BINDINGS = [("escape", "cancel_validation", "Cancel")]
 
     _BADGE_WIDTH = max(len(s.value) for s in ValidationSeverity)
+    # Status-language glyph per severity (02 §5.2): ✗ ERROR, ▲ WARNING, INFO.
+    _SEVERITY_STATE = {
+        ValidationSeverity.ERROR: "error",
+        ValidationSeverity.WARNING: "warning",
+    }
 
     def __init__(self, issues: List[ValidationIssue]) -> None:
         super().__init__()
         self.issues = issues
         self.has_errors = any(i.severity == ValidationSeverity.ERROR for i in issues)
 
+    @staticmethod
+    def _counts_text(error_count: int, warning_count: int) -> str:
+        """``2 errors must be fixed · 1 warning to review`` (02 §5.4 #33)."""
+        parts: List[str] = []
+        if error_count:
+            noun = "error" if error_count == 1 else "errors"
+            parts.append(f"{error_count} {noun} must be fixed")
+        if warning_count:
+            noun = "warning" if warning_count == 1 else "warnings"
+            parts.append(f"{warning_count} {noun} to review")
+        return " · ".join(parts) or "No errors or warnings"
+
     def compose(self) -> ComposeResult:
         error_count = sum(1 for i in self.issues if i.severity == ValidationSeverity.ERROR)
         warning_count = sum(1 for i in self.issues if i.severity == ValidationSeverity.WARNING)
 
-        with Container(id="validation_container"):
-            yield Label("Data Validation Results", id="validation_title")
-
-            with Horizontal(classes="field-pair"):
-                yield Label(f"Errors: {error_count}", classes="issue-error" if error_count > 0 else "")
-                yield Label(f"  Warnings: {warning_count}", classes="issue-warning" if warning_count > 0 else "")
+        with Container(id="validation_container", classes="ab-modal"):
+            yield Label("Check your data", id="validation_title")
+            yield Label(
+                self._counts_text(error_count, warning_count),
+                id="validation_counts",
+                classes="issue-error" if error_count else ("issue-warning" if warning_count else ""),
+            )
 
             yield Label("", id="validation_hint")
 
-            yield ListView(id="issue_list")
+            yield ListView(id="issue_list", classes="ab-list")
 
-            with Horizontal(classes="input-group", id="validation_buttons"):
-                yield Button("Proceed", id="btn_proceed", variant="success", disabled=self.has_errors)
-                yield Button("Cancel", id="btn_cancel", variant="error")
+            with Horizontal(id="validation_buttons"):
+                yield Button("Proceed", id="btn_proceed", variant="success", disabled=self.has_errors, compact=True)
+                yield Button("Cancel", id="btn_cancel", variant="error", compact=True)
+        yield KeyBar("validation")
 
     @classmethod
     def _issue_text(cls, issue: ValidationIssue) -> Text:
         """Build a literal (markup-free) row: severity badge, message, rows."""
-        badge = f" {issue.severity.value.upper():<{cls._BADGE_WIDTH}} "
+        state = cls._SEVERITY_STATE.get(issue.severity)
+        mark = status_glyph(state) if state else " " * len(status_glyph("error"))
+        badge = f" {mark} {issue.severity.value.upper():<{cls._BADGE_WIDTH}} "
         text = Text.assemble((badge, "bold reverse"), " ", str(issue.message))
         if issue.row_indices:
             row_preview = ", ".join(str(i) for i in issue.row_indices[:10])
             if len(issue.row_indices) > 10:
-                row_preview += f", ... ({len(issue.row_indices)} rows)"
+                row_preview += f", … ({len(issue.row_indices)} rows in total)"
             text.append(f"\n{' ' * (len(badge) + 1)}Rows: {row_preview}", style="italic")
         return text
 
@@ -482,6 +514,12 @@ class ValidationModal(ModalScreen):
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._update_hint)
+
+    def on_screen_resume(self) -> None:
+        _refresh_app_status(self.app)
+
+    def on_unmount(self) -> None:
+        _refresh_app_status(self.app)
 
     def _update_hint(self) -> None:
         """Say when the list overflows and why Proceed is unavailable."""
@@ -565,16 +603,43 @@ _PRIVACY_RELEASE_MODE_VALUES = frozenset(
 )
 
 
+class RunBadge(NamedTuple):
+    """Status-language state (tui.status) plus an optional detail word."""
+
+    state: str
+    detail: str = ""
+
+
+def _preset_display(preset: Optional[str]) -> str:
+    """Plain preset name for display; unknown (custom) presets keep their name."""
+    if not preset:
+        return "—"
+    label = labels.label_for(labels.PRESET, preset)
+    return preset if label.primary == labels.UNRECOGNISED else label.primary
+
+
 class BenchmarkApp(App):
     """Privacy-Compliant Peer Benchmark Tool TUI"""
 
+    # F8/F9 replace Ctrl+A/Ctrl+E: a focused Input binds Ctrl+A/Ctrl+E to
+    # Home/End, so those never reached the app from a text field (and Ctrl+A
+    # is the GNU screen prefix). No widget binds F8/F9, so they work in any
+    # field. The old keys stay as hidden aliases for muscle memory and the
+    # perf probe. The key bar (tui.keybar) shows the keys; no Footer.
     BINDINGS = [
-        ("ctrl+o", "open_file", "Open CSV"),
-        ("ctrl+r", "run_analysis", "Run"),
-        ("f1", "show_help", "Preset Guide"),
-        ("ctrl+a", "toggle_advanced", "Advanced"),
-        ("ctrl+e", "export_advanced", "Export Adv"),
-        ("ctrl+l", "clear_log", "Clear Log"),
+        Binding("ctrl+o", "open_file", "Open CSV"),
+        Binding("ctrl+r", "run_analysis", "Run"),
+        Binding("f1", "show_help", "Preset guide"),
+        Binding("f8", "toggle_advanced", "Advanced"),
+        Binding("f9", "export_advanced", "Export advanced"),
+        Binding("ctrl+a", "toggle_advanced", "Advanced", show=False),
+        Binding("ctrl+e", "export_advanced", "Export advanced", show=False),
+        Binding("ctrl+l", "clear_log", "Clear log"),
+        # Release tooling exits with Escape then Ctrl+C (edge_deploy.yaml
+        # tui_exit: ctrl_c). Textual 7.5 binds Ctrl+C to copy (Input, Screen)
+        # and only *hints* at quitting, so the app owns it: copy when there is
+        # a selection, otherwise quit like Ctrl+Q.
+        Binding("ctrl+c", "copy_or_quit", "Quit", show=False, priority=True),
     ]
 
     ADVANCED_FIELD_SPECS: List[ConfigFieldSpec] = ADVANCED_FIELD_SPECS
@@ -586,364 +651,12 @@ class BenchmarkApp(App):
         self._pending_confirmations: set[threading.Event] = set()
         self._confirmations_abandoned = False
 
-    CSS = """
-    #app_body {
-        height: 1fr;
-    }
+    # One token stylesheet for every screen (tui/styles.py, 02 §1).
+    CSS = AUTOBENCH_TCSS
 
-    /* ── Left: configuration pane ─────────────────────────────── */
-    #config_pane {
-        width: 58%;
-        min-width: 64;
-        padding: 0 1;
-        scrollbar-gutter: stable;
-    }
-
-    .form-section {
-        border: round $primary 40%;
-        border-title-color: $text-accent;
-        border-title-style: bold;
-        padding: 0 2;
-        margin: 0 0 1 0;
-        height: auto;
-    }
-
-    .form-section:focus-within {
-        border: round $primary;
-    }
-
-    .section-title {
-        text-style: bold;
-        margin-top: 1;
-        margin-bottom: 1;
-    }
-
-    .subsection-title {
-        text-style: italic;
-        color: $text-muted;
-        margin-bottom: 0;
-    }
-
-    .field-label {
-        color: $text;
-        margin-top: 1;
-    }
-
-    .field-hint {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-
-    .field-pair {
-        height: auto;
-    }
-
-    .input-group {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    .input-group Input, .input-group Select {
-        width: 1fr;
-        margin-right: 1;
-    }
-
-    .split-inputs {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    .split-inputs Input, .split-inputs Select {
-        width: 1fr;
-        margin-right: 1;
-    }
-
-    Input {
-        margin-bottom: 1;
-    }
-
-    Select {
-        margin-bottom: 1;
-    }
-
-    #csv_meta {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-
-    #btn_run {
-        width: 100%;
-        margin-top: 1;
-        margin-bottom: 1;
-    }
-
-    TabbedContent {
-        height: auto;
-    }
-
-    .multi-select {
-        height: 7;
-        border: round $primary 40%;
-        margin-bottom: 1;
-    }
-
-    .multi-select:focus {
-        border: round $primary;
-    }
-
-    .hidden {
-        display: none;
-    }
-
-    #btn_preset_help {
-        min-width: 16;
-    }
-
-    /* ── Right: activity pane ─────────────────────────────────── */
-    #activity_pane {
-        width: 1fr;
-        min-width: 42;
-        padding: 0 1;
-    }
-
-    #run_status {
-        border: round $primary 40%;
-        border-title-color: $text-accent;
-        border-title-style: bold;
-        padding: 0 2;
-        height: auto;
-        min-height: 5;
-        margin-bottom: 1;
-    }
-
-    #results_panel {
-        border: round $primary 40%;
-        border-title-color: $text-accent;
-        border-title-style: bold;
-        padding: 0 2;
-        height: auto;
-        max-height: 14;
-        margin-bottom: 1;
-        overflow-y: auto;
-    }
-
-    #log_output {
-        height: 1fr;
-        min-height: 8;
-        border: round $primary 40%;
-        border-title-color: $text-accent;
-        border-title-style: bold;
-        background: $surface;
-        padding: 0 1;
-    }
-
-    /* ── Compliance Declarations Section ──────────────────────── */
-    #compliance_declarations {
-        border: round $warning 60%;
-        padding: 0 1;
-        margin-top: 0;
-        margin-bottom: 1;
-    }
-
-    #compliance_form {
-        height: auto;
-    }
-
-    #compliance_form Input, #compliance_form Checkbox {
-        margin-bottom: 1;
-    }
-
-    /* ── Advanced Optimization Section ────────────────────────── */
-    #advanced_opt {
-        border: round $accent 60%;
-        padding: 0 1;
-        margin-top: 0;
-        margin-bottom: 1;
-    }
-
-    #advanced_form {
-        height: auto;
-    }
-
-    .adv-group-title {
-        text-style: bold;
-        color: $warning;
-        margin-top: 1;
-        margin-bottom: 1;
-    }
-
-    .adv-field-label {
-        color: $text;
-        margin-bottom: 0;
-    }
-
-    #advanced_form .field-pair {
-        margin-bottom: 0;
-    }
-
-    #advanced_form .input-group {
-        margin-bottom: 0;
-    }
-
-    #advanced_form Input, #advanced_form Checkbox {
-        margin-bottom: 1;
-    }
-
-    #advanced_form Button {
-        margin-bottom: 0;
-    }
-
-    /* ── Validation modal ─────────────────────────────────────── */
-    ValidationModal {
-        align: center middle;
-        background: rgba(0,0,0,0.7);
-    }
-
-    #validation_container {
-        width: 80%;
-        max-width: 110;
-        /* Sized so the list keeps several rows and both buttons stay visible at 80x24. */
-        height: 90%;
-        max-height: 36;
-        background: $surface;
-        border: round $primary;
-        padding: 0 2;
-    }
-
-    #validation_title {
-        text-style: bold;
-        margin-bottom: 1;
-        text-align: center;
-        width: 100%;
-    }
-
-    #validation_hint {
-        width: 100%;
-        color: $text-muted;
-    }
-
-    #issue_list {
-        height: 1fr;
-        min-height: 3;
-        border: round $secondary;
-        background: $boost;
-    }
-
-    /* Rows size to their content; a 1fr child would swallow the whole list. */
-    #issue_list > .issue-item {
-        height: auto;
-        padding: 0 1;
-        border-bottom: solid $primary 50%;
-    }
-
-    #issue_list .issue-text {
-        height: auto;
-        width: 1fr;
-    }
-
-    #validation_buttons {
-        height: auto;
-        margin-bottom: 0;
-    }
-
-    .issue-error {
-        color: $error;
-        text-style: bold;
-    }
-
-    .issue-warning {
-        color: $warning;
-    }
-
-    /* ── CSV picker modal ─────────────────────────────────────── */
-    CsvPickerScreen {
-        align: center middle;
-        background: rgba(0,0,0,0.7);
-    }
-
-    #picker_container {
-        width: 84%;
-        max-width: 120;
-        height: 80%;
-        background: $surface;
-        border: round $primary;
-        padding: 1 2;
-    }
-
-    #picker_title {
-        text-style: bold;
-        text-align: center;
-        width: 100%;
-        margin-bottom: 1;
-    }
-
-    #picker_body {
-        height: 1fr;
-    }
-
-    #picker_quick {
-        width: 40%;
-        min-width: 28;
-        margin-right: 2;
-    }
-
-    #picker_tree_pane {
-        width: 1fr;
-    }
-
-    .picker-subtitle {
-        text-style: bold;
-        color: $text-accent;
-        margin-bottom: 1;
-    }
-
-    .picker-hint {
-        color: $text-muted;
-        margin-top: 1;
-    }
-
-    #picker_quick_list, #picker_tree {
-        height: 1fr;
-        border: round $primary 40%;
-        background: $boost;
-    }
-
-    #btn_picker_cancel {
-        width: 100%;
-        margin-top: 1;
-    }
-
-    /* ── Confirm modal ────────────────────────────────────────── */
-    ConfirmScreen {
-        align: center middle;
-        background: rgba(0,0,0,0.7);
-    }
-
-    #confirm_container {
-        width: 60;
-        height: auto;
-        background: $surface;
-        border: round $error;
-        padding: 1 2;
-    }
-
-    #confirm_message {
-        width: 100%;
-        margin-bottom: 1;
-    }
-
-    #confirm_buttons {
-        height: auto;
-        align-horizontal: center;
-    }
-
-    #confirm_buttons Button {
-        margin-right: 2;
-    }
-    """
-
+    # Release tooling matches the title (edge_deploy.yaml tui_chrome_regex).
     TITLE = "Privacy-Compliant Peer Benchmark"
-    SUB_TITLE = "Control 3.2 dimensional analysis"
+    SUB_TITLE = ""
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -956,54 +669,60 @@ class BenchmarkApp(App):
             # LEFT — CONFIGURATION
             # ═══════════════════════════════════════════════════════════
             with VerticalScroll(id="config_pane"):
-                with Container(id="section_data", classes="form-section") as section:
-                    section.border_title = "1 · Data Source"
+                with Container(id="section_data", classes="form-section"):
+                    yield Label("1 · Data source", classes="ab-section")
                     yield Label("CSV file path", classes="field-label")
-                    with Horizontal(classes="input-group"):
-                        yield Button("Browse…", id="btn_browse_csv", variant="default")
-                        yield Input(placeholder="path/to/data.csv", id="csv_path", classes="file-input")
+                    with Horizontal(classes="ab-row"):
+                        yield Button("Browse…", id="btn_browse_csv", variant="default", compact=True)
+                        yield Input(placeholder="path/to/data.csv", id="csv_path", classes="file-input", compact=True)
                     yield Static("No file loaded.", id="csv_meta")
 
-                with Container(id="section_entity", classes="form-section") as section:
-                    section.border_title = "2 · Entity"
+                with Container(id="section_entity", classes="form-section"):
+                    yield Label("2 · Entity", classes="ab-section")
                     with Horizontal(classes="input-group"):
                         with Vertical(classes="field-pair"):
                             yield Label("Entity ID column", classes="field-label")
-                            yield Select([], prompt="Select column…", id="entity_col")
+                            yield Select([], prompt="Select column…", id="entity_col", compact=True)
                         with Vertical(classes="field-pair"):
-                            yield Label("Target entity (blank = peer-only)", classes="field-label")
-                            yield Select([], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True)
+                            yield Label("Target entity", classes="field-label")
+                            yield Select(
+                                [], prompt=ENTITY_SELECT_PROMPT, id="entity_name", allow_blank=True, compact=True
+                            )
 
-                with Container(id="section_analysis", classes="form-section") as section:
-                    section.border_title = "3 · Analysis Options"
+                with Container(id="section_analysis", classes="form-section"):
+                    yield Label("3 · Analysis options", classes="ab-section")
                     with Horizontal(classes="input-group"):
                         with Vertical(classes="field-pair"):
-                            yield Label("Time period column (optional)", classes="field-label")
-                            yield Select([], prompt="Select column…", id="time_col", allow_blank=True)
+                            yield Label("Time period column", classes="field-label")
+                            yield Select([], prompt="Select column…", id="time_col", allow_blank=True, compact=True)
                         with Vertical(classes="field-pair"):
-                            yield Label("Output filename", classes="field-label")
-                            yield Input(placeholder="Auto-generated if blank", id="output_file")
+                            yield Label("Output file name", classes="field-label")
+                            yield Input(placeholder="Leave blank to name it automatically", id="output_file", compact=True)
 
                     yield Label("Optimization preset", classes="field-label")
-                    with Horizontal(classes="input-group"):
-                        yield Select([], prompt="Select preset…", id="preset_select")
-                        yield Button("Preset Guide", id="btn_preset_help", variant="default")
+                    with Horizontal(classes="ab-row"):
+                        yield Select([], prompt="Select preset…", id="preset_select", compact=True)
+                        yield Button("Preset guide", id="btn_preset_help", variant="default", compact=True)
                     yield Static("", id="preset_blurb", classes="field-hint")
 
-                    with Horizontal(classes="input-group"):
-                        yield Checkbox("Analyze impact", value=True, id="analyze_distortion")
-                        yield Checkbox("Compare presets", id="compare_presets")
-                        yield Checkbox("Validate input", id="validate_input", value=True)
-                    with Horizontal(classes="input-group"):
-                        yield Checkbox("Include calc. metrics (CSV)", id="include_calculated")
+                    with Vertical(classes="ab-checks"):
+                        yield BoxCheckbox("Show how the weighting changed results", value=True, id="analyze_distortion", compact=True)
+                        yield BoxCheckbox("Compare presets", id="compare_presets", compact=True)
+                        yield BoxCheckbox("Validate input", id="validate_input", value=True, compact=True)
+                        yield BoxCheckbox("Add calculated metrics to the balanced CSV", id="include_calculated", compact=True)
                     with Horizontal(classes="input-group"):
                         with Vertical(classes="field-pair"):
                             yield Label("Output format", classes="field-label")
                             yield Select(
-                                [("Analysis", "analysis"), ("Publication", "publication"), ("Both", "both")],
+                                [
+                                    (labels.text_for(labels.OUTPUT_FORMAT, "analysis"), "analysis"),
+                                    (labels.text_for(labels.OUTPUT_FORMAT, "publication"), "publication"),
+                                    (labels.text_for(labels.OUTPUT_FORMAT, "both"), "both"),
+                                ],
                                 id="output_format",
                                 value="analysis",
                                 allow_blank=False,
+                                compact=True,
                             )
                     yield Label(
                         "Privacy release mode",
@@ -1015,6 +734,7 @@ class BenchmarkApp(App):
                         id="privacy_release_mode",
                         value=PrivacyReleaseMode.COMPLETE_OUTPUT.value,
                         allow_blank=False,
+                        compact=True,
                     )
                     yield Static(
                         "Verified safe coverage publishes only verified safe units. "
@@ -1023,183 +743,212 @@ class BenchmarkApp(App):
                         id="privacy_release_mode_hint",
                         classes="field-hint",
                     )
-                    yield Checkbox(
-                        "Privacy rule sweep mode",
-                        id="privacy_rule_sweep_mode",
-                        value=False,
-                    )
-                    yield Checkbox(
-                        "Anonymized aggregated merchant-spend context (enables 4/35)",
-                        id="privacy_merchant_spend_scope",
-                    )
+                    with Vertical(classes="ab-checks"):
+                        yield BoxCheckbox(
+                            "Privacy rule sweep: try every applicable rule",
+                            id="privacy_rule_sweep_mode",
+                            value=False,
+                            compact=True,
+                        )
+                        yield BoxCheckbox(
+                            "Anonymized aggregated merchant-spend context (enables 4/35)",
+                            id="privacy_merchant_spend_scope",
+                            compact=True,
+                        )
 
                 # ───────────────────────────────────────────────────────
                 # COMPLIANCE DECLARATIONS (collapsed by default)
                 # ───────────────────────────────────────────────────────
-                with Collapsible(title="Compliance Declarations", id="compliance_declarations", collapsed=True):
+                with Collapsible(title="Compliance declarations", id="compliance_declarations", collapsed=True):
                     with Vertical(id="compliance_form"):
-                        yield Label("Citi Privacy Overlay", classes="adv-group-title")
-                        yield Checkbox(
+                        yield Label("Citi privacy overlay", classes="adv-group-title")
+                        yield BoxCheckbox(
                             "A Citi competitor receives the output",
                             id="citi_competitor_receives_output",
+                            compact=True,
                         )
+                        yield Label("Citibank entity name", classes="field-label")
                         yield Input(
                             placeholder="Exact Citibank entity name (required for Citi overlay)",
                             id="citibank_entity_name",
+                            compact=True,
                         )
 
                 # ───────────────────────────────────────────────────────
                 # ADVANCED OPTIMIZATION (collapsed by default)
                 # ───────────────────────────────────────────────────────
-                with Collapsible(title="Advanced Optimization Parameters", id="advanced_opt", collapsed=True):
+                with Collapsible(title="Advanced optimization (F8)", id="advanced_opt", collapsed=True):
                     with Vertical(id="advanced_form"):
-                        yield Label("Linear Programming", classes="adv-group-title")
+                        yield Label("Linear programming", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
                                 yield Label("Tolerance (pp)", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance")
+                                yield Input(placeholder="e.g., 2.0", id="adv_lp_tolerance", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Max Iterations", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations")
+                                yield Label("Max iterations", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 1000", id="adv_lp_max_iterations", compact=True)
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Lambda Penalty", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty")
+                                yield Label("Lambda penalty", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 100", id="adv_lp_lambda_penalty", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Volume Weighting Exponent", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent")
-                        with Horizontal(classes="input-group"):
-                            yield Checkbox("Enable Volume-Weighted Penalties", id="adv_lp_volume_weighted_penalties")
+                                yield Label("Volume weighting exponent", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 1.5", id="adv_lp_volume_weighting_exponent", compact=True)
+                        with Vertical(classes="ab-checks"):
+                            yield BoxCheckbox(
+                                "Enable volume-weighted penalties", id="adv_lp_volume_weighted_penalties", compact=True
+                            )
 
                         yield Label("Constraints", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Volume Preservation", classes="adv-field-label")
-                                yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation")
+                                yield Label("Volume preservation", classes="adv-field-label")
+                                yield Input(placeholder="0.0 - 1.0", id="adv_constraints_volume_preservation", compact=True)
 
-                        yield Label("Weight Bounds", classes="adv-group-title")
+                        yield Label("Weight bounds", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Min Weight", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight")
+                                yield Label("Min weight", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 0.01", id="adv_bounds_min_weight", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Max Weight", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight")
+                                yield Label("Max weight", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 10.0", id="adv_bounds_max_weight", compact=True)
 
-                        yield Label("Subset Search", classes="adv-group-title")
+                        yield Label("Subset search", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
-                            yield Checkbox("Enable Subset Search", id="adv_subset_enabled")
+                            yield BoxCheckbox("Enable subset search", id="adv_subset_enabled", compact=True)
                             with Vertical(classes="field-pair"):
                                 yield Label("Strategy", classes="adv-field-label")
-                                yield Input(placeholder="greedy / random", id="adv_subset_strategy")
+                                yield Input(placeholder="greedy / random", id="adv_subset_strategy", compact=True)
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Max Attempts", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts")
+                                yield Label("Max attempts", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 200", id="adv_subset_max_attempts", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Max Slack Threshold", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold")
-                        with Horizontal(classes="input-group"):
-                            yield Checkbox("Trigger on Slack", id="adv_subset_trigger_on_slack")
-                            yield Checkbox("Prefer Slacks First", id="adv_subset_prefer_slacks_first")
+                                yield Label("Max slack threshold", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 0.05", id="adv_subset_max_slack_threshold", compact=True)
+                        with Vertical(classes="ab-checks"):
+                            yield BoxCheckbox("Trigger on slack", id="adv_subset_trigger_on_slack", compact=True)
+                            yield BoxCheckbox("Prefer slacks first", id="adv_subset_prefer_slacks_first", compact=True)
 
-                        yield Label("Bayesian Optimization (Fallback)", classes="adv-group-title")
+                        yield Label("Bayesian optimization (fallback)", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Max Iterations", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations")
+                                yield Label("Max iterations", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 100", id="adv_bayes_max_iterations", compact=True)
                             with Vertical(classes="field-pair"):
-                                yield Label("Learning Rate", classes="adv-field-label")
-                                yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate")
+                                yield Label("Learning rate", classes="adv-field-label")
+                                yield Input(placeholder="e.g., 0.01", id="adv_bayes_learning_rate", compact=True)
 
-                        yield Label("Analysis Settings", classes="adv-group-title")
+                        yield Label("Analysis settings", classes="adv-group-title")
                         with Horizontal(classes="input-group"):
                             with Vertical(classes="field-pair"):
-                                yield Label("Best-in-Class Percentile", classes="adv-field-label")
-                                yield Input(placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile")
+                                yield Label("Best-in-class percentile", classes="adv-field-label")
+                                yield Input(
+                                    placeholder="0.0 - 1.0 (e.g., 0.85)", id="adv_analysis_bic_percentile", compact=True
+                                )
 
-                        yield Label("Output Settings", classes="adv-group-title")
-                        with Horizontal(classes="input-group"):
-                            yield Checkbox("Include Debug Sheets", id="adv_output_debug_sheets")
-                            yield Checkbox("Include Privacy Validation", id="adv_output_privacy_validation")
+                        yield Label("Output settings", classes="adv-group-title")
+                        with Vertical(classes="ab-checks"):
+                            yield BoxCheckbox("Include debug sheets", id="adv_output_debug_sheets", compact=True)
+                            yield BoxCheckbox(
+                                "Include privacy validation", id="adv_output_privacy_validation", compact=True
+                            )
 
-                        with Horizontal(classes="input-group"):
-                            yield Button("Apply Overrides", id="btn_apply_advanced", variant="primary")
-                            yield Button("Export Config", id="btn_export_advanced", variant="default")
-                        yield Label("Values override preset when applied.", classes="subsection-title")
+                        with Horizontal(classes="ab-row ab-checks"):
+                            yield Button("Apply overrides", id="btn_apply_advanced", variant="primary", compact=True)
+                            yield Button("Export settings (F9)", id="btn_export_advanced", variant="default", compact=True)
+                        yield Label(
+                            "Applied values override the preset for the next runs.", classes="subsection-title"
+                        )
 
                 # ───────────────────────────────────────────────────────
                 # ANALYSIS MODE TABS
                 # ───────────────────────────────────────────────────────
-                with Container(id="section_mode", classes="form-section") as section:
-                    section.border_title = "4 · Analysis Mode"
+                with Container(id="section_mode", classes="form-section"):
+                    yield Label("4 · Analysis mode", classes="ab-section")
                     with TabbedContent(initial="share_tab"):
-                        with TabPane("Share Analysis", id="share_tab"):
+                        with TabPane("Share analysis", id="share_tab"):
                             with Vertical(classes="field-pair"):
                                 yield Label("Primary metric column", classes="field-label")
-                                yield Select([], prompt="Select column…", id="share_metric")
+                                yield Select([], prompt="Select column…", id="share_metric", compact=True)
 
                             with Vertical(classes="field-pair"):
-                                yield Label("Secondary metrics (optional)", classes="field-label")
-                                yield SelectionList(id="share_secondary", classes="multi-select")
+                                yield Label("Secondary metrics", classes="field-label")
+                                yield BoxSelectionList(id="share_secondary", classes="multi-select")
 
                             yield Label("Dimension options", classes="subsection-title")
-                            with Horizontal(classes="input-group"):
-                                yield Checkbox("Auto-detect dimensions", value=False, id="share_auto_dim")
-                                yield Checkbox("Debug sheets", value=True, id="share_debug")
-                                yield Checkbox("Export balanced CSV", value=True, id="share_export_csv")
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox("Auto-detect dimensions", value=False, id="share_auto_dim", compact=True)
+                                yield BoxCheckbox("Debug sheets", value=True, id="share_debug", compact=True)
+                                yield BoxCheckbox("Export balanced CSV", value=True, id="share_export_csv", compact=True)
 
-                            yield Label("Manual dimension selection", id="share_dims_label", classes="field-label")
-                            yield SelectionList(id="share_dims", classes="multi-select")
+                            yield Label("Dimensions", id="share_dims_label", classes="field-label")
+                            yield BoxSelectionList(id="share_dims", classes="multi-select")
 
-                        with TabPane("Rate Analysis", id="rate_tab"):
+                        with TabPane("Rate analysis", id="rate_tab"):
                             with Vertical(classes="field-pair"):
                                 yield Label("Total column (denominator)", classes="field-label")
-                                yield Select([], prompt="Select column…", id="rate_total")
+                                yield Select([], prompt="Select column…", id="rate_total", compact=True)
                             with Horizontal(classes="split-inputs"):
                                 with Vertical(classes="field-pair"):
                                     yield Label("Approved column", classes="field-label")
-                                    yield Select([], prompt="Select column…", id="rate_approved", allow_blank=True)
+                                    yield Select(
+                                        [], prompt="Select column…", id="rate_approved", allow_blank=True, compact=True
+                                    )
                                 with Vertical(classes="field-pair"):
                                     yield Label("Fraud column", classes="field-label")
-                                    yield Select([], prompt="Select column…", id="rate_fraud", allow_blank=True)
+                                    yield Select(
+                                        [], prompt="Select column…", id="rate_fraud", allow_blank=True, compact=True
+                                    )
 
                             with Vertical(classes="field-pair"):
-                                yield Label("Secondary metrics (optional)", classes="field-label")
-                                yield SelectionList(id="rate_secondary", classes="multi-select")
+                                yield Label("Secondary metrics", classes="field-label")
+                                yield BoxSelectionList(id="rate_secondary", classes="multi-select")
 
                             yield Label("Dimension options", classes="subsection-title")
-                            with Horizontal(classes="input-group"):
-                                yield Checkbox("Auto-detect dimensions", value=False, id="rate_auto_dim")
-                                yield Checkbox("Debug sheets", value=True, id="rate_debug")
-                                yield Checkbox("Export balanced CSV", value=False, id="rate_export_csv")
-                                yield Checkbox("Fraud in BPS", value=True, id="fraud_in_bps")
+                            with Vertical(classes="ab-checks"):
+                                yield BoxCheckbox("Auto-detect dimensions", value=False, id="rate_auto_dim", compact=True)
+                                yield BoxCheckbox("Debug sheets", value=True, id="rate_debug", compact=True)
+                                yield BoxCheckbox("Export balanced CSV", value=False, id="rate_export_csv", compact=True)
+                                yield BoxCheckbox(
+                                    "Show fraud in basis points (publication workbook)",
+                                    value=True,
+                                    id="fraud_in_bps",
+                                    compact=True,
+                                )
 
-                            yield Label("Manual dimension selection", id="rate_dims_label", classes="field-label")
-                            yield SelectionList(id="rate_dims", classes="multi-select")
+                            yield Label("Dimensions", id="rate_dims_label", classes="field-label")
+                            yield BoxSelectionList(id="rate_dims", classes="multi-select")
 
-                yield Button("▶  Run Analysis", id="btn_run", variant="primary")
+                yield Button("▶  Run Analysis", id="btn_run", variant="primary", compact=True)
 
             # ═══════════════════════════════════════════════════════════
             # RIGHT — ACTIVITY
             # ═══════════════════════════════════════════════════════════
             with Vertical(id="activity_pane"):
-                status = Static(id="run_status")
-                status.border_title = "Run Status"
-                yield status
+                status = Vertical(id="run_status", classes="ab-panel")
+                status.border_title = "Run status"
+                with status:
+                    yield StatusBadge("ready", id="run_status_badge")
+                    yield Static("", id="run_status_detail")
 
-                results = Static("No runs yet.", id="results_panel")
-                results.border_title = "Last Run"
-                yield results
+                last_run = Vertical(id="last_run", classes="ab-panel")
+                last_run.border_title = "Last run"
+                with last_run:
+                    with Horizontal(id="results_badges", classes="hidden"):
+                        yield StatusBadge("success", id="results_badge")
+                        yield StatusBadge("compliant", id="results_verdict_badge", classes="hidden")
+                    yield Static("No runs yet.", id="results_panel")
 
                 # highlight=False: per-line regex highlighting is CPU-costly on
                 # busy logs. max_lines bounds memory and re-render cost on
                 # long sessions.
-                log = Log(id="log_output", highlight=False, max_lines=2000)
-                log.border_title = "Execution Log"
+                log = Log(id="log_output", highlight=False, max_lines=2000, classes="ab-panel")
+                log.border_title = "Execution log"
                 yield log
 
-        yield Footer()
+        yield KeyBar("field", id="key_bar")
 
     # ──────────────────────────────────────────────────────────────────
     # Lifecycle
@@ -1212,7 +961,8 @@ class BenchmarkApp(App):
         self._run_started_at: Optional[float] = None
         self._run_mode: Optional[str] = None
         self._elapsed_timer = None
-        self._last_status_text: Optional[str] = None
+        self._last_status_text: Optional[tuple] = None
+        self._outcome_badge: Optional[str] = None
         self._last_telemetry_surface: Optional[str] = None
         self._telemetry_session_started = False
         # Prior privacy-rule-sweep checkbox value while Verified Safe Coverage
@@ -1232,7 +982,7 @@ class BenchmarkApp(App):
         # Set initial focus
         self.query_one("#csv_path").focus()
         self.notify(
-            "Ctrl+O browse · Ctrl+R run · Ctrl+A advanced · Ctrl+E export adv · Ctrl+L clear log · F1 preset guide",
+            "Ctrl+O open CSV · Ctrl+R run · F8 advanced · F9 export advanced · Ctrl+L clear log · F1 preset guide",
             title="Keyboard shortcuts",
             severity="information",
             timeout=6,
@@ -1420,9 +1170,9 @@ class BenchmarkApp(App):
         select.value = PrivacyReleaseMode.COMPLETE_OUTPUT.value
         self._restored_privacy_release_mode = PrivacyReleaseMode.COMPLETE_OUTPUT.value
         self.notify(
-            "Saved privacy release mode was unknown or stale; "
+            "The saved release mode is no longer available, so the release "
             "fell back to Complete output.",
-            title="Session Restore",
+            title="Session restore",
             severity="warning",
             timeout=6,
         )
@@ -1446,18 +1196,28 @@ class BenchmarkApp(App):
     # Run status / results panels
     # ──────────────────────────────────────────────────────────────────
 
-    _STATE_BADGES = {
-        "idle": "[dim]●[/dim] [b]Ready[/b]",
-        "validating": "[cyan]●[/cyan] [b cyan]Validating[/b cyan]",
-        "running": "[yellow]●[/yellow] [b yellow]Running[/b yellow]",
-        "success": "[green]●[/green] [b green]Success[/b green]",
-        "error": "[red]●[/red] [b red]Failed[/b red]",
-        "blocked": "[red]●[/red] [b red]Blocked[/b red]",
+    # App run state -> status-language badge (tui.status). "validating" is
+    # its own app state (a ValidationModal may still be open), shown as
+    # RUNNING with a "Validating" detail.
+    _STATE_BADGES: Dict[str, "RunBadge"] = {
+        "idle": RunBadge("ready"),
+        "validating": RunBadge("running", "Validating"),
+        "running": RunBadge("running"),
+        "success": RunBadge("success"),
+        "error": RunBadge("error"),
+        "blocked": RunBadge("blocked"),
     }
 
+    def _current_run_badge(self) -> "RunBadge":
+        state = getattr(self, "_run_state", "idle")
+        if state == "validating" and isinstance(self.screen, ModalScreen):
+            return RunBadge("awaiting")
+        if state == "blocked" and getattr(self, "_outcome_badge", None):
+            return RunBadge(self._outcome_badge)
+        return self._STATE_BADGES.get(state, self._STATE_BADGES["idle"])
+
     def _refresh_run_status(self) -> None:
-        badge = self._STATE_BADGES.get(self._run_state, self._STATE_BADGES["idle"])
-        lines = [badge]
+        badge = self._current_run_badge()
         preset = None
         try:
             preset_val = self.query_one("#preset_select", Select).value
@@ -1465,19 +1225,77 @@ class BenchmarkApp(App):
         except NoMatches:
             pass
         mode = self._run_mode or self._analysis_mode()
-        lines.append(f"[dim]Mode[/dim]    {mode}")
-        lines.append(f"[dim]Preset[/dim]  {preset or '—'}")
+        lines = [
+            f"[$text-muted]Mode[/]    {escape_markup(labels.text_for(labels.ANALYSIS_MODE, mode))}",
+            f"[$text-muted]Preset[/]  {escape_markup(_preset_display(preset))}",
+        ]
         if self._run_started_at is not None and self._run_state == "running":
             elapsed = time.monotonic() - self._run_started_at
-            lines.append(f"[dim]Elapsed[/dim] {elapsed:.0f}s")
+            lines.append(f"[$text-muted]Elapsed[/] {elapsed:.0f} s")
         text = "\n".join(lines)
-        if text == self._last_status_text:
+        key = (badge, text)
+        if key == self._last_status_text:
             return  # Nothing changed; skip the repaint.
         try:
-            self.query_one("#run_status", Static).update(text)
-            self._last_status_text = text
+            self.query_one("#run_status_badge", StatusBadge).set_status(badge.state, badge.detail)
+            self.query_one("#run_status_detail", Static).update(text)
+            self._last_status_text = key
         except NoMatches:
             pass
+        self._update_key_bar()
+
+    # ── Key bar context (tui.keybar) ──────────────────────────────────────
+
+    def _key_bar_context(self) -> str:
+        if getattr(self, "_run_state", "idle") in ("running", "validating"):
+            return "running"
+        focused = self.focused
+        context = "field"
+        if focused is not None:
+            chain = list(focused.ancestors_with_self)
+            if any(isinstance(node, Select) for node in chain):
+                context = "select"
+            elif isinstance(focused, SelectionList):
+                context = "list"
+            elif isinstance(focused, Checkbox):
+                context = "toggle"
+            elif isinstance(focused, (Button, CollapsibleTitle)):
+                context = "button"
+            elif isinstance(focused, Tabs):
+                context = "tabs"
+        if context == "field" and getattr(self, "_run_state", "idle") in ("success", "error", "blocked"):
+            return "results"
+        return context
+
+    def _update_key_bar(self) -> None:
+        try:
+            bar = self.query_one("#key_bar", KeyBar)
+        except NoMatches:
+            return
+        bar.set_context(self._key_bar_context())
+
+    def on_descendant_focus(self, event: Any) -> None:
+        self._update_key_bar()
+
+    def on_descendant_blur(self, event: Any) -> None:
+        self._update_key_bar()
+
+    def action_copy_or_quit(self) -> None:
+        """Ctrl+C: copy a text selection if there is one, otherwise quit."""
+        focused = self.focused
+        if isinstance(focused, Input) and not focused.selection.is_empty:
+            focused.action_copy()
+            return
+        try:
+            selected = self.screen.get_selected_text()
+        except Exception:
+            selected = None
+        if selected:
+            self.copy_to_clipboard(selected)
+            return
+        if isinstance(self.screen, ConfirmScreen) and self.screen.confirm_label == "Quit":
+            return  # The quit question is already open.
+        self.action_quit()
 
     def _begin_validation_ui(self) -> None:
         """Switch UI into the pre-run validation state (app thread only).
@@ -1513,9 +1331,22 @@ class BenchmarkApp(App):
         self._refresh_run_status()
         self._save_session()
 
-    def _end_run_ui(self, state: str, summary_markup: str) -> None:
-        """Restore UI after a run and publish the last-run summary (app thread only)."""
+    def _end_run_ui(
+        self,
+        state: str,
+        summary_markup: str,
+        badge: Optional[str] = None,
+        verdict: Optional[str] = None,
+    ) -> None:
+        """Restore UI after a run and publish the last-run summary (app thread only).
+
+        ``state`` is the app run state (success/error/blocked). ``badge``
+        overrides its status-language badge (``withheld`` for a privacy
+        denial) and ``verdict`` adds a second badge (``compliant`` or
+        ``warning``) next to DONE.
+        """
         self._run_state = state
+        self._outcome_badge = badge
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
             self._elapsed_timer = None
@@ -1528,14 +1359,24 @@ class BenchmarkApp(App):
         btn.label = "▶  Run Privacy Sweep" if self._privacy_sweep_enabled() else "▶  Run Analysis"
         self._refresh_run_status()
 
-        header = self._STATE_BADGES.get(state, "")
+        header = f"Finished {datetime.now().strftime('%H:%M:%S')}"
         if elapsed is not None:
-            header += f"  [dim]({elapsed:.1f}s · {datetime.now().strftime('%H:%M:%S')})[/dim]"
-        self.query_one("#results_panel", Static).update(f"{header}\n{summary_markup}".strip())
+            header += f" · {elapsed:.1f} s"
+        self.query_one("#results_panel", Static).update(f"[$text-muted]{header}[/]\n{summary_markup}".strip())
+        try:
+            self.query_one("#results_badges").remove_class("hidden")
+            self.query_one("#results_badge", StatusBadge).set_status(self._current_run_badge().state)
+            verdict_badge = self.query_one("#results_verdict_badge", StatusBadge)
+            if verdict:
+                verdict_badge.set_status(verdict)
+            verdict_badge.set_class(not verdict, "hidden")
+        except NoMatches:
+            pass
 
     def _reset_run_ui(self) -> None:
         """Re-enable the run controls after an aborted launch (app thread only)."""
         self._run_state = "idle"
+        self._outcome_badge = None
         if self._elapsed_timer is not None:
             self._elapsed_timer.stop()
             self._elapsed_timer = None
@@ -1562,11 +1403,13 @@ class BenchmarkApp(App):
         focus_id: Optional[str] = None,
         *,
         block_reason: Optional[str] = None,
+        title_state: str = "notready",
     ) -> None:
         """Notify about an invalid launch and return UI to idle (worker-safe).
 
         ``block_reason`` is a closed LAUNCH_BLOCK_REASONS value recorded as
         ``launch_blocked``; ``message`` never reaches telemetry.
+        ``title_state`` picks the status-language toast title (tui.status).
         """
         if block_reason is not None:
             launch_blocked(self._telemetry_action(), block_reason)
@@ -1576,7 +1419,9 @@ class BenchmarkApp(App):
         )
         log_widget = self.query_one("#log_output", Log)
         write_log_message(log_widget, f"ERROR: {message}")
-        self.call_from_thread(self.notify, message, title="Cannot run", severity="error")
+        self.call_from_thread(
+            self.notify, message, title=status_text(title_state), severity="error", markup=False
+        )
         self.call_from_thread(self._reset_run_ui)
         if focus_id:
             def _focus() -> None:
@@ -1594,9 +1439,11 @@ class BenchmarkApp(App):
         """
         return self._await_confirmation(
             ConfirmScreen(
-                "This preset uses the accuracy_first compliance posture: it "
-                "prioritizes analytical fidelity over strict compliance and "
-                "may produce a NON-PUBLISHABLE diagnostic report.\n\n"
+                "Consent needed for this run\n\n"
+                "This preset uses the Accuracy first compliance posture "
+                "(accuracy_first): it prioritizes analytical fidelity over "
+                "strict compliance and may produce a NON-PUBLISHABLE "
+                "diagnostic report. Consent applies to this run only.\n\n"
                 "Proceed with this run?",
                 confirm_label="I understand — proceed",
             )
@@ -1692,9 +1539,9 @@ class BenchmarkApp(App):
         if facts is None:
             return []
         lines = [
-            f"[dim]Release[/dim]  {facts['mode']}",
+            f"[$text-muted]Release[/]  {facts['mode']}",
             (
-                f"[dim]Coverage[/dim] "
+                f"[$text-muted]Coverage[/] "
                 f"{facts['released_unit_count']}/{facts['candidate_unit_count']} "
                 f"released · {facts['suppressed_unit_count']} suppressed · "
                 f"{facts['coverage_percentage']:.4g}%"
@@ -1702,9 +1549,9 @@ class BenchmarkApp(App):
         ]
         cert_path = facts["coverage_certificate_output"]
         if cert_path:
-            lines.append(f"[dim]Certificate[/dim] {cert_path}")
+            lines.append(f"[$text-muted]Certificate[/] {escape_markup(str(cert_path))}")
         if facts["independent_verification_passed"]:
-            lines.append("[dim]Status[/dim]  Independent privacy verification passed")
+            lines.append("[$text-muted]Status[/]  Independent privacy verification passed")
         return lines
 
     @classmethod
@@ -1752,10 +1599,11 @@ class BenchmarkApp(App):
         if not os.path.isfile(csv_path):
             self._emit_dataset_load("not_found", csv_path)
             self.notify(
-                f"CSV file not found: {csv_path}",
-                title="Invalid Path",
+                f"Not found: {csv_path}. Check the folder, or press Ctrl+O to browse.",
+                title="CSV file not found",
                 severity="error",
                 timeout=6,
+                markup=False,
             )
             self.query_one("#log_output").write(f"CSV file not found: {csv_path}\n")
             return None
@@ -1827,16 +1675,23 @@ class BenchmarkApp(App):
             if announce:
                 self.notify(
                     f"Loaded {len(cols)} columns from {os.path.basename(file_path)}",
-                    title="CSV Loaded",
+                    title="CSV loaded",
                     severity="information",
                     timeout=5,
+                    markup=False,
                 )
 
         except Exception as e:
             if not headers_read:
                 self._emit_dataset_load("header_read_failed", file_path)
             self.query_one("#log_output").write(f"Error reading CSV headers: {e}\n")
-            self.notify(f"Failed to read CSV: {e}", title="CSV Error", severity="error")
+            first_line = str(e).splitlines()[0] if str(e) else type(e).__name__
+            self.notify(
+                f"Can't read this file as CSV: {first_line}. Check that it is comma-separated text.",
+                title="CSV not loaded",
+                severity="error",
+                markup=False,
+            )
 
     def _emit_dataset_load(self, outcome: str, file_path: Any) -> None:
         """Record a closed dataset_load outcome once per (outcome, file).
@@ -1863,8 +1718,12 @@ class BenchmarkApp(App):
         except OSError:
             size_text = "?"
         preview = ", ".join(cols[:6]) + ("…" if len(cols) > 6 else "")
+        # Literal text: file and column names come from the operator's data.
         self.query_one("#csv_meta", Static).update(
-            f"[green]✓[/green] {os.path.basename(file_path)} · {len(cols)} columns · {size_text}\n[dim]{preview}[/dim]"
+            Text(
+                f"{status_glyph('success')} {os.path.basename(file_path)} · "
+                f"{len(cols)} columns · {size_text}\n{preview}"
+            )
         )
 
     def update_secondary_options(self, list_id, exclude=None):
@@ -1939,26 +1798,38 @@ class BenchmarkApp(App):
         # changes refresh via on_select_changed.
 
     def _update_preset_blurb(self, preset_name: str) -> None:
-        """Show the preset's own description under the selector."""
+        """Show the preset's description and privacy posture under the selector.
+
+        The posture is shown before the run (02 §5.4 #11), so a Best effort or
+        Accuracy first run is never a surprise in the log afterwards.
+        """
         description = ""
+        posture = None
         try:
             data = self.preset_workflow.load_preset_data(preset_name)
             if isinstance(data, dict):
-                description = str(data.get("description") or "")
+                description = labels.strip_preset_description(str(data.get("description") or ""))
+                posture = data.get("compliance_posture")
         except Exception:
             description = ""
+        lines = [description] if description else []
+        if posture:
+            posture_label = labels.label_for(labels.POSTURE, posture)
+            mark = f"{status_glyph('warning')} " if posture in ("best_effort", "accuracy_first") else ""
+            lines.append(f"{mark}Privacy posture: {posture_label.primary}. {posture_label.why}".rstrip())
         try:
-            self.query_one("#preset_blurb", Static).update(description)
+            self.query_one("#preset_blurb", Static).update(Text("\n".join(lines)))
         except NoMatches:
             pass
 
     def _warn_missing_widget(self, widget_id: str) -> None:
         logging.getLogger(__name__).warning("Advanced widget not found: %s", widget_id)
         self.notify(
-            f"Advanced widget missing: {widget_id}",
-            title="Advanced Optimization",
+            f"Couldn't show the advanced setting {widget_id}; the preset value is used.",
+            title="Advanced optimization",
             severity="warning",
             timeout=4,
+            markup=False,
         )
 
     def _safe_set_input(self, field_id: str, value: Any) -> None:
@@ -2053,7 +1924,12 @@ class BenchmarkApp(App):
         yaml_data = self._collect_advanced_override_data()
         if not yaml_data:
             advanced_override("empty")
-            self.notify("No advanced values provided", title="Advanced Overrides", severity="warning", timeout=4)
+            self.notify(
+                "No advanced values to apply. Enter at least one value, then apply again.",
+                title="Advanced overrides",
+                severity="warning",
+                timeout=4,
+            )
             return
 
         posture = "strict"
@@ -2075,15 +1951,23 @@ class BenchmarkApp(App):
             if self._config_file_declares_privacy_release_mode(str(tmp_path)):
                 self._refresh_privacy_release_mode_from_config()
             self.notify(
-                f"Advanced overrides applied (file: {tmp_path.name})",
-                title="Advanced Overrides",
+                f"Advanced overrides apply to the next runs. File: {tmp_path}",
+                title="Advanced overrides",
                 severity="information",
                 timeout=6,
+                markup=False,
             )
             advanced_override("applied")
         except Exception as e:
             advanced_override("failed")
-            self.notify(f"Failed to write overrides: {e}", title="Advanced Overrides", severity="error", timeout=6)
+            self.notify(
+                f"Couldn't save the advanced overrides for this run. Why: {e}. "
+                "Next: check that the working folder is writable, then apply again.",
+                title=status_text("error"),
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
 
     def setup_logging_capture(self):
         """Redirect logging to the TUI Log widget."""
@@ -2492,7 +2376,13 @@ class BenchmarkApp(App):
                     self._refresh_privacy_release_mode_from_config()
                 self._refresh_run_status()
                 if not self.query_one("#advanced_opt").collapsed:
-                    self.notify(f"Preset '{event.value}' parameters refreshed", title="Advanced Optimization", severity="information", timeout=4)
+                    self.notify(
+                        f"Advanced values reloaded from the preset {event.value}.",
+                        title="Advanced optimization",
+                        severity="information",
+                        timeout=4,
+                        markup=False,
+                    )
 
         elif event.select.id == "privacy_release_mode":
             if event.value != SELECT_BLANK and event.value is not None:
@@ -2517,15 +2407,14 @@ class BenchmarkApp(App):
             preset_val = self.query_one("#preset_select").value
             if preset_val and preset_val != SELECT_BLANK:
                 self.update_advanced_parameters(preset_val)
-            self.notify("Advanced parameters visible", title="Advanced Optimization", severity="information", timeout=3)
+            self.notify("Advanced optimization shown (F8 hides it)", title="Advanced optimization", severity="information", timeout=3)
         else:
-            self.notify("Advanced parameters hidden", title="Advanced Optimization", severity="information", timeout=3)
+            self.notify("Advanced optimization hidden (F8 shows it)", title="Advanced optimization", severity="information", timeout=3)
 
     def action_export_advanced(self) -> None:
         """Keyboard shortcut to export advanced overrides (Ctrl+E)."""
         # Ensure overrides exist
         if self.query_one("#advanced_opt").collapsed:
-            self.notify("Expanding advanced section to ensure values are current", title="Export Adv", severity="information", timeout=3)
             self.query_one("#advanced_opt").collapsed = False
             preset_val = self.query_one("#preset_select").value
             if preset_val and preset_val != SELECT_BLANK:
@@ -2550,11 +2439,24 @@ class BenchmarkApp(App):
             if not hasattr(self, 'preset_workflow'):
                 self.preset_workflow = PresetWorkflow()
             export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
-            self.notify(f"Exported advanced config: {export_path.name}", title="Advanced Export", severity="information", timeout=6)
+            self.notify(
+                f"Advanced settings exported to {export_path}",
+                title="Advanced settings exported",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
             advanced_override("exported")
         except Exception as e:
             advanced_override("export_failed")
-            self.notify(f"Failed export: {e}", title="Advanced Export", severity="error", timeout=6)
+            self.notify(
+                f"Couldn't export the advanced settings. Why: {e}. "
+                "Next: check that the folder is writable, then export again (F9).",
+                title=status_text("error"),
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
 
     # ──────────────────────────────────────────────────────────────────
     # Analysis execution
@@ -2570,7 +2472,9 @@ class BenchmarkApp(App):
                 return
 
             self.call_from_thread(log_widget.clear)
-            self.call_from_thread(log_widget.write, "Starting analysis sequence...\n")
+            started = datetime.now().strftime("%H:%M:%S")
+            mode_text = labels.text_for(labels.ANALYSIS_MODE, self._analysis_mode())
+            self.call_from_thread(log_widget.write, f"Run started · {mode_text} · {started}\n")
             self.call_from_thread(self._begin_validation_ui)
 
             try:
@@ -2634,7 +2538,8 @@ class BenchmarkApp(App):
                                 return  # App is quitting; the quit is already recorded.
                             action_cancelled(self._telemetry_action(), "accuracy_first_consent")
                             self._fail_launch(
-                                "accuracy_first run cancelled: operator consent was not given.",
+                                "Run cancelled: consent was not given. Nothing was written.",
+                                title_state="cancelled",
                             )
                             return
                         values["acknowledge_accuracy_first"] = True
@@ -2785,9 +2690,18 @@ class BenchmarkApp(App):
                             logging.getLogger(),
                             privacy_authorized=False,
                         )
-                        self.call_from_thread(log_widget.write, f"Validation error: {exc}\n")
-                        self.call_from_thread(self.notify, "Validation failed. Fix the data and retry.", severity="error")
-                        self.call_from_thread(self._end_run_ui, "error", f"Validation error: {exc}")
+                        self.call_from_thread(log_widget.write, f"Data check failed: {exc}\n")
+                        self.call_from_thread(
+                            self.notify,
+                            "The data check couldn't finish. Details are in Last run.",
+                            title=status_text("error"),
+                            severity="error",
+                        )
+                        self.call_from_thread(
+                            self._end_run_ui,
+                            "error",
+                            _outcome_markup(labels.DATA_CHECK_FAILED, why=str(exc), code=type(exc).__name__),
+                        )
                         return
 
                 self.call_from_thread(self.run_analysis, True, request, df)
@@ -2799,8 +2713,12 @@ class BenchmarkApp(App):
                     logging.getLogger(),
                     privacy_authorized=False,
                 )
-                self.call_from_thread(log_widget.write, f"Initialization Error: {exc}\n")
-                self.call_from_thread(self._end_run_ui, "error", f"Initialization error: {exc}")
+                self.call_from_thread(log_widget.write, f"Run could not start: {exc}\n")
+                self.call_from_thread(
+                    self._end_run_ui,
+                    "error",
+                    _outcome_markup(labels.START_FAILED, why=str(exc), code=type(exc).__name__),
+                )
                 return
 
         if confirmed and saved_request:
@@ -2861,7 +2779,7 @@ class BenchmarkApp(App):
                 if quarantine_path:
                     self.call_from_thread(
                         log_widget.write,
-                        "Non-publishable run log (do not share): "
+                        "Internal run log (do not share):\n"
                         f"{quarantine_path}\n",
                     )
             else:
@@ -2880,100 +2798,144 @@ class BenchmarkApp(App):
                 )
             summary = artifacts.compliance_summary or artifacts.metadata.get('compliance_summary', {})
             posture = summary.get('posture') or summary.get('compliance_posture')
+            verdict = str(summary.get('compliance_verdict'))
+            posture_text = labels.text_for(labels.POSTURE, posture) if posture else "—"
+            consent_state = summary.get('acknowledgement_state')
+            consent_text = labels.text_for(labels.CONSENT_STATE, consent_state) if consent_state else "—"
             self.call_from_thread(
                 log_widget.write,
-                f"Compliance: posture={posture} verdict={summary.get('compliance_verdict')} acknowledgement={summary.get('acknowledgement_state')}\n",
+                f"Compliance: {posture_text} posture · verdict {verdict} · consent: {consent_text}\n",
             )
             for line in self._format_safe_coverage_summary_plain(artifacts):
                 self.call_from_thread(log_widget.write, f"{line}\n")
             report_paths = [str(p) for p in (artifacts.report_paths or [artifacts.analysis_output_file]) if p]
-            verdict = str(summary.get('compliance_verdict'))
-            if verdict == 'fully_compliant':
-                verdict_markup = f"[green]{verdict}[/green]"
-            elif verdict in ('violations_detected', 'not_publishable_input', 'structural_infeasibility', 'blocked'):
-                verdict_markup = f"[red]{verdict}[/red]"
-            else:
-                verdict_markup = verdict
-            summary_lines = [
-                f"[dim]Mode[/dim]     {request.mode} · {request.preset or 'default'}",
-                f"[dim]Verdict[/dim]  {verdict_markup} [dim](posture={posture})[/dim]",
+            mode_text = labels.text_for(labels.ANALYSIS_MODE, request.mode)
+            details = [
+                _summary_field("Mode", f"{mode_text} · {_preset_display(request.preset or 'default')}"),
+                _summary_field("Verdict", labels.text_for(labels.COMPLIANCE_VERDICT, verdict)),
+                _summary_field("Posture", f"{posture_text} · Consent: {consent_text}"),
             ]
             for path in report_paths:
-                summary_lines.append(f"[dim]Report[/dim]   {path}")
-            summary_lines.extend(self._format_safe_coverage_summary_markup(artifacts))
+                details.append(_summary_field("Report", path))
+            details.extend(self._format_safe_coverage_summary_markup(artifacts))
             if hard_privacy_block:
+                reason = privacy_decision.withholding_reason
+                diagnostic = bool(
+                    (artifacts.metadata or {}).get("non_publishable_diagnostic")
+                    and artifacts.analysis_output_file
+                )
+                headline = labels.label_for(labels.WITHHOLDING_REASON, reason)
+                if diagnostic:
+                    headline = labels.Label(
+                        "Publication withheld. A consented diagnostic report was "
+                        "written; it is NON-PUBLISHABLE (do not share).",
+                        headline.why,
+                    )
+                elif headline.primary == labels.UNRECOGNISED:
+                    headline = labels.Label("Results were withheld to protect peer privacy.")
                 if (
                     request.privacy_release_mode
                     is PrivacyReleaseMode.VERIFIED_SAFE_COVERAGE
                 ):
-                    summary_lines.append(
-                        "[dim]Release[/dim]  Verified safe coverage"
-                    )
-                summary_lines.append(
-                    "[red]Publication withheld[/red] "
-                    f"[dim]({privacy_decision.withholding_reason})[/dim]"
-                )
-                if (
-                    (artifacts.metadata or {}).get("non_publishable_diagnostic")
-                    and artifacts.analysis_output_file
-                ):
-                    summary_lines.append(
-                        "[yellow]Non-publishable diagnostic report "
-                        "(do not share)[/yellow] "
-                        f"{artifacts.analysis_output_file}"
+                    details.append(_summary_field("Release", "Verified safe coverage"))
+                details.append(_summary_field("Status", labels.text_for(labels.RUN_STATUS, "withheld")))
+                if diagnostic:
+                    details.append(
+                        _summary_field(
+                            "Non-publishable diagnostic report (do not share)",
+                            str(artifacts.analysis_output_file),
+                        )
                     )
                 if artifacts.audit_log_output:
-                    summary_lines.append(
-                        "[dim]Non-publishable audit[/dim] "
-                        f"{artifacts.audit_log_output}"
-                    )
+                    details.append(_summary_field("Non-publishable audit", str(artifacts.audit_log_output)))
+                if quarantine_path:
+                    details.append(_summary_field("Internal run log (do not share)", str(quarantine_path)))
                 self.call_from_thread(
                     self._end_run_ui,
                     "blocked",
-                    "\n".join(summary_lines),
+                    _outcome_markup(headline, details, code=f"{reason} · {verdict}"),
+                    badge="withheld",
                 )
                 self.call_from_thread(
                     self.notify,
-                    "Control 3 privacy denial: publication withheld.",
-                    title="Publication Withheld",
+                    f"Publication withheld: {headline.primary} Details are in Last run.",
+                    title=status_text("withheld"),
                     severity="error",
                     timeout=10,
+                    markup=False,
                 )
             else:
+                verdict_state = labels.VERDICT_STATUS.get(verdict)
+                if verdict_state not in ("compliant", "warning"):
+                    verdict_state = None
                 self.call_from_thread(
                     self._end_run_ui,
                     "success",
-                    "\n".join(summary_lines),
+                    _outcome_markup(
+                        labels.Label("The run finished and the report was written."),
+                        details,
+                        code=verdict,
+                    ),
+                    verdict=verdict_state,
                 )
                 self.call_from_thread(
                     self.notify,
                     f"Report saved: {report_paths[0] if report_paths else 'n/a'}",
-                    title="Analysis Complete",
+                    title=status_text("success"),
                     severity="information",
                     timeout=10,
+                    markup=False,
                 )
         except RunBlocked as exc:
-            self._quarantine_run_logging(logger, log_widget)
-            self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
-            self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
-            self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
+            log_path = self._quarantine_run_logging(logger, log_widget)
+            self.call_from_thread(log_widget.write, f"Run blocked: {exc}\n")
+            label = labels.blocked_label(str(exc))
+            self.call_from_thread(
+                self._end_run_ui,
+                "blocked",
+                _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunBlocked"),
+            )
+            self.call_from_thread(
+                self.notify, label.primary, title=status_text("blocked"), severity="error", timeout=10, markup=False
+            )
         except RunAborted as exc:
-            self._quarantine_run_logging(logger, log_widget)
-            self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
-            self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
-            self.call_from_thread(self.notify, str(exc), title="Failed", severity="error", timeout=10)
+            log_path = self._quarantine_run_logging(logger, log_widget)
+            self.call_from_thread(log_widget.write, f"Run failed: {exc}\n")
+            label = labels.aborted_label(str(exc))
+            self.call_from_thread(
+                self._end_run_ui,
+                "error",
+                _outcome_markup(label, _log_details(log_path), why=str(exc), code="RunAborted"),
+            )
+            self.call_from_thread(
+                self.notify, label.primary, title=status_text("error"), severity="error", timeout=10, markup=False
+            )
         except Exception as exc:
-            self._quarantine_run_logging(logger, log_widget)
-            self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
+            log_path = self._quarantine_run_logging(logger, log_widget)
+            self.call_from_thread(log_widget.write, f"Run failed: {exc}\n")
             self.call_from_thread(log_widget.write, traceback.format_exc())
-            self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")
+            label = labels.UNEXPECTED_ERROR
+            self.call_from_thread(
+                self._end_run_ui,
+                "error",
+                _outcome_markup(
+                    label,
+                    _log_details(log_path),
+                    why=f"An unexpected error ({type(exc).__name__}) stopped the run. The input file was not changed.",
+                    code=f"{type(exc).__name__}: {exc}",
+                ),
+            )
 
     def _quarantine_run_logging(
         self,
         logger: logging.Logger,
         log_widget: Log,
-    ) -> None:
-        """Quarantine deferred diagnostics for a denied or failed run."""
+    ) -> Optional[str]:
+        """Quarantine deferred diagnostics for a denied or failed run.
+
+        Returns the quarantined log path (or None) so the outcome card can
+        show it in full.
+        """
         quarantine_path = finalize_deferred_logging(
             logger,
             privacy_authorized=False,
@@ -2981,8 +2943,44 @@ class BenchmarkApp(App):
         if quarantine_path:
             self.call_from_thread(
                 log_widget.write,
-                f"Non-publishable run log (do not share): {quarantine_path}\n",
+                f"Internal run log (do not share):\n{quarantine_path}\n",
             )
+        return str(quarantine_path) if quarantine_path else None
+
+
+def _summary_field(name: str, value: str) -> str:
+    """One ``Name  value`` line of the Last run card; the value is escaped."""
+    return f"[$text-muted]{escape_markup(name)}[/]  {escape_markup(str(value))}"
+
+
+def _log_details(log_path: Optional[str]) -> List[str]:
+    if not log_path:
+        return []
+    return [_summary_field("Internal run log (do not share)", log_path)]
+
+
+def _outcome_markup(
+    label: "labels.Label",
+    details: Iterable[str] = (),
+    *,
+    why: Optional[str] = None,
+    code: Optional[str] = None,
+) -> str:
+    """Last run card body: what happened, why, what to do, details, code (02 §5.3).
+
+    ``details`` lines are already-escaped markup (``_summary_field``); every
+    other value here is escaped.
+    """
+    lines = [f"[b]{escape_markup(label.primary)}[/b]"]
+    cause = why if why is not None else label.why
+    if cause:
+        lines.append(f"[$text-muted]Why[/]   {escape_markup(cause)}")
+    if label.next:
+        lines.append(f"[$text-muted]Next[/]  {escape_markup(label.next)}")
+    lines.extend(details)
+    if code:
+        lines.append(f"[$text-muted i]Code: {escape_markup(code)}[/]")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
