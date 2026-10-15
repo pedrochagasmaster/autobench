@@ -31,7 +31,7 @@ from textual.reactive import reactive
 from textual.suggester import SuggestFromList, Suggester
 from textual.widget import Widget
 from textual.widgets import Collapsible, Input, OptionList, Select, Static
-from textual.widgets._select import SelectOverlay
+from textual.widgets._select import SelectCurrent, SelectOverlay
 from textual.widgets.option_list import Option
 
 from tui.status import glyph as status_glyph, use_ascii_glyphs
@@ -134,15 +134,41 @@ class SafeSelect(Select):
     """``Select`` that tolerates being torn down while it mounts.
 
     Steps 2 and 3 mount in the background after a CSV load; if the app
-    closes at that moment the stock mount handler would query an overlay
-    that is already gone.
+    closes at that moment the stock mount handler and value watcher would
+    query an overlay, or the ``SelectCurrent`` label, that is already gone
+    (``NoMatches`` raised out of the app on exit).
     """
+
+    def _parts_ready(self) -> bool:
+        """True when the overlay and the current-value label both exist."""
+        if not self.query(SelectOverlay):
+            return False
+        current = self.query(SelectCurrent)
+        return bool(current) and bool(current.first().query("#label"))
 
     def _on_mount(self, event: events.Mount) -> None:  # Select, Textual 7.5
         # Textual runs every class's own handler along the MRO; preventing
-        # the default skips Select._on_mount when the overlay is gone.
-        if not self.query(SelectOverlay):
+        # the default skips Select._on_mount while a part is missing.
+        if not self._parts_ready():
             event.prevent_default()
+            if self.is_attached:
+                # Not torn down, just not composed yet: initialise later.
+                self.call_after_refresh(self._deferred_init)
+
+    def _deferred_init(self) -> None:
+        if not (self.is_attached and self._parts_ready()):
+            return
+        self._setup_options_renderables()
+        if self.value == self.BLANK:
+            self._init_selected_option(self._value)
+        else:
+            # A value set while the parts were missing skipped the watcher;
+            # re-assigning it would be a no-op, so sync the display directly.
+            Select._watch_value(self, self.value)
+
+    def _watch_value(self, value: Any) -> None:  # Select, Textual 7.5
+        if self._parts_ready():
+            super()._watch_value(value)
 
 
 class ColumnSelect(SafeSelect):
