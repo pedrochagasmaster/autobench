@@ -491,6 +491,39 @@ def test_run_status_panel_and_last_run_show_badges_after_a_run() -> None:
     asyncio.run(scenario())
 
 
+def test_every_app_run_state_maps_to_a_status_language_state() -> None:
+    for state, badge in BenchmarkApp._STATE_BADGES.items():
+        assert badge.state in STATUS, state
+    assert BenchmarkApp._STATE_BADGES["cancelled"].state == "cancelled"
+
+
+def test_cancelled_run_shows_the_cancelled_badge_and_outcome_card() -> None:
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app._begin_run_ui()
+            app._set_run_stage("analysis")
+            await pilot.pause()
+            detail = str(app.query_one("#run_status_detail", Static).content)
+            assert "Stage" in detail and "Optimizing and checking privacy" in detail
+            app._end_run_ui(
+                "cancelled", tui_app._outcome_markup(labels.RUN_CANCELLED, code="RunCancelled")
+            )
+            await pilot.pause()
+            assert app.query_one("#run_status_badge", StatusBadge).state == "cancelled"
+            assert app.query_one("#results_badge", StatusBadge).state == "cancelled"
+            assert app.query_one("#results_verdict_badge").has_class("hidden")
+            results = str(app.query_one("#results_panel", Static).content)
+            assert labels.RUN_CANCELLED.primary in results and "Code: RunCancelled" in results
+            assert "Stage" not in str(app.query_one("#run_status_detail", Static).content)
+            app.query_one("#csv_path", Input).focus()
+            await pilot.pause()
+            assert app.query_one(KeyBar).context == "results"
+
+    asyncio.run(scenario())
+
+
 def test_validation_shows_waiting_for_you_while_the_dialog_is_open() -> None:
     async def scenario() -> None:
         async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
