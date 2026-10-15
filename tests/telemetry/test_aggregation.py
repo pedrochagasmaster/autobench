@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -94,7 +95,7 @@ def test_who_sessions_distinct_on_session_start_only(
         )
         + _record(
             "action_completed",
-            {"action": "share_analysis"},
+            {"action": "share_analysis", "publication_withheld": False},
             session_id=SESSION_A,
             now=FIXED_NOW,
         )
@@ -122,12 +123,12 @@ def test_who_last_seen_max_and_completions(
         _record("session_start", {"launch_context": "tui"}, now=early)
         + _record(
             "action_completed",
-            {"action": "share_analysis"},
+            {"action": "share_analysis", "publication_withheld": False},
             now=early,
         )
         + _record(
             "action_completed",
-            {"action": "rate_analysis"},
+            {"action": "rate_analysis", "publication_withheld": True},
             now=late,
         )
         + _record(
@@ -179,10 +180,16 @@ def test_summary_zero_filled_and_fixed_key_order(
     summary = _reader(tmp_path).summary(days=None)
 
     assert isinstance(summary, Summary)
-    assert list(summary.surfaces) == ["share", "rate"]
+    assert list(summary.surfaces) == [
+        "share",
+        "rate",
+        "validation_review",
+        "preset_help",
+        "advanced",
+    ]
     assert list(summary.actions) == ["share_analysis", "rate_analysis"]
     assert list(summary.outcomes) == ["completed", "cancelled", "refused", "failed"]
-    assert dict(summary.surfaces) == {"share": 0, "rate": 0}
+    assert set(summary.surfaces.values()) == {0}
     assert dict(summary.actions) == {"share_analysis": 0, "rate_analysis": 0}
     assert dict(summary.outcomes) == {
         "completed": 0,
@@ -202,8 +209,14 @@ def test_summary_counts_surfaces_actions_outcomes(
         + _record("surface_viewed", {"surface": "share"})
         + _record("surface_viewed", {"surface": "rate"})
         + _record("action_attempted", {"action": "share_analysis"})
-        + _record("action_completed", {"action": "share_analysis"})
-        + _record("action_cancelled", {"action": "rate_analysis"})
+        + _record(
+            "action_completed",
+            {"action": "share_analysis", "publication_withheld": False},
+        )
+        + _record(
+            "action_cancelled",
+            {"action": "rate_analysis", "prompt": "clearing_spend"},
+        )
         + _record(
             "action_refused",
             {"action": "share_analysis", "reason": "configuration"},
@@ -218,9 +231,12 @@ def test_summary_counts_surfaces_actions_outcomes(
 
     summary = _reader(tmp_path).summary(days=None)
 
-    assert dict(summary.surfaces) == {"share": 2, "rate": 1}
-    # Every action_* event counted by action name.
-    assert dict(summary.actions) == {"share_analysis": 3, "rate_analysis": 3}
+    assert summary.surfaces["share"] == 2
+    assert summary.surfaces["rate"] == 1
+    # Run intents, not raw action_* events: share = 1 attempt (its completed
+    # and refused outcomes are not re-counted); rate = 1 pre-attempt cancel +
+    # 1 attempt.
+    assert dict(summary.actions) == {"share_analysis": 1, "rate_analysis": 2}
     # attempted is not an outcome.
     assert dict(summary.outcomes) == {
         "completed": 1,
@@ -244,4 +260,70 @@ def test_summary_user_filter(tmp_path: Path, patch_uid: None) -> None:
     )
 
     summary = _reader(tmp_path).summary(days=None, user="bob")
-    assert dict(summary.surfaces) == {"share": 0, "rate": 1}
+    assert summary.surfaces["share"] == 0
+    assert summary.surfaces["rate"] == 1
+
+
+def _legacy_v1(
+    event: str,
+    props: dict[str, object],
+    *,
+    user: str = "alice",
+    session_id: UUID = SESSION_A,
+    now: datetime = FIXED_NOW,
+) -> bytes:
+    """A record exactly as a schema-v1 writer produced it."""
+    payload = {
+        "schema_version": 1,
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "event": event,
+        "user": user,
+        "session_id": str(session_id),
+        "app_version": "2.9",
+        "props": props,
+    }
+    return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def test_new_reader_reads_mixed_v1_and_v2_file(tmp_path: Path, patch_uid: None) -> None:
+    """An upgraded node appends v2 records after its v1 history."""
+    shared = tmp_path / "shared"
+    early = FIXED_NOW - timedelta(days=2)
+    payload = (
+        _legacy_v1("session_start", {"launch_context": "tui"}, now=early)
+        + _legacy_v1("action_cancelled", {"action": "share_analysis"}, now=early)
+        + _legacy_v1("action_attempted", {"action": "share_analysis"}, now=early)
+        + _legacy_v1("action_completed", {"action": "share_analysis"}, now=early)
+        + _record("session_start", {"launch_context": "tui"}, session_id=SESSION_B)
+        + _record(
+            "launch_blocked",
+            {"action": "share_analysis", "reason": "metric_missing"},
+            session_id=SESSION_B,
+        )
+        + _record("action_attempted", {"action": "share_analysis"}, session_id=SESSION_B)
+        + _record(
+            "action_completed",
+            {"action": "share_analysis", "publication_withheld": True},
+            session_id=SESSION_B,
+        )
+    )
+    _write_shared(shared, "alice", payload)
+    warnings: list[str] = []
+    reader = TelemetryReader(
+        shared_dir=shared,
+        identity=_identity(),
+        storage_root=tmp_path / "ads",
+        now=FIXED_NOW,
+        warn=warnings.append,
+    )
+
+    events = list(reader.iter_events(days=None))
+    # The v2-era session_start is still written as v1 (LEGACY_WRITE_EVENTS).
+    assert [e.schema_version for e in events] == [1, 1, 1, 1, 1, 2, 2, 2]
+    assert warnings == []
+
+    summary = reader.summary(days=None)
+    # v1 cancel (pre-attempt) + v1 attempt + v2 block + v2 attempt.
+    assert summary.actions["share_analysis"] == 4
+    assert summary.outcomes["completed"] == 2
+    assert reader.who(days=None)[0].completed == 2

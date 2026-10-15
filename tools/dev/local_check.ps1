@@ -28,13 +28,13 @@ if ($LASTEXITCODE -ne 0) {
 Set-Location (($repoRoot -join "`n").Trim())
 
 # Wrapped commands:
-# py -m compileall benchmark.py tui_app.py core utils scripts tools
+# py -m compileall benchmark.py tui_app.py core utils scripts tools tui
 # py -m ruff check .
 # py -m mypy --no-site-packages core/ utils/
 # py scripts/perform_gate_test.py
 # py -m pytest
-Invoke-Step "Compile Python sources" "py -m compileall benchmark.py tui_app.py core utils scripts tools" {
-    py -m compileall benchmark.py tui_app.py core utils scripts tools
+Invoke-Step "Compile Python sources" "py -m compileall benchmark.py tui_app.py core utils scripts tools tui" {
+    py -m compileall benchmark.py tui_app.py core utils scripts tools tui
 }
 Invoke-Step "Lint" "py -m ruff check ." {
     py -m ruff check .

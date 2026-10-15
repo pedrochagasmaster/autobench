@@ -324,7 +324,7 @@ def smoke(args: argparse.Namespace) -> int:
         (
             f"cd {quoted_root} && . {quoted_root}/bin/runtime_check.sh && "
             f"RUNTIME=$(autobench_active_runtime {quoted_root}) && "
-            '"$RUNTIME/bin/python" -m compileall benchmark.py tui_app.py core utils scripts tools'
+            '"$RUNTIME/bin/python" -m compileall benchmark.py tui_app.py core utils scripts tools tui'
         ),
         failure_class="deployment",
         timeout=120,

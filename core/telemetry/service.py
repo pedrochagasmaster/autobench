@@ -172,11 +172,26 @@ class TelemetryService:
     def action_attempted(self, action: str) -> None:
         self._emit("action_attempted", {"action": action})
 
-    def action_completed(self, action: str) -> None:
-        self._emit("action_completed", {"action": action})
+    def action_completed(self, action: str, publication_withheld: bool) -> None:
+        self._emit(
+            "action_completed",
+            {"action": action, "publication_withheld": publication_withheld},
+        )
 
-    def action_cancelled(self, action: str) -> None:
-        self._emit("action_cancelled", {"action": action})
+    def action_cancelled(self, action: str, prompt: str) -> None:
+        self._emit("action_cancelled", {"action": action, "prompt": prompt})
+
+    def launch_blocked(self, action: str, reason: str) -> None:
+        self._emit("launch_blocked", {"action": action, "reason": reason})
+
+    def dataset_load(self, outcome: str) -> None:
+        self._emit("dataset_load", {"outcome": outcome})
+
+    def advanced_override(self, outcome: str) -> None:
+        self._emit("advanced_override", {"outcome": outcome})
+
+    def session_restored(self) -> None:
+        self._emit("session_restored", {})
 
     def action_refused(self, action: str, reason: str) -> None:
         self._emit("action_refused", {"action": action, "reason": reason})

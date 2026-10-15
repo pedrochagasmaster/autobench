@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any, Callable, List, Tuple
 from uuid import UUID
 
+import pandas as pd
 import pytest
 
 import core.analysis_run as analysis_run
 import core.telemetry as telemetry
 from core.analysis_run import RunAborted, RunBlocked, execute_rate_run, execute_share_run
-from core.contracts import AnalysisRunRequest
+from core.contracts import AnalysisArtifacts, AnalysisRunRequest
 from core.observability import RunObservability
 from core.telemetry.identity import Identity, encode_user_token
 from core.telemetry.service import TelemetryService
@@ -143,8 +144,55 @@ def test_share_attempt_then_complete_ordering(
     execute_share_run(_share_request(tmp_path), logging.getLogger("test"))
     assert calls == [
         ("attempted", ("share_analysis",)),
-        ("completed", ("share_analysis",)),
+        # gate_demo under strict has one violation: publication is withheld.
+        ("completed", ("share_analysis", True)),
     ]
+
+
+def test_strict_withheld_publication_completes_with_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G13: a strict run that writes only the analysis workbook says so."""
+    rows: list[dict[str, object]] = [
+        {"issuer_name": entity, "card_type": "CREDIT", "txn_cnt": 100}
+        for entity in ("Target", "P1", "P2", "P3", "P4", "P5", "P6")
+    ]
+    rows.append({"issuer_name": "P1", "card_type": "PREPAID", "txn_cnt": 5000})
+    calls: List[Tuple[str, tuple]] = []
+    _patch_helpers(monkeypatch, calls)
+    artifacts = execute_share_run(
+        AnalysisRunRequest(
+            df=pd.DataFrame(rows),
+            entity="Target",
+            metric="txn_cnt",
+            dimensions=["card_type"],
+            preset="compliance_strict",
+            compliance_posture="strict",
+            output=str(tmp_path / "violating.xlsx"),
+            validate_input=False,
+            output_format="both",
+        ),
+        logging.getLogger("test"),
+    )
+    assert artifacts.publication_output is None
+    assert calls == [
+        ("attempted", ("share_analysis",)),
+        ("completed", ("share_analysis", True)),
+    ]
+
+
+def test_publication_withheld_reads_only_the_closed_marker() -> None:
+    for reason, expected in (
+        ("strict_posture_violations", True),
+        ("strict_posture_noncompliant_verdict", True),
+        (None, False),
+        ("control3_numeric_policy_blocked", False),
+        ("Target issuer_name txn_cnt", False),
+    ):
+        artifacts = AnalysisArtifacts(metadata={"publication_withheld_reason": reason})
+        assert analysis_run._publication_withheld(artifacts) is expected
+    assert analysis_run._publication_withheld(AnalysisArtifacts(metadata=None)) is False
 
 
 def test_rate_attempt_then_complete_ordering(
@@ -156,7 +204,8 @@ def test_rate_attempt_then_complete_ordering(
     execute_rate_run(_rate_request(tmp_path), logging.getLogger("test"))
     assert calls == [
         ("attempted", ("rate_analysis",)),
-        ("completed", ("rate_analysis",)),
+        # gate_demo under strict has one violation: publication is withheld.
+        ("completed", ("rate_analysis", True)),
     ]
 
 
@@ -307,9 +356,9 @@ def test_only_closed_enum_args_and_no_sensitive_payload(
         calls.append(("attempted", (action,)))
         real_attempted(action)
 
-    def completed(action: str) -> None:
-        calls.append(("completed", (action,)))
-        real_completed(action)
+    def completed(action: str, publication_withheld: bool) -> None:
+        calls.append(("completed", (action, publication_withheld)))
+        real_completed(action, publication_withheld)
 
     monkeypatch.setattr(analysis_run, "action_attempted", attempted)
     monkeypatch.setattr(analysis_run, "action_completed", completed)
@@ -325,6 +374,8 @@ def test_only_closed_enum_args_and_no_sensitive_payload(
         for marker in SENSITIVE_MARKERS:
             assert marker not in blob
         for arg in args:
+            if isinstance(arg, bool):
+                continue  # publication_withheld: a strict boolean, nothing else
             assert isinstance(arg, str)
             assert arg in {
                 "share_analysis",
@@ -340,7 +391,9 @@ def test_only_closed_enum_args_and_no_sensitive_payload(
     for record in written:
         text = record.decode("utf-8")
         payload = json.loads(text)
-        assert set(payload["props"]) <= {"action"}
+        assert set(payload["props"]) <= {"action", "publication_withheld"}
+        withheld = payload["props"].get("publication_withheld", False)
+        assert withheld is True or withheld is False
         for marker in SENSITIVE_MARKERS:
             assert marker not in text
 

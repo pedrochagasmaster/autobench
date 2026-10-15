@@ -34,7 +34,7 @@ link-mode = "copy"
 py-modules = ["benchmark", "tui_app"]
 
 [tool.setuptools.packages.find]
-include = ["core*", "utils*", "scripts*", "tools*"]
+include = ["core*", "utils*", "scripts*", "tools*", "tui*"]
 
 [tool.ruff]
 target-version = "py310"
@@ -44,6 +44,7 @@ include = [
     "tui_app.py",
     "core/**/*.py",
     "utils/**/*.py",
+    "tui/**/*.py",
     "scripts/**/*.py",
     "tests/**/*.py",
 ]

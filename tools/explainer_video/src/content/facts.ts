@@ -156,10 +156,10 @@ export const SESSION_MEMORY = {
 export const SHORTCUTS = [
   { key: "Ctrl+O", label: "Open CSV" },
   { key: "Ctrl+R", label: "Run" },
-  { key: "F1", label: "Preset Guide" },
-  { key: "Ctrl+A", label: "Advanced" },
-  { key: "Ctrl+E", label: "Export Adv" },
-  { key: "Ctrl+L", label: "Clear Log" },
+  { key: "F1", label: "Preset guide" },
+  { key: "F8", label: "Advanced" },
+  { key: "F9", label: "Export advanced" },
+  { key: "Ctrl+L", label: "Clear log" },
 ];
 
 // ---------------------------------------------------------------------------

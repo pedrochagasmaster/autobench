@@ -77,11 +77,19 @@ def test_public_surface_has_no_generic_emit() -> None:
         "action_cancelled",
         "action_refused",
         "action_failed",
+        "launch_blocked",
+        "dataset_load",
+        "advanced_override",
+        "session_restored",
         "LaunchContext",
         "Surface",
         "Action",
         "RefuseReason",
         "FailCategory",
+        "LaunchBlockReason",
+        "CancelPrompt",
+        "DatasetLoadOutcome",
+        "AdvancedOverrideOutcome",
     }
     for name in names:
         assert hasattr(telemetry, name)
@@ -94,6 +102,15 @@ def test_typed_aliases_match_canonical_vocabulary() -> None:
     assert get_args(telemetry.Action) == constants.ACTIONS
     assert get_args(telemetry.RefuseReason) == constants.REFUSAL_REASONS
     assert get_args(telemetry.FailCategory) == constants.FAILURE_CATEGORIES
+    assert get_args(telemetry.LaunchBlockReason) == constants.LAUNCH_BLOCK_REASONS
+    assert get_args(telemetry.CancelPrompt) == constants.CANCEL_PROMPTS
+    assert get_args(telemetry.DatasetLoadOutcome) == constants.DATASET_LOAD_OUTCOMES
+    assert (
+        get_args(telemetry.AdvancedOverrideOutcome)
+        == constants.ADVANCED_OVERRIDE_OUTCOMES
+    )
+    assert set(constants.IN_RUN_CANCEL_PROMPTS) <= set(constants.CANCEL_PROMPTS)
+    assert set(constants.TAB_SURFACES) <= set(constants.SURFACES)
 
 
 def test_helpers_delegate_and_never_raise_on_invalid() -> None:
@@ -109,11 +126,19 @@ def test_helpers_delegate_and_never_raise_on_invalid() -> None:
     telemetry.start_session("tui")
     telemetry.surface_viewed("share")
     telemetry.action_attempted("share_analysis")
-    telemetry.action_completed("share_analysis")
-    telemetry.action_cancelled("rate_analysis")
+    telemetry.action_completed("share_analysis", True)
+    telemetry.action_cancelled("rate_analysis", "clearing_spend")
     telemetry.action_refused("share_analysis", "configuration")
     telemetry.action_failed("rate_analysis", "unexpected")
+    telemetry.launch_blocked("share_analysis", "csv_missing")
+    telemetry.dataset_load("loaded")
+    telemetry.advanced_override("applied")
+    telemetry.session_restored()
     assert done.wait(timeout=2.0)
+    deadline = _deadline()
+    while len(written) < 11:
+        _assert_before(deadline)
+        time.sleep(0.01)
     names = [json.loads(r.decode("utf-8"))["event"] for r in written]
     assert names == [
         "session_start",
@@ -123,17 +148,29 @@ def test_helpers_delegate_and_never_raise_on_invalid() -> None:
         "action_cancelled",
         "action_refused",
         "action_failed",
+        "launch_blocked",
+        "dataset_load",
+        "advanced_override",
+        "session_restored",
     ]
+    completed = json.loads(written[3].decode("utf-8"))
+    assert completed["props"] == {"action": "share_analysis", "publication_withheld": True}
 
     before = list(written)
     # Invalid arguments must not raise and must not enqueue.
     telemetry.start_session("not-a-context")  # type: ignore[arg-type]
     telemetry.surface_viewed("nope")  # type: ignore[arg-type]
     telemetry.action_attempted("nope")  # type: ignore[arg-type]
-    telemetry.action_completed("")  # type: ignore[arg-type]
-    telemetry.action_cancelled(None)  # type: ignore[arg-type]
+    telemetry.action_completed("", False)  # type: ignore[arg-type]
+    telemetry.action_completed("share_analysis", "withheld")  # type: ignore[arg-type]
+    telemetry.action_completed("share_analysis", 1)  # type: ignore[arg-type]
+    telemetry.action_cancelled(None, "clearing_spend")  # type: ignore[arg-type]
+    telemetry.action_cancelled("share_analysis", "Analysis cancelled by user.")  # type: ignore[arg-type]
     telemetry.action_refused("share_analysis", "bad")  # type: ignore[arg-type]
     telemetry.action_failed("share_analysis", "bad")  # type: ignore[arg-type]
+    telemetry.launch_blocked("share_analysis", "CSV path is required.")  # type: ignore[arg-type]
+    telemetry.dataset_load("/data/peers.csv")  # type: ignore[arg-type]
+    telemetry.advanced_override("max_weight=0.3")  # type: ignore[arg-type]
     time.sleep(0.05)
     assert written == before
     telemetry.end_session()

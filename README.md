@@ -342,13 +342,51 @@ The TUI (`tui_app.py`) is best for first-time users:
 5. Configure Share or Rate tab.
 6. Click Run Analysis and watch logs.
 
-Keyboard shortcuts:
+TUI defaults and rules worth knowing:
+
+- **Export balanced CSV** is off by default on both the Share and Rate tabs,
+  as it is on the CLI (`--export-balanced-csv`). Tick it for each run that
+  needs the CSV.
+- The Rate **Total column** has no default. It is the clearing-spend basis for
+  fraud analysis, so you always choose it explicitly.
+- **Debug sheets** are set only by the checkbox on the Share/Rate tab; the
+  Advanced panel has no separate debug-sheets control.
+- Changing the preset clears any applied advanced overrides, with a notice;
+  press **Apply overrides** again to use them with the new preset. The
+  accuracy_first consent dialog follows the effective posture, overrides
+  included. Consent and clearing-spend dialogs open with **Cancel** focused.
+- **Privacy rule sweep mode** is locked on only while Verified safe coverage
+  is selected on the Share tab. On the Rate tab it is unlocked and the run
+  uses exactly the value shown.
+- Session restore remembers the Share/Rate tab and your column choices
+  (entity column, metric, rate columns, dimensions, secondary metrics). They
+  are applied after you load a CSV that has those columns. The CSV path,
+  output filename, target entity and compliance declarations are never
+  restored.
+- Quitting while an analysis runs stops it at the next safe checkpoint, before
+  any output is written. A run that has already started writing outputs
+  finishes first. A cancelled run shows `■ CANCELLED` and writes nothing.
+
+Keyboard shortcuts (the key bar at the bottom shows the ones that apply to
+the focused field):
 
 - `Ctrl+O` open/select file
 - `Ctrl+R` run analysis
-- `F1` preset help
-- `Ctrl+A` toggle advanced panel
-- `Ctrl+E` export advanced overrides
+- `F1` preset guide
+- `F8` show or hide the advanced optimization panel
+- `F9` export the advanced overrides to a file
+- `Ctrl+L` clear the execution log
+- `Ctrl+Q` or `Ctrl+C` quit (asks first while a run is active; `Ctrl+C`
+  copies instead when text is selected)
+
+`F8` and `F9` replace `Ctrl+A` and `Ctrl+E`, which a focused text field
+uses for Home/End. The old keys still work outside text fields.
+
+Status words always come with a glyph (for example `◐ WITHHELD`,
+`⊘ BLOCKED`, `✗ FAILED`), so the TUI reads the same with `NO_COLOR=1` or a
+16-colour terminal. Set `AUTOBENCH_GLYPHS=ascii` if your terminal font lacks
+these glyphs; the TUI also switches to ASCII on the Linux console and when the
+terminal is not UTF-8.
 
 ## CLI Cookbook
 
@@ -437,7 +475,30 @@ py benchmark.py telemetry summary --user alice --days 14
 
 `--dir` names the telemetry **parent** whose direct child is `users/`. Reports
 prefer shared `users/*.jsonl` when present; otherwise they fall back to the
-current user's private file.
+current user's private file. That fallback is never silent: a `WARNING:` on
+stderr names the reason (for example `owner_mismatch=5` when files were copied
+from another host, which the owner check deliberately rejects). Run reports on
+the node that wrote the files.
+
+Breakdown reports (read-only; same `--days` and `--dir`, plus `--user`,
+`--context {cli_share,cli_rate,tui}` and `--app-version V`):
+
+```powershell
+py benchmark.py telemetry funnel       # per-action run intents -> blocked / cancelled / attempted -> outcomes
+py benchmark.py telemetry refusals     # refusals by reason
+py benchmark.py telemetry failures     # failures by category
+py benchmark.py telemetry blocks       # pre-run launch blocks by reason, cancels by prompt
+py benchmark.py telemetry surfaces     # surface views and launch contexts
+py benchmark.py telemetry durations    # session duration distribution
+py benchmark.py telemetry friction --context tui   # everything above plus derived TUI friction
+```
+
+`summary` "Actions" counts run intents (one per attempt or pre-run stop), not
+every action event. Events are versioned (`schema_version` 1 and 2 are both
+read). Every recorded value is a closed enum, a boolean, or the session
+duration. See
+[docs/research/tui-redesign-phase0/05-telemetry-friction.md §8](docs/research/tui-redesign-phase0/05-telemetry-friction.md#8-implemented-in-this-pass)
+for the catalog and how the funnel is defined.
 
 ## Programmatic use (Python API)
 
