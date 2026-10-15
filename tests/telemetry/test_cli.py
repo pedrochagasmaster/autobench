@@ -485,8 +485,14 @@ def test_populated_shared_who_summary_deterministic(
             now=t2,
         )
         + _record(
-            "action_completed",
+            "action_attempted",
             {"action": "share_analysis"},
+            user=user,
+            now=t2,
+        )
+        + _record(
+            "action_completed",
+            {"action": "share_analysis", "publication_withheld": False},
             user=user,
             now=t2,
         )
@@ -506,12 +512,16 @@ def test_populated_shared_who_summary_deterministic(
     )
     sum_out = capsys.readouterr().out
     assert code2 == 0
+    # Actions are run intents: one attempt, its completion is not re-counted.
     assert sum_out == (
         "Surfaces\n"
         "share  1\n"
         "rate  0\n"
+        "validation_review  0\n"
+        "preset_help  0\n"
+        "advanced  0\n"
         "\n"
-        "Actions\n"
+        "Actions (run intents)\n"
         "share_analysis  1\n"
         "rate_analysis  0\n"
         "\n"

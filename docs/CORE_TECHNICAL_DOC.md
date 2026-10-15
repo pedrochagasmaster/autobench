@@ -1159,9 +1159,12 @@ Purpose: Own policy orchestration over the canonical numeric rule engine.
   quarantine the buffer to `autobench_NON_PUBLISHABLE_run_log_<uuid>.log`
   beside the intended path, with a do-not-share header; the intended log path
   is never created. Offline product telemetry has a closed event
-  schema containing only launch/surface/action/outcome enums, duration,
-  username/session/version, and timestamps; it rejects file paths, entity or
-  peer names, categories, shares, weights, rates, and benchmark values.
+  schema containing only launch/surface/action/outcome enums (schema v2 adds
+  TUI launch-block reasons, cancel prompts, dataset-load and advanced-override
+  outcomes, a session-restored marker, and a `publication_withheld` boolean on
+  completions), duration, username/session/version, and timestamps; it rejects
+  file paths, entity or peer names, categories, shares, weights, rates, and
+  benchmark values.
 - The Python API creates no file sink. At run entry, `PrivacyRunLogGate`
   captures current-thread records at standard `Logger.callHandlers` dispatch,
   including handlers installed after gate start. Authorization replays the

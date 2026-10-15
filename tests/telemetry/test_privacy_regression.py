@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -17,11 +18,15 @@ import pytest
 
 import core.analysis_run as analysis_run
 import core.telemetry as telemetry
+import tui_app
 from core.analysis_run import RunBlocked, execute_share_run
 from core.audit_log import build_audit_log_model
 from core.contracts import AnalysisRunRequest
+from core.telemetry import constants
+from core.telemetry import events as telemetry_events
 from core.telemetry.events import decode_record
 from core.telemetry.identity import Identity, encode_user_token
+from core.telemetry.reader import TelemetryReader
 from core.telemetry.service import TelemetryService
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "gate_demo.csv"
@@ -87,7 +92,10 @@ INCIDENTAL_META_KEYS = frozenset(
     }
 )
 
-SHARE_ACTION_PROPS = {"action": "share_analysis"}
+EXPECTED_SHARE_PROPS = (
+    {"action": "share_analysis"},
+    {"action": "share_analysis", "publication_withheld": False},
+)
 EXPECTED_SHARE_EVENTS = ("action_attempted", "action_completed")
 
 
@@ -341,6 +349,16 @@ def test_strict_nonpublishable_remains_withheld_on_and_off(tmp_path: Path) -> No
         logging.getLogger("privacy_block_on"),
     )
     assert done.wait(timeout=2.0)
+    # G13: the withheld publication is visible as a bare boolean, and the
+    # record carries nothing about which violation caused it.
+    completed = [decode_record(raw) for raw in captured if b"action_completed" in raw]
+    assert [dict(e.props) for e in completed] == [
+        {"action": "share_analysis", "publication_withheld": True}
+    ]
+    for raw in captured:
+        text = raw.decode("utf-8")
+        for marker in ("PREPAID", "CREDIT", "card_type", "P1", "Target", "strict_posture", "violat"):
+            assert marker not in text
 
     disabled_root = tmp_path / "disabled_ads"
     disabled_root.mkdir()
@@ -506,8 +524,7 @@ def test_captured_records_use_exact_envelope_and_approved_props_only(tmp_path: P
     decoded_events = [decode_record(raw) for raw in captured]
     assert [event.event for event in decoded_events] == list(EXPECTED_SHARE_EVENTS)
     assert len(decoded_events) == 2
-    for event in decoded_events:
-        assert dict(event.props) == SHARE_ACTION_PROPS
+    assert tuple(dict(event.props) for event in decoded_events) == EXPECTED_SHARE_PROPS
 
     markers = _sensitive_markers(tmp_path, output_stem=output_stem)
     for raw in captured:
@@ -529,7 +546,7 @@ def test_opt_out_starts_no_consumer_and_produces_no_records(tmp_path: Path) -> N
     )
     telemetry.start_session("cli_share")
     telemetry.action_attempted("share_analysis")
-    telemetry.action_completed("share_analysis")
+    telemetry.action_completed("share_analysis", False)
     artifacts = execute_share_run(
         _share_request(tmp_path, stem="opt_out", df=_representative_df()),
         logging.getLogger("privacy_opt_out"),
@@ -557,3 +574,232 @@ def test_no_tracked_or_generated_telemetry_event_jsonl_under_repo() -> None:
 
     unexpected_events = _iter_untracked_events_jsonl(REPO_ROOT)
     assert unexpected_events == [], f"unexpected events.jsonl artifacts: {unexpected_events}"
+
+
+# ---------------------------------------------------------------------------
+# Schema v2: every new event and prop is closed (pass-1 telemetry gaps)
+# ---------------------------------------------------------------------------
+
+# One valid prop set per v2 event; each prop is then replaced by hostile values.
+_V2_VALID_PROPS: dict[str, dict[str, object]] = {
+    "session_start": {"launch_context": "tui"},
+    "session_end": {"duration_s": 1.0},
+    "session_restored": {},
+    "surface_viewed": {"surface": "validation_review"},
+    "action_attempted": {"action": "share_analysis"},
+    "action_completed": {"action": "share_analysis", "publication_withheld": True},
+    "action_cancelled": {"action": "rate_analysis", "prompt": "clearing_spend"},
+    "action_refused": {"action": "share_analysis", "reason": "configuration"},
+    "action_failed": {"action": "share_analysis", "category": "input"},
+    "launch_blocked": {"action": "share_analysis", "reason": "metric_missing"},
+    "dataset_load": {"outcome": "header_read_failed"},
+    "advanced_override": {"outcome": "applied"},
+}
+
+# Free text, paths, file/column/entity names, data values, exception text,
+# counts, and type confusion: none of these may ever be recordable.
+_HOSTILE_VALUES: tuple[object, ...] = (
+    "/ads_storage/alice/peers_2026.csv",
+    "peers_2026.csv",
+    "gate_demo",
+    "issuer_name",
+    "txn_cnt",
+    "card_type",
+    "Target",
+    "Acme Bank N.A.",
+    "PREPAID",
+    "balanced_default",
+    "ValueError: could not convert string to float: 'abc'",
+    "CSV path is required.",
+    "Primary metric is required for share analysis.",
+    "strict_posture_violations",
+    "x" * 300,
+    "",
+    " ",
+    "csv_missing ",
+    "CSV_MISSING",
+    "loaded\n",
+    "applied\x1b[31m",
+    0,
+    1,
+    7,
+    12_345,
+    -1,
+    3.5,
+    float("nan"),
+    None,
+    [],
+    {},
+    ["csv_missing"],
+    {"reason": "csv_missing"},
+)
+
+
+def _build_v2(event: str, props: dict[str, object]) -> bytes:
+    return telemetry_events.build_record(
+        event,
+        props,
+        user="alice",
+        session_id=SESSION_ID,
+        app_version="3.0",
+    )
+
+
+def test_v2_valid_props_cover_the_whole_catalog() -> None:
+    assert set(_V2_VALID_PROPS) == set(telemetry_events.event_names())
+    for event, props in _V2_VALID_PROPS.items():
+        decoded = decode_record(_build_v2(event, props))
+        assert dict(decoded.props) == props
+
+
+@pytest.mark.parametrize("event", sorted(_V2_VALID_PROPS))
+def test_every_v2_prop_rejects_free_text_and_data_values(event: str) -> None:
+    for key in _V2_VALID_PROPS[event]:
+        for hostile in _HOSTILE_VALUES:
+            if key == "duration_s" and isinstance(hostile, (int, float)) and not isinstance(hostile, bool):
+                # The one bounded numeric field: finite, 0 <= x <= 1 year.
+                if hostile == hostile and 0 <= hostile <= constants.MAX_DURATION_S:
+                    continue
+            props = dict(_V2_VALID_PROPS[event])
+            props[key] = hostile
+            with pytest.raises(telemetry_events.EventValidationError):
+                _build_v2(event, props)
+        # Booleans only where a boolean is declared, and vice versa.
+        props = dict(_V2_VALID_PROPS[event])
+        props[key] = "true" if key == "publication_withheld" else True
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, props)
+
+
+@pytest.mark.parametrize("event", sorted(_V2_VALID_PROPS))
+def test_v2_events_reject_any_extra_key(event: str) -> None:
+    for extra in ("message", "path", "file", "column", "entity", "rows", "exception", "field"):
+        props = dict(_V2_VALID_PROPS[event])
+        props[extra] = "csv_missing"
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, props)
+
+
+def test_new_vocabularies_hold_no_data_or_config_names() -> None:
+    vocab = set().union(
+        constants.LAUNCH_BLOCK_REASONS,
+        constants.CANCEL_PROMPTS,
+        constants.DATASET_LOAD_OUTCOMES,
+        constants.ADVANCED_OVERRIDE_OUTCOMES,
+        constants.SURFACES,
+    )
+    markers = _sensitive_markers(Path("/nonexistent"), output_stem="x") + tuple(
+        spec.widget_id for spec in tui_app.ADVANCED_FIELD_SPECS
+    )
+    for value in vocab:
+        assert value.isascii() and value.replace("_", "").isalpha()
+        for marker in markers:
+            assert marker not in value
+
+
+def test_tui_friction_emission_records_only_closed_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drive the real TUI handlers with sensitive inputs; inspect raw records."""
+    captured: list[bytes] = []
+    _inject_service(writer=captured.append, storage_root=tmp_path / "ads", environ={})
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    (tmp_path / "session.yaml").write_text("validate_input: true\n", encoding="utf-8")
+    secret_csv = tmp_path / "Acme_Bank_issuer_peers.csv"
+    secret_csv.write_text("issuer_name,txn_cnt,card_type\nTarget,1,PREPAID\n", encoding="utf-8")
+    missing_csv = tmp_path / "Missing_Secret_Bank.csv"
+
+    async def scenario() -> None:
+        async with tui_app.BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app._resolve_csv_path(str(missing_csv))
+            app.load_csv_headers(str(secret_csv))
+            app.load_csv_headers(str(secret_csv))  # deduplicated
+            await pilot.pause()
+            app.query_one("#csv_path").value = ""
+            app.run_analysis()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            request = AnalysisRunRequest(mode="share", metric="txn_cnt", entity="Target")
+            log = app.query_one("#log_output")
+            app._handle_validation_modal_result(
+                False, has_errors=True, should_abort=True,
+                request=request, saved_df=None, log_widget=log,
+            )
+            app._handle_validation_modal_result(
+                False, has_errors=False, should_abort=False,
+                request=request, saved_df=None, log_widget=log,
+            )
+            app.action_show_help()
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    telemetry._reset_for_tests()
+
+    decoded = [decode_record(raw) for raw in captured]
+    by_event = [(e.event, dict(e.props)) for e in decoded]
+    assert ("session_restored", {}) in by_event
+    assert by_event.count(("dataset_load", {"outcome": "loaded"})) == 1
+    assert ("dataset_load", {"outcome": "not_found"}) in by_event
+    assert ("launch_blocked", {"action": "share_analysis", "reason": "csv_missing"}) in by_event
+    assert (
+        "launch_blocked",
+        {"action": "share_analysis", "reason": "validation_errors"},
+    ) in by_event
+    assert (
+        "action_cancelled",
+        {"action": "share_analysis", "prompt": "validation_review"},
+    ) in by_event
+    assert ("surface_viewed", {"surface": "preset_help"}) in by_event
+
+    markers = (
+        str(tmp_path),
+        "Acme",
+        "Missing_Secret",
+        "issuer",
+        "txn_cnt",
+        "card_type",
+        "Target",
+        "PREPAID",
+        "CSV path is required",
+        "cancelled by user",
+        "Cannot run",
+        "ERROR",
+    )
+    for raw in captured:
+        text = raw.decode("utf-8")
+        assert frozenset(json.loads(text)) == ENVELOPE_KEYS
+        for marker in markers:
+            assert marker not in text
+
+
+def test_reader_fallback_warning_names_reason_without_leaking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copied shared files fail the owner gate; the warning says why, and
+    names neither the rejected files nor anything inside them."""
+    shared = tmp_path / "copied"
+    users = shared / "users"
+    users.mkdir(parents=True)
+    copied = _build_v2("launch_blocked", {"action": "share_analysis", "reason": "csv_missing"})
+    payload = json.loads(copied)
+    payload["user"] = "secret_peer_analyst"
+    raw = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+    (users / f"{encode_user_token('secret_peer_analyst')}.jsonl").write_bytes(raw)
+    # Owner UID of the copy is ours, not the named user's: owner_mismatch.
+    monkeypatch.setattr("core.telemetry.reader.lookup_uid", lambda _u: os.geteuid() + 1)
+    warnings: list[str] = []
+    reader = TelemetryReader(
+        shared_dir=shared,
+        identity=_identity(),
+        storage_root=tmp_path / "ads",
+        warn=warnings.append,
+    )
+    assert list(reader.iter_events(days=None)) == []
+    assert len(warnings) == 1
+    assert "owner_mismatch=1" in warnings[0]
+    assert "private" in warnings[0]
+    assert "secret_peer_analyst" not in warnings[0]
+    assert encode_user_token("secret_peer_analyst") not in warnings[0]
+    assert "csv_missing" not in warnings[0]

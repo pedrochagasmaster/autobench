@@ -53,7 +53,7 @@ def test_entrypoints_do_not_rebase_the_callers_working_directory() -> None:
 
     assert "os.chdir(" not in benchmark
     assert "os.chdir(" not in tui
-    assert "CsvDirectoryTree(os.getcwd()" in tui
+    assert "self._browse(os.getcwd())" in tui
 
 
 def test_application_code_does_not_require_a_personal_virtualenv() -> None:
