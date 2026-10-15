@@ -19,7 +19,8 @@ import pytest
 import yaml
 from textual.pilot import Pilot
 from textual.widgets import Button, Checkbox, Collapsible, Input, OptionList, Select, SelectionList, Static
-from textual.widgets._select import SelectOverlay
+from textual.app import App, ComposeResult
+from textual.widgets._select import SelectCurrent, SelectOverlay
 from textual.widgets._toast import ToastRack
 
 import tui_app
@@ -670,5 +671,29 @@ def test_steps_two_and_three_mount_in_the_background_after_a_csv_load() -> None:
             assert not app.query("#output_file")  # More options mounts on first open
             # The prewarmed widgets follow the form like any mounted step.
             assert app.query_one("#share_metric", Select).value == app.form.metric
+
+    asyncio.run(scenario())
+
+
+def test_column_select_survives_a_missing_label_during_teardown() -> None:
+    """A background step can still be mounting while the app exits.
+
+    Textual's Select then writes its value into a SelectCurrent label that is
+    already gone (NoMatches raised out of run_test on CI). SafeSelect must
+    skip that write instead of crashing.
+    """
+
+    class _Host(App):
+        def compose(self) -> ComposeResult:
+            yield ColumnSelect(["alpha", "beta"], value="alpha", id="cols")
+
+    async def scenario() -> None:
+        async with _Host().run_test() as pilot:
+            await pilot.pause()
+            select = pilot.app.query_one("#cols", ColumnSelect)
+            await select.query_one(SelectCurrent).query_one("#label").remove()
+            select.value = "beta"  # must not raise NoMatches
+            await pilot.pause()
+            assert select.value == "beta"
 
     asyncio.run(scenario())
