@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
-from textual.widgets import Select, SelectionList, TabbedContent
+from textual.widgets import Select, SelectionList
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -44,24 +44,28 @@ async def capture() -> list[tuple[str, str]]:
         await snap(app, "01_initial_launch")
 
         app.query_one("#csv_path").value = str(FIXTURE)
-        app.load_csv_headers(str(FIXTURE))
+        app.load_csv_headers(str(FIXTURE), focus_next=True)
         await pilot.pause()
         await snap(app, "02_csv_loaded")
 
+        # Steps mount on first show; More options holds the output fields.
+        for step in ("entity", "analysis"):
+            await app.ensure_step(step)
+        await app.open_more_options()
         app.query_one("#entity_col", Select).value = "issuer_name"
         app.load_unique_entities("issuer_name")
         app.query_one("#entity_name", Select).value = "Target"
         app.query_one("#time_col", Select).value = "year_month"
         app.query_one("#share_metric", Select).value = "txn_cnt"
-        share_dims = app.query_one("#share_dims", SelectionList)
+        share_dims = app.query_one("#dims", SelectionList)
         share_dims.select("card_type")
         share_dims.select("channel")
         app.query_one("#output_file").value = str(OUT_DIR / "demo_output.xlsx")
+        app.action_go_to_step("analysis")
         await pilot.pause()
         await snap(app, "03_share_configured")
 
-        tabs = app.query_one(TabbedContent)
-        tabs.active = "rate_tab"
+        app.set_analysis_mode("rate")
         await pilot.pause()
         await snap(app, "04_rate_tab")
 
@@ -77,8 +81,8 @@ async def capture() -> list[tuple[str, str]]:
         app.pop_screen()
         await pilot.pause()
 
-        app.query_one("#validate_input").value = False
-        tabs.active = "share_tab"
+        app.form.validate_input = False
+        app.set_analysis_mode("share")
         await pilot.pause()
         app.run_analysis()
         for _ in range(120):

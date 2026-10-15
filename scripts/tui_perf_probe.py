@@ -28,8 +28,19 @@ Measured per run (one fresh app per dataset x repeat):
                            the values of the new column (polled, so it works
                            whether loading is synchronous or worker-based).
 * ``key_*``                keypress-to-idle latency for a tab/typing sequence.
+* ``step3_first_show_s``   "Go to step 3" (``action_go_to_step``) until the
+                           Metric field is mounted, displayed and the app is
+                           idle, measured STEP3_THINK_S after the CSV load
+                           went idle (an operator reads the loaded-file line
+                           first). Revisions that mount every step at startup
+                           only lay it out; PR 5 mounts steps 2 and 3 in the
+                           background after a load, else on this first show.
+* ``think_stall_max_ms``   worst event-loop stall during that think time
+                           (PR 5's background step mounting shows up here).
 * ``advanced_expand_s``    Ctrl+A until the Advanced collapsible is expanded
-                           and the app is idle.
+                           and the app is idle (revisions before PR 5).
+* ``expert_open_s``        F8 until the Expert settings screen (PR 5) is
+                           active and the app is idle.
 * ``picker_open_s`` /      Ctrl+O until the CSV picker screen is active /
   ``picker_ready_s``       its browse list (or, on older revisions, its
                            DirectoryTree, also reported as
@@ -99,6 +110,9 @@ POLL_INTERVAL_S = 0.002
 STALL_INTERVAL_S = 0.005
 SETTLE_POLL_S = 0.001
 WAIT_TIMEOUT_S = 300.0
+# Pause between the CSV load going idle and "go to step 3": an operator
+# reads the loaded-file line first. The same for every revision.
+STEP3_THINK_S = 1.0
 
 # Final Phase 1 budgets (docs/research/tui-redesign-phase1/03-performance-architecture.md
 # §8.1). Keys are metric names; each budget is checked against the per-dataset median
@@ -128,7 +142,7 @@ DEFAULT_BUDGETS: Dict[str, float] = {
     "entity_filter_key_max_ms": 50.0,
 }
 
-ALL_PHASES = ("startup", "csv", "entity", "keys", "advanced", "picker", "log", "entity-large")
+ALL_PHASES = ("startup", "csv", "step3", "entity", "keys", "advanced", "expert", "picker", "log", "entity-large")
 
 # Engine modules ``import tui_app`` must not load (03 §1.4).
 HEAVY_IMPORT_MODULES = ("scipy", "scipy.stats", "scipy.optimize", "core.analysis_run")
@@ -559,6 +573,24 @@ async def run_scenario(
             metrics["entity_option_count"] = len(entity_values(app))
             csv_loaded = True
 
+        if "step3" in cfg.phases and csv_loaded and hasattr(app, "action_go_to_step"):
+            mark = stall.mark("think")
+            await asyncio.sleep(STEP3_THINK_S)
+            await settle(pilot)
+            metrics["think_stall_max_ms"] = (await stall.window_stats(mark))["stall_max_ms"]
+            mark = stall.mark("step3")
+            t0 = time.perf_counter()
+            app.action_go_to_step("analysis")
+
+            def metric_shown() -> bool:
+                found = app.query("#share_metric")
+                return bool(found) and found.first().region.area > 0
+
+            await wait_until(metric_shown)
+            metrics["step3_first_show_s"] = await settle(pilot) - t0
+            stats = await stall.window_stats(mark)
+            metrics["step3_stall_max_ms"] = stats["stall_max_ms"]
+
         if "entity" in cfg.phases and csv_loaded:
             before = set(entity_values(app))
             mark = stall.mark("entity")
@@ -584,7 +616,15 @@ async def run_scenario(
             mark = stall.mark("keys")
             for index, key in enumerate(cfg.keys):
                 if key.startswith("@"):
-                    app.query_one(key[1:]).focus()
+                    # Show the field's step (and open a disclosure) first,
+                    # where the revision has that helper.
+                    focus_field = getattr(app, "_focus_field", None)
+                    if focus_field is not None:
+                        focus_field(key[2:])
+                        await settle(pilot)
+                        await wait_until(lambda: getattr(app.focused, "id", None) == key[2:])
+                    else:
+                        app.query_one(key[1:]).focus()
                     await settle(pilot)
                     continue
                 focused = getattr(app.focused, "id", None)
@@ -600,9 +640,9 @@ async def run_scenario(
             metrics["key_slowest"] = slowest
             metrics["key_detail"] = per_key
 
-        if "advanced" in cfg.phases:
+        if "advanced" in cfg.phases and app.query("#advanced_opt"):
             collapsible = app.query_one("#advanced_opt")
-            app.query_one("#btn_run").focus()
+            app._focus_field("btn_run") if hasattr(app, "_focus_field") else app.query_one("#btn_run").focus()
             await settle(pilot)
             mark = stall.mark("advanced")
             t0 = time.perf_counter()
@@ -615,10 +655,26 @@ async def run_scenario(
             metrics["advanced_stall_max_ms"] = stats["stall_max_ms"]
             await press(pilot, "ctrl+a")
 
+        if "expert" in cfg.phases and not app.query("#advanced_opt"):
+            base_screen = app.screen
+            app.query_one("#csv_path").focus()
+            await settle(pilot)
+            mark = stall.mark("expert")
+            t0 = time.perf_counter()
+            send_key(app, "f8")
+            await wait_until(
+                lambda: type(app.screen).__name__ == "ExpertScreen" and app.screen is not base_screen
+            )
+            metrics["expert_open_s"] = await settle(pilot) - t0
+            stats = await stall.window_stats(mark)
+            metrics["expert_stall_max_ms"] = stats["stall_max_ms"]
+            await press(pilot, "escape")
+
         if "picker" in cfg.phases and cfg.picker_dir is not None:
             base_screen = app.screen
             with chdir(cfg.picker_dir):
-                app.query_one("#btn_run").focus()
+                # The Run button is on step 5; the path field is always mounted.
+                app.query_one("#csv_path").focus()
                 await settle(pilot)
                 mark = stall.mark("picker")
                 t0 = time.perf_counter()
@@ -724,9 +780,13 @@ SUMMARY_METRICS = (
     "key_latency_p95_ms",
     "key_latency_max_ms",
     "key_stall_max_ms",
+    "step3_first_show_s",
+    "step3_stall_max_ms",
+    "think_stall_max_ms",
     "advanced_expand_s",
     "advanced_stall_max_ms",
     "expert_open_s",
+    "expert_stall_max_ms",
     "picker_open_s",
     "picker_ready_s",
     "picker_tree_ready_s",
