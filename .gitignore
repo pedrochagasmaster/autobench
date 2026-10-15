@@ -85,6 +85,10 @@ config.json
 !docs/autobench_demo.csv
 !assets/icons/**/*.svg
 !assets/icons/**/*.png
+# TUI snapshot baselines (pytest-textual-snapshot), reviewed in PRs.
+!tests/__snapshots__/**/*.svg
+# pytest-textual-snapshot writes this report when a snapshot fails.
+snapshot_report.html
 *.csv.gz
 /offline_packages/*
 autobench_deploy.zip
