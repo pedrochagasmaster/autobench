@@ -1,0 +1,68 @@
+name: TUI performance nightly (report only)
+
+# Absolute run of scripts/tui_perf_probe.py against DEFAULT_BUDGETS over the
+# Phase 0 dataset matrix, including the 1M-row budgets that are too slow for
+# pull requests (docs/research/tui-redesign-phase1/03-performance-architecture.md
+# §8.2). It informs and never blocks: the budget step is continue-on-error and
+# the results go to the job summary and an artifact.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  absolute:
+    name: Absolute TUI probe (Python 3.13)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 150
+    env:
+      PERF_OUT: ${{ github.workspace }}/perf-results
+      PERF_DATA: ${{ runner.temp }}/tui-perf-data
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.0"
+
+      - name: Install dependencies
+        run: uv sync --locked --extra dev --python 3.13
+
+      - name: Run the probe against the budgets
+        continue-on-error: true
+        run: |
+          mkdir -p "$PERF_OUT"
+          set +e
+          uv run --locked --no-sync python scripts/tui_perf_probe.py \
+            --rows 10000 100000 1000000 --cardinality 50 5000 --repeat 5 \
+            --data-dir "$PERF_DATA" --json-out "$PERF_OUT/nightly.json" \
+            --budget > "$PERF_OUT/nightly.txt" 2>&1
+          status=$?
+          {
+            echo "## TUI performance nightly"
+            echo
+            echo '```'
+            cat "$PERF_OUT/nightly.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Upload probe results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tui-perf-nightly-${{ github.run_id }}
+          path: perf-results/
+          if-no-files-found: warn
