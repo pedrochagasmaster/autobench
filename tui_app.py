@@ -19,7 +19,7 @@ import importlib
 import io
 import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 import yaml
 
 # Remote-friendly renderer defaults (must be set before Textual is imported).
@@ -46,11 +46,12 @@ from textual.widgets import (
     Static,
     ListView,
     ListItem,
+    OptionList,
     SelectionList,
     Markdown,
     Collapsible,
-    DirectoryTree,
 )
+from textual.widgets.option_list import Option
 from datetime import datetime
 from textual import work
 from textual.css.query import NoMatches
@@ -361,61 +362,176 @@ class PresetCatalog:
         return self._release_modes[key]
 
 
-class FileListItem(ListItem):
-    """Custom ListItem that stores the file path."""
-    def __init__(self, file_path: str) -> None:
-        super().__init__(Label(file_path))
-        self.file_path = file_path
+QUICK_PICK_PATTERNS = ("*.csv", "data/*.csv", "tests/fixtures/*.csv")
+# Quick picks shown at once; the filter box reaches the rest (03 §4).
+QUICK_PICK_LIMIT = 50
 
 
-class CsvDirectoryTree(DirectoryTree):
-    """Directory tree limited to directories and CSV files."""
+def _is_browsable_entry(name: str, is_dir: bool) -> bool:
+    """The picker's file filter: directories and ``*.csv``, no hidden entries."""
+    if name.startswith(".") or name == "__pycache__":
+        return False
+    return is_dir or name.lower().endswith(".csv")
 
-    def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
-        keep = []
-        for path in paths:
-            name = path.name
-            if name.startswith(".") or name == "__pycache__":
+
+def scan_csv_directory(directory: str) -> List[tuple]:
+    """List one directory for the CSV picker as ``(name, is_dir)`` pairs.
+
+    Runs on a thread worker: one ``os.scandir`` and no widget access.
+    ``DirEntry.is_dir()`` follows symlinks like the old ``Path.is_dir()``
+    filter, but needs no extra ``stat`` for regular entries (it uses
+    ``d_type``). Directories come first, then files, each sorted
+    case-insensitively, as ``DirectoryTree`` ordered them.
+    """
+    entries: List[tuple] = []
+    with os.scandir(directory) as scan:
+        for entry in scan:
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
                 continue
-            if path.is_dir() or path.suffix.lower() == ".csv":
-                keep.append(path)
-        return keep
+            if _is_browsable_entry(entry.name, is_dir):
+                entries.append((entry.name, is_dir))
+    entries.sort(key=lambda item: (not item[1], item[0].lower()))
+    return entries
 
 
 class CsvPickerScreen(ModalScreen[Optional[str]]):
-    """Modal CSV picker: quick picks from known data folders plus a full tree."""
+    """Modal CSV picker: capped quick picks plus a flat, per-directory browser.
+
+    Both lists are ``OptionList``s, which render only the visible lines, so a
+    folder with thousands of CSVs costs a handful of widgets instead of one
+    widget per file. The directory listing runs on a thread worker. Enter
+    picks a file or opens a directory (``..`` goes up); Escape cancels.
+    """
 
     BINDINGS = [("escape", "cancel_picker", "Cancel")]
 
     def __init__(self, quick_picks: List[str]) -> None:
         super().__init__()
         self.quick_picks = quick_picks
+        self._browse_dir: Optional[str] = None
+        self._browse_entries: List[tuple] = []
 
     def compose(self) -> ComposeResult:
         with Container(id="picker_container"):
             yield Label("Select a CSV file", id="picker_title")
+            yield Input(placeholder="Filter by name…", id="picker_filter")
             with Horizontal(id="picker_body"):
                 with Vertical(id="picker_quick"):
-                    yield Label("Quick picks", classes="picker-subtitle")
-                    yield ListView(
-                        *[FileListItem(path) for path in self.quick_picks],
-                        id="picker_quick_list",
-                    )
+                    yield Label("Quick picks", id="picker_quick_title", classes="picker-subtitle")
+                    yield OptionList(id="picker_quick_list")
                 with Vertical(id="picker_tree_pane"):
-                    yield Label("Browse workspace", classes="picker-subtitle")
-                    yield CsvDirectoryTree(os.getcwd(), id="picker_tree")
+                    yield Label("Browse workspace", id="picker_browse_title", classes="picker-subtitle")
+                    yield OptionList(id="picker_browse_list")
             yield Label(
                 "Enter to select · Escape to cancel",
                 classes="picker-hint",
             )
             yield Button("Cancel", id="btn_picker_cancel", variant="default")
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if isinstance(event.item, FileListItem):
-            self.dismiss(event.item.file_path)
+    def on_mount(self) -> None:
+        self._refresh_quick_picks()
+        # Browse starts in the caller's working directory, never a fixed root.
+        self._browse(os.getcwd())
+        quick = self.query_one("#picker_quick_list", OptionList)
+        (quick if quick.option_count else self.query_one("#picker_browse_list", OptionList)).focus()
 
-    def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        self.dismiss(str(event.path))
+    def _filter_text(self) -> str:
+        try:
+            return self.query_one("#picker_filter", Input).value.strip().casefold()
+        except NoMatches:
+            return ""
+
+    def _refresh_quick_picks(self) -> None:
+        needle = self._filter_text()
+        matches = [path for path in self.quick_picks if needle in path.casefold()] if needle else self.quick_picks
+        shown = matches[:QUICK_PICK_LIMIT]
+        quick = self.query_one("#picker_quick_list", OptionList)
+        quick.set_options(Option(Text(path), id=path) for path in shown)
+        # Like the old ListView: Enter right away picks the first entry.
+        quick.highlighted = 0 if shown else None
+        title = "Quick picks"
+        if len(matches) > len(shown):
+            title = f"Quick picks ({len(shown)} of {len(matches):,})"
+        self.query_one("#picker_quick_title", Label).update(title)
+
+    def _browse(self, directory: str) -> None:
+        self._browse_dir = directory
+        self.query_one("#picker_browse_title", Label).update(Text(f"Browse {directory}"))
+        self._scan_worker(directory)
+
+    @work(thread=True, exclusive=True, group="picker_browse", exit_on_error=False)
+    def _scan_worker(self, directory: str) -> None:
+        worker = get_current_worker()
+        try:
+            entries = scan_csv_directory(directory)
+        except OSError:
+            entries = []
+        if worker.is_cancelled:
+            return
+        try:
+            self.app.call_from_thread(self._apply_browse, directory, entries)
+        except RuntimeError:
+            pass  # App already gone.
+
+    def _apply_browse(self, directory: str, entries: List[tuple]) -> None:
+        if directory != self._browse_dir or not self.is_mounted:
+            return  # A newer directory request owns the list.
+        self._browse_entries = entries
+        self._render_browse()
+
+    def _render_browse(self) -> None:
+        directory = self._browse_dir
+        if directory is None:
+            return
+        needle = self._filter_text()
+        options: List[Option] = []
+        parent = os.path.dirname(os.path.abspath(directory))
+        if parent and parent != os.path.abspath(directory):
+            options.append(Option(Text(".."), id=f"d:{parent}"))
+        for name, is_dir in self._browse_entries:
+            if needle and needle not in name.casefold():
+                continue
+            path = os.path.join(directory, name)
+            if is_dir:
+                options.append(Option(Text(f"▸ {name}/"), id=f"d:{path}"))
+            else:
+                options.append(Option(Text(name), id=f"f:{path}"))
+        browse = self.query_one("#picker_browse_list", OptionList)
+        browse.set_options(options)
+        browse.highlighted = 0 if options else None
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "picker_filter":
+            event.stop()
+            self._refresh_quick_picks()
+            self._render_browse()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "picker_filter":
+            event.stop()
+            for list_id in ("#picker_quick_list", "#picker_browse_list"):
+                option_list = self.query_one(list_id, OptionList)
+                if option_list.option_count:
+                    option_list.focus()
+                    break
+
+    def on_input_blurred(self, event: Input.Blurred) -> None:
+        # The app reloads the CSV when #csv_path blurs; keep the filter's
+        # blur from reaching that handler.
+        event.stop()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        option_id = event.option.id or ""
+        if event.option_list.id == "picker_quick_list":
+            self.dismiss(option_id)
+        elif option_id.startswith("f:"):
+            self.dismiss(option_id[2:])
+        elif option_id.startswith("d:"):
+            self.query_one("#picker_filter", Input).value = ""
+            self._browse(option_id[2:])
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_picker_cancel":
@@ -1036,7 +1152,11 @@ class BenchmarkApp(App):
         margin-top: 1;
     }
 
-    #picker_quick_list, #picker_tree {
+    #picker_filter {
+        margin-bottom: 1;
+    }
+
+    #picker_quick_list, #picker_browse_list {
         height: 1fr;
         border: round $primary 40%;
         background: $boost;
@@ -1882,14 +2002,27 @@ class BenchmarkApp(App):
     # ──────────────────────────────────────────────────────────────────
 
     def _quick_pick_files(self) -> List[str]:
-        """CSV files from the working directory and known data folders."""
-        patterns = ("*.csv", "data/*.csv", "tests/fixtures/*.csv")
-        seen: List[str] = []
-        for pattern in patterns:
-            for match in sorted(glob.glob(pattern)):
+        """CSV files from the working directory and known data folders.
+
+        De-duplicated with a set (the old list check was O(F²)) and sorted
+        newest first, so the capped quick-pick list shows recent files.
+        """
+        seen: set = set()
+        matches: List[str] = []
+        for pattern in QUICK_PICK_PATTERNS:
+            for match in glob.glob(pattern):
                 if match not in seen:
-                    seen.append(match)
-        return seen
+                    seen.add(match)
+                    matches.append(match)
+
+        def newest_first(path: str) -> tuple:
+            try:
+                return (-os.stat(path).st_mtime_ns, path)
+            except OSError:
+                return (0, path)
+
+        matches.sort(key=newest_first)
+        return matches
 
     def _resolve_csv_path(self, raw_path: str) -> Optional[str]:
         """Normalize and validate a CSV path from manual entry or browse."""

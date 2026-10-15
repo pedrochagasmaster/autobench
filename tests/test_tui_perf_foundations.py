@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, Select
+from textual.widgets import Input, OptionList, Select
 
 import tui_app
 from tui_app import SELECT_BLANK, BenchmarkApp, PresetCatalog
@@ -281,6 +281,130 @@ def test_csv_tab_out_still_reports_a_missing_file(tmp_path: Path) -> None:
             assert toasts == ["Invalid Path"]
 
     asyncio.run(scenario())
+
+
+# ── 4. CSV picker ─────────────────────────────────────────────────────────
+
+
+async def _open_picker(pilot):
+    from tui_app import CsvPickerScreen
+
+    await pilot.press("ctrl+o")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        await pilot.pause(0.02)
+        screen = pilot.app.screen
+        if isinstance(screen, CsvPickerScreen) and screen._browse_entries:
+            break
+    await pilot.pause()
+    return pilot.app.screen
+
+
+def test_csv_picker_caps_quick_picks_and_lists_the_cwd_in_a_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from tui_app import QUICK_PICK_LIMIT
+
+    for index in range(QUICK_PICK_LIMIT + 70):
+        (tmp_path / f"file_{index:03d}.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (tmp_path / "UPPER.CSV").write_text("a\n1\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    (tmp_path / ".hidden.csv").write_text("a\n1\n", encoding="utf-8")
+    for name in ("sub", ".git", "__pycache__"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "sub" / "inner.csv").write_text("a\n1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    on_main_thread: list = []
+    real_scan = tui_app.scan_csv_directory
+
+    def tracking_scan(directory: str):
+        on_main_thread.append(threading.current_thread() is threading.main_thread())
+        return real_scan(directory)
+
+    monkeypatch.setattr(tui_app, "scan_csv_directory", tracking_scan)
+
+    async def scenario() -> None:
+        async with BenchmarkApp().run_test(size=(140, 45)) as pilot:
+            app = pilot.app
+            picked: list = []
+            app.load_csv_headers = lambda path, **_kw: picked.append(path)  # type: ignore[method-assign]
+            await pilot.pause()
+            screen = await _open_picker(pilot)
+
+            quick = screen.query_one("#picker_quick_list", OptionList)
+            total = QUICK_PICK_LIMIT + 70  # *.csv glob is case-sensitive: UPPER.CSV is browse-only
+            assert quick.option_count == QUICK_PICK_LIMIT
+            assert f"of {total}" in str(screen.query_one("#picker_quick_title").render())
+
+            browse = screen.query_one("#picker_browse_list", OptionList)
+            ids = [browse.get_option_at_index(i).id for i in range(browse.option_count)]
+            assert ids[0] == f"d:{tmp_path.parent}"  # ".." first
+            assert ids[1] == f"d:{tmp_path / 'sub'}"  # directories before files
+            files = {i[2:] for i in ids if i.startswith("f:")}
+            assert files == {str(tmp_path / f"file_{n:03d}.csv") for n in range(total)} | {
+                str(tmp_path / "UPPER.CSV")
+            }
+            assert on_main_thread == [False]
+
+            # Filter narrows both lists.
+            screen.query_one("#picker_filter", Input).value = "file_119"
+            await pilot.pause()
+            assert quick.option_count == 1
+            assert [browse.get_option_at_index(i).id for i in range(browse.option_count)] == [
+                f"d:{tmp_path.parent}",
+                f"f:{tmp_path / 'file_119.csv'}",
+            ]
+            screen.query_one("#picker_filter", Input).value = ""
+            await pilot.pause()
+
+            # Keyboard: Enter on a directory opens it, Enter on a file picks it.
+            browse.focus()
+            browse.highlighted = 1
+            await pilot.press("enter")
+            deadline = time.monotonic() + 10
+            while screen._browse_dir != str(tmp_path / "sub") or browse.option_count != 2:
+                assert time.monotonic() < deadline
+                await pilot.pause(0.02)
+            browse.highlighted = 1
+            await pilot.press("enter")
+            await pilot.pause()
+            assert picked == [str(tmp_path / "sub" / "inner.csv")]
+            assert app.query_one("#csv_path", Input).value == picked[0]
+
+            # Escape cancels without loading anything.
+            screen = await _open_picker(pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+            assert len(picked) == 1
+
+            # Enter on a quick pick picks it (newest first).
+            newest = tmp_path / "file_005.csv"
+            stat = newest.stat()
+            os.utime(newest, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000_000))
+            screen = await _open_picker(pilot)
+            assert app.focused is screen.query_one("#picker_quick_list", OptionList)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert picked[-1] == "file_005.csv"
+
+    asyncio.run(scenario())
+
+
+def test_quick_picks_are_deduplicated_across_patterns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "data").mkdir()
+    (tmp_path / "a.csv").write_text("a\n", encoding="utf-8")
+    (tmp_path / "data" / "b.csv").write_text("a\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_app, "QUICK_PICK_PATTERNS", ("*.csv", "data/*.csv", "*.csv"))
+    picks = BenchmarkApp()._quick_pick_files()
+    assert sorted(picks) == ["a.csv", "data/b.csv"]
+    assert len(picks) == len(set(picks))
 
 
 # ── 2. focus-change cost ──────────────────────────────────────────────────
