@@ -45,9 +45,20 @@ class _FixedDatetime(_dt.datetime):
         return cls(2026, 10, 14, 10, 15, 30, tzinfo=tz)
 
 
+# Log messages can name the checkout (e.g. "Loaded 6 preset(s) from
+# <repo>/presets"); its length changes the log's width and so the horizontal
+# scrollbar in the snapshot, which then differs between a worktree, a plain
+# clone and CI. Show a fixed root instead.
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+_FIXED_ROOT = "/opt/autobench"
+
+
 class _FixedFormatter(logging.Formatter):
     def formatTime(self, record: logging.LogRecord, datefmt: Any = None) -> str:  # noqa: N802
         return "10:15:30"
+
+    def format(self, record: logging.LogRecord) -> str:
+        return super().format(record).replace(_REPO_ROOT, _FIXED_ROOT)
 
 
 def _fixed_formatter() -> logging.Formatter:
