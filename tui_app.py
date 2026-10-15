@@ -15,6 +15,7 @@ import traceback
 import glob
 import contextlib
 import copy
+import importlib
 import io
 import pandas as pd
 from pathlib import Path
@@ -60,15 +61,6 @@ from rich.text import Text
 # Import shared run orchestration and adapter dependencies.
 sys.path.append(str(Path(__file__).parent))
 try:
-    from core.analysis_run import (
-        RunAborted,
-        RunBlocked,
-        build_run_config,
-        prepare_run_data,
-        resolve_dimensions,
-        validate_analysis_input,
-        execute_run,
-    )
     from core.contracts import (
         AnalysisArtifacts,
         AnalysisRunRequest,
@@ -101,6 +93,58 @@ except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
     sys.exit(1)
+
+# ``core.analysis_run`` pulls in the whole engine (scipy.stats through
+# core.privacy_coverage_solver, about 0.8 s), and the TUI needs none of it
+# until a run starts. It is imported on first use instead, and pre-warmed on a
+# thread worker after the first paint (``BenchmarkApp._prewarm_analysis_run``).
+_ANALYSIS_RUN: Any = None
+_ANALYSIS_RUN_LOCK = threading.Lock()
+
+
+def _analysis_run() -> Any:
+    """Return ``core.analysis_run``, importing it on first use (thread-safe).
+
+    Deliberate deferred import, allow-listed in
+    ``tests/telemetry/test_no_inline_imports.py``. The lock makes a run that
+    starts while the pre-warm import is still in progress wait for it, so the
+    module is never imported twice.
+    """
+    global _ANALYSIS_RUN
+    with _ANALYSIS_RUN_LOCK:
+        if _ANALYSIS_RUN is None:
+            _ANALYSIS_RUN = importlib.import_module("core.analysis_run")
+    return _ANALYSIS_RUN
+
+
+# Thin module-level wrappers keep ``tui_app.prepare_run_data`` and friends as
+# patchable attributes (tests monkeypatch them) without importing the engine.
+def build_run_config(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().build_run_config(*args, **kwargs)
+
+
+def prepare_run_data(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().prepare_run_data(*args, **kwargs)
+
+
+def resolve_dimensions(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().resolve_dimensions(*args, **kwargs)
+
+
+def validate_analysis_input(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().validate_analysis_input(*args, **kwargs)
+
+
+def execute_run(*args: Any, **kwargs: Any) -> Any:
+    return _analysis_run().execute_run(*args, **kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    # ``tui_app.RunBlocked`` / ``tui_app.RunAborted`` keep resolving (PEP 562).
+    if name in ("RunBlocked", "RunAborted"):
+        return getattr(_analysis_run(), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Textual >= 0.89 renamed the Select no-selection sentinel from BLANK to NULL;
 # Select.BLANK now resolves to Widget.BLANK (False), so compare against the
@@ -1331,6 +1375,20 @@ class BenchmarkApp(App):
         if getattr(self, "_telemetry_session_restored", False):
             session_restored()
         self._emit_surface_if_changed(self._analysis_mode())
+        # Pay the deferred engine import off the UI thread once the first
+        # frame is up, so the first Run does not wait for it (03 §1.4).
+        self.call_after_refresh(self._prewarm_analysis_run)
+
+    def _prewarm_analysis_run(self) -> None:
+        if getattr(self, "_exit", False):
+            return
+        self.run_worker(
+            _analysis_run,
+            thread=True,
+            group="prewarm",
+            exit_on_error=False,
+            description="pre-warm core.analysis_run",
+        )
 
     def on_unmount(self) -> None:
         """End telemetry session, then detach log handlers from dead widgets."""
@@ -3036,12 +3094,14 @@ class BenchmarkApp(App):
                     severity="information",
                     timeout=10,
                 )
-        except RunBlocked as exc:
+        # ``except`` expressions are evaluated only while an exception
+        # propagates, and by then execute_run has imported the module.
+        except _analysis_run().RunBlocked as exc:
             self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Execution Blocked: {exc}\n")
             self.call_from_thread(self._end_run_ui, "blocked", f"[red]{exc}[/red]")
             self.call_from_thread(self.notify, str(exc), title="Blocked", severity="error", timeout=10)
-        except RunAborted as exc:
+        except _analysis_run().RunAborted as exc:
             self._quarantine_run_logging(logger, log_widget)
             self.call_from_thread(log_widget.write, f"Execution Error: {exc}\n")
             self.call_from_thread(self._end_run_ui, "error", f"[red]{exc}[/red]")

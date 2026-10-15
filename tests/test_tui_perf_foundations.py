@@ -7,8 +7,12 @@ Each test pins the behaviour a performance fix must keep, plus the fix itself
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
+import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 
@@ -139,7 +143,60 @@ def test_resolved_release_mode_tracks_the_override_file(tmp_path: Path) -> None:
     stat = override.stat()
     os.utime(override, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     changed = ConfigManager(config_file=str(override), preset="balanced_default").resolve()
+    assert changed.privacy_release_mode != expected.privacy_release_mode
     assert (
         catalog.resolved_release_mode("balanced_default", str(override))
         == changed.privacy_release_mode.value
     )
+
+
+# ── 1.4 lazy core.analysis_run ────────────────────────────────────────────
+
+
+def test_analysis_run_is_prewarmed_off_the_ui_thread_after_mount(tmp_path: Path) -> None:
+    """Import stays light; a thread worker loads the engine once the app is up."""
+    code = textwrap.dedent(
+        f"""
+        import asyncio, json, os, sys, threading, time
+        os.environ["AUTOBENCH_TELEMETRY"] = "0"
+        from pathlib import Path
+        import tui_app
+        tui_app.SESSION_FILE = Path({str(tmp_path / "session.yaml")!r})
+        result = {{"at_import": "core.analysis_run" in sys.modules}}
+        importers = []
+        original = tui_app.importlib.import_module
+
+        def tracking(name, *args, **kwargs):
+            if name == "core.analysis_run":
+                importers.append(threading.current_thread() is threading.main_thread())
+            return original(name, *args, **kwargs)
+
+        tui_app.importlib.import_module = tracking
+
+        async def scenario():
+            async with tui_app.BenchmarkApp().run_test(size=(120, 40)) as pilot:
+                deadline = time.monotonic() + 60
+                while tui_app._ANALYSIS_RUN is None and time.monotonic() < deadline:
+                    await pilot.pause(0.05)
+                module = sys.modules["core.analysis_run"]
+                result["prewarmed"] = tui_app._ANALYSIS_RUN is not None
+                result["same_module"] = tui_app._analysis_run() is module
+                result["run_blocked"] = tui_app.RunBlocked is module.RunBlocked
+
+        asyncio.run(scenario())
+        result["importers_on_main_thread"] = importers
+        print(json.dumps(result))
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert result == {
+        "at_import": False,
+        "prewarmed": True,
+        "same_module": True,
+        "run_blocked": True,
+        "importers_on_main_thread": [False],
+    }

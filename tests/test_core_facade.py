@@ -166,3 +166,18 @@ def test_unknown_attribute_still_raises_attribute_error() -> None:
         core.definitely_not_a_core_name  # noqa: B018
     assert not hasattr(core, "definitely_not_a_core_name")
 
+
+
+def test_import_tui_app_does_not_load_scipy() -> None:
+    result = _run(
+        """
+        import json, os, sys
+        os.environ["AUTOBENCH_TELEMETRY"] = "0"
+        import tui_app  # noqa: F401
+        print(json.dumps({
+            "scipy": "scipy" in sys.modules,
+            "core.analysis_run": "core.analysis_run" in sys.modules,
+        }))
+        """
+    )
+    assert result == {"scipy": False, "core.analysis_run": False}
