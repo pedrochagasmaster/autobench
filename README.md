@@ -333,49 +333,74 @@ Analyst handbook: [docs/autobench-onboarding.html](docs/autobench-onboarding.htm
 
 ## TUI Workflow
 
-The TUI (`tui_app.py`) is best for first-time users:
+The TUI (`tui_app.py`) is best for first-time users. It walks five steps
+(Data, Entity, Analysis & mode, Privacy & compliance, Review & run); Tab flows
+from one step into the next and `Ctrl+P` lists "Go to step: …":
 
-1. Enter a CSV path or use Browse (searches current directory and `data/`).
-2. Press Enter or tab away from the path field to load headers.
-3. Choose entity column and target entity (or run peer-only).
-4. Pick a preset.
-5. Configure Share or Rate tab.
-6. Click Run Analysis and watch logs.
+1. Enter a CSV path and press Enter, or press `Ctrl+O` to browse. Focus then
+   moves to the next empty field (Entity column, else Target entity).
+2. Choose the target entity (blank runs peer-only).
+3. Pick Share or Rate (`←`/`→`), the metric or rate columns, and dimensions.
+   Metric and Total list numeric columns first; text columns stay selectable
+   below the line. One dimensions list serves both modes and hides columns
+   that already have a role.
+4. Check the preset, release mode and the declarations.
+5. Press `Ctrl+R`. When something is missing, `Ctrl+R` jumps to it, and the
+   Review step lists every blocker (Enter jumps to that field).
 
 TUI defaults and rules worth knowing:
 
-- **Export balanced CSV** is off by default on both the Share and Rate tabs,
-  as it is on the CLI (`--export-balanced-csv`). Tick it for each run that
-  needs the CSV.
+- **More options** on step 3 holds the time column, secondary metrics, output
+  format and file, input validation, impact analysis, preset comparison and
+  the balanced CSV. Its title says how many differ from the defaults.
+- **Export balanced CSV** is off by default for both modes, as it is on the
+  CLI (`--export-balanced-csv`). Tick it for each run that needs the CSV.
 - The Rate **Total column** has no default. It is the clearing-spend basis for
   fraud analysis, so you always choose it explicitly.
-- **Debug sheets** are set only by the checkbox on the Share/Rate tab; the
-  Advanced panel has no separate debug-sheets control.
-- Changing the preset clears any applied advanced overrides, with a notice;
-  press **Apply overrides** again to use them with the new preset. The
-  accuracy_first consent dialog follows the effective posture, overrides
-  included. Consent and clearing-spend dialogs open with **Cancel** focused.
+- **Expert settings** (`F8`) hold the optimizer tuning, as changes on top of
+  the current preset; a blank field inherits the preset. There is no Apply
+  button: at run time the changes are written once to an
+  `adv_override_*.yaml` file in the launch folder (it stays there), with the
+  current preset's posture. The Posture line on step 4 says
+  `from preset + N expert changes`. Changing the preset while you have expert
+  changes asks first and defaults to **Keep current preset**. `F9` exports the
+  settings to `exported_<preset>_overrides.yaml` and shows the full path.
+- **Debug sheets** have one control, on the Expert settings screen.
+- The accuracy_first consent dialog follows the effective posture. Consent
+  and clearing-spend dialogs open with **Cancel** focused, on every run.
 - **Privacy rule sweep mode** is locked on only while Verified safe coverage
-  is selected on the Share tab. On the Rate tab it is unlocked and the run
-  uses exactly the value shown.
-- Session restore remembers the Share/Rate tab and your column choices
-  (entity column, metric, rate columns, dimensions, secondary metrics). They
-  are applied after you load a CSV that has those columns. The CSV path,
-  output filename, target entity and compliance declarations are never
-  restored.
-- Quitting while an analysis runs stops it at the next safe checkpoint, before
-  any output is written. A run that has already started writing outputs
-  finishes first. A cancelled run shows `■ CANCELLED` and writes nothing.
+  is selected for a share run. In rate mode it is unlocked and the run uses
+  exactly the value shown.
+- The **Citibank entity** of the Citi competitor declaration is picked from the
+  entity column's values (a filter above 2,000 values), not typed.
+- Session restore remembers the mode, the preset, the release mode and rule
+  sweep, the More options values and your column choices (entity column,
+  metric, rate columns, dimensions, secondary metrics). Column choices are
+  applied after you load a CSV that has those columns. Restored values show
+  `↺`, and **Clear restored values** on the Review step resets them. The CSV
+  path, output filename, target entity, compliance declarations, Citibank
+  entity, consent and expert settings are never restored.
+- While a run is active the form is locked, and a line under the rail says
+  so. Quitting while an analysis runs stops it at the next safe checkpoint,
+  before any output is written. A run that has already started writing
+  outputs finishes first. A cancelled run shows `■ CANCELLED` and writes
+  nothing.
+- **Show run log** (in the results column) shows the log across the whole
+  window; `Ctrl+T` goes back.
 
 Keyboard shortcuts (the key bar at the bottom shows the ones that apply to
 the focused field):
 
 - `Ctrl+O` open/select file
-- `Ctrl+R` run analysis
-- `F1` preset guide
-- `F8` show or hide the advanced optimization panel
-- `F9` export the advanced overrides to a file
-- `Ctrl+L` clear the execution log
+- `Ctrl+R` run analysis (or jump to the first thing to fix)
+- `Ctrl+P` command palette, including "Go to step: …"
+- `Ctrl+T` results view (below 110 columns) or results column focus
+- `Ctrl+Y` copy the report path
+- `Ctrl+G` cancel the run (until output writing starts)
+- `F1` help: keys and the preset guide
+- `F8` Expert settings
+- `F9` export the expert settings to a file
+- `Ctrl+L` clear the run log
 - `Ctrl+Q` or `Ctrl+C` quit (asks first while a run is active; `Ctrl+C`
   copies instead when text is selected)
 
