@@ -34,6 +34,7 @@ LaunchBlockReason = Literal[
     "data_preparation_error",
     "initialization_error",
     "entity_not_found",
+    "citi_entity_missing",
 ]
 CancelPrompt = Literal[
     "validation_review",

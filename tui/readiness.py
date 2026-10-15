@@ -4,7 +4,9 @@
 worker uses it to refuse a launch (``BenchmarkApp._fail_launch``) and the UI
 uses the same function, on the same ``RunInputs`` snapshot shape, for the
 action bar, the step rail and the Review step. Messages and closed telemetry
-reasons are exactly today's guards; nothing here touches ``core/``.
+reasons are exactly today's guards; nothing here touches ``core/``. PR 6
+added the Citibank entity check (``citi_entity_missing``, schema v4): the
+same condition core refuses, caught before the attempt instead of inside it.
 
 Consent and the clearing-spend attestation are not blockers: they are asked
 per run attempt, after these checks pass.
@@ -78,6 +80,17 @@ def launch_blockers(inputs: Any) -> Tuple[LaunchBlocker, ...]:
                 # One dimensions list for both modes (PR 5, 01 §2.2).
                 "dims",
                 "dimensions_missing",
+            )
+        )
+    privacy = dict(inputs.privacy_values)
+    if privacy.get("citi_competitor_receives_output") and not privacy.get("citibank_entity_name"):
+        # The same condition core refuses (compliance_policy) once the run
+        # has started; checked here so it is a readiness item instead.
+        found.append(
+            LaunchBlocker(
+                "Choose the Citibank entity, or untick “A Citi competitor will receive this output”.",
+                "citibank_entity_filter" if getattr(inputs, "entity_large_list", False) else "citibank_entity_name",
+                "citi_entity_missing",
             )
         )
     return tuple(found)

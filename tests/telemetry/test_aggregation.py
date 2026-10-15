@@ -286,15 +286,20 @@ def _legacy_v1(
     return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def test_new_reader_reads_mixed_v1_v2_and_v3_file(tmp_path: Path, patch_uid: None) -> None:
-    """An upgraded node appends v2, then v3, records after its v1 history."""
+def test_new_reader_reads_mixed_v1_to_v4_file(tmp_path: Path, patch_uid: None) -> None:
+    """An upgraded node appends v2, v3, then v4 records after its v1 history."""
     shared = tmp_path / "shared"
-    early = FIXED_NOW - timedelta(days=2)
-    middle = FIXED_NOW - timedelta(days=1)
+    early = FIXED_NOW - timedelta(days=3)
+    middle = FIXED_NOW - timedelta(days=2)
+    later = FIXED_NOW - timedelta(days=1)
     session_c = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+    session_d = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 
     def v2(event: str, props: dict[str, object]) -> bytes:
         return _legacy_v1(event, props, session_id=SESSION_B, now=middle, schema_version=2)
+
+    def v3(event: str, props: dict[str, object]) -> bytes:
+        return _legacy_v1(event, props, session_id=session_c, now=later, schema_version=3)
 
     payload = (
         _legacy_v1("session_start", {"launch_context": "tui"}, now=early)
@@ -306,22 +311,22 @@ def test_new_reader_reads_mixed_v1_v2_and_v3_file(tmp_path: Path, patch_uid: Non
         + v2("launch_blocked", {"action": "share_analysis", "reason": "metric_missing"})
         + v2("action_attempted", {"action": "share_analysis"})
         + v2("action_completed", {"action": "share_analysis", "publication_withheld": True})
-        + _record("session_start", {"launch_context": "tui"}, session_id=session_c)
+        + _legacy_v1("session_start", {"launch_context": "tui"}, session_id=session_c, now=later)
+        + v3("launch_blocked", {"action": "share_analysis", "reason": "entity_not_found"})
+        + v3("action_cancelled", {"action": "share_analysis", "prompt": "cancel_before_run"})
+        + v3("action_attempted", {"action": "share_analysis"})
+        + v3("action_cancelled", {"action": "share_analysis", "prompt": "cancel_during_run"})
+        + _record("session_start", {"launch_context": "tui"}, session_id=session_d)
         + _record(
             "launch_blocked",
-            {"action": "share_analysis", "reason": "entity_not_found"},
-            session_id=session_c,
+            {"action": "rate_analysis", "reason": "citi_entity_missing"},
+            session_id=session_d,
         )
+        + _record("action_attempted", {"action": "rate_analysis"}, session_id=session_d)
         + _record(
-            "action_cancelled",
-            {"action": "share_analysis", "prompt": "cancel_before_run"},
-            session_id=session_c,
-        )
-        + _record("action_attempted", {"action": "share_analysis"}, session_id=session_c)
-        + _record(
-            "action_cancelled",
-            {"action": "share_analysis", "prompt": "cancel_during_run"},
-            session_id=session_c,
+            "action_completed",
+            {"action": "rate_analysis", "publication_withheld": False},
+            session_id=session_d,
         )
     )
     _write_shared(shared, "alice", payload)
@@ -336,12 +341,14 @@ def test_new_reader_reads_mixed_v1_v2_and_v3_file(tmp_path: Path, patch_uid: Non
 
     events = list(reader.iter_events(days=None))
     # session_start is still written as v1 (LEGACY_WRITE_EVENTS).
-    assert [e.schema_version for e in events] == [1, 1, 1, 1, 1, 2, 2, 2, 1, 3, 3, 3, 3]
+    assert [e.schema_version for e in events] == [1, 1, 1, 1, 1, 2, 2, 2, 1, 3, 3, 3, 3, 1, 4, 4, 4]
     assert warnings == []
 
     summary = reader.summary(days=None)
     # v1: cancel (pre-attempt) + attempt; v2: block + attempt; v3: block +
     # pre-attempt cancel + attempt. The in-run cancel ends an attempt.
     assert summary.actions["share_analysis"] == 7
-    assert summary.outcomes["completed"] == 2
-    assert reader.who(days=None)[0].completed == 2
+    # v4: the Citibank readiness block + attempt.
+    assert summary.actions["rate_analysis"] == 2
+    assert summary.outcomes["completed"] == 3
+    assert reader.who(days=None)[0].completed == 3

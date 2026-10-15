@@ -696,7 +696,7 @@ def test_v3_values_are_closed_and_reject_near_misses(event: str, key: str, value
     props[key] = value
     raw = _build_v2(event, props)
     decoded = decode_record(raw)
-    assert decoded.schema_version == constants.SCHEMA_VERSION == 3
+    assert decoded.schema_version == constants.SCHEMA_VERSION == 4
     assert dict(decoded.props) == props
     near_misses = (
         value.upper(),
@@ -714,6 +714,45 @@ def test_v3_values_are_closed_and_reject_near_misses(event: str, key: str, value
         with pytest.raises(telemetry_events.EventValidationError):
             _build_v2(event, bad)
     for extra in ("entity", "typed", "message", "stage", "elapsed_s"):
+        bad = dict(props)
+        bad[extra] = value
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, bad)
+
+
+# Schema v4 (verification): the Citibank entity readiness block. Same
+# closed-enum rules; the Citibank entity name, the typed filter text and the
+# core refusal message are never accepted in its place.
+_V4_NEW_VALUES = (("launch_blocked", "reason", "citi_entity_missing"),)
+
+
+@pytest.mark.parametrize(("event", "key", "value"), _V4_NEW_VALUES)
+def test_v4_values_are_closed_and_reject_near_misses(event: str, key: str, value: str) -> None:
+    props = dict(_V2_VALID_PROPS[event])
+    props[key] = value
+    raw = _build_v2(event, props)
+    decoded = decode_record(raw)
+    assert decoded.schema_version == constants.SCHEMA_VERSION == 4
+    assert dict(decoded.props) == props
+    near_misses = (
+        value.upper(),
+        f" {value}",
+        f"{value} ",
+        value.replace("_", "-"),
+        f"{value}:Citibank N.A.",
+        "citibank_entity_missing",
+        "citi_missing",
+        "Citibank N.A.",
+        "Citibank",
+        "citibank_entity_name is required when a Citi competitor receives the output",
+        "compliance_policy",
+    )
+    for hostile in near_misses + _HOSTILE_VALUES:
+        bad = dict(props)
+        bad[key] = hostile
+        with pytest.raises(telemetry_events.EventValidationError):
+            _build_v2(event, bad)
+    for extra in ("citibank_entity", "entity", "typed", "filter", "message", "competitor"):
         bad = dict(props)
         bad[extra] = value
         with pytest.raises(telemetry_events.EventValidationError):
@@ -906,10 +945,75 @@ def test_tui_v3_emissions_record_only_closed_values(
     assert ("launch_blocked", {"action": "share_analysis", "reason": "entity_not_found"}) in by_event
     assert ("action_cancelled", {"action": "rate_analysis", "prompt": "cancel_before_run"}) in by_event
     assert not any(e == "action_cancelled" and p.get("prompt") == "clearing_spend" for e, p in by_event)
-    assert {e.schema_version for e in decoded if e.event not in ("session_start", "session_end")} == {3}
+    assert {e.schema_version for e in decoded if e.event not in ("session_start", "session_end")} == {4}
     for raw in captured:
         text = raw.decode("utf-8")
         assert frozenset(json.loads(text)) == ENVELOPE_KEYS
         for marker in (str(tmp_path), "Acme", "Secret", "0000x", "issuer", "txn_cnt",
                        "card_type", "not found"):
+            assert marker not in text, marker
+
+
+def test_tui_v4_citi_block_records_only_closed_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema v4 end to end: "Citi competitor" ticked with no exact Citibank
+    entity is a readiness block (citi_entity_missing) recorded before any
+    attempt. Neither the entity names nor the typed filter text reach the
+    writer, and core is never called."""
+    import time as _time
+
+    from textual.widgets import Input
+
+    captured: list[bytes] = []
+    _inject_service(writer=captured.append, storage_root=tmp_path / "ads", environ={})
+    monkeypatch.setattr(tui_app, "SESSION_FILE", tmp_path / "session.yaml")
+    monkeypatch.setenv("AUTOBENCH_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.chdir(tmp_path)
+    engine_calls: list[object] = []
+    monkeypatch.setattr(tui_app, "execute_run", lambda *a, **k: engine_calls.append(a))
+    secret_csv = tmp_path / "Acme_Secret_Bank_entities.csv"
+    rows = ["issuer_name,card_type,txn_cnt,total,fraud"]
+    rows += [f"SecretBank_{i:05d},CREDIT,{i + 1},{i + 10},1" for i in range(2500)]
+    rows.append("Citibank_Secret_NA,CREDIT,5,50,1")
+    secret_csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    async def until(pilot, predicate, timeout: float = 20.0) -> None:
+        deadline = _time.monotonic() + timeout
+        while not predicate():
+            assert _time.monotonic() < deadline
+            await pilot.pause(0.05)
+
+    async def scenario() -> None:
+        async with tui_app.BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            app.form.csv_path = str(secret_csv)
+            app.load_csv_headers(str(secret_csv))
+            await until(pilot, lambda: app._entity_large and not app.entity_values_loading)
+            app.form.update(
+                validate_input=False, metric="txn_cnt", dimensions=("card_type",), citi_competitor=True
+            )
+            await app.ensure_step("privacy")
+            # Typed text that is not an exact entity is still "missing".
+            app.query_one("#citibank_entity_filter", Input).value = "Citibank_Secret"
+            await pilot.pause()
+            app.run_analysis()
+            await until(pilot, lambda: app.focused is not None and app.focused.id == "citibank_entity_filter")
+            await until(pilot, lambda: app._run_state == "idle")
+
+    asyncio.run(scenario())
+    telemetry._reset_for_tests()
+
+    assert engine_calls == []
+    decoded = [decode_record(raw) for raw in captured]
+    by_event = [(e.event, dict(e.props)) for e in decoded]
+    assert ("launch_blocked", {"action": "share_analysis", "reason": "citi_entity_missing"}) in by_event
+    assert not any(e == "action_attempted" for e, _ in by_event)
+    assert {e.schema_version for e in decoded if e.event not in ("session_start", "session_end")} == {4}
+    for raw in captured:
+        text = raw.decode("utf-8")
+        assert frozenset(json.loads(text)) == ENVELOPE_KEYS
+        for marker in (str(tmp_path), "Acme", "Secret", "Citibank", "citibank", "issuer",
+                       "txn_cnt", "card_type", "competitor"):
             assert marker not in text, marker

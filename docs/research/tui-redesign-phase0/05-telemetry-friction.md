@@ -987,3 +987,37 @@ event is written as v3.
 
 The funnel column `QUIT_IN_RUN` is renamed `CANCEL_IN_RUN`, because it now
 counts both in-run prompts.
+
+### 8.11 Schema v4 (Phase 2 PR 6, verification)
+
+v4 adds one closed enum value and nothing else: no new event, no new key.
+
+| event | prop | new value | when |
+|---|---|---|---|
+| `launch_blocked` | `reason` | `citi_entity_missing` | "A Citi competitor will receive this output" is ticked and no exact Citibank entity is chosen (blank, or large-list filter text that matches no value) |
+
+Until v4 this case reached core. The TUI recorded `action_attempted`, then
+core raised `RunBlocked("citibank_entity_name is required when a Citi
+competitor receives the output")`, recorded as `action_refused` /
+`compliance_policy`. Core still refuses it exactly as before. The TUI now
+stops the run at the readiness check, using the same condition, so the
+attempt never starts. Neither the Citibank entity, the typed filter text nor
+the core message is recorded (`test_tui_v4_citi_block_records_only_closed_values`).
+
+**Effect on §6.** Guardrail G-a (`refused{compliance_policy}` ÷ attempted) can
+drop slightly after this release, because these runs move from REFUSED to
+BLOCKED. That drop is the reclassification, not weaker enforcement. When
+comparing with a pre-v4 window, move `launch_blocked{citi_entity_missing}`
+back into the compliance-policy refusals.
+
+Versioning follows §8.4 exactly. `SCHEMA_VERSION = 4`,
+`SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)`. `_EVENT_SCHEMAS_V3` is now frozen
+(its enums are literal tuples in `events.py`) and `_EVENT_SCHEMAS_V4` is
+current. `session_start`/`session_end` are still written as v1.
+
+| reader | data | behaviour |
+|---|---|---|
+| new (v4) | mixed v1 + v2 + v3 + v4 | Reads everything, each record against its own catalog (`test_new_reader_reads_mixed_v1_to_v4_file`). `citi_entity_missing` inside a v1, v2 or v3 record is rejected (`test_v4_values_decode_only_in_a_v4_record`). |
+| installed v3 | mixed v1–v4 | No crash. v1–v3 records and every `session_start`/`session_end` are read. Each v4 record is skipped with `skipped 4 record(s) with an unsupported schema_version (this reader supports 1, 2, 3); upgrade Autobench to read them.` Checked by running the real v3 package (`git archive 5da85ae core/telemetry`) against a v4 store. |
+| installed v2 | mixed v1–v4 | The same, with `supports 1, 2` (package from `74e9025`). |
+| installed v1 | v2–v4 records | Each skipped with `unsupported schema_version: N`; sessions are still counted (package from `ddea32c`). |

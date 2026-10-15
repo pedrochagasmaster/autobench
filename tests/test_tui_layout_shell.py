@@ -650,7 +650,8 @@ def test_review_summarises_the_current_form() -> None:
             app = pilot.app
             await pilot.pause()
             await _ready_share_form(pilot)
-            app.form.citi_competitor = True
+            # PR 6: ticking Citi needs the Citibank entity to be ready.
+            app.form.update(citi_competitor=True, citibank_entity="P1")
             app.action_go_to_step("review")
             await app.ensure_step("review")
             await pilot.pause()
@@ -663,7 +664,7 @@ def test_review_summarises_the_current_form() -> None:
     assert "Ready to run share analysis" in text
     assert "issuer_name → Target" in text
     assert "metric txn_cnt" in text and "dims card_type" in text
-    assert "Citi competitor: Yes" in text
+    assert "Citi competitor: Yes (P1)" in text
 
 
 def test_review_button_still_runs(monkeypatch: pytest.MonkeyPatch) -> None:

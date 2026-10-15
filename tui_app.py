@@ -1050,6 +1050,9 @@ class RunInputs:
     debug: bool = True
     export_balanced_csv: bool = False
     fraud_in_bps: bool = True
+    # The entity choosers show the large-list filter (above the Select limit);
+    # readiness uses it to focus the visible Citibank field.
+    entity_large_list: bool = False
 
 
 class RunBadge(NamedTuple):
@@ -4154,6 +4157,7 @@ class BenchmarkApp(App):
             "include_calculated": form.include_calculated,
             "output_format": str(form.output_format or "analysis"),
             "privacy_values": tuple(self._privacy_values().items()),
+            "entity_large_list": self._entity_index is not None,
         }
         per_mode: Dict[str, Any] = {
             "secondary_metrics": form.effective_secondary(),

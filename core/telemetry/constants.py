@@ -15,8 +15,10 @@ from typing import Mapping
 # version 1 (events.LEGACY_WRITE_EVENTS) so v1 readers keep their file gate.
 # v3 (TUI layout shell) only adds closed enum values: the visible Cancel
 # prompts and the large-entity no-match launch block.
-SCHEMA_VERSION = 3
-SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
+# v4 (TUI verification) only adds one closed enum value: the Citibank entity
+# readiness block.
+SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
 MAX_RECORD_BYTES = 8192
 SHARED_GATE_SCAN_MAX_BYTES = 64 * 1024
 DATA_CAPACITY = 256
@@ -59,6 +61,10 @@ LAUNCH_BLOCK_REASONS = (
     "initialization_error",
     # v3: the large-entity filter holds text that is not an exact entity.
     "entity_not_found",
+    # v4: "A Citi competitor will receive this output" is ticked and no exact
+    # Citibank entity is chosen. Core refuses that run (compliance_policy);
+    # the TUI now stops it before the attempt.
+    "citi_entity_missing",
 )
 # v2: which prompt the operator declined or left. Every prompt except those in
 # IN_RUN_CANCEL_PROMPTS is answered before action_attempted.

@@ -830,7 +830,7 @@ def test_skipped_records_are_counted_once_per_report(
 ) -> None:
     identity = _identity()
     shared = tmp_path / "shared"
-    future = b'{"schema_version":4,"ts":"2026-07-12T22:00:00Z","event":"x","user":"alice",' \
+    future = b'{"schema_version":5,"ts":"2026-07-12T22:00:00Z","event":"x","user":"alice",' \
         b'"session_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","app_version":"9","props":{}}\n'
     unknown_event = _session_start().replace(b'"session_start"', b'"session_pause"')
     _write_shared(
@@ -842,7 +842,7 @@ def test_skipped_records_are_counted_once_per_report(
     assert len(list(reader.iter_events(days=None))) == 2
     assert len(warnings) == 2
     assert warnings[0].startswith("skipped 2 record(s) with an unsupported schema_version")
-    assert "supports 1, 2, 3" in warnings[0]
+    assert "supports 1, 2, 3, 4" in warnings[0]
     assert warnings[1] == "skipped 1 record(s) that failed schema validation."
 
 
