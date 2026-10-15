@@ -19,10 +19,30 @@ logger = logging.getLogger(__name__)
 # core.telemetry.constants (Literal needs literal strings); a test asserts
 # they stay identical.
 LaunchContext = Literal["cli_share", "cli_rate", "tui"]
-Surface = Literal["share", "rate"]
+Surface = Literal["share", "rate", "validation_review", "preset_help", "advanced"]
 Action = Literal["share_analysis", "rate_analysis"]
 RefuseReason = Literal["configuration", "input_validation", "compliance_policy"]
 FailCategory = Literal["input", "analysis", "output", "unexpected"]
+LaunchBlockReason = Literal[
+    "csv_missing",
+    "entity_loading",
+    "metric_missing",
+    "total_missing",
+    "rate_column_missing",
+    "dimensions_missing",
+    "validation_errors",
+    "data_preparation_error",
+    "initialization_error",
+]
+CancelPrompt = Literal[
+    "validation_review",
+    "accuracy_first_consent",
+    "clearing_spend",
+    "quit_before_run",
+    "quit_during_run",
+]
+DatasetLoadOutcome = Literal["loaded", "not_found", "header_read_failed", "entity_list_failed"]
+AdvancedOverrideOutcome = Literal["applied", "empty", "failed", "exported", "export_failed"]
 
 _FALLBACK_VERSION = "0"
 _VERSION_PATH = Path(__file__).resolve().parents[2] / "VERSION"
@@ -107,12 +127,35 @@ def action_attempted(action: Action) -> None:
     _run_safely("action_attempted", lambda s: s.action_attempted(action))
 
 
-def action_completed(action: Action) -> None:
-    _run_safely("action_completed", lambda s: s.action_completed(action))
+def action_completed(action: Action, publication_withheld: bool) -> None:
+    """Record a completed run; ``publication_withheld`` is True when a strict
+    posture wrote only the analysis workbook and withheld publication."""
+    _run_safely(
+        "action_completed",
+        lambda s: s.action_completed(action, publication_withheld),
+    )
 
 
-def action_cancelled(action: Action) -> None:
-    _run_safely("action_cancelled", lambda s: s.action_cancelled(action))
+def action_cancelled(action: Action, prompt: CancelPrompt) -> None:
+    """Record the operator declining ``prompt``; see ``CANCEL_PROMPTS``."""
+    _run_safely("action_cancelled", lambda s: s.action_cancelled(action, prompt))
+
+
+def launch_blocked(action: Action, reason: LaunchBlockReason) -> None:
+    """Record the TUI stopping a run before ``action_attempted``."""
+    _run_safely("launch_blocked", lambda s: s.launch_blocked(action, reason))
+
+
+def dataset_load(outcome: DatasetLoadOutcome) -> None:
+    _run_safely("dataset_load", lambda s: s.dataset_load(outcome))
+
+
+def advanced_override(outcome: AdvancedOverrideOutcome) -> None:
+    _run_safely("advanced_override", lambda s: s.advanced_override(outcome))
+
+
+def session_restored() -> None:
+    _run_safely("session_restored", lambda s: s.session_restored())
 
 
 def action_refused(action: Action, reason: RefuseReason) -> None:

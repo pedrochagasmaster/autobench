@@ -64,6 +64,7 @@ from core.data_loader import DataLoader, ValidationIssue, ValidationSeverity
 from core.dimensional_analyzer import DimensionalAnalyzer
 from core.observability import RunObservability
 from core.output_artifacts import (
+    STRICT_PUBLICATION_WITHHELD_REASONS,
     SUPPRESSED_PUBLICATION_VIEW_NOTICE,
     apply_release_set_filter,
     filter_results_to_release_set,
@@ -1237,6 +1238,24 @@ class RunBlocked(RunAborted):
         self.compliance_summary = compliance_summary
 
 
+class RunCancelled(Exception):
+    """Raised when the caller's ``cancel_requested`` hook stopped a run.
+
+    Core checks the hook only at phase boundaries and never once output
+    writing has started, so a cancelled run has written no artifact. It is
+    deliberately not a ``RunAborted``: nothing was refused or invalid.
+    """
+
+    def __init__(self, phase: str):
+        super().__init__("Run cancelled before output writing started")
+        # Closed phase name the run had reached (configuration/input/analysis).
+        self.phase = phase
+
+
+CancelRequested = Callable[[], bool]
+StageCallback = Callable[[str], None]
+
+
 def enforce_compliance_preconditions(config: ConfigManager, request: AnalysisRunRequest) -> Dict[str, Any]:
     posture = config.get('compliance_posture')
     acknowledgement_given = bool(request.acknowledge_accuracy_first)
@@ -1676,11 +1695,49 @@ def _sha256_file(path: str) -> str:
     return hasher.hexdigest()
 
 
-def execute_run(request: AnalysisRunRequest, logger: logging.Logger) -> AnalysisArtifacts:
+def execute_run(
+    request: AnalysisRunRequest,
+    logger: logging.Logger,
+    *,
+    cancel_requested: Optional[CancelRequested] = None,
+    on_stage: Optional[StageCallback] = None,
+) -> AnalysisArtifacts:
+    """Run one analysis through the shared seam.
+
+    ``cancel_requested`` and ``on_stage`` are optional, additive hooks for
+    interactive callers; the CLI passes neither and behaves exactly as before.
+    Core reports each phase it enters (``configuration``, ``input``,
+    ``analysis``, ``output``) to ``on_stage``, and checks ``cancel_requested``
+    before entering each of them. The last check is before ``output`` starts,
+    so cancellation never interrupts output writing; a cancelled run raises
+    ``RunCancelled`` having written nothing.
+    """
+    if cancel_requested is None and on_stage is None:
+        # The unhooked path is exactly the pre-hook dispatch.
+        if request.is_share:
+            return execute_share_run(request, logger)
+        if request.is_rate:
+            return execute_rate_run(request, logger)
+        raise RunAborted(f"Unsupported analysis mode: {request.mode}")
+    # Hooked path: the same mode specs and overrides as execute_share_run and
+    # execute_rate_run, whose signatures are public and stay (request, logger).
     if request.is_share:
-        return execute_share_run(request, logger)
+        return _execute_run(
+            request,
+            SHARE_MODE_SPEC,
+            logger,
+            cancel_requested=cancel_requested,
+            on_stage=on_stage,
+        )
     if request.is_rate:
-        return execute_rate_run(request, logger)
+        return _execute_run(
+            request,
+            RATE_MODE_SPEC,
+            logger,
+            extra_config_overrides={'fraud_in_bps': request.fraud_in_bps},
+            cancel_requested=cancel_requested,
+            on_stage=on_stage,
+        )
     raise RunAborted(f"Unsupported analysis mode: {request.mode}")
 
 
@@ -2260,15 +2317,37 @@ RATE_MODE_SPEC = AnalysisModeSpec(
 
 
 class _PhaseTracker:
-    """Tracks orchestration phase without retaining request fields."""
+    """Tracks orchestration phase without retaining request fields.
 
-    __slots__ = ("phase",)
+    The optional hooks make every ``set`` a phase boundary: cancellation is
+    checked before the new phase is entered, then the stage is reported.
+    Without hooks ``set`` only records the phase, exactly as before.
+    """
 
-    def __init__(self) -> None:
+    __slots__ = ("phase", "_cancel_requested", "_on_stage")
+
+    def __init__(
+        self,
+        *,
+        cancel_requested: Optional[CancelRequested] = None,
+        on_stage: Optional[StageCallback] = None,
+    ) -> None:
         self.phase = "configuration"
+        self._cancel_requested = cancel_requested
+        self._on_stage = on_stage
 
     def set(self, phase: str) -> None:
+        if self._cancel_requested is not None and self._cancel_requested():
+            # self.phase is still the phase that just finished; output (the
+            # only phase that writes) has not started.
+            raise RunCancelled(self.phase)
         self.phase = phase
+        if self._on_stage is not None:
+            try:
+                self._on_stage(phase)
+            except Exception:
+                # A progress display must never change the run's outcome.
+                logging.getLogger(__name__).debug("on_stage hook failed", exc_info=True)
 
 
 def _failure_category(phase: str) -> FailCategory:
@@ -2281,17 +2360,45 @@ def _failure_category(phase: str) -> FailCategory:
     return "unexpected"
 
 
+def _publication_withheld(artifacts: AnalysisArtifacts) -> bool:
+    """True when a strict posture withheld publication of an authorized run.
+
+    Reads only the closed ``publication_withheld_reason`` marker that
+    ``write_outputs`` sets; the boolean is all telemetry records (G13).
+    """
+    try:
+        reason = (artifacts.metadata or {}).get("publication_withheld_reason")
+        return reason in STRICT_PUBLICATION_WITHHELD_REASONS
+    except Exception:
+        return False
+
+
 def _execute_run(
     request: AnalysisRunRequest,
     mode_spec: AnalysisModeSpec,
     logger: logging.Logger,
     *,
     extra_config_overrides: Optional[Dict[str, Any]] = None,
+    cancel_requested: Optional[CancelRequested] = None,
+    on_stage: Optional[StageCallback] = None,
 ) -> AnalysisArtifacts:
     # Telemetry helpers are best-effort and never raise, so the outcome
     # mapping below cannot alter analysis behavior.
+    #
+    # Outcome semantics (documented in docs/research/tui-redesign-phase0/
+    # 05-telemetry-friction.md §8): "refused" means the product deliberately
+    # declined to produce benchmark output (policy block, aborted input or
+    # configuration); "failed" means an error the product did not anticipate.
+    # RunAborted is therefore refused/input_validation in every phase, even
+    # though the TUI titles its toast "Failed".
+    #
+    # RunCancelled (only possible when the caller passed cancel_requested)
+    # records no outcome here: the caller that asked for the cancel records
+    # action_cancelled with the closed prompt naming why (the TUI records
+    # quit_during_run when the operator confirms Quit). Recording it here as
+    # well would end one attempt twice.
     action: Action = "share_analysis" if request.is_share else "rate_analysis"
-    tracker = _PhaseTracker()
+    tracker = _PhaseTracker(cancel_requested=cancel_requested, on_stage=on_stage)
     log_gate = PrivacyRunLogGate()
     log_gate.start()
     privacy_log_authorized = False
@@ -2305,6 +2412,8 @@ def _execute_run(
                 extra_config_overrides=extra_config_overrides,
                 phase_tracker=tracker,
             )
+        except RunCancelled:
+            raise
         except RunBlocked:
             action_refused(action, "compliance_policy")
             raise
@@ -2326,7 +2435,7 @@ def _execute_run(
         privacy_sink_authorized = artifacts.privacy_sink_authorized is True
         privacy_log_authorized = artifacts.privacy_log_authorized is True
         if privacy_sink_authorized:
-            action_completed(action)
+            action_completed(action, _publication_withheld(artifacts))
         else:
             action_refused(action, "compliance_policy")
         return artifacts
