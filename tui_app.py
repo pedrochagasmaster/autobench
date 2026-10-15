@@ -14,6 +14,7 @@ import threading
 import traceback
 import glob
 import contextlib
+import copy
 import io
 import pandas as pd
 from pathlib import Path
@@ -231,6 +232,89 @@ class LogHandler(logging.Handler):
             self._flush_scheduled = False
         if pending:
             self.log_widget.write("".join(pending))
+
+
+PRESETS_DIR = Path(__file__).resolve().parent / "presets"
+
+
+def _preset_dir_signature(preset_dir: Path) -> tuple:
+    """Cheap fingerprint of the preset files: one ``scandir`` plus a stat each.
+
+    Any added, removed or edited ``*.yaml``/``*.yml`` file changes it, so a
+    cached parse is never served for presets that changed on disk.
+    """
+    try:
+        entries = []
+        with os.scandir(preset_dir) as scan:
+            for entry in scan:
+                if entry.name.endswith((".yaml", ".yml")):
+                    stat = entry.stat()
+                    entries.append((entry.name, stat.st_mtime_ns, stat.st_size))
+        return tuple(sorted(entries))
+    except OSError:
+        return ()
+
+
+def _file_signature(path: Optional[str]) -> Optional[tuple]:
+    """(path, mtime_ns, size) of a config file, or None when unset/missing."""
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (path, None, None)
+    return (path, stat.st_mtime_ns, stat.st_size)
+
+
+class PresetCatalog:
+    """Parse the preset directory once, for display purposes only.
+
+    The TUI used to parse every preset file four times at startup and again on
+    every Advanced expand (each ``ConfigManager`` builds its own
+    ``PresetManager``). The catalog keeps one ``PresetWorkflow`` and a memo of
+    resolved preset configs, both invalidated when a preset file changes.
+
+    Display only: the run path still builds a fresh ``ConfigManager`` inside
+    ``build_run_config``, exactly like the CLI, so what runs never comes from
+    this cache.
+    """
+
+    def __init__(self, preset_dir: Path = PRESETS_DIR) -> None:
+        self._preset_dir = preset_dir
+        self._signature: Optional[tuple] = None
+        self._workflow: Optional[PresetWorkflow] = None
+        self._resolved: Dict[str, Dict[str, Any]] = {}
+        self._release_modes: Dict[tuple, str] = {}
+
+    def _revalidate(self) -> None:
+        signature = _preset_dir_signature(self._preset_dir)
+        if self._workflow is None or signature != self._signature:
+            self._workflow = PresetWorkflow()
+            self._signature = signature
+            self._resolved.clear()
+            self._release_modes.clear()
+
+    @property
+    def workflow(self) -> PresetWorkflow:
+        self._revalidate()
+        assert self._workflow is not None
+        return self._workflow
+
+    def resolved_config(self, preset: str) -> Dict[str, Any]:
+        """``ConfigManager(preset=preset).config``, memoised; callers get a copy."""
+        self._revalidate()
+        if preset not in self._resolved:
+            self._resolved[preset] = ConfigManager(preset=preset).config
+        return copy.deepcopy(self._resolved[preset])
+
+    def resolved_release_mode(self, preset: Optional[str], config_file: Optional[str]) -> str:
+        """Effective ``privacy_release_mode`` value for (preset, override file)."""
+        self._revalidate()
+        key = (preset, _file_signature(config_file))
+        if key not in self._release_modes:
+            resolved = ConfigManager(config_file=config_file, preset=preset).resolve()
+            self._release_modes[key] = resolved.privacy_release_mode.value
+        return self._release_modes[key]
 
 
 class FileListItem(ListItem):
@@ -581,6 +665,11 @@ class BenchmarkApp(App):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        # Set before the first stylesheet pass: assigning it in on_mount
+        # restyled the whole widget tree a second time (03 §1.3).
+        self.theme = "tokyo-night"
+        # One parse of presets/*.yaml for display (see PresetCatalog).
+        self._preset_catalog = PresetCatalog()
         # Confirmations the analysis worker is blocked on (see _await_confirmation).
         self._confirmation_lock = threading.Lock()
         self._pending_confirmations: set[threading.Event] = set()
@@ -1207,7 +1296,6 @@ class BenchmarkApp(App):
 
     def on_mount(self) -> None:
         """Event handler called when widget is added to the app."""
-        self.theme = "tokyo-night"
         self._run_state = "idle"
         self._run_started_at: Optional[float] = None
         self._run_mode: Optional[str] = None
@@ -1917,9 +2005,20 @@ class BenchmarkApp(App):
     # Presets / advanced overrides
     # ──────────────────────────────────────────────────────────────────
 
+    @property
+    def preset_workflow(self) -> PresetWorkflow:
+        """The shared preset workflow (cached, re-parsed when presets change)."""
+        override = self.__dict__.get("_preset_workflow_override")
+        if override is not None:
+            return override
+        return self._preset_catalog.workflow
+
+    @preset_workflow.setter
+    def preset_workflow(self, value: PresetWorkflow) -> None:
+        self.__dict__["_preset_workflow_override"] = value
+
     def load_presets(self):
         """Load available presets through the shared preset workflow."""
-        self.preset_workflow = PresetWorkflow()
         presets = self.preset_workflow.list_presets()
         options = [(preset, preset) for preset in presets] or [("standard", "standard")]
         self.query_one("#preset_select").set_options(options)
@@ -2000,15 +2099,12 @@ class BenchmarkApp(App):
         return self._override_builder.read_field(data, spec)
 
     def _load_advanced_parameter_data(self, preset_name: str) -> Dict[str, Any]:
-        if not hasattr(self, 'preset_workflow'):
-            self.preset_workflow = PresetWorkflow()
-
         raw_data = self.preset_workflow.load_preset_data(preset_name)
         if not raw_data:
             return {}
 
         try:
-            return ConfigManager(preset=preset_name).config
+            return self._preset_catalog.resolved_config(preset_name)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Falling back to raw preset data for advanced parameters: %s",
@@ -2059,15 +2155,11 @@ class BenchmarkApp(App):
         posture = "strict"
         preset_val = self.query_one("#preset_select").value
         if preset_val and preset_val != SELECT_BLANK:
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             preset_data = self.preset_workflow.load_preset_data(str(preset_val))
             if isinstance(preset_data, dict):
                 posture = preset_data.get("compliance_posture", posture)
 
         try:
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             tmp_path = self.preset_workflow.write_override_file(yaml_data, posture=posture)
             self.advanced_config_path = str(tmp_path)
             # Optimization override files usually omit privacy_release_mode; only
@@ -2284,11 +2376,7 @@ class BenchmarkApp(App):
         preset = None if preset_val == SELECT_BLANK else str(preset_val)
         config_file = getattr(self, "advanced_config_path", None)
         try:
-            resolved = ConfigManager(
-                config_file=config_file,
-                preset=preset,
-            ).resolve()
-            mode_value = resolved.privacy_release_mode.value
+            mode_value = self._preset_catalog.resolved_release_mode(preset, config_file)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "Could not resolve privacy_release_mode from configuration: %s",
@@ -2547,8 +2635,6 @@ class BenchmarkApp(App):
             tmp_path = Path(self.advanced_config_path)
             with open(tmp_path, 'r', encoding='utf-8') as f:
                 content = yaml.safe_load(f) or {}
-            if not hasattr(self, 'preset_workflow'):
-                self.preset_workflow = PresetWorkflow()
             export_path = self.preset_workflow.export_override_file(content, preset_name=str(preset_val))
             self.notify(f"Exported advanced config: {export_path.name}", title="Advanced Export", severity="information", timeout=6)
             advanced_override("exported")
@@ -2621,8 +2707,6 @@ class BenchmarkApp(App):
                 }
                 if preset and not values["config"]:
                     posture = None
-                    if not hasattr(self, 'preset_workflow'):
-                        self.preset_workflow = PresetWorkflow()
                     preset_data = self.preset_workflow.load_preset_data(preset)
                     posture = preset_data.get('compliance_posture') if isinstance(preset_data, dict) else None
                     values["compliance_posture"] = posture
