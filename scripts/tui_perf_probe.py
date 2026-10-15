@@ -672,6 +672,11 @@ async def run_scenario(
             await settle(pilot)
             t0 = time.perf_counter()
             send_key(app, "enter")
+            # The entity phase may have switched the column; use the large one.
+            await wait_until(lambda: app._loaded_csv_signature[0] == str(cfg.large_entity_csv))
+            entity_col = app.query_one("#entity_col", Select)
+            if entity_col.value != ENTITY_COL:
+                entity_col.value = ENTITY_COL
             await wait_until(
                 lambda: not app.entity_values_loading
                 and len(entity_values(app)) == cfg.large_entity_count
