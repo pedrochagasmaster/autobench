@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -110,60 +111,86 @@ def widget_rect(app: Any, selector: str) -> Optional[dict[str, float]]:
 
 
 def build_beats() -> list[Beat]:
-    """The onboarding run, one beat per thing the analyst actually does."""
+    """The onboarding run, one beat per thing the analyst actually does.
+
+    The redesigned TUI (Phase 2) is one screen with five steps: Data, Entity,
+    Analysis & mode, Privacy & compliance, Review & run. Values are set on the
+    form model (``app.form``), the same state the widgets bind to; each beat
+    shows the step that holds the field it teaches.
+    """
+
+    async def show(app: Any, pilot: Any, step: str, focus: Any = "entry") -> None:
+        await app.ensure_step(step)
+        app._show_step(step, focus=focus)
+        await settle(pilot, 4)
 
     async def open_picker(app: Any, pilot: Any) -> None:
         await pilot.press("ctrl+o")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            screen = app.screen
+            if type(screen).__name__ == "CsvPickerScreen" and getattr(screen, "_quick_loaded", True):
+                break
+            await settle(pilot, 1)
 
     async def choose_file(app: Any, pilot: Any) -> None:
-        from textual.widgets import ListView
+        from textual.widgets import OptionList
 
         picker = app.screen
-        quick = picker.query_one("#picker_quick_list", ListView)
-        if quick.children:
-            quick.index = 0
+        quick = picker.query_one("#picker_quick_list", OptionList)
+        if quick.option_count:
+            quick.highlighted = 0
             app.set_focus(quick)
             await pilot.press("enter")
         else:
             picker.dismiss(str(Path.cwd() / DEMO_CSV))
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and (not app._csv_loaded or app.entity_values_loading):
+            await settle(pilot, 1)
+        await show(app, pilot, "data", focus="csv_path")
 
     async def set_entity_column(app: Any, pilot: Any) -> None:
-        app.query_one("#entity_col").value = "issuer_name"
+        app.form.entity_col = EXPECTED_ENTITY_COL
+        await show(app, pilot, "entity", focus="entity_col")
 
     async def set_target(app: Any, pilot: Any) -> None:
-        app.query_one("#entity_name").value = "Target"
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and app.entity_values_loading:
+            await settle(pilot, 1)
+        app.form.entity = EXPECTED_TARGET
+        await show(app, pilot, "entity", focus="entity_name")
 
     async def set_time_column(app: Any, pilot: Any) -> None:
-        app.query_one("#time_col").value = "year_month"
+        app.form.time_col = EXPECTED_TIME_COL
+        await app.open_more_options()
+        await show(app, pilot, "analysis", focus="time_col")
 
     async def set_preset(app: Any, pilot: Any) -> None:
-        app.query_one("#preset_select").value = "compliance_strict"
-
-    async def set_metric(app: Any, pilot: Any) -> None:
-        app.query_one("#share_metric").value = "txn_cnt"
-
-    async def set_dimensions(app: Any, pilot: Any) -> None:
-        from textual.widgets import SelectionList
-
-        dims = app.query_one("#share_dims", SelectionList)
-        for value in EXPECTED_DIMENSIONS:
-            dims.select(value)
+        app.form.preset = EXPECTED_PRESET
+        await show(app, pilot, "privacy", focus="preset_select")
 
     async def open_preset_guide(app: Any, pilot: Any) -> None:
         await pilot.press("f1")
 
     async def close_preset_guide(app: Any, pilot: Any) -> None:
         await pilot.press("escape")
+        await show(app, pilot, "analysis", focus="analyze_distortion")
 
-    async def show_rate_tab(app: Any, pilot: Any) -> None:
-        from textual.widgets import TabbedContent
+    async def set_metric(app: Any, pilot: Any) -> None:
+        app.form.metric = EXPECTED_METRIC
+        await show(app, pilot, "analysis", focus="share_metric")
 
-        app.query_one(TabbedContent).active = "rate_tab"
+    async def set_dimensions(app: Any, pilot: Any) -> None:
+        app.form.dimensions = EXPECTED_DIMENSIONS
+        await show(app, pilot, "analysis", focus="dims")
+
+    async def show_rate_mode(app: Any, pilot: Any) -> None:
+        app.form.mode = "rate"
+        await show(app, pilot, "analysis", focus="mode_switch")
 
     async def back_to_share(app: Any, pilot: Any) -> None:
-        from textual.widgets import TabbedContent
-
-        app.query_one(TabbedContent).active = "share_tab"
+        app.form.mode = "share"
+        await show(app, pilot, "review", focus="btn_run")
 
     async def start_run(app: Any, pilot: Any) -> None:
         await pilot.press("ctrl+r")
@@ -185,69 +212,68 @@ def build_beats() -> list[Beat]:
                     pass
             await settle(pilot, 4)
         await settle(pilot, 10)
-        # The log keeps its scroll position; the closing lines are the point.
+        app.clear_notifications()
+        # The full-width run log; it keeps its scroll position, and the
+        # closing lines are the point.
+        app.action_show_log()
+        await settle(pilot, 4)
         app.query_one("#log_output", Log).scroll_end(animate=False)
         await settle(pilot, 4)
 
-    async def hold(app: Any, pilot: Any) -> None:
+    async def show_results(app: Any, pilot: Any) -> None:
+        app.action_show_log()  # back to the form and the results column
         await settle(pilot, 4)
 
     return [
         Beat(
             "launch",
-            "Launch autobench from the directory holding your CSV. Four numbered "
-            "sections on the left, run activity on the right.",
+            "Launch autobench from the directory holding your CSV. Five steps run "
+            "across the top; the bar at the bottom always says whether the run is ready.",
         ),
         Beat(
             "browse",
-            "Ctrl+O opens Browse…, which lists the CSV files in the directory you "
-            "launched from.",
+            "Ctrl+O opens the file picker: quick picks from the launch folder, and a "
+            "browser for everything else.",
             action=open_picker,
         ),
         Beat(
             "loaded",
-            "Picking the file loads the header row, and every selector below is "
-            "populated from those columns.",
+            "Picking the file loads the header row, and every column choice in the "
+            "later steps is filled from those columns.",
             action=choose_file,
-            focus=("#section_data",),
-            reveal="#section_data",
+            focus=("#csv_path",),
         ),
         Beat(
             "entity_column",
-            "Entity ID column is the identifier shared by the target and its peers: "
-            "issuer_name here.",
+            "Step 2: the entity column is the identifier shared by the target and its "
+            "peers: issuer_name here.",
             action=set_entity_column,
             focus=("#entity_col",),
-            reveal="#section_entity",
         ),
         Beat(
             "target",
             "Target entity is case-sensitive. Name it to compare one client, or leave "
-            "it blank for a market view.",
+            "it blank for a market view. It is never remembered between sessions.",
             action=set_target,
             focus=("#entity_name",),
-            reveal="#section_entity",
         ),
         Beat(
             "time_column",
-            "The time period column is optional. The demo groups by year_month, and "
-            "privacy constraints are enforced within every period.",
+            "The time column is optional and lives under More options in step 3. The "
+            "demo groups by year_month; privacy constraints hold within every period.",
             action=set_time_column,
             focus=("#time_col",),
-            reveal="#section_analysis",
         ),
         Beat(
             "preset",
-            "compliance_strict is already selected: it is the default preset. Keep it "
-            "unless a reviewed requirement justifies another one.",
+            "Step 4: compliance_strict is the default preset. Keep it unless a reviewed "
+            "requirement justifies another one.",
             action=set_preset,
             focus=("#preset_select",),
-            reveal="#section_analysis",
         ),
         Beat(
             "preset_guide",
-            "F1 opens the Preset Guide, which describes every preset without leaving "
-            "the terminal.",
+            "F1 opens help, including the preset guide, without leaving the terminal.",
             action=open_preset_guide,
             settle=8,
         ),
@@ -258,53 +284,48 @@ def build_beats() -> list[Beat]:
             "what the balancing cost.",
             action=close_preset_guide,
             focus=("#analyze_distortion", "#validate_input"),
-            reveal="#analyze_distortion",
         ),
         Beat(
             "metric",
-            "On the Share tab, the primary metric is the one the weights are optimized "
-            "on.",
+            "In Share mode, the primary metric is the one the weights are optimized on.",
             action=set_metric,
             focus=("#share_metric",),
-            reveal="#section_mode",
         ),
         Beat(
             "dimensions",
             "Every dimension you tick adds privacy constraints. Pick only the cuts the "
             "request actually needs.",
             action=set_dimensions,
-            focus=("#share_dims",),
-            reveal="#share_dims",
+            focus=("#dims",),
         ),
         Beat(
             "rate_tab",
-            "The Rate tab asks for a denominator and numerators instead. Same engine, "
+            "Rate mode asks for a denominator and numerators instead. Same engine, "
             "same privacy enforcement.",
-            action=show_rate_tab,
-            focus=("#rate_total",),
-            reveal="#section_mode",
+            action=show_rate_mode,
+            focus=("#mode_switch",),
         ),
         Beat(
             "running",
-            "Back on Share, Ctrl+R starts the run. Input validation happens before the "
-            "analysis, not after it.",
+            "Back in Share mode, step 5 reviews the run and Ctrl+R starts it. Input "
+            "validation happens before the analysis, not after it.",
             action=lambda app, pilot: _run_share(app, pilot, back_to_share, start_run),
             focus=("#run_status",),
             settle=0,
         ),
         Beat(
             "log_tail",
-            "The execution log ends with Analysis completed successfully, followed by "
-            "the posture and the verdict.",
+            "The run log ends with Analysis completed successfully, followed by the "
+            "posture and the verdict.",
             action=wait_for_finish,
             focus=("#log_output",),
             settle=10,
         ),
         Beat(
             "done",
-            "Last Run repeats the verdict and gives the output path. fully_compliant "
-            "under a strict posture is a good run.",
-            action=hold,
+            "Last run repeats the verdict in plain words and gives the report path; "
+            "Ctrl+Y copies it.",
+            action=show_results,
             focus=("#results_panel",),
         ),
     ]
@@ -331,11 +352,13 @@ async def capture(output_dir: Path) -> list[dict[str, Any]]:
             await settle(pilot, beat.settle)
             if beat.reveal:
                 await reveal(app, pilot, beat.reveal)
+            app.clear_notifications()
+            await settle(pilot, 2)
 
             svg = strip_font_faces(app.export_screenshot())
             filename = f"{index:02d}_{beat.slug}.svg"
             (output_dir / filename).write_text(svg, encoding="utf-8")
-            if "citi" in svg.lower() or "santander" in svg.lower():
+            if names_an_institution(svg):
                 raise SystemExit(
                     f"capture aborted: {filename} contains a named institution"
                 )
@@ -362,20 +385,20 @@ def assert_run_matches_onboarding(app: Any) -> None:
     The screenshots are shown to new analysts as the run they should copy, so a
     silently mis-configured capture is worse than no capture.
     """
-    from textual.widgets import SelectionList
-
+    form = app.form
     checks = {
-        "entity column": (app.query_one("#entity_col").value, EXPECTED_ENTITY_COL),
-        "target entity": (app.query_one("#entity_name").value, EXPECTED_TARGET),
-        "time column": (app.query_one("#time_col").value, EXPECTED_TIME_COL),
-        "preset": (app.query_one("#preset_select").value, EXPECTED_PRESET),
-        "primary metric": (app.query_one("#share_metric").value, EXPECTED_METRIC),
+        "entity column": (form.entity_col, EXPECTED_ENTITY_COL),
+        "target entity": (form.entity, EXPECTED_TARGET),
+        "time column": (form.time_col, EXPECTED_TIME_COL),
+        "preset": (form.preset, EXPECTED_PRESET),
+        "primary metric": (form.metric, EXPECTED_METRIC),
+        "mode": (form.mode, "share"),
     }
     for label, (actual, expected) in checks.items():
         if actual != expected:
             raise SystemExit(f"capture aborted: {label} is {actual!r}, expected {expected!r}")
 
-    selected = tuple(app.query_one("#share_dims", SelectionList).selected)
+    selected = tuple(form.dimensions)
     if selected != EXPECTED_DIMENSIONS:
         raise SystemExit(
             f"capture aborted: dimensions are {selected!r}, expected {EXPECTED_DIMENSIONS!r}"
@@ -386,6 +409,27 @@ def assert_run_matches_onboarding(app: Any) -> None:
         raise SystemExit(f"capture aborted: TUI run state is {run_state!r}, expected 'success'")
 
     print("run state: success · configuration matches the onboarding walkthrough")
+
+
+# The privacy step's own copy names the Citi declaration (a compliance
+# control, not data). Only these UI phrases are allowed (a modal may clip the
+# first one); any other mention, such as an entity value in the demo data,
+# still aborts the capture.
+UI_PHRASES = (
+    re.compile(r"A Citi competitor will[^<]*"),
+    re.compile(r"25% Citi cap"),
+    re.compile(r"Citi competitor:"),
+    re.compile(r"Citibank entity"),
+    re.compile(r"Pick the exact Citibank value"),
+)
+
+
+def names_an_institution(svg: str) -> bool:
+    text = svg.replace("&#160;", " ").replace("&#x27;", "'")
+    for phrase in UI_PHRASES:
+        text = phrase.sub("", text)
+    lowered = text.lower()
+    return "citi" in lowered or "santander" in lowered
 
 
 def strip_font_faces(svg: str) -> str:
@@ -436,6 +480,8 @@ def main() -> None:
 
     previous_cwd = Path.cwd()
     os.environ.setdefault("TERM", "xterm-256color")
+    # The video is rendered with a Unicode font: use the Unicode status glyphs.
+    os.environ.setdefault("AUTOBENCH_GLYPHS", "unicode")
     os.chdir(work)
     try:
         manifest = asyncio.run(capture(args.output_dir))

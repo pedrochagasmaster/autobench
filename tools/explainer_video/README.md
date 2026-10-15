@@ -92,7 +92,10 @@ The capture refuses to publish screenshots unless the app really ran the
 documented configuration: entity column `issuer_name`, target `Target`, time
 column `year_month`, preset `compliance_strict`, metric `txn_cnt`, dimensions
 `card_type`, `input_mode`, `card_type_input_mode`, and a run state of `success`.
-It also refuses to write a screenshot containing a named institution.
+It also refuses to write a screenshot containing a named institution, except
+the privacy step's own wording of the Citi declaration (a compliance control,
+not data). The walkthrough follows the five-step TUI (Data, Entity, Analysis &
+mode, Privacy & compliance, Review & run); `--output-dir` writes elsewhere.
 
 Because the screenshots are vector SVG, the composition can push in on a single
 widget and the terminal text stays sharp. `src/components/TuiShot.tsx` does the
