@@ -470,7 +470,6 @@ def test_log_handler_delivers_records_in_a_running_app() -> None:
             log.clear()
             handler = LogHandler(log)
             handler.setFormatter(logging.Formatter("%(message)s"))
-            start = time.monotonic()
 
             def emit_many() -> None:
                 for i in range(2000):
@@ -480,11 +479,12 @@ def test_log_handler_delivers_records_in_a_running_app() -> None:
 
             worker = threading.Thread(target=emit_many)
             worker.start()
-            while worker.is_alive():
-                await pilot.pause(0.01)
-            worker_seconds = time.monotonic() - start
+            # Join *from the UI loop's thread*, so the UI pumps nothing while
+            # the worker logs. A handler that waited on the UI would deadlock
+            # here; the non-blocking handler finishes regardless of machine load.
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "LogHandler.emit blocked on the UI thread"
             assert await _until(pilot, lambda: "worker 1999" in "\n".join(log.lines))
-            assert worker_seconds < 2.0
 
     asyncio.run(scenario())
 
