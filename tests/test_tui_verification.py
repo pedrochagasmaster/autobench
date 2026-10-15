@@ -1,7 +1,9 @@
 """TUI redesign Phase 2 PR 6: verification gaps.
 
 The Citibank entity readiness blocker (schema v4 ``citi_entity_missing``),
-the dimensions list sized to its content, and the Review step's file name.
+the dimensions list sized to its content, the Review step's file name, the
+CSV picker's quick picks off the UI thread and background step mounts that
+wait for quiet input.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import List, Tuple
 
 import pytest
 from textual.pilot import Pilot
-from textual.widgets import Select
+from textual.widgets import OptionList, Select, SelectionList, Static
 
 import tui_app
 from tui import status as tui_status
@@ -144,3 +146,121 @@ def test_citi_ticked_blank_entity_says_why_and_jumps_to_the_field(telemetry_call
     # Recorded before any attempt; core was never called.
     assert telemetry_calls == [("blocked", ("share_analysis", "citi_entity_missing"))]
     assert engine_calls == []
+
+
+# ── PR 5 gaps: dimensions list, Review file name ────────────────────────────
+
+
+def test_dimensions_list_is_sized_to_its_options_up_to_a_cap(tmp_path: Path) -> None:
+    async def scenario() -> Tuple[int, int, int]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load(pilot)
+            await app.ensure_step("analysis")
+            app._show_step("analysis", focus="dims")
+            await pilot.pause(0.3)
+            dims = app.query_one("#dims", SelectionList)
+            return dims.option_count, dims.outer_size.height, dims.max_scroll_y
+
+    count, height, max_scroll = asyncio.run(scenario())
+    # gate_demo.csv offers 6 dimension candidates: all visible, no scrolling.
+    assert count == 6
+    assert height == count + 2  # options plus the border
+    assert max_scroll == 0
+
+    wide = tmp_path / "wide.csv"
+    columns = ["issuer_name", "txn_cnt"] + [f"dim_{i:02d}" for i in range(20)]
+    wide.write_text(",".join(columns) + "\n" + ",".join(["A", "1"] + ["x"] * 20) + "\n", encoding="utf-8")
+
+    async def capped() -> Tuple[int, int]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load(pilot, wide)
+            await app.ensure_step("analysis")
+            app._show_step("analysis", focus="dims")
+            await pilot.pause(0.3)
+            dims = app.query_one("#dims", SelectionList)
+            return dims.outer_size.height, dims.max_scroll_y
+
+    height, max_scroll = asyncio.run(capped())
+    assert height == 10  # $ab-multi-max-rows
+    assert max_scroll > 0
+
+
+def test_review_shows_the_file_name_and_the_log_keeps_the_full_path(
+    monkeypatch: pytest.MonkeyPatch, engine_calls
+) -> None:
+    async def scenario() -> Tuple[str, List[str]]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await _load(pilot)
+            app.form.update(entity="Target", metric="txn_cnt", dimensions=("card_type",))
+            await app.ensure_step("review")
+            app._show_step("review")
+            await pilot.pause(0.2)
+            review = str(app.query_one("#review_summary", Static).content)
+            app.run_analysis()
+            assert await _until(pilot, lambda: bool(engine_calls) or app._run_state in ("error", "success"))
+            return review, [str(line) for line in app.query_one("#log_output").lines]
+
+    review, log_lines = asyncio.run(scenario())
+    data_line = next(line for line in review.splitlines() if line.startswith("Data"))
+    assert "gate_demo.csv · 8 columns" in data_line
+    assert str(FIXTURE.parent) not in review
+    assert f"Input file: {FIXTURE}" in log_lines
+
+
+# ── Performance gaps ───────────────────────────────────────────────────────
+
+
+def test_picker_gathers_quick_picks_off_the_ui_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+O never globs and stats the folder on the UI thread (PR 6)."""
+    import threading
+
+    for index in range(3):
+        (tmp_path / f"file_{index}.csv").write_text("a\n1\n", encoding="utf-8")
+    threads: List[bool] = []
+    real = BenchmarkApp._quick_pick_files
+
+    def tracking(self, root=None):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(self, root)
+
+    monkeypatch.setattr(BenchmarkApp, "_quick_pick_files", tracking)
+
+    async def scenario() -> Tuple[int, str]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            await pilot.press("ctrl+o")
+            assert await _until(pilot, lambda: isinstance(app.screen, tui_app.CsvPickerScreen))
+            screen = app.screen
+            assert await _until(pilot, lambda: screen._quick_loaded)
+            await pilot.pause()
+            quick = screen.query_one("#picker_quick_list", OptionList)
+            return quick.option_count, getattr(app.focused, "id", "")
+
+    count, focused = asyncio.run(scenario())
+    assert threads == [False]
+    assert count == 3
+    assert focused == "picker_quick_list"
+
+
+def test_background_step_mount_waits_for_quiet_input() -> None:
+    async def scenario() -> Tuple[bool, bool]:
+        async with BenchmarkApp().run_test(size=(120, 40)) as pilot:
+            app = pilot.app
+            await pilot.pause()
+            assert "entity" not in app._mounted_steps  # only step 1 at startup
+            app._last_input_at = time.monotonic()
+            app._prewarm_next_step()
+            deferred = "entity" not in app._mounted_steps
+            app._last_input_at = time.monotonic() - 10
+            app._prewarm_next_step()
+            return deferred, "entity" in app._mounted_steps
+
+    deferred, mounted = asyncio.run(scenario())
+    assert deferred and mounted

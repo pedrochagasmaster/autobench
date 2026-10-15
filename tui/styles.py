@@ -57,6 +57,7 @@ $ab-modal-md: 76;          /* fits 80 columns with a 2-column margin       */
 $ab-modal-lg: 110;         /* CSV picker: two panes and full paths         */
 $ab-results-column: 42;    /* status/results column at 110+ columns (01)  */
 $ab-list-rows: 6;
+$ab-multi-max-rows: 10;
 $ab-toast-width: 40;
 $ab-label-column: 18;      /* label column of a compact field row (01 §3.2) */       /* toasts, top right (01 §5.3)                 */
 """
@@ -256,8 +257,11 @@ ActionBar #action_key.-dim { color: $ab-muted; text-style: none; }
 #btn_run { width: 100%; margin: $ab-space-1 0; }
 TabbedContent { height: auto; }
 
+/* Sized to the options (no scrollbar for a short list), up to a cap; the
+   border adds 2 rows (PR 6). */
 .multi-select {
-    height: $ab-list-rows;
+    height: auto;
+    max-height: $ab-multi-max-rows;
     border: $ab-border-panel $ab-border;
     background: $ab-panel;
 }
@@ -283,7 +287,9 @@ TabbedContent { height: auto; }
 #results_copy { height: auto; }
 #results_path { height: auto; }
 #btn_copy_path { margin: $ab-space-1 0 0 0; }
-#log_output { height: 1fr; min-height: 6; }
+/* Textual's Log defaults to overflow: scroll, which draws both scrollbars
+   even when empty (PR 6); show them only when the log overflows. */
+#log_output { height: 1fr; min-height: 6; overflow: auto auto; }
 
 /* ═══ Modals: one frame rule, no per-screen CSS (02 §1.1) ═══════════════ */
 #validation_container {

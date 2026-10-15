@@ -20,6 +20,7 @@ import contextlib
 import collections
 import copy
 from functools import partial
+import gc
 import importlib
 import io
 import pandas as pd
@@ -59,11 +60,13 @@ from textual.widgets import (
     Collapsible,
     Tabs,
 )
+from textual.dom import DOMNode
 from textual.widgets._collapsible import CollapsibleTitle
+from textual.widgets._select import SelectCurrent, SelectOverlay
 from textual.widgets._toast import ToastRack
 from textual.widgets.option_list import Option
 from datetime import datetime
-from textual import work
+from textual import events, work
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.worker import get_current_worker
@@ -128,10 +131,12 @@ try:
         ENTITY_SELECT_PROMPT,
         SEPARATOR,
         ColumnSelect,
+        Disclosure,
         EntityChooser,
         EntityIndex,
         EntitySuggester,
         ModeSwitch,
+        SafeSelect,
     )
     from tui.keybar import KeyBar
     from tui.rail import ATTENTION, DONE, PENDING, RESTORED, STEP_BY_ID, STEPS, StepRail
@@ -155,7 +160,7 @@ try:
     )
     from tui.status import glyph as status_glyph, status_text
     from tui.styles import AUTOBENCH_TCSS
-    from tui.widgets import StatusBadge
+    from tui.widgets import BoxCheckbox, BoxSelectionList, StatusBadge
 except ImportError as e:
     # Fallback for when running in a different context or if imports fail
     print(f"Error importing benchmark modules: {e}")
@@ -182,6 +187,26 @@ def _analysis_run() -> Any:
         if _ANALYSIS_RUN is None:
             _ANALYSIS_RUN = importlib.import_module("core.analysis_run")
     return _ANALYSIS_RUN
+
+
+_GC_FROZEN = False
+
+
+def _prewarm_engine() -> None:
+    """Pre-warm worker body: import the engine, then ``gc.freeze()`` once.
+
+    The import leaves ~1M long-lived objects (pandas, scipy, the engine) in
+    the collected generations, so every later gen-2 collection walks them:
+    65-220 ms UI stalls that landed at random in the CSV-load, entity and key
+    windows (PR 6, measured with gc.callbacks). Freezing moves what exists now
+    to the permanent generation. Once per process: a later freeze would also
+    pin whatever garbage a previous app session left behind.
+    """
+    global _GC_FROZEN
+    _analysis_run()
+    if not _GC_FROZEN:
+        _GC_FROZEN = True
+        gc.freeze()
 
 
 # Thin module-level wrappers keep ``tui_app.prepare_run_data`` and friends as
@@ -250,6 +275,11 @@ NUMERIC_SAMPLE_ROWS = 500
 # this long after the load) so their first show is a display toggle.
 STEP_PREWARM_DELAY_S = 0.25
 STEP_PREWARM_ORDER = ("entity", "analysis")
+# Textual parses a widget class's DEFAULT_CSS, and rebuilds the rules map, the
+# first time an instance mounts. Steps 2-5 introduce these classes; their CSS
+# is registered once in an idle tick after startup so the background step
+# mounts after a CSV load do not pay for it (PR 6: background-mount stall).
+STEP_CSS_PRELOAD_DELAY_S = 0.05
 
 # Toasts (01 §5.3): top right, 40 columns; they move to the bottom when the
 # focused field is in this top-right area.
@@ -316,6 +346,21 @@ def write_log_message(log_widget: Log, message: str) -> None:
             app.call_from_thread(log_widget.write, text)
         except RuntimeError:
             pass  # App loop already gone (e.g. a run cancelled by Quit).
+
+
+def _elapsed_since(start: float) -> float:
+    """Seconds since a ``time.monotonic()`` mark, as the run status shows them (patchable in snapshots)."""
+    return time.monotonic() - start
+
+
+def _launch_folder() -> str:
+    """The working directory relative paths resolve from (patchable in snapshots)."""
+    return os.getcwd()
+
+
+def _full_path(path: str) -> str:
+    """Absolute form of a user path, as the run log shows it (patchable in snapshots)."""
+    return os.path.abspath(path)
 
 
 def _log_view_formatter() -> logging.Formatter:
@@ -543,13 +588,27 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
     folder with thousands of CSVs costs a handful of widgets instead of one
     widget per file. The directory listing runs on a thread worker. Enter
     picks a file or opens a directory (``..`` goes up); Escape cancels.
+
+    With ``quick_pick_source`` the quick picks (a glob plus one ``stat`` per
+    file) are also gathered on a thread worker, so Ctrl+O opens at once even
+    while another thread holds the GIL (PR 6: the engine pre-warm import made
+    those stats queue behind it, up to 0.4 s before the picker appeared).
     """
 
     BINDINGS = [("escape", "cancel_picker", "Cancel")]
 
-    def __init__(self, quick_picks: List[str]) -> None:
+    def __init__(
+        self,
+        quick_picks: Optional[List[str]] = None,
+        *,
+        quick_pick_source: Optional[Callable[[], List[str]]] = None,
+    ) -> None:
         super().__init__()
-        self.quick_picks = quick_picks
+        self.quick_picks = list(quick_picks or [])
+        self._quick_pick_source = quick_pick_source
+        self._quick_loaded = quick_pick_source is None
+        # Set by the first key: a late quick-pick list never steals focus.
+        self._operator_moved = False
         self._browse_dir: Optional[str] = None
         self._browse_entries: List[tuple] = []
 
@@ -575,8 +634,40 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
         self._refresh_quick_picks()
         # Browse starts in the caller's working directory, never a fixed root.
         self._browse(os.getcwd())
+        if self._quick_pick_source is not None:
+            self._quick_worker(self._quick_pick_source)
         quick = self.query_one("#picker_quick_list", OptionList)
         (quick if quick.option_count else self.query_one("#picker_browse_list", OptionList)).focus()
+
+    def on_key(self, event: events.Key) -> None:
+        self._operator_moved = True
+
+    @work(thread=True, exclusive=True, group="picker_quick", exit_on_error=False)
+    def _quick_worker(self, source: Callable[[], List[str]]) -> None:
+        worker = get_current_worker()
+        try:
+            picks = list(source())
+        except OSError:
+            picks = []
+        if worker.is_cancelled:
+            return
+        try:
+            self.app.call_from_thread(self._apply_quick_picks, picks)
+        except RuntimeError:
+            pass  # App already gone.
+
+    def _apply_quick_picks(self, picks: List[str]) -> None:
+        if not self.is_mounted:
+            return
+        self.quick_picks = picks
+        self._quick_loaded = True
+        self._refresh_quick_picks()
+        quick = self.query_one("#picker_quick_list", OptionList)
+        browse = self.query_one("#picker_browse_list", OptionList)
+        # As when the list was ready at open: start on the quick picks, unless
+        # the operator has already pressed a key.
+        if quick.option_count and not self._operator_moved and self.focused in (None, browse):
+            quick.focus()
 
     def _filter_text(self) -> str:
         try:
@@ -592,7 +683,7 @@ class CsvPickerScreen(ModalScreen[Optional[str]]):
         quick.set_options(Option(Text(path), id=path) for path in shown)
         # Like the old ListView: Enter right away picks the first entry.
         quick.highlighted = 0 if shown else None
-        title = "Quick picks"
+        title = "Quick picks" if self._quick_loaded else "Quick picks · finding files…"
         if len(matches) > len(shown):
             title = f"Quick picks ({len(shown)} of {len(matches):,})"
         self.query_one("#picker_quick_title", Label).update(title)
@@ -1285,12 +1376,33 @@ class BenchmarkApp(App):
         # Pay the deferred engine import off the UI thread once the first
         # frame is up, so the first Run does not wait for it (03 §1.4).
         self.call_after_refresh(self._prewarm_analysis_run)
+        self.set_timer(STEP_CSS_PRELOAD_DELAY_S, self._preload_step_css)
+
+    def _preload_step_css(self) -> None:
+        """Register the DEFAULT_CSS of the later steps' widget classes, parse once.
+
+        The same sources Textual would add on their first mount (identical
+        location keys, so the later add is a no-op); styles do not change.
+        """
+        if getattr(self, "_exit", False) or not self.is_running:
+            return
+        stylesheet = self.stylesheet
+        for cls in (
+            SafeSelect, ColumnSelect, SelectCurrent, SelectOverlay, OptionList, SelectionList,
+            BoxSelectionList, BoxCheckbox, Disclosure, CollapsibleTitle, Collapsible.Contents,
+            Container, EntityChooser, ModeSwitch,
+        ):
+            for read_from, css, tie_breaker, scope in DOMNode._get_default_css(object.__new__(cls)):
+                stylesheet.add_source(
+                    css, read_from=read_from, is_default_css=True, tie_breaker=tie_breaker, scope=scope
+                )
+        stylesheet.rules_map  # parse now, while idle  # noqa: B018
 
     def _prewarm_analysis_run(self) -> None:
         if getattr(self, "_exit", False):
             return
         self.run_worker(
-            _analysis_run,
+            _prewarm_engine,
             thread=True,
             group="prewarm",
             exit_on_error=False,
@@ -1380,7 +1492,7 @@ class BenchmarkApp(App):
             entity_index=self._entity_index,
             entity_loading=self.entity_values_loading,
             preset_options=list(self._preset_options),
-            launch_folder=os.getcwd(),
+            launch_folder=_launch_folder(),
             csv_meta=self._csv_meta,
         )
 
@@ -1753,6 +1865,14 @@ class BenchmarkApp(App):
 
     _mode_pending_focus: Optional[str] = None
 
+    # monotonic time of the last key or mouse event (see on_event).
+    _last_input_at = 0.0
+
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, events.InputEvent) and not event.is_forwarded:
+            self._last_input_at = time.monotonic()
+        await super().on_event(event)
+
     def _prewarm_next_step(self) -> None:
         """Mount the next unmounted step of STEP_PREWARM_ORDER while idle.
 
@@ -1763,6 +1883,12 @@ class BenchmarkApp(App):
             return
         stack = self.screen_stack  # empty while the app shuts down
         if not stack or isinstance(stack[-1], ModalScreen):
+            return
+        # Never mount under the operator's fingers: wait until input has been
+        # quiet this long (PR 6: the step 3 mount landed in key windows).
+        quiet_for = time.monotonic() - self._last_input_at
+        if quiet_for < STEP_PREWARM_DELAY_S:
+            self.set_timer(STEP_PREWARM_DELAY_S - quiet_for, self._prewarm_next_step)
             return
         for step_id in STEP_PREWARM_ORDER:
             if step_id not in self._mounted_steps:
@@ -2111,6 +2237,11 @@ class BenchmarkApp(App):
                 continue
         self._set_results_view(False)
         if changed:
+            # Ask for the screen layout now. Otherwise the display switch is
+            # only noticed on the idle pass after the next frame, and at 20 FPS
+            # the newly shown step waits one extra 50 ms frame for its layout
+            # (PR 6: step 3 first show 0.13 s -> about 0.08 s at 50 entities).
+            self.screen.refresh(layout=True)
             # A step that was just displayed has no layout yet, so the focus
             # scroll inside it happens after the next refresh.
             self.call_after_refresh(self._scroll_focus_into_view)
@@ -2473,7 +2604,7 @@ class BenchmarkApp(App):
             stage = _RUN_STAGE_LABELS.get(self._run_stage or "", "Starting the engine")
             elapsed = ""
             if self._run_started_at is not None:
-                elapsed = f" · {time.monotonic() - self._run_started_at:.0f} s"
+                elapsed = f" · {_elapsed_since(self._run_started_at):.0f} s"
             if self._run_stage == "output":
                 bar.set_state("running", f"{stage}{elapsed}", "Cancel unavailable: writing outputs")
             else:
@@ -2563,8 +2694,9 @@ class BenchmarkApp(App):
         columns = len(form.columns)
         loaded = getattr(self, "_loaded_csv_signature", None) is not None
         if loaded and csv_text:
-            folder = os.path.dirname(os.path.abspath(csv_text))
-            lines.append(("Data", f"{os.path.basename(csv_text)} · {columns} columns  ({folder})"))
+            # File name only (PR 6). The full path is in step 1's path field
+            # and is the first line of the run log.
+            lines.append(("Data", f"{os.path.basename(csv_text)} · {columns} columns · full path in step 1"))
         else:
             lines.append(("Data", csv_text or "no file loaded"))
         entity, _ = self._target_entity_for_run()
@@ -2610,7 +2742,7 @@ class BenchmarkApp(App):
         ))
         output = form.output_file.strip()
         format_text = labels.text_for(labels.OUTPUT_FORMAT, form.output_format)
-        where = os.path.abspath(output) if output else f"named automatically in {os.getcwd()}"
+        where = _full_path(output) if output else f"named automatically in {_launch_folder()}"
         lines.append(("Output", f"{format_text} → {where}"))
         lines.append(("Expert", expert_changes_text(len(form.expert))))
         return lines
@@ -2686,7 +2818,7 @@ class BenchmarkApp(App):
             f"[$text-muted]Preset[/]  {escape_markup(_preset_display(self.form.preset))}",
         ]
         if self._run_started_at is not None and self._run_state == "running":
-            elapsed = time.monotonic() - self._run_started_at
+            elapsed = _elapsed_since(self._run_started_at)
             lines.append(f"[$text-muted]Elapsed[/] {elapsed:.0f} s")
             stage = _RUN_STAGE_LABELS.get(self._run_stage or "")
             if stage:
@@ -2974,7 +3106,7 @@ class BenchmarkApp(App):
             self._elapsed_timer = None
         elapsed = None
         if self._run_started_at is not None:
-            elapsed = time.monotonic() - self._run_started_at
+            elapsed = _elapsed_since(self._run_started_at)
         self._run_started_at = None
         self._set_form_locked(False)
         self._set_run_button(f"Run {self._run_label()} ^R", False)
@@ -3238,23 +3370,26 @@ class BenchmarkApp(App):
     # CSV loading
     # ──────────────────────────────────────────────────────────────────
 
-    def _quick_pick_files(self) -> List[str]:
+    def _quick_pick_files(self, root: Optional[str] = None) -> List[str]:
         """CSV files from the working directory and known data folders.
 
         De-duplicated with a set (the old list check was O(F²)) and sorted
         newest first, so the capped quick-pick list shows recent files.
+        Paths are relative to ``root`` (default: the working directory), as
+        before; the picker calls this on a thread with the cwd at Ctrl+O.
         """
+        base = root or os.getcwd()
         seen: set = set()
         matches: List[str] = []
         for pattern in QUICK_PICK_PATTERNS:
-            for match in glob.glob(pattern):
+            for match in glob.glob(pattern, root_dir=base):
                 if match not in seen:
                     seen.add(match)
                     matches.append(match)
 
         def newest_first(path: str) -> tuple:
             try:
-                return (-os.stat(path).st_mtime_ns, path)
+                return (-os.stat(os.path.join(base, path)).st_mtime_ns, path)
             except OSError:
                 return (0, path)
 
@@ -3825,7 +3960,10 @@ class BenchmarkApp(App):
             self.form.csv_path = path
             self.load_csv_headers(path, focus_next=True)
 
-        self.push_screen(CsvPickerScreen(self._quick_pick_files()), on_picked)
+        cwd = os.getcwd()
+        self.push_screen(
+            CsvPickerScreen(quick_pick_source=partial(self._quick_pick_files, cwd)), on_picked
+        )
 
     def action_run_analysis(self) -> None:
         """Run analysis (Ctrl+R)."""
@@ -4210,6 +4348,9 @@ class BenchmarkApp(App):
         started = datetime.now().strftime("%H:%M:%S")
         mode_text = labels.text_for(labels.ANALYSIS_MODE, inputs.mode)
         log_widget.write(f"Run started · {mode_text} · {started}\n")
+        if inputs.csv_path:
+            # The Review step shows only the file name; the log keeps the path.
+            log_widget.write(f"Input file: {_full_path(inputs.csv_path)}\n")
         self._begin_validation_ui()
         self._launch_run_worker(inputs, log_widget)
 

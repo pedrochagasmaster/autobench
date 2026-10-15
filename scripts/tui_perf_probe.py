@@ -523,6 +523,13 @@ def measure_imports(repo: Path, work_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _analysis_run_imported() -> bool:
+    """True once ``core.analysis_run`` has finished importing (not just started)."""
+    module = sys.modules.get("core.analysis_run")
+    spec = getattr(module, "__spec__", None)
+    return module is not None and not getattr(spec, "_initializing", False)
+
+
 async def run_scenario(
     tui_app: Any, dataset: Dataset, cfg: ProbeConfig, profiler: Optional[PhaseProfiler] = None
 ) -> Dict[str, Any]:
@@ -543,9 +550,13 @@ async def run_scenario(
         # Revisions that pre-warm core.analysis_run on a thread after the first
         # paint: let that finish so it does not land inside a later window.
         # Only the first session per probe process pays it (the import is cached).
-        if any(getattr(w, "group", None) == "prewarm" for w in app.workers):
+        # The worker starts after the first refresh, which can come after the
+        # app first goes idle (PR 5 settles in ~0.2 s), so wait on the import
+        # itself: otherwise the GIL-heavy import overlaps the next windows.
+        if hasattr(app, "_prewarm_analysis_run"):
+            await wait_until(_analysis_run_imported)
             await wait_until(
-                lambda: not any(w.group == "prewarm" and not w.is_finished for w in app.workers)
+                lambda: not any(getattr(w, "group", None) == "prewarm" and not w.is_finished for w in app.workers)
             )
             metrics["prewarm_done_s"] = time.perf_counter() - t0
             await settle(pilot)

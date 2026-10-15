@@ -320,7 +320,8 @@ async def _open_picker(pilot):
     while time.monotonic() < deadline:
         await pilot.pause(0.02)
         screen = pilot.app.screen
-        if isinstance(screen, CsvPickerScreen) and screen._browse_entries:
+        # Both lists fill from thread workers (PR 6: quick picks too).
+        if isinstance(screen, CsvPickerScreen) and screen._browse_entries and screen._quick_loaded:
             break
     await pilot.pause()
     return pilot.app.screen
